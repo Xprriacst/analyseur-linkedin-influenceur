@@ -39,6 +39,12 @@ def _client() -> ApifyClient:
     return ApifyClient(os.environ["APIFY_TOKEN"])
 
 
+def _default_dataset_id(run: Any) -> str:
+    if isinstance(run, dict):
+        return run["defaultDatasetId"]
+    return run.default_dataset_id
+
+
 def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> list[dict[str, Any]]:
     """Fetch the last `limit` posts of a LinkedIn profile via Apify."""
     handle = extract_handle(profile_url)
@@ -70,7 +76,7 @@ def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> li
         }
 
     run = _client().actor(actor).call(run_input=run_input)
-    items = list(_client().dataset(run["defaultDatasetId"]).iterate_items())
+    items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
     track_apify(actor, len(items), cached=False)
 
     cache_file.write_text(json.dumps(items, ensure_ascii=False, indent=2, default=str))
@@ -99,7 +105,7 @@ def fetch_profile(profile_url: str, use_cache: bool = True) -> dict[str, Any] | 
 
     try:
         run = _client().actor(actor).call(run_input=run_input)
-        items = list(_client().dataset(run["defaultDatasetId"]).iterate_items())
+        items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
     except Exception:
         items = []
 
