@@ -69,7 +69,7 @@ def normalize_posts(raw: list[dict]) -> list[dict]:
         likes = int(_get(p, "engagement.likes", "numLikes", "likes", "likeCount", "reactions", "stats.like", "stats.total_reactions", default=0) or 0)
         comments = int(_get(p, "engagement.comments", "numComments", "comments", "commentCount", "stats.comments", default=0) or 0)
         reposts = int(_get(p, "engagement.shares", "numShares", "shares", "reposts", "repostCount", "stats.reposts", default=0) or 0)
-        url = _get(p, "url", "postUrl", "link", default="")
+        url = _get(p, "url", "postUrl", "linkedinUrl", "link", default="")
 
         out.append(
             {
@@ -98,7 +98,7 @@ def normalize_profile(raw: dict | None) -> dict:
         "name": _get(raw, "fullName", "name", "displayName", default=""),
         "headline": _get(raw, "headline", default=""),
         "summary": _get(raw, "summary", "about", default=""),
-        "location": _get(raw, "geoLocationName", "location", "locationName", default=""),
+        "location": _get(raw, "geoLocationName", "location.linkedinText", "locationName", default="") or "",
         "follower_count": int(_get(raw, "followerCount", "followers", default=0) or 0),
         "connections_count": int(_get(raw, "connectionsCount", "connections", default=0) or 0),
         "creator_mode": bool(_get(raw, "creator", default=False)),

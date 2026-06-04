@@ -52,11 +52,11 @@ def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> li
 
     if use_cache and cache_file.exists():
         cached = json.loads(cache_file.read_text())
-        actor = os.environ.get("APIFY_ACTOR", "apimaestro/linkedin-profile-posts")
+        actor = os.environ.get("APIFY_ACTOR", "harvestapi/linkedin-profile-posts")
         track_apify(actor, len(cached), cached=True)
         return cached
 
-    actor = os.environ.get("APIFY_ACTOR", "apimaestro/linkedin-profile-posts")
+    actor = os.environ.get("APIFY_ACTOR", "harvestapi/linkedin-profile-posts")
     url = normalize_url(profile_url)
 
     if "harvestapi" in actor:
@@ -90,18 +90,23 @@ def fetch_profile(profile_url: str, use_cache: bool = True) -> dict[str, Any] | 
 
     if use_cache and cache_file.exists():
         cached = json.loads(cache_file.read_text())
-        actor = os.environ.get("APIFY_PROFILE_ACTOR", "supreme_coder/linkedin-profile-scraper")
+        actor = os.environ.get("APIFY_PROFILE_ACTOR", "harvestapi/linkedin-profile-scraper")
         track_apify(actor, 1 if cached else 0, cached=True)
         return cached or None
 
-    actor = os.environ.get("APIFY_PROFILE_ACTOR", "supreme_coder/linkedin-profile-scraper")
+    actor = os.environ.get("APIFY_PROFILE_ACTOR", "harvestapi/linkedin-profile-scraper")
     url = normalize_url(profile_url)
 
-    run_input = {
-        "urls": [{"url": url}],
-        "scrapeCompany": False,
-        "findContacts": False,
-    }
+    if "harvestapi" in actor:
+        run_input = {
+            "queries": [url],
+        }
+    else:
+        run_input = {
+            "urls": [{"url": url}],
+            "scrapeCompany": False,
+            "findContacts": False,
+        }
 
     try:
         run = _client().actor(actor).call(run_input=run_input)
