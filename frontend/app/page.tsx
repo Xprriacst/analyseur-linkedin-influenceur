@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 
 const API_URL = "/api";
+const DIRECT_API_URL = "https://analyseur-linkedin-influenceur-api.onrender.com";
 
 type Health = { ok: boolean; apify: boolean; anthropic: boolean; model: string };
 type Report = { name: string; path: string; updated_at: number; content: string };
@@ -463,7 +464,7 @@ function Generator() {
     setError("");
     setLoadingIdeas(true);
     try {
-      const res = await fetch(`${API_URL}/ideas`, {
+      const res = await fetch(`${DIRECT_API_URL}/ideas`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ count: 5 }),
@@ -483,7 +484,7 @@ function Generator() {
     if (!t.trim()) { setError("Entre un sujet pour le post."); return; }
     setLoadingPosts(true);
     try {
-      const res = await fetch(`${API_URL}/generate`, {
+      const res = await fetch(`${DIRECT_API_URL}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ topic: t.trim() }),
@@ -615,7 +616,7 @@ function GlobalDashboard() {
     setAiError("");
     setLoadingAi(true);
     try {
-      const res = await fetch(`${API_URL}/dashboard/ai-analysis`, { method: "POST" });
+      const res = await fetch(`${DIRECT_API_URL}/dashboard/ai-analysis`, { method: "POST" });
       const d = await res.json();
       if (!res.ok) throw new Error(d.detail || "Échec de l'analyse IA");
       setAiAnalysis(d.markdown || "");
@@ -822,7 +823,7 @@ export default function Home() {
     if (!payload.url.trim()) { setError("Colle d'abord une URL de profil LinkedIn."); return; }
     setLoading(true);
     try {
-      const response = await fetch(`${API_URL}/analyze`, {
+      const response = await fetch(`${DIRECT_API_URL}/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ profile_url: payload.url, limit: payload.limit, use_cache: payload.useCache, run_llm: payload.runLlm }),

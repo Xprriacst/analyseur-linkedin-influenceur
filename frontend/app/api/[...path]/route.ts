@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// Extend Netlify function timeout to max (background functions up to 15min)
+export const maxDuration = 300; // 5 minutes
+export const dynamic = "force-dynamic";
+
 const BACKEND = "https://analyseur-linkedin-influenceur-api.onrender.com";
 
 async function proxy(req: NextRequest, path: string) {
