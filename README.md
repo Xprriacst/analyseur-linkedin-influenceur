@@ -74,6 +74,109 @@ Variables `.env` :
 | `APIFY_PROFILE_ACTOR` | `supreme_coder/linkedin-profile-scraper` | Actor profil |
 | `POSTS_LIMIT` | `30` | Nb max de posts |
 
+## Déploiement production
+
+### URLs
+
+| Service | URL |
+|---|---|
+| Frontend Netlify | https://courageous-strudel-2d8ba3.netlify.app |
+| Backend Render | https://analyseur-linkedin-influenceur-api.onrender.com |
+| Health backend | https://analyseur-linkedin-influenceur-api.onrender.com/health |
+| GitHub | https://github.com/Xprriacst/analyseur-linkedin-influenceur |
+
+### Comptes et services
+
+| Plateforme | Compte / workspace | Service |
+|---|---|---|
+| Render | `Alex's workspace` — `contact.polaris.ia@gmail.com` | `analyseur-linkedin-influenceur-api` |
+| Netlify | `Xprriacst’s team` | `courageous-strudel-2d8ba3` |
+
+### Render backend
+
+Service Render :
+
+```txt
+https://dashboard.render.com/web/srv-d8gn0n7lk1mc73f2pcf0
+```
+
+Configuration :
+
+| Champ | Valeur |
+|---|---|
+| Runtime | Python |
+| Build command | `pip install -r requirements.txt` |
+| Start command | `uvicorn api:app --host 0.0.0.0 --port $PORT` |
+| Branch | `main` |
+| Auto deploy | Activé |
+
+Variables d'environnement Render requises :
+
+| Var | Description |
+|---|---|
+| `APIFY_TOKEN` | Token Apify utilisé par le scraper |
+| `ANTHROPIC_API_KEY` | Clé Anthropic utilisée par la synthèse/génération |
+| `ANTHROPIC_MODEL` | Modèle Claude, actuellement `claude-sonnet-4-6` |
+
+Vérification attendue :
+
+```bash
+curl https://analyseur-linkedin-influenceur-api.onrender.com/health
+```
+
+Réponse attendue :
+
+```json
+{
+  "ok": true,
+  "apify": true,
+  "anthropic": true,
+  "model": "claude-sonnet-4-6"
+}
+```
+
+### Netlify frontend
+
+Site Netlify :
+
+```txt
+https://app.netlify.com/projects/courageous-strudel-2d8ba3
+```
+
+Variable d'environnement Netlify requise en production :
+
+| Var | Valeur |
+|---|---|
+| `NEXT_PUBLIC_API_URL` | `https://analyseur-linkedin-influenceur-api.onrender.com` |
+
+Le frontend Next.js lit cette variable dans `frontend/app/page.tsx`. Si elle manque au build Netlify, le frontend retombe sur `http://localhost:8000`.
+
+Commande CLI utilisée pour définir la variable :
+
+```bash
+netlify env:set NEXT_PUBLIC_API_URL https://analyseur-linkedin-influenceur-api.onrender.com --context production
+```
+
+Après modification d'une variable `NEXT_PUBLIC_*`, redéployer Netlify :
+
+```bash
+netlify deploy --prod
+```
+
+Vérification du bundle publié :
+
+```bash
+curl -sS https://courageous-strudel-2d8ba3.netlify.app/_next/static/chunks/app/<page-chunk>.js | grep "analyseur-linkedin-influenceur-api.onrender.com"
+```
+
+### CORS
+
+Le backend FastAPI autorise explicitement le frontend Netlify dans `api.py` :
+
+```txt
+https://courageous-strudel-2d8ba3.netlify.app
+```
+
 ## Structure
 
 ```
