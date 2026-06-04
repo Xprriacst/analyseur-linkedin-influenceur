@@ -6,6 +6,7 @@ async function proxy(req: NextRequest, path: string) {
   const url = `${BACKEND}/${path}${req.nextUrl.search}`;
   const headers = new Headers(req.headers);
   headers.delete("host");
+  headers.set("accept-encoding", "identity");
 
   const upstream = await fetch(url, {
     method: req.method,
@@ -14,9 +15,13 @@ async function proxy(req: NextRequest, path: string) {
     duplex: "half",
   } as RequestInit);
 
+  const responseHeaders = new Headers(upstream.headers);
+  responseHeaders.delete("content-encoding");
+  responseHeaders.delete("transfer-encoding");
+
   return new NextResponse(upstream.body, {
     status: upstream.status,
-    headers: upstream.headers,
+    headers: responseHeaders,
   });
 }
 
