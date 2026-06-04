@@ -19,9 +19,7 @@ import {
   Zap,
 } from "lucide-react";
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ||
-  (typeof window !== "undefined" ? "/api" : "http://localhost:8000");
+const API_URL = "/api";
 
 type Health = { ok: boolean; apify: boolean; anthropic: boolean; model: string };
 type Report = { name: string; path: string; updated_at: number; content: string };
