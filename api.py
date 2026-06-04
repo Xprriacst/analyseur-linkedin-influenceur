@@ -1,0 +1,370 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from src.pipeline import run_analysis
+from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy
+from src.normalize import normalize_posts, normalize_profile
+from src.patterns import analyze_patterns
+from src.stats import compute_stats
+
+load_dotenv()
+
+app = FastAPI(title="LinkedIn Strategy Decoder API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:3002",
+        "http://127.0.0.1:3002",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class AnalyzeRequest(BaseModel):
+    profile_url: str = Field(..., min_length=8)
+    limit: int = Field(default=25, ge=10, le=50)
+    use_cache: bool = True
+    run_llm: bool = True
+
+
+@app.get("/health")
+def health() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "apify": bool(os.environ.get("APIFY_TOKEN")),
+        "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "model": os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7"),
+    }
+
+
+@app.get("/reports")
+def reports() -> list[dict[str, Any]]:
+    reports_dir = Path("reports")
+    if not reports_dir.exists():
+        return []
+    files = sorted(reports_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [
+        {
+            "name": path.name,
+            "path": str(path),
+            "updated_at": path.stat().st_mtime,
+            "content": path.read_text(encoding="utf-8"),
+        }
+        for path in files[:10]
+    ]
+
+
+def _load_cached_influencers() -> list[dict]:
+    """Load all influencer profiles + posts from local cache."""
+    import json
+    cache_dir = Path("cache")
+    if not cache_dir.exists():
+        return []
+    result = []
+    for profile_file in sorted(cache_dir.glob("*-profile.json")):
+        handle = profile_file.stem.replace("-profile", "")
+        posts_file = cache_dir / f"{handle}-posts.json"
+        if not posts_file.exists():
+            continue
+        try:
+            profile_raw = json.loads(profile_file.read_text())
+            posts_raw = json.loads(posts_file.read_text())
+        except Exception:
+            continue
+        profile = normalize_profile(profile_raw)
+        posts = normalize_posts(posts_raw)
+        if not posts:
+            continue
+        patterns = analyze_patterns(posts)
+        stats = compute_stats(posts, profile=profile)
+        result.append({
+            "handle": handle,
+            "profile": profile,
+            "posts": posts,
+            "stats": stats,
+            "patterns": patterns,
+        })
+    return result
+
+
+def _build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
+    """Build top posts list and benchmark summary."""
+    from collections import Counter
+    all_posts: list[dict] = []
+    hook_totals: Counter = Counter()
+    for inf in influencers:
+        name = inf["profile"].get("name", inf["handle"])
+        enriched = inf["patterns"].get("posts_enriched", inf["posts"])
+        for p in enriched:
+            all_posts.append({**p, "influencer": name})
+        for hook, count in inf["patterns"].get("hook_distribution", {}).items():
+            hook_totals[hook] += count
+
+    top_posts = sorted(all_posts, key=lambda x: x.get("engagement", 0), reverse=True)[:6]
+    benchmarks = []
+    for inf in influencers:
+        s = inf["stats"].get("engagement", {})
+        benchmarks.append({
+            "influencer": inf["profile"].get("name", inf["handle"]),
+            "followers": inf["profile"].get("follower_count", 0),
+            "avg_engagement": round(s.get("mean_engagement", 0), 1),
+            "avg_comments": round(s.get("mean_comments", 0), 1),
+        })
+    benchmark = {
+        "benchmarks": benchmarks,
+        "top_hook_types": dict(hook_totals.most_common(6)),
+        "proven_insights": [
+            "Hook stat+contrarian : combo sous-exploité, +40-80% vs post standard",
+            "Triple CTA (comment+repost+save) : multiplicateur x2-3 prouvé sur le corpus",
+            "Format image/carousel : 2x plus d'engagement que texte seul",
+            "Longueur optimale : 1 400-1 800 caractères",
+            "Hook question : quasi absent du corpus = alpha, +150% engagement potentiel",
+        ],
+    }
+    return top_posts, benchmark
+
+
+@app.get("/dashboard")
+def dashboard() -> dict[str, Any]:
+    """Aggregated stats across all cached influencer analyses."""
+    influencers = _load_cached_influencers()
+    if not influencers:
+        return {"influencer_count": 0, "influencers": [], "aggregated": {}}
+
+    total_posts = 0
+    total_followers = 0
+    all_likes = []
+    all_comments = []
+    all_reposts = []
+    all_engagement = []
+    format_counts: dict[str, int] = {}
+    hook_counts: dict[str, int] = {}
+    weekday_counts: dict[str, int] = {}
+    influencer_summaries = []
+
+    for inf in influencers:
+        stats = inf["stats"]
+        profile = inf["profile"]
+        patterns = inf["patterns"]
+        posts = inf["posts"]
+        eng = stats.get("engagement", {})
+
+        total_posts += stats.get("count", 0)
+        total_followers += profile.get("follower_count", 0) or 0
+
+        for p in posts:
+            all_likes.append(p.get("likes", 0))
+            all_comments.append(p.get("comments", 0))
+            all_reposts.append(p.get("reposts", 0))
+            all_engagement.append(p.get("engagement", 0))
+
+        for fmt_name, count in stats.get("format_counts", {}).items():
+            format_counts[fmt_name] = format_counts.get(fmt_name, 0) + count
+
+        for hook, count in patterns.get("hook_distribution", {}).items():
+            hook_counts[hook] = hook_counts.get(hook, 0) + count
+
+        for day, count in stats.get("weekday_distribution", {}).items():
+            weekday_counts[day] = weekday_counts.get(day, 0) + count
+
+        influencer_summaries.append({
+            "handle": inf["handle"],
+            "name": profile.get("name", inf["handle"]),
+            "headline": profile.get("headline", ""),
+            "followers": profile.get("follower_count", 0) or 0,
+            "posts_analyzed": stats.get("count", 0),
+            "posts_per_week": stats.get("posts_per_week"),
+            "avg_engagement": round(eng.get("mean_engagement", 0), 1),
+            "median_comments": eng.get("median_comments", 0),
+            "engagement_rate_pct": eng.get("engagement_rate_pct"),
+            "top_format": max(stats.get("format_counts", {"?": 0}), key=lambda k: stats["format_counts"][k]) if stats.get("format_counts") else "—",
+        })
+
+    import statistics
+    aggregated = {
+        "total_posts": total_posts,
+        "total_followers": total_followers,
+        "avg_likes": round(statistics.mean(all_likes), 1) if all_likes else 0,
+        "median_likes": round(statistics.median(all_likes)) if all_likes else 0,
+        "avg_comments": round(statistics.mean(all_comments), 1) if all_comments else 0,
+        "median_comments": round(statistics.median(all_comments)) if all_comments else 0,
+        "avg_reposts": round(statistics.mean(all_reposts), 1) if all_reposts else 0,
+        "avg_engagement": round(statistics.mean(all_engagement), 1) if all_engagement else 0,
+        "median_engagement": round(statistics.median(all_engagement)) if all_engagement else 0,
+        "format_distribution": format_counts,
+        "hook_distribution": dict(sorted(hook_counts.items(), key=lambda x: x[1], reverse=True)),
+        "weekday_distribution": weekday_counts,
+    }
+
+    return {
+        "influencer_count": len(influencers),
+        "influencers": influencer_summaries,
+        "aggregated": aggregated,
+    }
+
+
+@app.get("/dashboard/growth")
+def dashboard_growth() -> list[dict[str, Any]]:
+    """Growth comparison: engagement before vs after the 25th post for each influencer."""
+    influencers = _load_cached_influencers()
+    result = []
+    for inf in influencers:
+        name = inf["profile"].get("name", inf["handle"]) or inf["handle"]
+        posts_sorted = sorted(
+            [p for p in inf["posts"] if p.get("date")],
+            key=lambda x: x["date"],
+        )
+        total = len(posts_sorted)
+        if total < 5:
+            continue
+
+        split_idx = min(25, total)
+        first_batch = posts_sorted[:split_idx]
+        later_batch = posts_sorted[split_idx:]
+
+        import statistics as _stats
+        first_eng = [p.get("engagement", 0) for p in first_batch]
+        first_avg = round(_stats.mean(first_eng), 1) if first_eng else 0
+
+        later_avg: float | None = None
+        growth_pct: float | None = None
+        if later_batch:
+            later_eng = [p.get("engagement", 0) for p in later_batch]
+            later_avg = round(_stats.mean(later_eng), 1)
+            growth_pct = round(((later_avg / max(first_avg, 1)) - 1) * 100, 1)
+
+        post_25_date = first_batch[-1]["date"]
+        date_str = post_25_date.strftime("%Y-%m-%d") if hasattr(post_25_date, "strftime") else str(post_25_date)[:10]
+
+        result.append({
+            "handle": inf["handle"],
+            "name": name,
+            "total_posts": total,
+            "split_at": split_idx,
+            "date_post_split": date_str,
+            "avg_eng_before": first_avg,
+            "avg_eng_after": later_avg,
+            "growth_pct": growth_pct,
+        })
+
+    result.sort(key=lambda x: x["growth_pct"] if x["growth_pct"] is not None else -999, reverse=True)
+    return result
+
+
+@app.post("/dashboard/ai-analysis")
+def dashboard_ai_analysis() -> dict[str, Any]:
+    """AI strategic analysis of all cached influencer data."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    influencers = _load_cached_influencers()
+    if not influencers:
+        raise HTTPException(status_code=400, detail="Aucun influenceur en cache.")
+
+    inf_summaries = []
+    for inf in influencers:
+        s = inf["stats"].get("engagement", {})
+        p = inf["profile"]
+        pats = inf["patterns"]
+        inf_summaries.append({
+            "name": p.get("name", inf["handle"]) or inf["handle"],
+            "handle": inf["handle"],
+            "followers": p.get("follower_count", 0) or 0,
+            "posts_count": inf["stats"].get("count", 0),
+            "posts_per_week": inf["stats"].get("posts_per_week"),
+            "mean_engagement": round(s.get("mean_engagement", 0), 1),
+            "median_engagement": s.get("median_engagement", 0),
+            "mean_likes": round(s.get("mean_likes", 0), 1),
+            "mean_comments": round(s.get("mean_comments", 0), 1),
+            "median_comments": s.get("median_comments", 0),
+            "engagement_rate_pct": s.get("engagement_rate_pct", 0),
+            "format_mix": inf["stats"].get("format_mix_pct", {}),
+            "hook_distribution": pats.get("hook_distribution", {}),
+            "cta_share_pct": pats.get("cta_share_pct", 0),
+            "length_distribution": pats.get("length_distribution", {}),
+            "weekday_distribution": inf["stats"].get("weekday_distribution", {}),
+        })
+
+    # Also include growth data
+    growth_data = None
+    try:
+        growth_data = dashboard_growth()
+    except Exception:
+        pass
+
+    try:
+        analysis_md = analyze_dashboard_strategy(inf_summaries, growth_data)
+        return {"markdown": analysis_md}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+class IdeasRequest(BaseModel):
+    count: int = Field(default=5, ge=1, le=10)
+
+
+class GenerateRequest(BaseModel):
+    topic: str = Field(..., min_length=3)
+
+
+@app.post("/ideas")
+def ideas(payload: IdeasRequest) -> dict[str, Any]:
+    """Generate post ideas from cached influencer insights."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    influencers = _load_cached_influencers()
+    if not influencers:
+        raise HTTPException(status_code=400, detail="Aucun influenceur en cache. Lance d'abord une analyse.")
+
+    top_posts, benchmark = _build_benchmark(influencers)
+    ideas_list = generate_ideas(top_posts, benchmark, count=payload.count)
+    return {"ideas": ideas_list, "influencer_count": len(influencers)}
+
+
+@app.post("/generate")
+def generate(payload: GenerateRequest) -> dict[str, Any]:
+    """Generate optimized post variants for a given topic."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    influencers = _load_cached_influencers()
+    if not influencers:
+        raise HTTPException(status_code=400, detail="Aucun influenceur en cache. Lance d'abord une analyse.")
+
+    top_posts, benchmark = _build_benchmark(influencers)
+    variants = generate_posts(payload.topic.strip(), top_posts, benchmark)
+    return {"variants": variants}
+
+
+@app.post("/analyze")
+def analyze(payload: AnalyzeRequest) -> dict[str, Any]:
+    if not os.environ.get("APIFY_TOKEN"):
+        raise HTTPException(status_code=400, detail="APIFY_TOKEN manquant dans .env")
+    if payload.run_llm and not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    try:
+        return run_analysis(
+            payload.profile_url.strip(),
+            limit=payload.limit,
+            no_cache=not payload.use_cache,
+            with_llm=payload.run_llm,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

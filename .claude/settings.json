@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m uvicorn api:app --reload --port 8000)",
+      "Bash(echo \"Backend PID: $!\")",
+      "Bash(echo \"Frontend PID: $!\")",
+      "Bash(lsof -ti:8000)"
+    ],
+    "additionalDirectories": [
+      "/Users/alexandreerrasti/CascadeProjects/windsurf-project-8/frontend/.next",
+      "/tmp"
+    ]
+  }
+}
