@@ -74,6 +74,51 @@ Variables `.env` :
 | `APIFY_PROFILE_ACTOR` | `supreme_coder/linkedin-profile-scraper` | Actor profil |
 | `POSTS_LIMIT` | `30` | Nb max de posts |
 
+## Base de données (Supabase)
+
+App multi-utilisateurs : chaque utilisateur a son propre espace (analyses, influenceurs, posts) isolé par **Row Level Security**.
+
+### Projet
+
+| Champ | Valeur |
+|---|---|
+| Projet | `Linkedin analyse` (`zcxaxwqkswuefzlzpgvi`, eu-west-1) |
+| URL | `https://zcxaxwqkswuefzlzpgvi.supabase.co` |
+
+### Schéma (`public`)
+
+| Table | Rôle |
+|---|---|
+| `profiles` | Profil applicatif lié à `auth.users` (créé automatiquement à l'inscription via trigger) |
+| `influencers` | Influenceurs analysés, scoping `user_id`, unique `(user_id, handle)` |
+| `posts` | Posts normalisés rattachés à un influenceur (cascade delete) |
+| `analyses` | Rapport + données calculées (`stats`, `patterns`, `synthesis`, `usage`…) par run |
+
+RLS activée sur toutes les tables : un utilisateur ne lit/écrit que ses propres lignes (`user_id = auth.uid()`).
+
+### Variables d'environnement
+
+Backend (FastAPI / Render) :
+
+| Var | Description |
+|---|---|
+| `SUPABASE_URL` | `https://zcxaxwqkswuefzlzpgvi.supabase.co` |
+| `SUPABASE_ANON_KEY` | Clé anon/publishable du projet |
+
+Frontend (Next.js / Netlify) — optionnel, valeurs publiques par défaut dans `app/lib/supabase.ts` :
+
+| Var | Description |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | URL du projet Supabase |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clé anon (sûre à exposer côté navigateur) |
+
+### Fonctionnement
+
+- Le frontend gère l'auth via `@supabase/supabase-js` (`AuthGate` : login / signup / logout).
+- Chaque requête `/analyze` envoie le JWT en `Authorization: Bearer <token>`.
+- Si un JWT valide est présent, le backend **persiste l'analyse en BDD** (best-effort, n'échoue jamais l'analyse). Sinon, comportement fichier inchangé.
+- Endpoints utilisateur : `GET /me/influencers`, `GET /me/analyses`, `GET /me/analyses/{id}` (auth requise).
+
 ## Déploiement production
 
 ### URLs

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from src import db
 from src.pipeline import run_analysis
 from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy
 from src.normalize import normalize_posts, normalize_profile
@@ -36,6 +37,29 @@ app.add_middleware(
 )
 
 
+def _bearer_token(authorization: Optional[str]) -> Optional[str]:
+    """Extract a bearer token from an Authorization header."""
+    if not authorization:
+        return None
+    parts = authorization.split(" ", 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return None
+
+
+def optional_token(authorization: Optional[str] = Header(default=None)) -> Optional[str]:
+    """Optional auth: returns a token if present, else None (no error)."""
+    return _bearer_token(authorization)
+
+
+def require_token(authorization: Optional[str] = Header(default=None)) -> str:
+    """Required auth: 401 if no valid Supabase session is provided."""
+    token = _bearer_token(authorization)
+    if not token or not db.get_user(token):
+        raise HTTPException(status_code=401, detail="Authentification requise.")
+    return token
+
+
 class AnalyzeRequest(BaseModel):
     profile_url: str = Field(..., min_length=8)
     limit: int = Field(default=25, ge=10, le=50)
@@ -50,7 +74,29 @@ def health() -> dict[str, Any]:
         "apify": bool(os.environ.get("APIFY_TOKEN")),
         "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "model": os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7"),
+        "supabase": db.supabase_enabled(),
     }
+
+
+@app.get("/me/influencers")
+def me_influencers(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List the authenticated user's analyzed influencers."""
+    return db.list_influencers(token)
+
+
+@app.get("/me/analyses")
+def me_analyses(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List the authenticated user's analysis history."""
+    return db.list_analyses(token)
+
+
+@app.get("/me/analyses/{analysis_id}")
+def me_analysis(analysis_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Fetch a single stored analysis (report + computed data)."""
+    analysis = db.get_analysis(token, analysis_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Analyse introuvable.")
+    return analysis
 
 
 @app.get("/reports")
@@ -354,14 +400,17 @@ def generate(payload: GenerateRequest) -> dict[str, Any]:
 
 
 @app.post("/analyze")
-def analyze(payload: AnalyzeRequest) -> dict[str, Any]:
+def analyze(
+    payload: AnalyzeRequest,
+    token: Optional[str] = Depends(optional_token),
+) -> dict[str, Any]:
     if not os.environ.get("APIFY_TOKEN"):
         raise HTTPException(status_code=400, detail="APIFY_TOKEN manquant dans .env")
     if payload.run_llm and not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
     try:
-        return run_analysis(
+        result = run_analysis(
             payload.profile_url.strip(),
             limit=payload.limit,
             no_cache=not payload.use_cache,
@@ -369,3 +418,15 @@ def analyze(payload: AnalyzeRequest) -> dict[str, Any]:
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Persist to the database when an authenticated user is making the request.
+    if token and db.supabase_enabled():
+        try:
+            saved = db.save_analysis(token, result, posts_limit=payload.limit)
+            if saved:
+                result["saved"] = saved
+        except Exception:
+            # Persistence is best-effort: never fail the analysis on a DB error.
+            pass
+
+    return result

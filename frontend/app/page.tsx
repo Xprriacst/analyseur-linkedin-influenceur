@@ -18,6 +18,8 @@ import {
   TrendingUp,
   Zap,
 } from "lucide-react";
+import AuthGate from "./components/AuthGate";
+import { authHeaders } from "./lib/supabase";
 
 const API_URL = "/api";
 const DIRECT_API_URL = "https://analyseur-linkedin-influenceur-api.onrender.com";
@@ -825,7 +827,7 @@ export default function Home() {
     try {
       const response = await fetch(`${DIRECT_API_URL}/analyze`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({ profile_url: payload.url, limit: payload.limit, use_cache: payload.useCache, run_llm: payload.runLlm }),
       });
       const data = await response.json();
@@ -840,22 +842,24 @@ export default function Home() {
   }
 
   return (
-    <div className="app-shell">
-      <Sidebar health={health} reports={reports} view={view} onNavigate={(v) => { setView(v); if (v === "analyze") setResult(null); }} onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }} />
-      <TopHeader result={result} view={view} onReset={() => { setResult(null); setLoadedReport(null); }} />
-      <main className="main">
-        {view === "analyze" && (
-          loading
-            ? <LoadingState />
-            : result
-              ? <Dashboard result={result} />
-              : loadedReport
-                ? <div className="markdown card"><ReactMarkdown>{loadedReport.content}</ReactMarkdown></div>
-                : <Landing onSubmit={analyze} loading={loading} error={error} />
-        )}
-        {view === "generator" && <Generator />}
-        {view === "dashboard" && <GlobalDashboard />}
-      </main>
-    </div>
+    <AuthGate>
+      <div className="app-shell">
+        <Sidebar health={health} reports={reports} view={view} onNavigate={(v) => { setView(v); if (v === "analyze") setResult(null); }} onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }} />
+        <TopHeader result={result} view={view} onReset={() => { setResult(null); setLoadedReport(null); }} />
+        <main className="main">
+          {view === "analyze" && (
+            loading
+              ? <LoadingState />
+              : result
+                ? <Dashboard result={result} />
+                : loadedReport
+                  ? <div className="markdown card"><ReactMarkdown>{loadedReport.content}</ReactMarkdown></div>
+                  : <Landing onSubmit={analyze} loading={loading} error={error} />
+          )}
+          {view === "generator" && <Generator />}
+          {view === "dashboard" && <GlobalDashboard />}
+        </main>
+      </div>
+    </AuthGate>
   );
 }
