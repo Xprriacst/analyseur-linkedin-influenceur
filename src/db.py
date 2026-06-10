@@ -142,6 +142,60 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
     return {"influencer_id": influencer_id, "analysis_id": analysis_id}
 
 
+def get_user_corpus(access_token: str) -> list[dict]:
+    """Load the user's full corpus (influencers + their posts) from Supabase.
+
+    Returns a list of {"handle", "profile", "posts"} dicts shaped like the
+    normalized pipeline output, so stats/patterns can be recomputed on top.
+    """
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+
+    inf_resp = db.table("influencers").select("*").order("updated_at", desc=True).execute()
+    influencers = inf_resp.data or []
+    if not influencers:
+        return []
+
+    ids = [inf["id"] for inf in influencers]
+    posts_resp = (
+        db.table("posts")
+        .select("*")
+        .in_("influencer_id", ids)
+        .order("posted_at", desc=True)
+        .execute()
+    )
+    posts_by_inf: dict[str, list[dict]] = {}
+    for row in posts_resp.data or []:
+        posts_by_inf.setdefault(row["influencer_id"], []).append({
+            "url": row.get("url"),
+            "text": row.get("text") or "",
+            "date": row.get("posted_at"),
+            "posted_ago": row.get("posted_ago"),
+            "format": row.get("format"),
+            "likes": row.get("likes", 0) or 0,
+            "comments": row.get("comments", 0) or 0,
+            "reposts": row.get("reposts", 0) or 0,
+            "engagement": row.get("engagement", 0) or 0,
+            "length_chars": row.get("length_chars", 0) or 0,
+            "length_words": row.get("length_words", 0) or 0,
+        })
+
+    corpus = []
+    for inf in influencers:
+        posts = posts_by_inf.get(inf["id"], [])
+        if not posts:
+            continue
+        profile = inf.get("raw_profile") or {
+            "name": inf.get("name"),
+            "headline": inf.get("headline"),
+            "follower_count": inf.get("follower_count", 0),
+        }
+        corpus.append({"handle": inf["handle"], "profile": profile, "posts": posts})
+    return corpus
+
+
 def list_influencers(access_token: str) -> list[dict]:
     user = get_user(access_token)
     if not user:

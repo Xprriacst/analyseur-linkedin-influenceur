@@ -149,6 +149,36 @@ def _load_cached_influencers() -> list[dict]:
     return result
 
 
+def _enrich_influencers(corpus: list[dict]) -> list[dict]:
+    """Compute stats + patterns on a raw corpus of {handle, profile, posts}."""
+    result = []
+    for inf in corpus:
+        posts = inf["posts"]
+        if not posts:
+            continue
+        result.append({
+            "handle": inf["handle"],
+            "profile": inf["profile"],
+            "posts": posts,
+            "stats": compute_stats(posts, profile=inf["profile"]),
+            "patterns": analyze_patterns(posts),
+        })
+    return result
+
+
+def _get_influencers(token: Optional[str]) -> list[dict]:
+    """Per-user data source: Supabase when configured, disk cache otherwise.
+
+    When Supabase is enabled the endpoints become multi-user: a valid session
+    is required and only the caller's data is returned (RLS-scoped).
+    """
+    if db.supabase_enabled():
+        if not token or not db.get_user(token):
+            raise HTTPException(status_code=401, detail="Authentification requise.")
+        return _enrich_influencers(db.get_user_corpus(token))
+    return _load_cached_influencers()
+
+
 def _build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
     """Build top posts list and benchmark summary."""
     from collections import Counter
@@ -187,9 +217,9 @@ def _build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
 
 
 @app.get("/dashboard")
-def dashboard() -> dict[str, Any]:
-    """Aggregated stats across all cached influencer analyses."""
-    influencers = _load_cached_influencers()
+def dashboard(token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
+    """Aggregated stats across the user's analyzed influencers."""
+    influencers = _get_influencers(token)
     if not influencers:
         return {"influencer_count": 0, "influencers": [], "aggregated": {}}
 
@@ -265,10 +295,8 @@ def dashboard() -> dict[str, Any]:
     }
 
 
-@app.get("/dashboard/growth")
-def dashboard_growth() -> list[dict[str, Any]]:
+def _compute_growth(influencers: list[dict]) -> list[dict[str, Any]]:
     """Growth comparison: engagement before vs after the 25th post for each influencer."""
-    influencers = _load_cached_influencers()
     result = []
     for inf in influencers:
         name = inf["profile"].get("name", inf["handle"]) or inf["handle"]
@@ -313,15 +341,21 @@ def dashboard_growth() -> list[dict[str, Any]]:
     return result
 
 
+@app.get("/dashboard/growth")
+def dashboard_growth(token: Optional[str] = Depends(optional_token)) -> list[dict[str, Any]]:
+    """Growth comparison endpoint, scoped to the authenticated user."""
+    return _compute_growth(_get_influencers(token))
+
+
 @app.post("/dashboard/ai-analysis")
-def dashboard_ai_analysis() -> dict[str, Any]:
-    """AI strategic analysis of all cached influencer data."""
+def dashboard_ai_analysis(token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
+    """AI strategic analysis of the user's influencer data."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _load_cached_influencers()
+    influencers = _get_influencers(token)
     if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur en cache.")
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé.")
 
     inf_summaries = []
     for inf in influencers:
@@ -350,7 +384,7 @@ def dashboard_ai_analysis() -> dict[str, Any]:
     # Also include growth data
     growth_data = None
     try:
-        growth_data = dashboard_growth()
+        growth_data = _compute_growth(influencers)
     except Exception:
         pass
 
@@ -370,14 +404,14 @@ class GenerateRequest(BaseModel):
 
 
 @app.post("/ideas")
-def ideas(payload: IdeasRequest) -> dict[str, Any]:
-    """Generate post ideas from cached influencer insights."""
+def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
+    """Generate post ideas from the user's influencer insights."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _load_cached_influencers()
+    influencers = _get_influencers(token)
     if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur en cache. Lance d'abord une analyse.")
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
     ideas_list = generate_ideas(top_posts, benchmark, count=payload.count)
@@ -385,14 +419,14 @@ def ideas(payload: IdeasRequest) -> dict[str, Any]:
 
 
 @app.post("/generate")
-def generate(payload: GenerateRequest) -> dict[str, Any]:
+def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
     """Generate optimized post variants for a given topic."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _load_cached_influencers()
+    influencers = _get_influencers(token)
     if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur en cache. Lance d'abord une analyse.")
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
     variants = generate_posts(payload.topic.strip(), top_posts, benchmark)

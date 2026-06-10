@@ -468,7 +468,7 @@ function Generator() {
     try {
       const res = await fetch(`${DIRECT_API_URL}/ideas`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({ count: 5 }),
       });
       const data = await res.json();
@@ -488,7 +488,7 @@ function Generator() {
     try {
       const res = await fetch(`${DIRECT_API_URL}/generate`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({ topic: t.trim() }),
       });
       const data = await res.json();
@@ -604,21 +604,24 @@ function GlobalDashboard() {
   const [aiError, setAiError] = useState("");
 
   useEffect(() => {
-    fetch(`${API_URL}/dashboard`)
-      .then((r) => r.json())
-      .then((d) => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
-    fetch(`${API_URL}/dashboard/growth`)
-      .then((r) => r.json())
-      .then((d) => Array.isArray(d) && setGrowth(d))
-      .catch(() => null);
+    (async () => {
+      const headers = await authHeaders();
+      fetch(`${API_URL}/dashboard`, { headers })
+        .then((r) => r.json())
+        .then((d) => { setData(d); setLoading(false); })
+        .catch(() => setLoading(false));
+      fetch(`${API_URL}/dashboard/growth`, { headers })
+        .then((r) => r.json())
+        .then((d) => Array.isArray(d) && setGrowth(d))
+        .catch(() => null);
+    })();
   }, []);
 
   async function runAiAnalysis() {
     setAiError("");
     setLoadingAi(true);
     try {
-      const res = await fetch(`${DIRECT_API_URL}/dashboard/ai-analysis`, { method: "POST" });
+      const res = await fetch(`${DIRECT_API_URL}/dashboard/ai-analysis`, { method: "POST", headers: await authHeaders() });
       const d = await res.json();
       if (!res.ok) throw new Error(d.detail || "Échec de l'analyse IA");
       setAiAnalysis(d.markdown || "");
