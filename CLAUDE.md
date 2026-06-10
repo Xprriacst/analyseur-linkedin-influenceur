@@ -2,6 +2,12 @@
 
 ## Changelog
 
+### 2026-06-10 (étape 1 implémentée)
+- **Étape 1 livrée** : `/generate`, `/ideas`, `/dashboard`, `/dashboard/growth`, `/dashboard/ai-analysis` lisent désormais Supabase scopé par utilisateur (RLS) via `db.get_user_corpus()` + `_get_influencers()` dans `api.py`.
+- Quand Supabase est configuré, ces endpoints exigent un token (401 sinon) ; sans Supabase (dev local), fallback sur le cache disque.
+- `dashboard_growth` refactoré en `_compute_growth(influencers)` (fonction pure, réutilisée par l'analyse IA).
+- Frontend : envoi du header `Authorization` sur les 5 appels (`authHeaders()`), le proxy Next `/api` forwardait déjà les headers.
+
 ### 2026-06-10
 - **Audit DB Supabase** : vérification des tables existantes (`profiles`, `influencers`, `posts`, `analyses`) + extensions disponibles. `vector` (pgvector 0.8.0) disponible mais non installé.
 - **Diagnostic backend** : identifié que Supabase est utilisé en write-only. Les endpoints `/generate`, `/ideas`, `/dashboard` et `/dashboard/ai-analysis` lisent le cache disque (`cache/`) au lieu de la base, ce qui rend la génération globale/éphémère et pas multi-utilisateur.
@@ -84,4 +90,4 @@ CREATE INDEX ON public.embeddings USING hnsw (embedding vector_cosine_ops);
 | Tant que tout tient dans le prompt | Backend SQL suffit |
 
 ## Prochaine action
-Implémenter l'étape 1 (backend par utilisateur) avant toute chose.
+Étape 1 ✅ faite. Suite : étape 2 — boucle de feedback (table `user_posts` : posts générés → publiés → métriques réelles).
