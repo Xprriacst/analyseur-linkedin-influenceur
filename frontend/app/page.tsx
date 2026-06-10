@@ -844,7 +844,7 @@ export default function Home() {
   return (
     <AuthGate>
       <div className="app-shell">
-        <Sidebar health={health} reports={reports} view={view} onNavigate={(v) => { setView(v); if (v === "analyze") setResult(null); }} onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }} />
+        <Sidebar health={health} reports={reports} view={view} onNavigate={(v) => { setView(v); if (v === "analyze") { setResult(null); setLoadedReport(null); setError(""); } }} onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }} />
         <TopHeader result={result} view={view} onReset={() => { setResult(null); setLoadedReport(null); }} />
         <main className="main">
           {view === "analyze" && (
