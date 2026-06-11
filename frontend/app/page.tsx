@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   Activity,
@@ -19,7 +19,7 @@ import {
   Zap,
 } from "lucide-react";
 import AuthGate from "./components/AuthGate";
-import { authHeaders } from "./lib/supabase";
+import { authHeaders, supabase } from "./lib/supabase";
 
 const API_URL = "/api";
 const DIRECT_API_URL = "https://analyseur-linkedin-influenceur-api.onrender.com";
@@ -820,6 +820,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("analyze");
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
+  const userIdRef = useRef<string | null>(null);
 
   async function loadReports() {
     try {
@@ -831,7 +832,21 @@ export default function Home() {
 
   useEffect(() => {
     fetch(`${API_URL}/health`).then((r) => r.json()).then(setHealth).catch(() => null);
-    loadReports();
+    // Home ne se démonte pas au logout (AuthGate est rendu en dessous) : son
+    // state doit être purgé à chaque changement d'utilisateur, sinon le compte
+    // suivant voit les rapports du précédent.
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      const uid = session?.user?.id ?? null;
+      if (uid === userIdRef.current) return;
+      userIdRef.current = uid;
+      setReports([]);
+      setResult(null);
+      setLoadedReport(null);
+      setError("");
+      setView("analyze");
+      if (uid) setTimeout(() => loadReports(), 0);
+    });
+    return () => sub.subscription.unsubscribe();
   }, []);
 
   async function analyze(payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) {
