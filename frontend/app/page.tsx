@@ -438,6 +438,9 @@ function Dashboard({ result }: { result: Analysis }) {
   const [tab, setTab] = useState("Rapport");
   return (
     <>
+      {(result as any).save_error && (
+        <div className="error">⚠️ Analyse non sauvegardée : {(result as any).save_error}</div>
+      )}
       <Kpis result={result} />
       <div className="tabs">
         {tabs.map((t) => (

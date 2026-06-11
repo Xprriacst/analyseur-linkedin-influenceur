@@ -459,8 +459,15 @@ def analyze(
             saved = db.save_analysis(token, result, posts_limit=payload.limit)
             if saved:
                 result["saved"] = saved
-        except Exception:
-            # Persistence is best-effort: never fail the analysis on a DB error.
-            pass
+            else:
+                result["save_error"] = "Sauvegarde Supabase échouée (session invalide ou RLS)."
+        except Exception as exc:
+            # Persistence is best-effort: never fail the analysis on a DB error,
+            # but surface the reason so the client can warn the user.
+            result["save_error"] = f"Sauvegarde Supabase échouée : {exc}"
+    elif not db.supabase_enabled():
+        result["save_error"] = "Supabase non configuré sur le serveur (SUPABASE_URL / SUPABASE_ANON_KEY)."
+    else:
+        result["save_error"] = "Aucune session utilisateur : analyse non sauvegardée."
 
     return result
