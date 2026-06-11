@@ -100,7 +100,17 @@ def me_analysis(analysis_id: str, token: str = Depends(require_token)) -> dict[s
 
 
 @app.get("/reports")
-def reports() -> list[dict[str, Any]]:
+def reports(token: Optional[str] = Depends(optional_token)) -> list[dict[str, Any]]:
+    """Recent analysis reports, scoped to the authenticated user.
+
+    Supabase-backed in production; falls back to the local reports/ folder
+    only when Supabase is not configured (single-user dev mode).
+    """
+    if db.supabase_enabled():
+        if not token or not db.get_user(token):
+            raise HTTPException(status_code=401, detail="Authentification requise.")
+        return db.list_reports(token)
+
     reports_dir = Path("reports")
     if not reports_dir.exists():
         return []
@@ -459,8 +469,15 @@ def analyze(
             saved = db.save_analysis(token, result, posts_limit=payload.limit)
             if saved:
                 result["saved"] = saved
-        except Exception:
-            # Persistence is best-effort: never fail the analysis on a DB error.
-            pass
+            else:
+                result["save_error"] = "Sauvegarde Supabase échouée (session invalide ou RLS)."
+        except Exception as exc:
+            # Persistence is best-effort: never fail the analysis on a DB error,
+            # but surface the reason so the client can warn the user.
+            result["save_error"] = f"Sauvegarde Supabase échouée : {exc}"
+    elif not db.supabase_enabled():
+        result["save_error"] = "Supabase non configuré sur le serveur (SUPABASE_URL / SUPABASE_ANON_KEY)."
+    else:
+        result["save_error"] = "Aucune session utilisateur : analyse non sauvegardée."
 
     return result

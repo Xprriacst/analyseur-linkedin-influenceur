@@ -438,6 +438,9 @@ function Dashboard({ result }: { result: Analysis }) {
   const [tab, setTab] = useState("Rapport");
   return (
     <>
+      {(result as any).save_error && (
+        <div className="error">⚠️ Analyse non sauvegardée : {(result as any).save_error}</div>
+      )}
       <Kpis result={result} />
       <div className="tabs">
         {tabs.map((t) => (
@@ -818,9 +821,17 @@ export default function Home() {
   const [view, setView] = useState<MainView>("analyze");
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
 
+  async function loadReports() {
+    try {
+      const res = await fetch(`${API_URL}/reports`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data)) setReports(data);
+    } catch { /* ignore */ }
+  }
+
   useEffect(() => {
     fetch(`${API_URL}/health`).then((r) => r.json()).then(setHealth).catch(() => null);
-    fetch(`${API_URL}/reports`).then((r) => r.json()).then(setReports).catch(() => null);
+    loadReports();
   }, []);
 
   async function analyze(payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) {
@@ -836,7 +847,7 @@ export default function Home() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Échec de l'analyse");
       setResult(data);
-      fetch(`${API_URL}/reports`).then((r) => r.json()).then(setReports).catch(() => null);
+      loadReports();
     } catch (err: any) {
       setError(err.message || "Échec de l'analyse");
     } finally {
