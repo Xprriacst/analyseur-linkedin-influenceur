@@ -2,6 +2,11 @@
 
 ## Changelog
 
+### 2026-06-11 (fuite cross-user : vraie cause racine = state React)
+- **Audit complet** : RLS Supabase correctes (`auth.uid() = user_id` sur les 4 tables, RLS activé), données bien séparées par `user_id` en base, backend Render à jour (`/reports`, `/dashboard`, `/dashboard/growth`, `/ideas` → 401 sans token, `/health` → `"supabase": true`). La piste « policies permissives » est écartée.
+- **Vraie cause** : dans `frontend/app/page.tsx`, `Home` détient `reports`/`result`/`loadedReport` et rend `<AuthGate>` en dessous. Au logout, AuthGate démonte l'app-shell mais `Home` ne se démonte jamais → son state survit. `loadReports()` n'était appelé qu'au mount initial. Donc : A analyse → logout → B se connecte dans le même onglet → B voit les rapports/résultats de A restés en mémoire.
+- **Fix** : listener `supabase.auth.onAuthStateChange` dans `Home` — purge du state par utilisateur (reports, result, loadedReport, error, view) dès que le `user.id` change, puis re-fetch de `/reports` avec le nouveau token (via `setTimeout` pour éviter le deadlock supabase-js dans le callback).
+
 ### 2026-06-11 (fuite cross-user corrigée)
 - **Bug** : `/reports` servait les fichiers `reports/*.md` du disque sans auth → la sidebar « Analyses récentes » montrait les rapports de TOUS les utilisateurs.
 - **Fix** : `/reports` lit désormais `analyses.report_markdown` depuis Supabase scopé par user (401 sans token quand Supabase est configuré ; fallback disque uniquement en dev). Frontend : header `Authorization` envoyé sur `/reports`.
@@ -25,7 +30,7 @@
 
 ## Contexte
 Projet : Analyseur-linkedin-influenceur
-Supabase project : `zcxawwqkswuefzlzpgvi` ("Linkedin analyse", eu-west-1)
+Supabase project : `zcxaxwqkswuefzlzpgvi` ("Linkedin analyse", eu-west-1)
 
 ## DB actuelle (schema public)
 - `profiles` → app profile lié à auth.users
