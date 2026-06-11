@@ -153,7 +153,14 @@ def get_user_corpus(access_token: str) -> list[dict]:
         return []
     db = client_for_token(access_token)
 
-    inf_resp = db.table("influencers").select("*").order("updated_at", desc=True).execute()
+    # Filtre user_id explicite en plus de RLS (défense en profondeur).
+    inf_resp = (
+        db.table("influencers")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("updated_at", desc=True)
+        .execute()
+    )
     influencers = inf_resp.data or []
     if not influencers:
         return []
@@ -204,6 +211,7 @@ def list_influencers(access_token: str) -> list[dict]:
     resp = (
         db.table("influencers")
         .select("*")
+        .eq("user_id", user["id"])
         .order("updated_at", desc=True)
         .execute()
     )
@@ -218,6 +226,7 @@ def list_analyses(access_token: str, limit: int = 20) -> list[dict]:
     resp = (
         db.table("analyses")
         .select("id,handle,created_at,posts_limit")
+        .eq("user_id", user["id"])
         .order("created_at", desc=True)
         .limit(limit)
         .execute()
@@ -234,6 +243,7 @@ def list_reports(access_token: str, limit: int = 10) -> list[dict]:
     resp = (
         db.table("analyses")
         .select("id,handle,created_at,report_markdown")
+        .eq("user_id", user["id"])
         .order("created_at", desc=True)
         .limit(limit)
         .execute()
@@ -256,8 +266,16 @@ def list_reports(access_token: str, limit: int = 10) -> list[dict]:
 
 
 def get_analysis(access_token: str, analysis_id: str) -> dict | None:
-    if not get_user(access_token):
+    user = get_user(access_token)
+    if not user:
         return None
     db = client_for_token(access_token)
-    resp = db.table("analyses").select("*").eq("id", analysis_id).limit(1).execute()
+    resp = (
+        db.table("analyses")
+        .select("*")
+        .eq("id", analysis_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
     return resp.data[0] if resp.data else None
