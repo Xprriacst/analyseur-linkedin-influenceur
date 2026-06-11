@@ -426,6 +426,8 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
 
     top_posts, benchmark = _build_benchmark(influencers)
     ideas_list = generate_ideas(top_posts, benchmark, count=payload.count)
+    if token:
+        ideas_list = db.save_ideas(token, ideas_list)
     return {"ideas": ideas_list, "influencer_count": len(influencers)}
 
 

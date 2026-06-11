@@ -2,6 +2,13 @@
 
 ## Changelog
 
+### 2026-06-11 (config Supabase Auth manquante après renommage Netlify)
+- **Bug** : après le renommage Netlify en `lkd-outreach.netlify.app`, la **Site URL** Supabase pointait encore vers `localhost` → les redirections OAuth et confirmations email échouaient → les analyses ne s'enregistraient pas en prod.
+- **Fix** : dans le dashboard Supabase → Authentication → URL Configuration :
+  - **Site URL** → `https://lkd-outreach.netlify.app`
+  - **Redirect URLs** → ajouter `https://lkd-outreach.netlify.app/**`
+- **Leçon** : tout changement de domaine frontend = 3 actions atomiques : (1) CORS backend `api.py`, (2) Supabase Auth Site URL + Redirect URLs, (3) variables d'env frontend si nécessaire. Ne pas marquer terminé sans avoir vérifié les 3.
+
 ### 2026-06-11 (fuite cross-user : vraie cause racine = state React)
 - **Audit complet** : RLS Supabase correctes (`auth.uid() = user_id` sur les 4 tables, RLS activé), données bien séparées par `user_id` en base, backend Render à jour (`/reports`, `/dashboard`, `/dashboard/growth`, `/ideas` → 401 sans token, `/health` → `"supabase": true`). La piste « policies permissives » est écartée.
 - **Vraie cause** : dans `frontend/app/page.tsx`, `Home` détient `reports`/`result`/`loadedReport` et rend `<AuthGate>` en dessous. Au logout, AuthGate démonte l'app-shell mais `Home` ne se démonte jamais → son state survit. `loadReports()` n'était appelé qu'au mount initial. Donc : A analyse → logout → B se connecte dans le même onglet → B voit les rapports/résultats de A restés en mémoire.
