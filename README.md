@@ -125,7 +125,7 @@ Frontend (Next.js / Netlify) — optionnel, valeurs publiques par défaut dans `
 
 | Service | URL |
 |---|---|
-| Frontend Netlify | https://courageous-strudel-2d8ba3.netlify.app |
+| Frontend Netlify | https://lkd-outreach.netlify.app |
 | Backend Render | https://analyseur-linkedin-influenceur-api.onrender.com |
 | Health backend | https://analyseur-linkedin-influenceur-api.onrender.com/health |
 | GitHub | https://github.com/Xprriacst/analyseur-linkedin-influenceur |
@@ -211,7 +211,7 @@ netlify deploy --prod
 Vérification du bundle publié :
 
 ```bash
-curl -sS https://courageous-strudel-2d8ba3.netlify.app/_next/static/chunks/app/<page-chunk>.js | grep "analyseur-linkedin-influenceur-api.onrender.com"
+curl -sS https://lkd-outreach.netlify.app/_next/static/chunks/app/<page-chunk>.js | grep "analyseur-linkedin-influenceur-api.onrender.com"
 ```
 
 ### CORS
@@ -219,7 +219,7 @@ curl -sS https://courageous-strudel-2d8ba3.netlify.app/_next/static/chunks/app/<
 Le backend FastAPI autorise explicitement le frontend Netlify dans `api.py` :
 
 ```txt
-https://courageous-strudel-2d8ba3.netlify.app
+https://lkd-outreach.netlify.app
 ```
 
 ## Structure
