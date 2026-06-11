@@ -426,9 +426,13 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
 
     top_posts, benchmark = _build_benchmark(influencers)
     ideas_list = generate_ideas(top_posts, benchmark, count=payload.count)
+    save_error: str | None = None
     if token:
-        ideas_list = db.save_ideas(token, ideas_list)
-    return {"ideas": ideas_list, "influencer_count": len(influencers)}
+        try:
+            ideas_list = db.save_ideas(token, ideas_list)
+        except Exception as exc:
+            save_error = str(exc)
+    return {"ideas": ideas_list, "influencer_count": len(influencers), "save_error": save_error}
 
 
 @app.post("/generate")
