@@ -282,6 +282,32 @@ def list_reports(access_token: str, limit: int = 10) -> list[dict]:
     return reports
 
 
+def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
+    """Persist generated ideas for the authenticated user. Returns saved rows (with ids)."""
+    if not ideas or not supabase_enabled():
+        return ideas
+    user = get_user(access_token)
+    if not user:
+        return ideas
+    db = client_for_token(access_token)
+    rows = [
+        {
+            "user_id": user["id"],
+            "title": idea.get("title"),
+            "hook": idea.get("hook"),
+            "hook_type": idea.get("hook_type"),
+            "funnel": idea.get("funnel"),
+            "angle": idea.get("angle"),
+            "why_it_works": idea.get("why_it_works"),
+            "difficulty": idea.get("difficulty"),
+            "estimated_lift": idea.get("estimated_lift"),
+        }
+        for idea in ideas
+    ]
+    resp = db.table("generated_ideas").insert(rows).execute()
+    return resp.data if resp.data else ideas
+
+
 def get_analysis(access_token: str, analysis_id: str) -> dict | None:
     user = get_user(access_token)
     if not user:
