@@ -149,6 +149,61 @@ def _load_cached_influencers() -> list[dict]:
     return result
 
 
+def _get_influencers(token: Optional[str]) -> list[dict]:
+    """Load influencers from Supabase (per-user) or fall back to local disk cache."""
+    if token and db.supabase_enabled():
+        corpus = db.get_user_corpus(token)
+        if corpus:
+            return corpus
+    return _load_cached_influencers()
+
+
+def _compute_growth(influencers: list[dict]) -> list[dict]:
+    """Growth comparison: engagement before vs after the 25th post for each influencer."""
+    import statistics as _stats
+    result = []
+    for inf in influencers:
+        name = inf["profile"].get("name", inf["handle"]) or inf["handle"]
+        posts_sorted = sorted(
+            [p for p in inf["posts"] if p.get("date")],
+            key=lambda x: x["date"],
+        )
+        total = len(posts_sorted)
+        if total < 5:
+            continue
+
+        split_idx = min(25, total)
+        first_batch = posts_sorted[:split_idx]
+        later_batch = posts_sorted[split_idx:]
+
+        first_eng = [p.get("engagement", 0) for p in first_batch]
+        first_avg = round(_stats.mean(first_eng), 1) if first_eng else 0
+
+        later_avg: float | None = None
+        growth_pct: float | None = None
+        if later_batch:
+            later_eng = [p.get("engagement", 0) for p in later_batch]
+            later_avg = round(_stats.mean(later_eng), 1)
+            growth_pct = round(((later_avg / max(first_avg, 1)) - 1) * 100, 1)
+
+        post_25_date = first_batch[-1]["date"]
+        date_str = post_25_date.strftime("%Y-%m-%d") if hasattr(post_25_date, "strftime") else str(post_25_date)[:10]
+
+        result.append({
+            "handle": inf["handle"],
+            "name": name,
+            "total_posts": total,
+            "split_at": split_idx,
+            "date_post_split": date_str,
+            "avg_eng_before": first_avg,
+            "avg_eng_after": later_avg,
+            "growth_pct": growth_pct,
+        })
+
+    result.sort(key=lambda x: x["growth_pct"] if x["growth_pct"] is not None else -999, reverse=True)
+    return result
+
+
 def _build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
     """Build top posts list and benchmark summary."""
     from collections import Counter
@@ -187,9 +242,9 @@ def _build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
 
 
 @app.get("/dashboard")
-def dashboard() -> dict[str, Any]:
-    """Aggregated stats across all cached influencer analyses."""
-    influencers = _load_cached_influencers()
+def dashboard(token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
+    """Aggregated stats for the authenticated user's influencer analyses."""
+    influencers = _get_influencers(token)
     if not influencers:
         return {"influencer_count": 0, "influencers": [], "aggregated": {}}
 
@@ -266,62 +321,21 @@ def dashboard() -> dict[str, Any]:
 
 
 @app.get("/dashboard/growth")
-def dashboard_growth() -> list[dict[str, Any]]:
+def dashboard_growth(token: Optional[str] = Depends(optional_token)) -> list[dict[str, Any]]:
     """Growth comparison: engagement before vs after the 25th post for each influencer."""
-    influencers = _load_cached_influencers()
-    result = []
-    for inf in influencers:
-        name = inf["profile"].get("name", inf["handle"]) or inf["handle"]
-        posts_sorted = sorted(
-            [p for p in inf["posts"] if p.get("date")],
-            key=lambda x: x["date"],
-        )
-        total = len(posts_sorted)
-        if total < 5:
-            continue
-
-        split_idx = min(25, total)
-        first_batch = posts_sorted[:split_idx]
-        later_batch = posts_sorted[split_idx:]
-
-        import statistics as _stats
-        first_eng = [p.get("engagement", 0) for p in first_batch]
-        first_avg = round(_stats.mean(first_eng), 1) if first_eng else 0
-
-        later_avg: float | None = None
-        growth_pct: float | None = None
-        if later_batch:
-            later_eng = [p.get("engagement", 0) for p in later_batch]
-            later_avg = round(_stats.mean(later_eng), 1)
-            growth_pct = round(((later_avg / max(first_avg, 1)) - 1) * 100, 1)
-
-        post_25_date = first_batch[-1]["date"]
-        date_str = post_25_date.strftime("%Y-%m-%d") if hasattr(post_25_date, "strftime") else str(post_25_date)[:10]
-
-        result.append({
-            "handle": inf["handle"],
-            "name": name,
-            "total_posts": total,
-            "split_at": split_idx,
-            "date_post_split": date_str,
-            "avg_eng_before": first_avg,
-            "avg_eng_after": later_avg,
-            "growth_pct": growth_pct,
-        })
-
-    result.sort(key=lambda x: x["growth_pct"] if x["growth_pct"] is not None else -999, reverse=True)
-    return result
+    influencers = _get_influencers(token)
+    return _compute_growth(influencers)
 
 
 @app.post("/dashboard/ai-analysis")
-def dashboard_ai_analysis() -> dict[str, Any]:
-    """AI strategic analysis of all cached influencer data."""
+def dashboard_ai_analysis(token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
+    """AI strategic analysis of the authenticated user's influencer data."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _load_cached_influencers()
+    influencers = _get_influencers(token)
     if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur en cache.")
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé pour cet utilisateur.")
 
     inf_summaries = []
     for inf in influencers:
@@ -347,10 +361,9 @@ def dashboard_ai_analysis() -> dict[str, Any]:
             "weekday_distribution": inf["stats"].get("weekday_distribution", {}),
         })
 
-    # Also include growth data
     growth_data = None
     try:
-        growth_data = dashboard_growth()
+        growth_data = _compute_growth(influencers)
     except Exception:
         pass
 
@@ -370,14 +383,17 @@ class GenerateRequest(BaseModel):
 
 
 @app.post("/ideas")
-def ideas(payload: IdeasRequest) -> dict[str, Any]:
-    """Generate post ideas from cached influencer insights."""
+def ideas(
+    payload: IdeasRequest,
+    token: Optional[str] = Depends(optional_token),
+) -> dict[str, Any]:
+    """Generate post ideas from the authenticated user's influencer insights."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _load_cached_influencers()
+    influencers = _get_influencers(token)
     if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur en cache. Lance d'abord une analyse.")
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
     ideas_list = generate_ideas(top_posts, benchmark, count=payload.count)
@@ -385,14 +401,17 @@ def ideas(payload: IdeasRequest) -> dict[str, Any]:
 
 
 @app.post("/generate")
-def generate(payload: GenerateRequest) -> dict[str, Any]:
+def generate(
+    payload: GenerateRequest,
+    token: Optional[str] = Depends(optional_token),
+) -> dict[str, Any]:
     """Generate optimized post variants for a given topic."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _load_cached_influencers()
+    influencers = _get_influencers(token)
     if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur en cache. Lance d'abord une analyse.")
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
     variants = generate_posts(payload.topic.strip(), top_posts, benchmark)

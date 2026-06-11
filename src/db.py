@@ -177,3 +177,69 @@ def get_analysis(access_token: str, analysis_id: str) -> dict | None:
     db = client_for_token(access_token)
     resp = db.table("analyses").select("*").eq("id", analysis_id).limit(1).execute()
     return resp.data[0] if resp.data else None
+
+
+def get_user_corpus(access_token: str) -> list[dict]:
+    """Return the user's influencers with stats/patterns (from latest analysis) and posts.
+
+    Returns data in the same shape as _load_cached_influencers() so dashboard,
+    ideas, and generate endpoints can use it without further transformation.
+    """
+    user = get_user(access_token)
+    if not user:
+        return []
+    supabase = client_for_token(access_token)
+
+    inf_resp = (
+        supabase.table("influencers")
+        .select("id,handle,raw_profile")
+        .order("updated_at", desc=True)
+        .execute()
+    )
+    influencers = inf_resp.data or []
+
+    result = []
+    for inf in influencers:
+        inf_id = inf["id"]
+        handle = inf["handle"]
+        profile = inf.get("raw_profile") or {}
+
+        # Latest analysis → pre-computed stats and patterns
+        an_resp = (
+            supabase.table("analyses")
+            .select("stats,patterns")
+            .eq("influencer_id", inf_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not an_resp.data:
+            continue
+
+        analysis = an_resp.data[0]
+        stats = analysis.get("stats") or {}
+        patterns = analysis.get("patterns") or {}
+
+        # Posts (already stored as individual fields)
+        posts_resp = (
+            supabase.table("posts")
+            .select("*")
+            .eq("influencer_id", inf_id)
+            .execute()
+        )
+        posts = []
+        for p in posts_resp.data or []:
+            post = dict(p)
+            if post.get("posted_at"):
+                post["date"] = post["posted_at"]
+            posts.append(post)
+
+        result.append({
+            "handle": handle,
+            "profile": profile,
+            "posts": posts,
+            "stats": stats,
+            "patterns": patterns,
+        })
+
+    return result

@@ -118,15 +118,19 @@ function totalCost(usage?: Record<string, any>) {
 function Sidebar({
   health,
   reports,
+  localHistory,
   view,
   onNavigate,
   onLoadReport,
+  onLoadAnalysis,
 }: {
   health: Health | null;
   reports: Report[];
+  localHistory: Analysis[];
   view: MainView;
   onNavigate: (v: MainView) => void;
   onLoadReport: (report: Report) => void;
+  onLoadAnalysis: (analysis: Analysis) => void;
 }) {
   const navItems: { key: MainView; label: string; icon: React.ReactNode }[] = [
     { key: "analyze", label: "Analyser", icon: <Zap size={14} /> },
@@ -168,7 +172,15 @@ function Sidebar({
       <section className="sidebar-section">
         <p className="eyebrow">Analyses récentes</p>
         <div className="report-list">
-          {reports.length ? reports.map((report) => (
+          {localHistory.length ? localHistory.map((analysis) => (
+            <div className="report-card" key={`local-${analysis.handle}`} onClick={() => onLoadAnalysis(analysis)}>
+              <div className="report-icon"><FileText size={13} /></div>
+              <div>
+                <strong>{analysis.profile?.name || analysis.handle}</strong>
+                <span>{analysis.handle}</span>
+              </div>
+            </div>
+          )) : reports.length ? reports.map((report) => (
             <div className="report-card" key={report.path} onClick={() => onLoadReport(report)}>
               <div className="report-icon"><FileText size={13} /></div>
               <div>
@@ -468,7 +480,7 @@ function Generator() {
     try {
       const res = await fetch(`${DIRECT_API_URL}/ideas`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({ count: 5 }),
       });
       const data = await res.json();
@@ -488,7 +500,7 @@ function Generator() {
     try {
       const res = await fetch(`${DIRECT_API_URL}/generate`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({ topic: t.trim() }),
       });
       const data = await res.json();
@@ -604,21 +616,25 @@ function GlobalDashboard() {
   const [aiError, setAiError] = useState("");
 
   useEffect(() => {
-    fetch(`${API_URL}/dashboard`)
-      .then((r) => r.json())
-      .then((d) => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
-    fetch(`${API_URL}/dashboard/growth`)
-      .then((r) => r.json())
-      .then((d) => Array.isArray(d) && setGrowth(d))
-      .catch(() => null);
+    async function load() {
+      const headers = await authHeaders();
+      fetch(`${API_URL}/dashboard`, { headers })
+        .then((r) => r.json())
+        .then((d) => { setData(d); setLoading(false); })
+        .catch(() => setLoading(false));
+      fetch(`${API_URL}/dashboard/growth`, { headers })
+        .then((r) => r.json())
+        .then((d) => Array.isArray(d) && setGrowth(d))
+        .catch(() => null);
+    }
+    load();
   }, []);
 
   async function runAiAnalysis() {
     setAiError("");
     setLoadingAi(true);
     try {
-      const res = await fetch(`${DIRECT_API_URL}/dashboard/ai-analysis`, { method: "POST" });
+      const res = await fetch(`${DIRECT_API_URL}/dashboard/ai-analysis`, { method: "POST", headers: await authHeaders() });
       const d = await res.json();
       if (!res.ok) throw new Error(d.detail || "Échec de l'analyse IA");
       setAiAnalysis(d.markdown || "");
@@ -806,10 +822,35 @@ function GlobalDashboard() {
 const mainViews = ["analyze", "generator", "dashboard"] as const;
 type MainView = typeof mainViews[number];
 
+const LOCAL_HISTORY_KEY = "sd_local_analyses";
+const LAST_ANALYSIS_KEY = "sd_last_analysis";
+const MAX_LOCAL_HISTORY = 15;
+
+function loadLocalHistory(): Analysis[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(LOCAL_HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadLastAnalysis(): Analysis | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_ANALYSIS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [result, setResult] = useState<Analysis | null>(null);
+  const [localHistory, setLocalHistory] = useState<Analysis[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("analyze");
@@ -818,7 +859,39 @@ export default function Home() {
   useEffect(() => {
     fetch(`${API_URL}/health`).then((r) => r.json()).then(setHealth).catch(() => null);
     fetch(`${API_URL}/reports`).then((r) => r.json()).then(setReports).catch(() => null);
+    // Restore persisted history + last viewed report after a refresh.
+    setLocalHistory(loadLocalHistory());
+    const last = loadLastAnalysis();
+    if (last) setResult(last);
   }, []);
+
+  function persistAnalysis(data: Analysis) {
+    if (typeof window === "undefined") return;
+    try {
+      const prev = loadLocalHistory().filter((a) => a.handle !== data.handle);
+      const next = [data, ...prev].slice(0, MAX_LOCAL_HISTORY);
+      window.localStorage.setItem(LOCAL_HISTORY_KEY, JSON.stringify(next));
+      window.localStorage.setItem(LAST_ANALYSIS_KEY, JSON.stringify(data));
+      setLocalHistory(next);
+    } catch {
+      // Ignore storage quota / serialization errors.
+    }
+  }
+
+  function clearLastAnalysis() {
+    if (typeof window !== "undefined") {
+      try { window.localStorage.removeItem(LAST_ANALYSIS_KEY); } catch {}
+    }
+  }
+
+  function showResult(data: Analysis) {
+    setResult(data);
+    setLoadedReport(null);
+    setView("analyze");
+    if (typeof window !== "undefined") {
+      try { window.localStorage.setItem(LAST_ANALYSIS_KEY, JSON.stringify(data)); } catch {}
+    }
+  }
 
   async function analyze(payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) {
     setError("");
@@ -833,6 +906,7 @@ export default function Home() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Échec de l'analyse");
       setResult(data);
+      persistAnalysis(data);
       fetch(`${API_URL}/reports`).then((r) => r.json()).then(setReports).catch(() => null);
     } catch (err: any) {
       setError(err.message || "Échec de l'analyse");
@@ -844,8 +918,16 @@ export default function Home() {
   return (
     <AuthGate>
       <div className="app-shell">
-        <Sidebar health={health} reports={reports} view={view} onNavigate={(v) => { setView(v); if (v === "analyze") { setResult(null); setLoadedReport(null); setError(""); } }} onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }} />
-        <TopHeader result={result} view={view} onReset={() => { setResult(null); setLoadedReport(null); }} />
+        <Sidebar
+          health={health}
+          reports={reports}
+          localHistory={localHistory}
+          view={view}
+          onNavigate={(v) => { setView(v); if (v === "analyze") { setResult(null); setLoadedReport(null); setError(""); clearLastAnalysis(); } }}
+          onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); clearLastAnalysis(); }}
+          onLoadAnalysis={showResult}
+        />
+        <TopHeader result={result} view={view} onReset={() => { setResult(null); setLoadedReport(null); clearLastAnalysis(); }} />
         <main className="main">
           {view === "analyze" && (
             loading
