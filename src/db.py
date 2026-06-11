@@ -225,6 +225,36 @@ def list_analyses(access_token: str, limit: int = 20) -> list[dict]:
     return resp.data or []
 
 
+def list_reports(access_token: str, limit: int = 10) -> list[dict]:
+    """User's recent analysis reports, shaped like the disk-based /reports payload."""
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("analyses")
+        .select("id,handle,created_at,report_markdown")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    reports = []
+    for row in resp.data or []:
+        created = row.get("created_at") or ""
+        try:
+            from datetime import datetime
+            ts = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            ts = 0
+        reports.append({
+            "name": f"{row['handle']} — {created[:10]}",
+            "path": row["id"],
+            "updated_at": ts,
+            "content": row.get("report_markdown") or "",
+        })
+    return reports
+
+
 def get_analysis(access_token: str, analysis_id: str) -> dict | None:
     if not get_user(access_token):
         return None

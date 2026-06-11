@@ -100,7 +100,17 @@ def me_analysis(analysis_id: str, token: str = Depends(require_token)) -> dict[s
 
 
 @app.get("/reports")
-def reports() -> list[dict[str, Any]]:
+def reports(token: Optional[str] = Depends(optional_token)) -> list[dict[str, Any]]:
+    """Recent analysis reports, scoped to the authenticated user.
+
+    Supabase-backed in production; falls back to the local reports/ folder
+    only when Supabase is not configured (single-user dev mode).
+    """
+    if db.supabase_enabled():
+        if not token or not db.get_user(token):
+            raise HTTPException(status_code=401, detail="Authentification requise.")
+        return db.list_reports(token)
+
     reports_dir = Path("reports")
     if not reports_dir.exists():
         return []

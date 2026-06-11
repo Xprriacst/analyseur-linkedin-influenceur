@@ -2,6 +2,12 @@
 
 ## Changelog
 
+### 2026-06-11 (fuite cross-user corrigée)
+- **Bug** : `/reports` servait les fichiers `reports/*.md` du disque sans auth → la sidebar « Analyses récentes » montrait les rapports de TOUS les utilisateurs.
+- **Fix** : `/reports` lit désormais `analyses.report_markdown` depuis Supabase scopé par user (401 sans token quand Supabase est configuré ; fallback disque uniquement en dev). Frontend : header `Authorization` envoyé sur `/reports`.
+- `/analyze` expose `save_error` quand la persistance Supabase échoue (au lieu d'un `except: pass` silencieux) + bandeau d'avertissement frontend.
+- ⚠️ À vérifier en prod : `/health` doit montrer `"supabase": true` sur Render, sinon les endpoints retombent sur le cache disque éphémère.
+
 ### 2026-06-10 (étape 1 implémentée)
 - **Étape 1 livrée** : `/generate`, `/ideas`, `/dashboard`, `/dashboard/growth`, `/dashboard/ai-analysis` lisent désormais Supabase scopé par utilisateur (RLS) via `db.get_user_corpus()` + `_get_influencers()` dans `api.py`.
 - Quand Supabase est configuré, ces endpoints exigent un token (401 sinon) ; sans Supabase (dev local), fallback sur le cache disque.
