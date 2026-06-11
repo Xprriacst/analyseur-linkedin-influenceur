@@ -6,6 +6,7 @@ Row Level Security applies and data is scoped to that user automatically.
 """
 from __future__ import annotations
 
+import datetime
 import os
 from typing import Any
 
@@ -14,6 +15,22 @@ try:
 except Exception:  # supabase not installed yet / import error
     Client = Any  # type: ignore
     create_client = None  # type: ignore
+
+
+def _json_safe(obj: Any) -> Any:
+    """Recursively convert non-JSON-serializable types to safe equivalents.
+
+    Supabase-py serialises JSONB columns with the standard json module, which
+    rejects datetime/date objects.  pandas Timestamps inherit from datetime so
+    they are caught by the same branch.
+    """
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
 
 
 def _url() -> str | None:
@@ -129,12 +146,12 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
         "influencer_id": influencer_id,
         "handle": result["handle"],
         "report_markdown": result.get("markdown"),
-        "stats": result.get("stats"),
-        "patterns": result.get("patterns"),
-        "classifications": result.get("classifications"),
-        "synthesis": result.get("synthesis"),
-        "cta_stats": result.get("cta_stats"),
-        "usage": result.get("usage"),
+        "stats": _json_safe(result.get("stats")),
+        "patterns": _json_safe(result.get("patterns")),
+        "classifications": _json_safe(result.get("classifications")),
+        "synthesis": _json_safe(result.get("synthesis")),
+        "cta_stats": _json_safe(result.get("cta_stats")),
+        "usage": _json_safe(result.get("usage")),
         "posts_limit": posts_limit,
     }
     an_resp = db.table("analyses").insert(analysis_row).execute()
