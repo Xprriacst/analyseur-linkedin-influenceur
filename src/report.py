@@ -239,19 +239,19 @@ def render_markdown(
         }
         lines.append("## Top 5 posts (par engagement total)")
         lines.append("")
-        lines.append("| # | Format | Sujet (extrait) | Likes | Commentaires | Partages | Total | Appel |")
-        lines.append("|---|---|---|---|---|---|---|---|")
         for i, p in enumerate(top5, 1):
-            txt = p["text"].replace("\n", " ").replace("|", "/").replace("[", "(").replace("]", ")")
-            snippet = (txt[:90] + "…") if len(txt) > 90 else txt
-            if p.get("url"):
-                snippet = f"[{snippet}]({p['url']})"
-            cta = "✅" if has_cta_by_url.get(p.get("url")) else "—"
+            # " ".join(split()) neutralise TOUT retour à la ligne (\n, \r, U+2028…)
+            # qui casserait le markdown
+            txt = " ".join((p["text"] or "").split()).replace("[", "(").replace("]", ")")
+            snippet = (txt[:110] + "…") if len(txt) > 110 else txt
+            title = f"[{snippet}]({p['url']})" if p.get("url") else snippet
+            cta = " · ✅ appel à commenter" if has_cta_by_url.get(p.get("url")) else ""
+            lines.append(f"{i}. **{title}**  ")
             lines.append(
-                f"| {i} | {_format_label(p['format'])} | {snippet} | {p['likes']} | {p['comments']} | {p['reposts']} | {p['engagement']} | {cta} |"
+                f"   _{_format_label(p['format'])}_ — 👍 {p['likes']} · 💬 {p['comments']} · 🔁 {p['reposts']} · **{p['engagement']} interactions**{cta}"
             )
         lines.append("")
-        lines.append("_Clique sur un extrait pour ouvrir le post sur LinkedIn. ✅ = post avec appel à commenter (« commente X pour recevoir ») : les commentaires y sont en partie mécaniques._")
+        lines.append("_Clique sur un extrait pour ouvrir le post sur LinkedIn. ✅ = les commentaires sont en partie mécaniques (« commente X pour recevoir »)._")
         lines.append("")
 
     # ========== BLOC 3 : Patterns détectés (déterministes) ==========

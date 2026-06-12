@@ -100,9 +100,10 @@ def fetch_profile(profile_url: str, use_cache: bool = True) -> dict[str, Any] | 
 
     if use_cache and cache_file.exists():
         cached = json.loads(cache_file.read_text())
-        actor = os.environ.get("APIFY_PROFILE_ACTOR", "harvestapi/linkedin-profile-scraper")
-        track_apify(actor, 1 if cached else 0, cached=True)
-        return cached or None
+        if cached:  # un cache vide = échec passé, on retente le scrape
+            actor = os.environ.get("APIFY_PROFILE_ACTOR", "harvestapi/linkedin-profile-scraper")
+            track_apify(actor, 1, cached=True)
+            return cached
 
     actor = os.environ.get("APIFY_PROFILE_ACTOR", "harvestapi/linkedin-profile-scraper")
     url = normalize_url(profile_url)
@@ -121,7 +122,10 @@ def fetch_profile(profile_url: str, use_cache: bool = True) -> dict[str, Any] | 
     try:
         run = _client().actor(actor).call(run_input=run_input)
         items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
-    except Exception:
+    except Exception as exc:
+        # Visible dans les logs Render — ex. actor qui exige une approbation de
+        # permissions Apify ("This Actor requires full access to your account").
+        print(f"[scraper] échec scrape profil {url} via {actor}: {exc}", flush=True)
         items = []
 
     profile = items[0] if items else {}
