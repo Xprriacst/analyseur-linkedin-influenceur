@@ -9,6 +9,47 @@ from urllib.parse import unquote
 
 REPORTS_DIR = Path("reports")
 
+# Libellés grand public ; le terme technique reste visible en italique discret.
+HOOK_LABELS = {
+    "question": "Question directe",
+    "story": "Histoire / anecdote",
+    "stat": "Chiffre choc",
+    "bold_claim": "Affirmation tranchée",
+    "list": "Liste",
+    "result": "Résultat chiffré",
+    "contrarian": "Contre-pied",
+    "other": "Autre",
+}
+
+STAGE_LABELS = {
+    "TOFU": "Attraction",
+    "MOFU": "Éducation",
+    "BOFU": "Conversion",
+}
+
+FORMAT_LABELS = {
+    "text": "Texte seul",
+    "image": "Image",
+    "video": "Vidéo",
+    "carousel": "Carrousel",
+    "document": "Document PDF",
+    "article": "Article",
+    "repost": "Repost (partage)",
+    "poll": "Sondage",
+}
+
+
+def _hook_label(key: str) -> str:
+    return f"{HOOK_LABELS.get(key, key)} _({key})_"
+
+
+def _stage_label(key: str) -> str:
+    return f"{STAGE_LABELS.get(key, key)} _({key})_"
+
+
+def _format_label(key: str) -> str:
+    return FORMAT_LABELS.get(key, key)
+
 
 def _bar(value: float, total: float, width: int = 20) -> str:
     if total <= 0:
@@ -84,7 +125,7 @@ def render_markdown(
         )
     if eng.get("organic_rate_pct") is not None:
         lines.append(
-            f"- **Taux organique médian** (likes + reposts, hors commentaires CTA) : {eng['organic_rate_pct']}%"
+            f"- **Taux organique médian** (likes + partages, hors commentaires « commente pour recevoir ») : {eng['organic_rate_pct']}%"
         )
     lines.append("")
 
@@ -130,61 +171,61 @@ def render_markdown(
 
     lines.append("## Mix de formats")
     lines.append("")
-    lines.append("| Format | % | Nb |")
+    lines.append("| Format | % | Nb posts |")
     lines.append("|---|---|---|")
     for fmt, pct in sorted(stats["format_mix_pct"].items(), key=lambda x: -x[1]):
         n = stats["format_counts"].get(fmt, 0)
-        lines.append(f"| {fmt} | {pct}% | {n} |")
+        lines.append(f"| {_format_label(fmt)} | {pct}% | {n} |")
     lines.append("")
 
-    lines.append("## Mix funnel TOFU / MOFU / BOFU")
+    lines.append("## Répartition du contenu — attirer, éduquer, convertir")
     lines.append("")
-    lines.append("**TOFU** (*Top of Funnel*) : contenu d'attraction — storytelling, opinions, posts viraux, prises de position, sujets larges pour toucher de nouvelles audiences.")
+    lines.append("**Attraction** _(TOFU)_ : contenu pour toucher de nouvelles audiences — storytelling, opinions, posts viraux, prises de position, sujets larges.")
     lines.append("")
-    lines.append("**MOFU** (*Middle of Funnel*) : contenu d'éducation — méthodes, frameworks, tutoriels, cas d'usage, expertise qui fait comprendre le problème et la solution.")
+    lines.append("**Éducation** _(MOFU)_ : contenu qui démontre l'expertise — méthodes, tutoriels, cas d'usage, frameworks qui font comprendre le problème et la solution.")
     lines.append("")
-    lines.append("**BOFU** (*Bottom of Funnel*) : contenu de conversion — preuves, offres, CTA commerciaux, témoignages, posts orientés vente ou prise de rendez-vous.")
+    lines.append("**Conversion** _(BOFU)_ : contenu qui vend — preuves, offres, témoignages, posts orientés prise de contact ou rendez-vous.")
     lines.append("")
     if classifications:
         stage_eng = {row["stage"]: row for row in stats.get("stage_engagement") or []}
-        lines.append("| Stage | % | Nb | Engagement médian |")
+        lines.append("| Étape | % | Nb posts | Engagement médian |")
         lines.append("|---|---|---|---|")
         for stage in ["TOFU", "MOFU", "BOFU"]:
             n = stage_dist.get(stage, 0)
             pct = round((n / total_class) * 100, 1)
             med = stage_eng.get(stage, {}).get("median_engagement")
-            lines.append(f"| {stage} | {pct}% | {n} | {med if med is not None else '–'} |")
+            lines.append(f"| {_stage_label(stage)} | {pct}% | {n} | {med if med is not None else '–'} |")
         lines.append("")
 
-        lines.append("**Types de hooks (classification LLM)**")
+        lines.append("**Types d'accroches** (la première ligne du post, celle qui arrête le scroll)")
         lines.append("")
         hook_eng = {row["hook_type"]: row for row in stats.get("hook_engagement") or []}
         if hook_eng:
-            lines.append("| Hook | Nb | Engagement médian | Max |")
+            lines.append("| Accroche | Nb posts | Engagement médian | Record |")
             lines.append("|---|---|---|---|")
             for hook, n in sorted(hook_dist.items(), key=lambda x: -x[1]):
                 row = hook_eng.get(hook, {})
                 lines.append(
-                    f"| `{hook}` | {n} | {row.get('median_engagement', '–')} | {row.get('max_engagement', '–')} |"
+                    f"| {_hook_label(hook)} | {n} | {row.get('median_engagement', '–')} | {row.get('max_engagement', '–')} |"
                 )
             lines.append("")
         else:
             for hook, n in sorted(hook_dist.items(), key=lambda x: -x[1]):
-                lines.append(f"- `{hook}` : {n}")
+                lines.append(f"- {_hook_label(hook)} : {n}")
             lines.append("")
     else:
-        lines.append("_Classification LLM désactivée._")
+        lines.append("_Classification indisponible pour cette analyse._")
         lines.append("")
 
     lines.append("## Engagement")
     lines.append("")
     eng = stats["engagement"]
     lines.append(f"- **Likes médian / moyen** : {eng['median_likes']} / {eng['mean_likes']}")
-    lines.append(f"- **Comments médian / moyen** : {eng['median_comments']} / {eng['mean_comments']}")
-    lines.append(f"- **Reposts médian / moyen** : {eng.get('median_reposts', '–')} / {eng['mean_reposts']}")
+    lines.append(f"- **Commentaires médian / moyen** : {eng['median_comments']} / {eng['mean_comments']}")
+    lines.append(f"- **Partages médian / moyen** : {eng.get('median_reposts', '–')} / {eng['mean_reposts']}")
     lines.append(f"- **Engagement total médian** : {eng.get('median_engagement', '–')}")
     if eng.get("median_organic") is not None:
-        lines.append(f"- **Engagement organique médian** (likes + reposts) : {eng['median_organic']}")
+        lines.append(f"- **Engagement organique médian** (likes + partages) : {eng['median_organic']}")
     lines.append(f"- **Longueur médiane** : {stats['length']['median_words']} mots")
     lines.append("")
 
@@ -198,7 +239,7 @@ def render_markdown(
         }
         lines.append("## Top 5 posts (par engagement total)")
         lines.append("")
-        lines.append("| # | Format | Sujet (extrait) | Likes | Comments | Shares | Eng. | CTA |")
+        lines.append("| # | Format | Sujet (extrait) | Likes | Commentaires | Partages | Total | Appel |")
         lines.append("|---|---|---|---|---|---|---|---|")
         for i, p in enumerate(top5, 1):
             txt = p["text"].replace("\n", " ").replace("|", "/").replace("[", "(").replace("]", ")")
@@ -207,23 +248,16 @@ def render_markdown(
                 snippet = f"[{snippet}]({p['url']})"
             cta = "✅" if has_cta_by_url.get(p.get("url")) else "—"
             lines.append(
-                f"| {i} | {p['format']} | {snippet} | {p['likes']} | {p['comments']} | {p['reposts']} | {p['engagement']} | {cta} |"
+                f"| {i} | {_format_label(p['format'])} | {snippet} | {p['likes']} | {p['comments']} | {p['reposts']} | {p['engagement']} | {cta} |"
             )
         lines.append("")
-        lines.append("_Clique sur un extrait pour ouvrir le post sur LinkedIn. CTA ✅ = post avec appel à commenter (« commente X pour recevoir ») : les commentaires y sont en partie mécaniques._")
+        lines.append("_Clique sur un extrait pour ouvrir le post sur LinkedIn. ✅ = post avec appel à commenter (« commente X pour recevoir ») : les commentaires y sont en partie mécaniques._")
         lines.append("")
 
     # ========== BLOC 3 : Patterns détectés (déterministes) ==========
     if patterns:
-        lines.append("## Patterns structurels (détectés)")
+        lines.append("## Récurrences détectées")
         lines.append("")
-
-        hook_d = patterns.get("hook_distribution", {})
-        if hook_d:
-            lines.append("**Types de hooks (heuristique 1ère ligne — peut différer de la classification LLM ci-dessus)**")
-            for h, n in sorted(hook_d.items(), key=lambda x: -x[1]):
-                lines.append(f"- `{h}` : {n}")
-            lines.append("")
 
         len_d = patterns.get("length_distribution", {})
         if len_d:
@@ -250,42 +284,42 @@ def render_markdown(
         cta_share = patterns.get("cta_share_pct", 0)
         cta_count = patterns.get("cta_count", 0)
         cta_kws = patterns.get("cta_keywords", [])
-        lines.append("**CTA commentaires**")
-        lines.append(f"- {cta_count} posts avec CTA explicite ({cta_share}% du total)")
+        lines.append("**Appels à commenter** _(CTA)_ — « commente X pour recevoir… »")
+        lines.append(f"- {cta_count} posts avec appel explicite ({cta_share}% du total)")
         if cta_kws:
             kw_str = ", ".join(f"`{kw}` ({n})" for kw, n in cta_kws[:8])
-            lines.append(f"- Mots-clés détectés : {kw_str}")
+            lines.append(f"- Mots-clés demandés en commentaire : {kw_str}")
         lines.append("")
 
         if cta_stats:
             wc = cta_stats.get("with_cta", {})
             wo = cta_stats.get("without_cta", {})
             if wc.get("count") and wo.get("count"):
-                lines.append("**Effet du CTA (médianes)**")
+                lines.append("**Effet de l'appel à commenter (médianes)**")
                 lines.append("")
-                lines.append("| | Avec CTA | Sans CTA |")
+                lines.append("| | Avec appel | Sans appel |")
                 lines.append("|---|---|---|")
                 lines.append(f"| Posts | {wc['count']} | {wo['count']} |")
                 lines.append(f"| Likes médian | {wc['median_likes']} | {wo['median_likes']} |")
-                lines.append(f"| Comments médian | {wc['median_comments']} | {wo['median_comments']} |")
-                lines.append(f"| Reposts médian | {wc['median_reposts']} | {wo['median_reposts']} |")
+                lines.append(f"| Commentaires médian | {wc['median_comments']} | {wo['median_comments']} |")
+                lines.append(f"| Partages médian | {wc['median_reposts']} | {wo['median_reposts']} |")
                 lines.append("")
 
-    lines.append("## Patterns (synthèse LLM)")
+    lines.append("## Analyse stratégique")
     lines.append("")
     lines.append("### Piliers de contenu")
     for pillar in synthesis["content_pillars"]:
         lines.append(f"- {pillar}")
     lines.append("")
-    lines.append("### Hooks récurrents")
+    lines.append("### Accroches qui reviennent")
     for h in synthesis["hook_patterns"]:
         lines.append(f"- {h}")
     lines.append("")
-    lines.append("### Patterns structurels")
+    lines.append("### Structures récurrentes")
     for s in synthesis["structural_patterns"]:
         lines.append(f"- {s}")
     lines.append("")
-    lines.append(f"**Stratégie de CTA** : {synthesis['cta_strategy']}")
+    lines.append(f"**Stratégie d'appel à l'action** : {synthesis['cta_strategy']}")
     lines.append("")
 
     lines.append("## Forces")

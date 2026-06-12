@@ -38,6 +38,13 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 - **Coûts Apify** : pricing harvestapi ajouté ($0.002/post, $0.004/profil) + fallback $0.002/item pour actor inconnu (fini le "~$0.0").
 - **Reste à faire (proposé)** : détection de near-duplicates/recyclage de templates, scraper de commentaires Apify sur les top posts (qualité d'audience + leads).
 
+### 2026-06-12 (libellés grand public dans le rapport)
+- **Jargon traduit** : hooks (`bold_claim` → « Affirmation tranchée »), stages (`TOFU` → « Attraction »), formats (`text` → « Texte seul ») via `HOOK_LABELS`/`STAGE_LABELS`/`FORMAT_LABELS` dans `report.py`. Le code technique reste visible en italique discret `_( … )_`, stylé petit/grisé via `.markdown table em` dans globals.css.
+- **Sections renommées** : « Mix funnel TOFU/MOFU/BOFU » → « Répartition du contenu — attirer, éduquer, convertir » ; « Patterns (synthèse LLM) » → « Analyse stratégique » ; « CTA commentaires » → « Appels à commenter » ; colonnes Comments/Shares → Commentaires/Partages.
+- **Table de hooks heuristique supprimée du rapport** (contradictoire avec la classification LLM, source de confusion).
+- **Frontend** : onglet Patterns avec les mêmes libellés français (`hookLabel()`).
+- **Prompt LLM** : la synthèse doit utiliser les libellés français en prose, jamais les codes.
+
 ### 2026-06-12 (version client : profil, liens, historique, URLs accentuées)
 - **Nom du profil** : harvestapi renvoie `firstName`/`lastName`, jamais `fullName` → `normalize_profile` construisait un nom vide (titre du rapport = handle, historique illisible). Fix : name = fullName ou firstName+lastName.
 - **Bloc "Profil en chiffres" toujours affiché** : avant, si le scrape profil échouait, tout le bloc (abonnés, connexions…) disparaissait silencieusement. Maintenant rendu avec "indisponible" pour les valeurs manquantes.
