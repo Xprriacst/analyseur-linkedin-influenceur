@@ -222,7 +222,10 @@ function Sidebar({
   onNavigate: (v: MainView) => void;
   onLoadReport: (report: Report) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
+
 }) {
+  const [configOpen, setConfigOpen] = useState(false);
+
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <Zap size={14} /> },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
@@ -301,19 +304,35 @@ function Sidebar({
 
       <section className="sidebar-section" style={{ marginTop: "auto" }}>
         <div className="config-card">
-          <p className="eyebrow" style={{ margin: 0 }}>Config</p>
-          <div className="config-row">
-            <span>Apify</span>
-            <b className={`status-pill ${health?.apify ? "ok" : "no"}`}>{health?.apify ? "OK" : "Manquant"}</b>
-          </div>
-          <div className="config-row">
-            <span>Anthropic</span>
-            <b className={`status-pill ${health?.anthropic ? "ok" : "no"}`}>{health?.anthropic ? "OK" : "Manquant"}</b>
-          </div>
-          <div className="config-row">
-            <span>Modèle</span>
-            <b className="status-pill" style={{ maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis" }}>{health?.model || "—"}</b>
-          </div>
+          <button
+            className="config-toggle"
+            onClick={() => setConfigOpen(o => !o)}
+            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+          >
+            <p className="eyebrow" style={{ margin: 0 }}>Config</p>
+            <span style={{ fontSize: 10, opacity: 0.5, transform: configOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▼</span>
+          </button>
+          {!configOpen && (
+            <p style={{ margin: "6px 0 0", fontSize: 11, opacity: 0.45, fontStyle: "italic" }}>
+              Lance la première analyse pour connecter le système
+            </p>
+          )}
+          {configOpen && (
+            <>
+              <div className="config-row">
+                <span>Apify</span>
+                <b className={`status-pill ${health?.apify ? "ok" : "no"}`}>{health?.apify ? "OK" : "Manquant"}</b>
+              </div>
+              <div className="config-row">
+                <span>Anthropic</span>
+                <b className={`status-pill ${health?.anthropic ? "ok" : "no"}`}>{health?.anthropic ? "OK" : "Manquant"}</b>
+              </div>
+              <div className="config-row">
+                <span>Modèle</span>
+                <b className="status-pill" style={{ maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis" }}>{health?.model || "—"}</b>
+              </div>
+            </>
+          )}
         </div>
       </section>
     </aside>
