@@ -90,38 +90,6 @@ def render_markdown(
     lines.append(f"**Audience** : {synthesis['audience']}")
     lines.append("")
 
-    lines.append("## Fréquence & Timing")
-    lines.append("")
-    cadence = f"{stats['posts_per_week']} posts/semaine" if stats.get("posts_per_week") is not None else "indisponible (dates non fournies)"
-    lines.append(f"- **Rythme** : {cadence}")
-    if stats.get("first_post_date"):
-        lines.append(f"- **Premier post analysé** : {stats['first_post_date'][:10]}")
-    if stats.get("last_post_date"):
-        lines.append(f"- **Dernier post analysé** : {stats['last_post_date'][:10]}")
-    lines.append("")
-    lines.append("**Jours de publication**")
-    lines.append("")
-    lines.append("| Jour | Posts | |")
-    lines.append("|---|---|---|")
-    weekdays_order = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
-    max_day = max(stats["weekday_distribution"].values(), default=1)
-    for d in weekdays_order:
-        n = stats["weekday_distribution"].get(d, 0)
-        lines.append(f"| {d} | {n} | `{_bar(n, max_day)}` |")
-    lines.append("")
-
-    lines.append("**Heures de publication**")
-    lines.append("")
-    hour_dist = stats["hour_distribution"]
-    if hour_dist:
-        max_hour = max(hour_dist.values())
-        lines.append("| Heure | Posts | |")
-        lines.append("|---|---|---|")
-        for h in sorted(hour_dist.keys()):
-            n = hour_dist[h]
-            lines.append(f"| {h:02d}h | {n} | `{_bar(n, max_hour)}` |")
-        lines.append("")
-
     lines.append("## Mix de formats")
     lines.append("")
     lines.append("| Format | % | Nb |")
