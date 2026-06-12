@@ -974,6 +974,18 @@ a { color: inherit; text-decoration: none; }
   pointer-events: none;
 }
 
+.blurred-items {
+  margin: 4px 0 4px 1.4em;
+  padding: 0;
+  filter: blur(5px);
+  user-select: none;
+  pointer-events: none;
+}
+.blurred-items li {
+  margin: 2px 0;
+  color: var(--fg);
+}
+
 /* Card whose content is locked behind sign-up. */
 .locked-card {
   position: relative;

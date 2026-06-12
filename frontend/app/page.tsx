@@ -170,7 +170,8 @@ function truncateLists(markdown: string): string {
       const run = lines.slice(i, j);
       if (run.length >= 4) {
         const keep = keepTwoThirds(run.length);
-        out.push(...run.slice(0, keep), "", `[[LOCK:${run.length - keep}]]`, "");
+        const hidden = run.slice(keep).map(l => l.replace(LIST_ITEM_RE, "").trim()).join(" § ");
+        out.push(...run.slice(0, keep), "", `[[BLUR:${hidden}]]`, "");
       } else {
         out.push(...run);
       }
@@ -183,18 +184,18 @@ function truncateLists(markdown: string): string {
   return out.join("\n");
 }
 
-/** Custom ReactMarkdown renderers: turn `[[LOCK:n]]` paragraphs into a CTA chip. */
-function reportComponents(onUnlock: () => void) {
+/** Custom ReactMarkdown renderers: turn `[[BLUR:...]]` paragraphs into blurred list items. */
+function reportComponents(_onUnlock: () => void) {
   return {
     p({ children }: { children?: React.ReactNode }) {
       const text = Array.isArray(children) ? children.join("") : children;
-      const m = typeof text === "string" ? text.match(/^\[\[LOCK:(\d+)\]\]$/) : null;
-      if (m) {
-        const n = Number(m[1]);
+      const blur = typeof text === "string" ? text.match(/^\[\[BLUR:(.*)\]\]$/) : null;
+      if (blur) {
+        const items = blur[1].split(" § ");
         return (
-          <button type="button" className="lock-chip" onClick={onUnlock}>
-            <Lock size={12} /> +{n} {n > 1 ? "points réservés" : "point réservé"} — débloquer gratuitement
-          </button>
+          <ul className="blurred-items" aria-hidden>
+            {items.map((item, idx) => <li key={idx}>{item}</li>)}
+          </ul>
         );
       }
       return <p>{children}</p>;
