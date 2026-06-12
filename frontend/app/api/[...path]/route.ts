@@ -4,7 +4,9 @@ import { NextRequest, NextResponse } from "next/server";
 export const maxDuration = 300; // 5 minutes
 export const dynamic = "force-dynamic";
 
-const BACKEND = "https://analyseur-linkedin-influenceur-api.onrender.com";
+const BACKEND =
+  process.env.BACKEND_URL ??
+  "https://analyseur-linkedin-influenceur-api.onrender.com";
 
 async function proxy(req: NextRequest, path: string) {
   const url = `${BACKEND}/${path}${req.nextUrl.search}`;

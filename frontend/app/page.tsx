@@ -22,7 +22,9 @@ import AuthGate from "./components/AuthGate";
 import { authHeaders, supabase } from "./lib/supabase";
 
 const API_URL = "/api";
-const DIRECT_API_URL = "https://analyseur-linkedin-influenceur-api.onrender.com";
+const DIRECT_API_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL ??
+  "https://analyseur-linkedin-influenceur-api.onrender.com";
 
 type Health = { ok: boolean; apify: boolean; anthropic: boolean; model: string };
 type Report = { name: string; path: string; updated_at: number; content: string };

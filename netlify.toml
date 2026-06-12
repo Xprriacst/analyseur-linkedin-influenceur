@@ -8,6 +8,6 @@
 
 [[redirects]]
   from = "/api/*"
-  to = "https://analyseur-linkedin-influenceur-api.onrender.com/:splat"
+  to = "$BACKEND_URL/:splat"
   status = 200
   force = true
