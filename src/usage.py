@@ -9,7 +9,12 @@ APIFY_COSTS = {
     "supreme_coder/linkedin-profile-scraper": {"per_run": 0.003, "per_item": 0.0},
     "apimaestro/linkedin-profile-posts": {"per_run": 0.0, "per_item": 0.00005},
     "harvestapi/linkedin-company-posts": {"per_run": 0.0, "per_item": 0.002},
+    "harvestapi/linkedin-profile-posts": {"per_run": 0.00005, "per_item": 0.002},
+    "harvestapi/linkedin-profile-scraper": {"per_run": 0.00005, "per_item": 0.004},
 }
+
+# Actor inconnu : estimation prudente plutôt que $0.0 trompeur
+DEFAULT_APIFY_COST = {"per_run": 0.0, "per_item": 0.002}
 
 ANTHROPIC_PRICES_PER_MTOK = {
     "opus": {"input": 15.0, "output": 75.0},
@@ -47,7 +52,7 @@ def get_usage() -> dict[str, Any]:
 
 
 def _apify_cost(actor: str, items: int) -> float:
-    cfg = APIFY_COSTS.get(actor, {"per_run": 0.0, "per_item": 0.0})
+    cfg = APIFY_COSTS.get(actor, DEFAULT_APIFY_COST)
     return round(cfg["per_run"] + cfg["per_item"] * items, 6)
 
 

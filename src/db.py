@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import os
 from typing import Any
+from urllib.parse import unquote
 
 try:
     from supabase import Client, create_client
@@ -259,7 +260,7 @@ def list_reports(access_token: str, limit: int = 10) -> list[dict]:
     db = client_for_token(access_token)
     resp = (
         db.table("analyses")
-        .select("id,handle,created_at,report_markdown")
+        .select("id,handle,created_at,report_markdown,influencers(name)")
         .eq("user_id", user["id"])
         .order("created_at", desc=True)
         .limit(limit)
@@ -273,8 +274,11 @@ def list_reports(access_token: str, limit: int = 10) -> list[dict]:
             ts = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
         except Exception:
             ts = 0
+        # Nom lisible : prénom + nom de l'influenceur, fallback handle décodé
+        influencer = row.get("influencers") or {}
+        name = (influencer.get("name") or "").strip() or unquote(row["handle"])
         reports.append({
-            "name": f"{row['handle']} — {created[:10]}",
+            "name": name,
             "path": row["id"],
             "updated_at": ts,
             "content": row.get("report_markdown") or "",

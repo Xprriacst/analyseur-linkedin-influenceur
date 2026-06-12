@@ -7,7 +7,7 @@ from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.report import render_markdown, save_report
 from src.scraper import extract_handle, fetch_posts, fetch_profile
-from src.stats import compute_stats, cta_breakdown
+from src.stats import compute_stats, cta_breakdown, engagement_by_classification
 from src.usage import get_usage, reset_usage
 
 ProgressCallback = Callable[[float, str], None]
@@ -57,12 +57,15 @@ def run_analysis(
     tick(0.55, "Detecting patterns")
     patterns = analyze_patterns(posts)
     cta_stats = cta_breakdown(patterns["posts_enriched"])
+    stats["cta_effect"] = cta_stats
 
     if with_llm:
         tick(0.7, "Classifying TOFU/MOFU/BOFU")
         classifications = classify_posts(posts)
+        stats["stage_engagement"] = engagement_by_classification(classifications, posts, "stage")
+        stats["hook_engagement"] = engagement_by_classification(classifications, posts, "hook_type")
         tick(0.85, "Generating strategic synthesis")
-        synthesis = synthesize_strategy(stats, classifications, posts)
+        synthesis = synthesize_strategy(stats, classifications, patterns["posts_enriched"])
     else:
         classifications = []
         synthesis = empty_synthesis()

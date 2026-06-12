@@ -1,8 +1,12 @@
 """Normalize the various Apify actor schemas into a consistent post shape."""
 from __future__ import annotations
 
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from typing import Any
+
+# urn:li:activity:7457316472336371712 ou .../activity-7457316472336371712-xxxx
+_ACTIVITY_ID_RE = re.compile(r"activity[:-](\d{15,25})")
 
 
 def _get(d: dict, *keys, default=None):
@@ -24,27 +28,89 @@ def _get(d: dict, *keys, default=None):
     return default
 
 
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sane(dt: datetime | None) -> datetime | None:
+    """Reject garbage dates (epochs mal interprétés, ex. 1781-07-12)."""
+    if dt is None:
+        return None
+    if dt.year < 2005 or dt.year > datetime.now(timezone.utc).year + 1:
+        return None
+    return dt
+
+
+def _from_epoch(value: float) -> datetime | None:
+    # Heuristique : au-delà de 1e11 c'est des millisecondes (1e11 s ≈ année 5138)
+    if value > 1e11:
+        value = value / 1000.0
+    try:
+        return _sane(datetime.fromtimestamp(value, tz=timezone.utc))
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _parse_date(value: Any) -> datetime | None:
-    if not value:
+    if value is None or value == "":
         return None
     if isinstance(value, datetime):
-        return value
-    s = str(value)
+        return _sane(value)
+    if isinstance(value, (int, float)):
+        return _from_epoch(float(value))
+    s = str(value).strip()
+    if re.fullmatch(r"\d{10,17}(\.\d+)?", s):
+        return _from_epoch(float(s))
     for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
         try:
-            return datetime.strptime(s, fmt)
+            return _sane(datetime.strptime(s, fmt))
         except ValueError:
             continue
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return _sane(datetime.fromisoformat(s.replace("Z", "+00:00")))
     except ValueError:
         return None
 
 
+def _date_from_urn(post: dict) -> datetime | None:
+    """Fallback : l'ID d'activité LinkedIn encode la date (41 bits de poids fort = epoch ms)."""
+    candidates = [
+        _get(post, "full_urn", "urn.activity_urn", "activityUrn", "entityId", "id"),
+        _get(post, "url", "postUrl", "linkedinUrl", "link"),
+    ]
+    for cand in candidates:
+        if not cand:
+            continue
+        s = str(cand)
+        m = _ACTIVITY_ID_RE.search(s)
+        digits = m.group(1) if m else (s if s.isdigit() and 15 <= len(s) <= 25 else None)
+        if digits:
+            dt = _from_epoch(float(int(digits) >> 22))
+            if dt:
+                return dt
+    return None
+
+
 def _detect_format(post: dict) -> str:
-    if _get(post, "video", "videoUrl"):
+    if _get(post, "isRepost", "reposted", default=False) or post.get("repost") or post.get("reshared_post"):
+        return "repost"
+    # Schéma apimaestro : media = {"type": "image|video|...", "images": [...]}
+    media = post.get("media")
+    if isinstance(media, dict):
+        mtype = str(media.get("type") or "").lower()
+        images = media.get("images") or []
+        if mtype == "image":
+            return "carousel" if isinstance(images, list) and len(images) > 1 else "image"
+        if mtype in ("carousel", "slideshow"):
+            return "carousel"
+        if mtype:
+            return mtype  # video, document, article, poll…
+    if _get(post, "video", "videoUrl", "linkedinVideo"):
         return "video"
-    images = _get(post, "images", "imageUrls", default=[]) or []
+    images = _get(post, "images", "imageUrls", "postImages", default=[]) or []
     if isinstance(images, list) and len(images) > 1:
         return "carousel"
     if images:
@@ -53,8 +119,6 @@ def _detect_format(post: dict) -> str:
         return "article"
     if _get(post, "document", "documentUrl"):
         return "document"
-    if _get(post, "isRepost", "reposted", default=False):
-        return "repost"
     return "text"
 
 
@@ -62,13 +126,22 @@ def normalize_posts(raw: list[dict]) -> list[dict]:
     out = []
     for p in raw:
         text = _get(p, "text", "postText", "content", "commentary", default="") or ""
+        # Les dates ISO d'abord, les timestamps epoch ensuite, l'URN en dernier recours.
         date = _parse_date(
-            _get(p, "postedAt.timestamp", "postedAt", "publishedAt", "date", "time", "postedAtTimestamp", "posted_at.date")
+            _get(
+                p,
+                "postedAt.date", "posted_at.date",
+                "postedAt.timestamp", "posted_at.timestamp",
+                "postedAt", "publishedAt", "date", "time", "postedAtTimestamp",
+            )
         )
+        if date is None:
+            date = _date_from_urn(p)
         posted_ago = _get(p, "postedAt.postedAgoText", "postedAgoText", "posted_at.relative", default="") or ""
-        likes = int(_get(p, "engagement.likes", "numLikes", "likes", "likeCount", "reactions", "stats.like", "stats.total_reactions", default=0) or 0)
-        comments = int(_get(p, "engagement.comments", "numComments", "comments", "commentCount", "stats.comments", default=0) or 0)
-        reposts = int(_get(p, "engagement.shares", "numShares", "shares", "reposts", "repostCount", "stats.reposts", default=0) or 0)
+        # total_reactions avant stats.like : "like" exclut love/support/celebrate/insight
+        likes = _safe_int(_get(p, "engagement.likes", "numLikes", "stats.total_reactions", "likes", "likeCount", "reactions", "stats.like", default=0))
+        comments = _safe_int(_get(p, "engagement.comments", "numComments", "comments", "commentCount", "stats.comments", default=0))
+        reposts = _safe_int(_get(p, "engagement.shares", "numShares", "shares", "reposts", "repostCount", "stats.reposts", default=0))
         url = _get(p, "url", "postUrl", "linkedinUrl", "link", default="")
 
         out.append(
@@ -94,8 +167,11 @@ def normalize_profile(raw: dict | None) -> dict:
     """Normalize the profile-scraper output."""
     if not raw:
         return {}
+    first = _get(raw, "firstName", "first_name", default="") or ""
+    last = _get(raw, "lastName", "last_name", default="") or ""
+    name = _get(raw, "fullName", "name", "displayName", default="") or f"{first} {last}".strip()
     return {
-        "name": _get(raw, "fullName", "name", "displayName", default=""),
+        "name": name,
         "headline": _get(raw, "headline", default=""),
         "summary": _get(raw, "summary", "about", default=""),
         "location": _get(raw, "geoLocationName", "location.linkedinText", "locationName", default="") or "",
