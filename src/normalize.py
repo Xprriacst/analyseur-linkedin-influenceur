@@ -167,8 +167,11 @@ def normalize_profile(raw: dict | None) -> dict:
     """Normalize the profile-scraper output."""
     if not raw:
         return {}
+    first = _get(raw, "firstName", "first_name", default="") or ""
+    last = _get(raw, "lastName", "last_name", default="") or ""
+    name = _get(raw, "fullName", "name", "displayName", default="") or f"{first} {last}".strip()
     return {
-        "name": _get(raw, "fullName", "name", "displayName", default=""),
+        "name": name,
         "headline": _get(raw, "headline", default=""),
         "summary": _get(raw, "summary", "about", default=""),
         "location": _get(raw, "geoLocationName", "location.linkedinText", "locationName", default="") or "",

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote
 
 from apify_client import ApifyClient
 
@@ -21,18 +22,20 @@ def _cache_path(handle: str, suffix: str = "") -> Path:
 
 
 def extract_handle(profile_url: str) -> str:
-    url = profile_url.rstrip("/")
-    return url.split("/in/")[-1].split("/")[0].split("?")[0]
+    """Handle décodé (clément-geynet-☀️-…), forme canonique pour cache/db/affichage."""
+    url = profile_url.strip().rstrip("/")
+    raw = url.split("/in/")[-1].split("/")[0].split("?")[0].split("#")[0]
+    return unquote(raw)
 
 
 def normalize_url(profile_url: str) -> str:
-    """Ensure trailing slash. Keep encoding intact (emojis %F0%9F...)."""
-    url = profile_url.strip()
-    if "?" in url:
-        url = url.split("?")[0]
-    if not url.endswith("/"):
-        url += "/"
-    return url
+    """URL canonique pour les actors Apify : handle percent-encodé, sans query params.
+
+    Gère les handles avec accents/emojis, qu'ils arrivent bruts (☀️) ou déjà
+    encodés (%F0%9F...) — unquote puis quote évite le double encodage.
+    """
+    handle = extract_handle(profile_url)
+    return f"https://www.linkedin.com/in/{quote(handle, safe='-._~')}/"
 
 
 def _client() -> ApifyClient:
@@ -77,9 +80,16 @@ def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> li
 
     run = _client().actor(actor).call(run_input=run_input)
     items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
+    # Certains actors renvoient un item d'erreur ({"message": ..., "profile_input": ...})
+    # au lieu d'un dataset vide : on ne garde que les vrais posts.
+    items = [
+        i for i in items
+        if isinstance(i, dict) and (i.get("text") or i.get("content") or i.get("full_urn") or i.get("id"))
+    ]
     track_apify(actor, len(items), cached=False)
 
-    cache_file.write_text(json.dumps(items, ensure_ascii=False, indent=2, default=str))
+    if items:  # ne jamais mettre en cache un échec
+        cache_file.write_text(json.dumps(items, ensure_ascii=False, indent=2, default=str))
     return items
 
 
@@ -116,5 +126,6 @@ def fetch_profile(profile_url: str, use_cache: bool = True) -> dict[str, Any] | 
 
     profile = items[0] if items else {}
     track_apify(actor, 1 if profile else 0, cached=False)
-    cache_file.write_text(json.dumps(profile, ensure_ascii=False, indent=2, default=str))
+    if profile:  # ne jamais mettre en cache un échec
+        cache_file.write_text(json.dumps(profile, ensure_ascii=False, indent=2, default=str))
     return profile or None

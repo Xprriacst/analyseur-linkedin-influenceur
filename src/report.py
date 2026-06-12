@@ -45,10 +45,11 @@ def render_markdown(
     cta_stats = cta_stats or {}
     usage = usage or {}
 
+    display_name = (profile or {}).get("name") or unquote(handle)
     lines: list[str] = []
-    lines.append(f"# Stratégie LinkedIn — `{unquote(handle)}`")
+    lines.append(f"# Stratégie LinkedIn — {display_name}")
     lines.append("")
-    lines.append(f"_Profil_ : {profile_url}  ")
+    lines.append(f"_Profil_ : [{unquote(handle)}]({profile_url})  ")
     lines.append(f"_Analyse générée le_ : {datetime.now().strftime('%Y-%m-%d %H:%M')}  ")
     excluded = stats.get("excluded_recent_count", 0)
     suffix = f" (— {excluded} post(s) <24h exclus)" if excluded else ""
@@ -56,38 +57,36 @@ def render_markdown(
     lines.append(f"_Posts analysés_ : **{stats['count']}** {span}{suffix}")
     lines.append("")
 
-    # ========== BLOC 1 : Profil en chiffres ==========
+    # ========== BLOC 1 : Profil en chiffres (toujours affiché, même si le scrape profil a échoué) ==========
+    lines.append("## Profil en chiffres")
+    lines.append("")
+    headline = profile.get("headline") or ""
+    location = profile.get("location") or ""
+    meta = " · ".join(filter(None, [display_name, headline, location]))
+    if meta:
+        lines.append(f"**{meta}**")
+        lines.append("")
+    followers = profile.get("follower_count", 0)
+    connections = profile.get("connections_count", 0)
+    fmt_n = lambda n: f"{n:,}".replace(",", " ") if n else "indisponible"
+    lines.append(f"- **Abonnés** : {fmt_n(followers)}")
+    lines.append(f"- **Connexions** : {fmt_n(connections)}")
     if profile:
-        lines.append("## Profil en chiffres")
-        lines.append("")
-        name = profile.get("name") or handle
-        headline = profile.get("headline") or ""
-        location = profile.get("location") or ""
-        meta = " · ".join(filter(None, [name, headline, location]))
-        if meta:
-            lines.append(f"**{meta}**")
-            lines.append("")
-        followers = profile.get("follower_count", 0)
-        connections = profile.get("connections_count", 0)
-        creator = "oui" if profile.get("creator_mode") else "non"
-        influencer = "oui" if profile.get("influencer") else "non"
-        lines.append(f"- **Abonnés** : {followers:,}".replace(",", " "))
-        lines.append(f"- **Connexions** : {connections:,}".replace(",", " "))
-        lines.append(f"- **Mode créateur** : {creator}")
-        lines.append(f"- **Badge influenceur** : {influencer}")
-        cadence = f"{stats['posts_per_week']} posts/semaine" if stats.get("posts_per_week") is not None else "indisponible (dates non fournies)"
-        lines.append(f"- **Cadence** : {cadence}")
-        eng = stats.get("engagement", {})
-        if eng.get("engagement_rate_pct") is not None:
-            lines.append(
-                f"- **Taux d'engagement médian** : {eng['engagement_rate_pct']}% "
-                f"(commentaires : {eng['comments_rate_pct']}%)"
-            )
-        if eng.get("organic_rate_pct") is not None:
-            lines.append(
-                f"- **Taux organique médian** (likes + reposts, hors commentaires CTA) : {eng['organic_rate_pct']}%"
-            )
-        lines.append("")
+        lines.append(f"- **Mode créateur** : {'oui' if profile.get('creator_mode') else 'non'}")
+        lines.append(f"- **Badge influenceur** : {'oui' if profile.get('influencer') else 'non'}")
+    cadence = f"{stats['posts_per_week']} posts/semaine" if stats.get("posts_per_week") is not None else "indisponible (dates non fournies)"
+    lines.append(f"- **Cadence** : {cadence}")
+    eng = stats.get("engagement", {})
+    if eng.get("engagement_rate_pct") is not None:
+        lines.append(
+            f"- **Taux d'engagement médian** : {eng['engagement_rate_pct']}% "
+            f"(commentaires : {eng['comments_rate_pct']}%)"
+        )
+    if eng.get("organic_rate_pct") is not None:
+        lines.append(
+            f"- **Taux organique médian** (likes + reposts, hors commentaires CTA) : {eng['organic_rate_pct']}%"
+        )
+    lines.append("")
 
     lines.append("## Positionnement")
     lines.append("")
@@ -202,18 +201,16 @@ def render_markdown(
         lines.append("| # | Format | Sujet (extrait) | Likes | Comments | Shares | Eng. | CTA |")
         lines.append("|---|---|---|---|---|---|---|---|")
         for i, p in enumerate(top5, 1):
-            txt = p["text"].replace("\n", " ").replace("|", "/")
+            txt = p["text"].replace("\n", " ").replace("|", "/").replace("[", "(").replace("]", ")")
             snippet = (txt[:90] + "…") if len(txt) > 90 else txt
+            if p.get("url"):
+                snippet = f"[{snippet}]({p['url']})"
             cta = "✅" if has_cta_by_url.get(p.get("url")) else "—"
             lines.append(
                 f"| {i} | {p['format']} | {snippet} | {p['likes']} | {p['comments']} | {p['reposts']} | {p['engagement']} | {cta} |"
             )
         lines.append("")
-        lines.append("_CTA ✅ = post avec appel à commenter (« commente X pour recevoir ») : les commentaires y sont en partie mécaniques._")
-        lines.append("")
-        for i, p in enumerate(top5, 1):
-            if p.get("url"):
-                lines.append(f"{i}. <{p['url']}>")
+        lines.append("_Clique sur un extrait pour ouvrir le post sur LinkedIn. CTA ✅ = post avec appel à commenter (« commente X pour recevoir ») : les commentaires y sont en partie mécaniques._")
         lines.append("")
 
     # ========== BLOC 3 : Patterns détectés (déterministes) ==========
@@ -307,20 +304,8 @@ def render_markdown(
         lines.append(f"{i}. {a}")
     lines.append("")
 
-    if usage:
-        apify = usage.get("apify", {})
-        anthropic = usage.get("anthropic", {})
-        total_cost = round(
-            float(apify.get("estimated_cost_usd", 0) or 0)
-            + float(anthropic.get("estimated_cost_usd", 0) or 0),
-            6,
-        )
-        lines.append("## Usage & coûts estimés")
-        lines.append("")
-        lines.append(f"- **Apify** : {apify.get('runs', 0)} run(s), {apify.get('cached_runs', 0)} cache hit(s), {apify.get('items', 0)} item(s), ~${apify.get('estimated_cost_usd', 0)}")
-        lines.append(f"- **Anthropic** : {anthropic.get('calls', 0)} appel(s), {anthropic.get('input_tokens', 0)} input tokens, {anthropic.get('output_tokens', 0)} output tokens, ~${anthropic.get('estimated_cost_usd', 0)}")
-        lines.append(f"- **Total estimé** : ~${total_cost}")
-        lines.append("")
+    # Usage & coûts : volontairement absents du rapport (version client).
+    # Les données restent disponibles dans result["usage"] et la colonne `usage` en base.
 
     return "\n".join(lines)
 

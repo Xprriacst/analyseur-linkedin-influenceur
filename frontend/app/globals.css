@@ -566,6 +566,27 @@ a { color: inherit; text-decoration: none; }
 
 .markdown h1, .markdown h2, .markdown h3 { letter-spacing: -0.03em; }
 
+.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0 20px;
+  font-size: 13px;
+}
+
+.markdown th, .markdown td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.markdown th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
 .markdown pre, .raw-json {
   overflow: auto;
   padding: 16px;

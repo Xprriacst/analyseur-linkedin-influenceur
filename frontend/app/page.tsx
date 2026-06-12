@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Activity,
   BarChart3,
@@ -101,7 +102,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const tabs = ["Rapport", "Top posts", "Patterns", "Usage", "Tous les posts", "JSON brut"];
+const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
 const steps = [
   "Scraping du profil",
   "Récupération des posts récents",
@@ -115,10 +116,6 @@ function fmt(value: any) {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "number") return value.toLocaleString("fr-FR");
   return String(value);
-}
-
-function totalCost(usage?: Record<string, any>) {
-  return Number(usage?.apify?.estimated_cost_usd || 0) + Number(usage?.anthropic?.estimated_cost_usd || 0);
 }
 
 /* ── Freemium gating helpers ───────────────────────────────────────────── */
@@ -512,7 +509,6 @@ function LoadingState() {
               <span>{step}</span>
             </div>
           ))}
-          <p className="eyebrow" style={{ marginTop: 12, marginBottom: 0 }}>Coût estimé ≈ 0,42 $</p>
         </div>
       </div>
     </section>
@@ -523,23 +519,14 @@ function Kpis({ result }: { result: Analysis }) {
   const profile = result.profile || {};
   const stats = result.stats || {};
   const engagement = stats.engagement || {};
-  const usage = result.usage || {};
   return (
-    <>
-      <div className="kpi-grid">
-        <div className="kpi-card"><span>Abonnés</span><div className="metric">{fmt(profile.follower_count)}</div></div>
-        <div className="kpi-card"><span>Posts analysés</span><div className="metric">{fmt(stats.count)}</div></div>
-        <div className="kpi-card"><span>Posts / semaine</span><div className="metric">{fmt(stats.posts_per_week)}</div></div>
-        <div className="kpi-card"><span>Comments médian</span><div className="metric">{fmt(engagement.median_comments)}</div></div>
-        <div className="kpi-card"><span>Taux d'engagement</span><div className="metric">{engagement.engagement_rate_pct ? `${engagement.engagement_rate_pct}%` : "—"}</div></div>
-      </div>
-      <div className="usage-grid">
-        <div className="usage-card"><span>Appels Apify</span><div className="metric">{fmt(usage.apify?.runs || 0)}</div></div>
-        <div className="usage-card"><span>Items Apify</span><div className="metric">{fmt(usage.apify?.items || 0)}</div></div>
-        <div className="usage-card"><span>Tokens Anthropic</span><div className="metric">{fmt((usage.anthropic?.input_tokens || 0) + (usage.anthropic?.output_tokens || 0))}</div></div>
-        <div className="usage-card"><span>Coût estimé</span><div className="metric">{totalCost(usage).toFixed(4)} $</div></div>
-      </div>
-    </>
+    <div className="kpi-grid">
+      <div className="kpi-card"><span>Abonnés</span><div className="metric">{fmt(profile.follower_count)}</div></div>
+      <div className="kpi-card"><span>Posts analysés</span><div className="metric">{fmt(stats.count)}</div></div>
+      <div className="kpi-card"><span>Posts / semaine</span><div className="metric">{fmt(stats.posts_per_week)}</div></div>
+      <div className="kpi-card"><span>Comments médian</span><div className="metric">{fmt(engagement.median_comments)}</div></div>
+      <div className="kpi-card"><span>Taux d'engagement</span><div className="metric">{engagement.engagement_rate_pct ? `${engagement.engagement_rate_pct}%` : "—"}</div></div>
+    </div>
   );
 }
 
@@ -667,11 +654,11 @@ function Dashboard({
 
       {tab === "Rapport" && (
         isAuthed ? (
-          <div className="markdown card"><ReactMarkdown>{result.markdown}</ReactMarkdown></div>
+          <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{result.markdown}</ReactMarkdown></div>
         ) : (
           <>
             <div className="markdown card">
-              <ReactMarkdown components={reportComponents(unlock)}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={reportComponents(unlock)}>
                 {reportBeforeActions(result.markdown || "")}
               </ReactMarkdown>
             </div>
@@ -694,7 +681,6 @@ function Dashboard({
       {tab === "Patterns" && (
         <Patterns result={result} limit={isAuthed ? undefined : 4} onUnlock={unlock} />
       )}
-      {tab === "Usage" && <pre className="raw-json">{JSON.stringify(result.usage, null, 2)}</pre>}
       {tab === "Tous les posts" && <pre className="raw-json">{JSON.stringify(result.posts, null, 2)}</pre>}
       {tab === "JSON brut" && <pre className="raw-json">{JSON.stringify(result, null, 2)}</pre>}
     </>
@@ -1045,7 +1031,7 @@ function GlobalDashboard() {
         {aiError && <div className="error">{aiError}</div>}
         {aiAnalysis && (
           <div className="markdown" style={{ borderTop: "1px solid var(--border)", paddingTop: 16 }}>
-            <ReactMarkdown>{aiAnalysis}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{aiAnalysis}</ReactMarkdown>
           </div>
         )}
       </div>
@@ -1199,7 +1185,7 @@ export default function Home() {
               : result
                 ? <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
                 : loadedReport
-                  ? <div className="markdown card"><ReactMarkdown>{loadedReport.content}</ReactMarkdown></div>
+                  ? <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
                   : <Landing onSubmit={analyze} loading={loading} error={error} />
           )}
           {view === "generator" && <Generator />}

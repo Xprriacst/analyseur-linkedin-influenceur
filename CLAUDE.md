@@ -38,6 +38,17 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 - **Coûts Apify** : pricing harvestapi ajouté ($0.002/post, $0.004/profil) + fallback $0.002/item pour actor inconnu (fini le "~$0.0").
 - **Reste à faire (proposé)** : détection de near-duplicates/recyclage de templates, scraper de commentaires Apify sur les top posts (qualité d'audience + leads).
 
+### 2026-06-12 (version client : profil, liens, historique, URLs accentuées)
+- **Nom du profil** : harvestapi renvoie `firstName`/`lastName`, jamais `fullName` → `normalize_profile` construisait un nom vide (titre du rapport = handle, historique illisible). Fix : name = fullName ou firstName+lastName.
+- **Bloc "Profil en chiffres" toujours affiché** : avant, si le scrape profil échouait, tout le bloc (abonnés, connexions…) disparaissait silencieusement. Maintenant rendu avec "indisponible" pour les valeurs manquantes.
+- **URLs accentuées/emoji** (ex. `clément-geynet-☀️-zénithia`) : `normalize_url` reconstruit l'URL avec handle percent-encodé (unquote→quote, pas de double encodage), query params iOS strippés. `extract_handle` renvoie la forme décodée (cache/db/affichage). ⚠️ Les caches existants au nom encodé (`th%C3%A9ophile…`) ne matchent plus → re-scrape au prochain run.
+- **Échecs plus jamais mis en cache** : items d'erreur (`{"message", "profile_input"}`) filtrés, cache écrit seulement si résultats non vides.
+- **Version client** : suppression de tout l'affichage technique — grille Apify/tokens/coût au-dessus du rapport, onglet "Usage", ligne "Coût estimé" du loading, section "Usage & coûts estimés" du markdown (les données restent en base dans `analyses.usage`).
+- **Liens cliquables** : profil = `[handle](url)`, top 5 = extrait du post cliquable, plus de liste d'URLs brutes.
+- **Historique ("Analyses récentes")** : affiche le prénom + nom de l'influenceur (jointure `influencers(name)`, fallback handle décodé) au lieu de `handle — date`.
+- **remark-gfm ajouté au frontend** : les tableaux markdown du rapport se rendent enfin en vrais tableaux HTML (avant : texte brut avec des pipes) + styles `.markdown table` dans globals.css.
+- **Rappel déploiement** : le backend Render (`analyseur-linkedin-influenceur-api`, partagé prod/dev) déploie depuis `main` uniquement → les changements backend nécessitent un merge dev→main. Netlify dev ne rebuild que si `frontend/` change (base directory).
+
 ### 2026-06-11 (config Supabase Auth manquante après renommage Netlify)
 - **Bug** : après le renommage Netlify en `lkd-outreach.netlify.app`, la **Site URL** Supabase pointait encore vers `localhost` → les redirections OAuth et confirmations email échouaient → les analyses ne s'enregistraient pas en prod.
 - **Fix** : dans le dashboard Supabase → Authentication → URL Configuration :
