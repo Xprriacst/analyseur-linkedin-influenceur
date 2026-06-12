@@ -93,6 +93,36 @@ def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> li
     return items
 
 
+# Actor de secours : fonctionne sans approbation de permissions Apify
+# (harvestapi/linkedin-profile-scraper exige depuis ~06/2026 un "full access"
+# à approuver manuellement dans la console — sinon chaque scrape échoue).
+PROFILE_FALLBACK_ACTOR = "apimaestro/linkedin-profile-detail"
+
+
+def _profile_run_input(actor: str, url: str) -> dict[str, Any]:
+    if "harvestapi" in actor:
+        return {"queries": [url]}
+    if "apimaestro" in actor:
+        return {"username": url}  # accepte handle, URL ou URN
+    return {"urls": [{"url": url}], "scrapeCompany": False, "findContacts": False}
+
+
+def _run_profile_actor(actor: str, url: str) -> list[dict]:
+    try:
+        run = _client().actor(actor).call(run_input=_profile_run_input(actor, url))
+        items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
+    except Exception as exc:
+        # Visible dans les logs Render — ex. actor qui exige une approbation de
+        # permissions Apify ("This Actor requires full access to your account").
+        print(f"[scraper] échec scrape profil {url} via {actor}: {exc}", flush=True)
+        return []
+    # Écarte les payloads d'erreur ({"message": ...}) renvoyés en guise d'item
+    return [
+        i for i in items
+        if isinstance(i, dict) and (i.get("basic_info") or i.get("firstName") or i.get("fullName") or i.get("name"))
+    ]
+
+
 def fetch_profile(profile_url: str, use_cache: bool = True) -> dict[str, Any] | None:
     """Fetch profile metadata (followers, headline, creator badge, etc.)."""
     handle = extract_handle(profile_url)
@@ -101,32 +131,17 @@ def fetch_profile(profile_url: str, use_cache: bool = True) -> dict[str, Any] | 
     if use_cache and cache_file.exists():
         cached = json.loads(cache_file.read_text())
         if cached:  # un cache vide = échec passé, on retente le scrape
-            actor = os.environ.get("APIFY_PROFILE_ACTOR", "harvestapi/linkedin-profile-scraper")
+            actor = os.environ.get("APIFY_PROFILE_ACTOR", PROFILE_FALLBACK_ACTOR)
             track_apify(actor, 1, cached=True)
             return cached
 
-    actor = os.environ.get("APIFY_PROFILE_ACTOR", "harvestapi/linkedin-profile-scraper")
+    actor = os.environ.get("APIFY_PROFILE_ACTOR", PROFILE_FALLBACK_ACTOR)
     url = normalize_url(profile_url)
 
-    if "harvestapi" in actor:
-        run_input = {
-            "queries": [url],
-        }
-    else:
-        run_input = {
-            "urls": [{"url": url}],
-            "scrapeCompany": False,
-            "findContacts": False,
-        }
-
-    try:
-        run = _client().actor(actor).call(run_input=run_input)
-        items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
-    except Exception as exc:
-        # Visible dans les logs Render — ex. actor qui exige une approbation de
-        # permissions Apify ("This Actor requires full access to your account").
-        print(f"[scraper] échec scrape profil {url} via {actor}: {exc}", flush=True)
-        items = []
+    items = _run_profile_actor(actor, url)
+    if not items and actor != PROFILE_FALLBACK_ACTOR:
+        items = _run_profile_actor(PROFILE_FALLBACK_ACTOR, url)
+        actor = PROFILE_FALLBACK_ACTOR
 
     profile = items[0] if items else {}
     track_apify(actor, 1 if profile else 0, cached=False)

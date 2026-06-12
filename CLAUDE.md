@@ -38,6 +38,10 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 - **Coûts Apify** : pricing harvestapi ajouté ($0.002/post, $0.004/profil) + fallback $0.002/item pour actor inconnu (fini le "~$0.0").
 - **Reste à faire (proposé)** : détection de near-duplicates/recyclage de templates, scraper de commentaires Apify sur les top posts (qualité d'audience + leads).
 
+### 2026-06-12 (abonnés de retour : fallback actor profil)
+- **Cause racine des abonnés manquants** : `harvestapi/linkedin-profile-scraper` exige depuis ~06/2026 une approbation de permissions « full access » dans la console Apify → chaque `fetch_profile` échouait (erreur avalée, maintenant loggée).
+- **Fix** : fallback automatique sur `apimaestro/linkedin-profile-detail` ($0.005/profil, aucune approbation requise, schéma `basic_info` avec follower_count/connection_count/is_creator/about/location) — c'est aussi le nouvel actor par défaut. Mapping ajouté dans `normalize_profile`. L'env `APIFY_PROFILE_ACTOR` (Render/local) peut rester sur harvestapi : le fallback prend le relais.
+
 ### 2026-06-12 (libellés grand public dans le rapport)
 - **Jargon traduit** : hooks (`bold_claim` → « Affirmation tranchée »), stages (`TOFU` → « Attraction »), formats (`text` → « Texte seul ») via `HOOK_LABELS`/`STAGE_LABELS`/`FORMAT_LABELS` dans `report.py`. Le code technique reste visible en italique discret `_( … )_`, stylé petit/grisé via `.markdown table em` dans globals.css.
 - **Sections renommées** : « Mix funnel TOFU/MOFU/BOFU » → « Répartition du contenu — attirer, éduquer, convertir » ; « Patterns (synthèse LLM) » → « Analyse stratégique » ; « CTA commentaires » → « Appels à commenter » ; colonnes Comments/Shares → Commentaires/Partages.

@@ -167,6 +167,24 @@ def normalize_profile(raw: dict | None) -> dict:
     """Normalize the profile-scraper output."""
     if not raw:
         return {}
+
+    # Schéma apimaestro/linkedin-profile-detail : tout est sous basic_info
+    if isinstance(raw.get("basic_info"), dict):
+        bi = raw["basic_info"]
+        loc = bi.get("location") or {}
+        name = bi.get("fullname") or f"{bi.get('first_name') or ''} {bi.get('last_name') or ''}".strip()
+        return {
+            "name": name,
+            "headline": bi.get("headline") or "",
+            "summary": bi.get("about") or "",
+            "location": (loc.get("full") if isinstance(loc, dict) else str(loc)) or "",
+            "follower_count": int(bi.get("follower_count") or 0),
+            "connections_count": int(bi.get("connection_count") or 0),
+            "creator_mode": bool(bi.get("is_creator")),
+            "influencer": bool(bi.get("is_influencer")),
+            "profile_url": bi.get("profile_url") or "",
+        }
+
     first = _get(raw, "firstName", "first_name", default="") or ""
     last = _get(raw, "lastName", "last_name", default="") or ""
     name = _get(raw, "fullName", "name", "displayName", default="") or f"{first} {last}".strip()
