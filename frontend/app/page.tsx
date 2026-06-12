@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   Activity,
@@ -152,54 +152,24 @@ function reportBeforeActions(markdown: string): string {
   return idx === -1 ? markdown : markdown.slice(0, idx).trimEnd();
 }
 
-const LIST_ITEM_RE = /^(\s*)([-*+]\s+|\d+\.\s+)/;
-
-/**
- * Truncate each substantial bullet/numbered list (≥4 items) to ~2/3 of its
- * items and drop a `[[LOCK:n]]` marker — rendered as a clickable blurred chip
- * by `reportComponents`. Tables and short lists are left untouched.
- */
-function truncateLists(markdown: string): string {
-  const lines = markdown.split("\n");
-  const out: string[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    if (LIST_ITEM_RE.test(lines[i])) {
-      let j = i;
-      while (j < lines.length && LIST_ITEM_RE.test(lines[j])) j++;
-      const run = lines.slice(i, j);
-      if (run.length >= 4) {
-        const keep = keepTwoThirds(run.length);
-        const hidden = run.slice(keep).map(l => l.replace(LIST_ITEM_RE, "").trim()).join(" § ");
-        out.push(...run.slice(0, keep), "", `[[BLUR:${hidden}]]`, "");
-      } else {
-        out.push(...run);
-      }
-      i = j;
-    } else {
-      out.push(lines[i]);
-      i++;
-    }
-  }
-  return out.join("\n");
-}
-
-/** Custom ReactMarkdown renderers: turn `[[BLUR:...]]` paragraphs into blurred list items. */
+/** Custom ReactMarkdown renderers: items 4+ d'une liste (≥4 items) sont floutés inline. */
 function reportComponents(_onUnlock: () => void) {
+  function BlurList({ tag: Tag, children }: { tag: "ol" | "ul"; children?: React.ReactNode }) {
+    const all = React.Children.toArray(children).filter(React.isValidElement);
+    if (all.length < 4) return <Tag>{children}</Tag>;
+    const keep = keepTwoThirds(all.length);
+    return (
+      <Tag>
+        {all.slice(0, keep)}
+        {all.slice(keep).map((child, i) =>
+          React.cloneElement(child as React.ReactElement<any>, { key: `b${i}`, className: "blurred" })
+        )}
+      </Tag>
+    );
+  }
   return {
-    p({ children }: { children?: React.ReactNode }) {
-      const text = Array.isArray(children) ? children.join("") : children;
-      const blur = typeof text === "string" ? text.match(/^\[\[BLUR:(.*)\]\]$/) : null;
-      if (blur) {
-        const items = blur[1].split(" § ");
-        return (
-          <ul className="blurred-items" aria-hidden>
-            {items.map((item, idx) => <li key={idx}>{item}</li>)}
-          </ul>
-        );
-      }
-      return <p>{children}</p>;
-    },
+    ol({ children }: { children?: React.ReactNode }) { return <BlurList tag="ol">{children}</BlurList>; },
+    ul({ children }: { children?: React.ReactNode }) { return <BlurList tag="ul">{children}</BlurList>; },
   };
 }
 
@@ -683,7 +653,7 @@ function Dashboard({
           <>
             <div className="markdown card">
               <ReactMarkdown components={reportComponents(unlock)}>
-                {truncateLists(reportBeforeActions(result.markdown || ""))}
+                {reportBeforeActions(result.markdown || "")}
               </ReactMarkdown>
             </div>
             {actionsCount > 0 && (
