@@ -949,6 +949,135 @@ a { color: inherit; text-decoration: none; }
 .auth-logout span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auth-logout:hover { color: var(--ink); border-color: var(--primary); }
 
+/* ── Header auth controls ── */
+.header-auth { display: flex; align-items: center; gap: 8px; }
+.header-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.header-user span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header-user:hover { color: var(--ink); border-color: var(--primary); }
+
+/* ── Freemium gating ── */
+.blurred {
+  filter: blur(6px);
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Card whose content is locked behind sign-up. */
+.locked-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  padding: 20px;
+}
+
+.lock-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 20px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0.92) 60%);
+}
+.lock-overlay .lock-badge {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  color: var(--primary);
+  background: rgba(70, 72, 212, 0.1);
+}
+.lock-overlay h4 { margin: 0; font-size: 15px; font-weight: 700; color: var(--ink); }
+.lock-overlay p { margin: 0; max-width: 320px; font-size: 13px; color: var(--muted); }
+
+/* Inline "+N locked" teaser at the end of a truncated list. */
+.lock-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+  padding: 5px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: var(--surface-low);
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lock-chip:hover { border-color: var(--primary); background: rgba(70, 72, 212, 0.06); }
+
+/* Greyed-out, locked navigation items and tabs. */
+.nav-item.locked,
+.tab.locked {
+  position: relative;
+  opacity: 0.55;
+  cursor: pointer;
+}
+.nav-item.locked:hover,
+.tab.locked:hover { opacity: 0.8; }
+.nav-item .lock-ico,
+.tab .lock-ico { margin-left: auto; color: var(--muted); }
+.tab .lock-ico { margin-left: 4px; }
+
+/* ── Auth modal ── */
+.auth-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(27, 24, 54, 0.45);
+  backdrop-filter: blur(2px);
+}
+.auth-modal {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgba(27, 24, 54, 0.25);
+}
+.auth-modal-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.auth-modal-close:hover { background: var(--surface-low); color: var(--ink); }
+
 /* ── Responsive ── */
 @media (max-width: 900px) {
   :root { --sidebar-w: 0px; }

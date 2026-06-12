@@ -31,6 +31,7 @@ app.add_middleware(
         "http://127.0.0.1:3002",
         "https://courageous-strudel-2d8ba3.netlify.app",
         "https://lkd-outreach.netlify.app",
+        "https://lkd-outreach-dev.netlify.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -488,3 +489,27 @@ def analyze(
         result["save_error"] = "Aucune session utilisateur : analyse non sauvegardée."
 
     return result
+
+
+@app.post("/analyses/persist")
+def persist_analysis(
+    result: dict[str, Any],
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Persist an already-computed analysis result for the authenticated user.
+
+    Used by the freemium flow: a visitor runs an anonymous analysis (full result
+    returned but not saved), then signs up. The client replays the in-memory
+    result here so it lands in the new account's history — no recompute, no cost.
+    """
+    if not result.get("handle"):
+        raise HTTPException(status_code=400, detail="Résultat d'analyse invalide (handle manquant).")
+
+    posts_limit = (result.get("stats") or {}).get("count")
+    try:
+        saved = db.save_analysis(token, result, posts_limit=posts_limit)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Sauvegarde échouée : {exc}") from exc
+    if not saved:
+        raise HTTPException(status_code=500, detail="Sauvegarde échouée (session invalide ou RLS).")
+    return {"saved": saved}

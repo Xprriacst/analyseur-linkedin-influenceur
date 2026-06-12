@@ -1,5 +1,29 @@
 # Notes Claude — Architecture Analyseur LinkedIn
 
+## Environnements déployés
+
+| Env | Frontend (Netlify) | Backend (Render) | Branche git |
+|---|---|---|---|
+| **Prod** | `lkd-outreach.netlify.app` (ID `81f75c05`) | `analyseur-linkedin-influenceur-api.onrender.com` | `main` |
+| **Dev** | `lkd-outreach-dev.netlify.app` (ID `35a2cf5e`) | idem (même service Render) | `dev` |
+
+### Variables d'env Netlify (identiques sur les deux sites)
+- `BACKEND_URL` → URL Render (server-side, proxy Next.js)
+- `NEXT_PUBLIC_BACKEND_URL` → URL Render (client-side, appels directs)
+- `NEXT_PUBLIC_SUPABASE_URL` → `https://zcxaxwqkswuefzlzpgvi.supabase.co`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` → clé anon Supabase
+
+### Règle de déploiement
+- Tout push sur `main` → déploiement auto sur prod
+- Tout push sur `dev` → déploiement auto sur dev (après liaison GitHub dans Netlify UI)
+- Les URLs hardcodées ont été remplacées par ces vars dans `frontend/app/page.tsx`, `frontend/app/api/[...path]/route.ts` et `netlify.toml`
+
+### Dev local
+Copier `frontend/.env.local.example` → `frontend/.env.local` et pointer `BACKEND_URL` / `NEXT_PUBLIC_BACKEND_URL` sur `http://localhost:8000`.
+
+### Règle changement de domaine (reminder)
+Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.py`, (2) Supabase Auth Site URL + Redirect URLs, (3) variables d'env Netlify. Ne pas marquer terminé sans avoir vérifié les 3.
+
 ## Changelog
 
 ### 2026-06-11 (config Supabase Auth manquante après renommage Netlify)

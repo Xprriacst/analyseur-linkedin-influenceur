@@ -12,13 +12,17 @@ import {
   Lightbulb,
   Link2,
   Loader2,
+  Lock,
+  LogIn,
+  LogOut,
   PenTool,
   RefreshCw,
   Sparkles,
   TrendingUp,
   Zap,
 } from "lucide-react";
-import AuthGate from "./components/AuthGate";
+import type { Session } from "@supabase/supabase-js";
+import AuthModal, { type AuthMode } from "./components/AuthModal";
 import { authHeaders, supabase } from "./lib/supabase";
 
 const API_URL = "/api";
@@ -117,23 +121,141 @@ function totalCost(usage?: Record<string, any>) {
   return Number(usage?.apify?.estimated_cost_usd || 0) + Number(usage?.anthropic?.estimated_cost_usd || 0);
 }
 
+/* ── Freemium gating helpers ───────────────────────────────────────────── */
+
+const ANON_USED_KEY = "lkd_anon_used";
+const ACTIONS_HEADING = "## ✨ Actions à répliquer";
+
+function anonAnalysisUsed(): boolean {
+  try {
+    return localStorage.getItem(ANON_USED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function markAnonAnalysisUsed() {
+  try {
+    localStorage.setItem(ANON_USED_KEY, "1");
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 2/3 of n, at least 1 (5→3, 4→3, 3→2). */
+function keepTwoThirds(n: number): number {
+  return Math.max(1, Math.round((n * 2) / 3));
+}
+
+/** Markdown up to (but excluding) the "Actions à répliquer" section. */
+function reportBeforeActions(markdown: string): string {
+  const idx = markdown.indexOf(ACTIONS_HEADING);
+  return idx === -1 ? markdown : markdown.slice(0, idx).trimEnd();
+}
+
+const LIST_ITEM_RE = /^(\s*)([-*+]\s+|\d+\.\s+)/;
+
+/**
+ * Truncate each substantial bullet/numbered list (≥4 items) to ~2/3 of its
+ * items and drop a `[[LOCK:n]]` marker — rendered as a clickable blurred chip
+ * by `reportComponents`. Tables and short lists are left untouched.
+ */
+function truncateLists(markdown: string): string {
+  const lines = markdown.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (LIST_ITEM_RE.test(lines[i])) {
+      let j = i;
+      while (j < lines.length && LIST_ITEM_RE.test(lines[j])) j++;
+      const run = lines.slice(i, j);
+      if (run.length >= 4) {
+        const keep = keepTwoThirds(run.length);
+        out.push(...run.slice(0, keep), "", `[[LOCK:${run.length - keep}]]`, "");
+      } else {
+        out.push(...run);
+      }
+      i = j;
+    } else {
+      out.push(lines[i]);
+      i++;
+    }
+  }
+  return out.join("\n");
+}
+
+/** Custom ReactMarkdown renderers: turn `[[LOCK:n]]` paragraphs into a CTA chip. */
+function reportComponents(onUnlock: () => void) {
+  return {
+    p({ children }: { children?: React.ReactNode }) {
+      const text = Array.isArray(children) ? children.join("") : children;
+      const m = typeof text === "string" ? text.match(/^\[\[LOCK:(\d+)\]\]$/) : null;
+      if (m) {
+        const n = Number(m[1]);
+        return (
+          <button type="button" className="lock-chip" onClick={onUnlock}>
+            <Lock size={12} /> +{n} {n > 1 ? "points réservés" : "point réservé"} — débloquer gratuitement
+          </button>
+        );
+      }
+      return <p>{children}</p>;
+    },
+  };
+}
+
+/** Blurred-content card with a centered sign-up CTA overlay. */
+function LockedCard({
+  title,
+  subtitle,
+  ghostLines = 4,
+  onUnlock,
+}: {
+  title: string;
+  subtitle?: string;
+  ghostLines?: number;
+  onUnlock: () => void;
+}) {
+  return (
+    <div className="locked-card">
+      <div className="blurred" aria-hidden>
+        {Array.from({ length: ghostLines }).map((_, i) => (
+          <p key={i} style={{ margin: "0 0 10px" }}>
+            {"▮".repeat(18 - (i % 3) * 4)} {"▯".repeat(10 + (i % 4) * 3)}
+          </p>
+        ))}
+      </div>
+      <div className="lock-overlay">
+        <span className="lock-badge"><Lock size={18} /></span>
+        <h4>{title}</h4>
+        {subtitle ? <p>{subtitle}</p> : null}
+        <button type="button" className="primary-button" onClick={onUnlock}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Sidebar({
   health,
   reports,
   view,
+  isAuthed,
   onNavigate,
   onLoadReport,
+  requireAuth,
 }: {
   health: Health | null;
   reports: Report[];
   view: MainView;
+  isAuthed: boolean;
   onNavigate: (v: MainView) => void;
   onLoadReport: (report: Report) => void;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
 }) {
-  const navItems: { key: MainView; label: string; icon: React.ReactNode }[] = [
+  const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <Zap size={14} /> },
-    { key: "generator", label: "Générateur", icon: <PenTool size={14} /> },
-    { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} /> },
+    { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
+    { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
   ];
 
   return (
@@ -154,23 +276,39 @@ function Sidebar({
       <section className="sidebar-section">
         <p className="eyebrow">Navigation</p>
         <div className="nav-list">
-          {navItems.map((item) => (
-            <button
-              key={item.key}
-              className={`nav-item ${view === item.key ? "active" : ""}`}
-              onClick={() => onNavigate(item.key)}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-            </button>
-          ))}
+          {navItems.map((item) => {
+            const locked = !!item.premium && !isAuthed;
+            return (
+              <button
+                key={item.key}
+                className={`nav-item ${view === item.key ? "active" : ""} ${locked ? "locked" : ""}`}
+                onClick={() =>
+                  locked
+                    ? requireAuth("Crée un compte gratuit pour débloquer le générateur de posts et le dashboard global.")
+                    : onNavigate(item.key)
+                }
+              >
+                {item.icon}
+                <span>{item.label}</span>
+                {locked ? <Lock size={12} className="lock-ico" /> : null}
+              </button>
+            );
+          })}
         </div>
       </section>
 
       <section className="sidebar-section">
         <p className="eyebrow">Analyses récentes</p>
         <div className="report-list">
-          {reports.length ? reports.map((report) => (
+          {!isAuthed ? (
+            <div className="report-card" onClick={() => requireAuth("Crée un compte gratuit pour conserver ton historique d'analyses.")} style={{ cursor: "pointer" }}>
+              <div className="report-icon"><Lock size={13} /></div>
+              <div>
+                <strong>Historique verrouillé</strong>
+                <span>Crée un compte pour le conserver</span>
+              </div>
+            </div>
+          ) : reports.length ? reports.map((report) => (
             <div className="report-card" key={report.path} onClick={() => onLoadReport(report)}>
               <div className="report-icon"><FileText size={13} /></div>
               <div>
@@ -211,7 +349,25 @@ function Sidebar({
   );
 }
 
-function TopHeader({ result, view, onReset }: { result: Analysis | null; view: MainView; onReset: () => void }) {
+function TopHeader({
+  result,
+  view,
+  isAuthed,
+  userEmail,
+  onReset,
+  onSignIn,
+  onSignUp,
+  onSignOut,
+}: {
+  result: Analysis | null;
+  view: MainView;
+  isAuthed: boolean;
+  userEmail?: string;
+  onReset: () => void;
+  onSignIn: () => void;
+  onSignUp: () => void;
+  onSignOut: () => void;
+}) {
   const viewTitles: Record<MainView, string> = {
     analyze: "Décodeur de stratégie LinkedIn",
     generator: "Générateur de posts",
@@ -237,18 +393,37 @@ function TopHeader({ result, view, onReset }: { result: Analysis | null; view: M
       <div className="header-actions">
         {result && view === "analyze" ? (
           <>
-            <a
-              className="secondary-button"
-              href={`data:text/markdown;charset=utf-8,${encodeURIComponent(result.markdown)}`}
-              download={`${result.handle}.md`}
-            >
-              <Download size={13} /> Télécharger .md
-            </a>
+            {isAuthed ? (
+              <a
+                className="secondary-button"
+                href={`data:text/markdown;charset=utf-8,${encodeURIComponent(result.markdown)}`}
+                download={`${result.handle}.md`}
+              >
+                <Download size={13} /> Télécharger .md
+              </a>
+            ) : null}
             <button className="secondary-button" onClick={onReset}>
               <RefreshCw size={13} /> Relancer
             </button>
           </>
         ) : null}
+        <div className="header-auth">
+          {isAuthed ? (
+            <button className="header-user" title={userEmail ?? "Déconnexion"} onClick={onSignOut}>
+              <LogOut size={14} />
+              <span>{userEmail}</span>
+            </button>
+          ) : (
+            <>
+              <button className="secondary-button" onClick={onSignIn}>
+                <LogIn size={13} /> Se connecter
+              </button>
+              <button className="primary-button" onClick={onSignUp}>
+                <Sparkles size={13} /> Créer un compte gratuit
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </header>
   );
@@ -388,7 +563,7 @@ function Bar({ label, value, max }: { label: string; value: number; max: number 
   );
 }
 
-function Patterns({ result }: { result: Analysis }) {
+function Patterns({ result, limit, onUnlock }: { result: Analysis; limit?: number; onUnlock?: () => void }) {
   const patterns = result.patterns || {};
   const stats = result.stats || {};
   const hookEntries = Object.entries(patterns.hook_distribution || {}) as [string, number][];
@@ -396,25 +571,42 @@ function Patterns({ result }: { result: Analysis }) {
   const maxHook = Math.max(1, ...hookEntries.map(([, n]) => n));
   const maxLength = Math.max(1, ...lengthEntries.map(([, n]) => n));
   const heat = Array.from({ length: 84 }, (_, i) => ((i * 7) % 11) / 10 + 0.08);
+
+  const cards = [
+    <div className="card" key="hooks"><h3>Hooks (1ère ligne)</h3>{hookEntries.map(([label, n]) => <Bar key={label} label={label} value={n} max={maxHook} />)}</div>,
+    <div className="card" key="length"><h3>Longueur des posts</h3>{lengthEntries.map(([label, n]) => <Bar key={label} label={label} value={n} max={maxLength} />)}</div>,
+    <div className="card" key="cta">
+      <h3>CTA détectés</h3>
+      <div className="metric">{patterns.cta_count || 0} / {result.posts.length}</div>
+      <p><span className="badge">{patterns.cta_share_pct || 0}% des posts</span></p>
+      <pre className="raw-json">{JSON.stringify(result.cta_stats, null, 2)}</pre>
+    </div>,
+    <div className="card" key="rythme"><h3>Rythme de publication</h3><div className="heatmap">{heat.map((a, i) => <span className="heat-cell" style={{ "--a": a } as any} key={i} />)}</div></div>,
+    <div className="card" key="signatures"><h3>Signatures visuelles</h3>{(patterns.visual_signatures || []).map(([symbol, n]: [string, number]) => <p key={symbol}><span className="badge">{symbol}</span> présent dans {n} posts</p>)}</div>,
+    <div className="card" key="weekday"><h3>Jours de publication</h3>{Object.entries(stats.weekday_distribution || {}).map(([label, n]) => <Bar key={label} label={label} value={Number(n)} max={Math.max(1, ...Object.values(stats.weekday_distribution || {}).map(Number))} />)}</div>,
+  ];
+
+  const gated = limit != null && limit < cards.length;
+  const shown = gated ? cards.slice(0, limit) : cards;
   return (
     <div className="pattern-grid">
-      <div className="card"><h3>Hooks (1ère ligne)</h3>{hookEntries.map(([label, n]) => <Bar key={label} label={label} value={n} max={maxHook} />)}</div>
-      <div className="card"><h3>Longueur des posts</h3>{lengthEntries.map(([label, n]) => <Bar key={label} label={label} value={n} max={maxLength} />)}</div>
-      <div className="card">
-        <h3>CTA détectés</h3>
-        <div className="metric">{patterns.cta_count || 0} / {result.posts.length}</div>
-        <p><span className="badge">{patterns.cta_share_pct || 0}% des posts</span></p>
-        <pre className="raw-json">{JSON.stringify(result.cta_stats, null, 2)}</pre>
-      </div>
-      <div className="card"><h3>Rythme de publication</h3><div className="heatmap">{heat.map((a, i) => <span className="heat-cell" style={{ "--a": a } as any} key={i} />)}</div></div>
-      <div className="card"><h3>Signatures visuelles</h3>{(patterns.visual_signatures || []).map(([symbol, n]: [string, number]) => <p key={symbol}><span className="badge">{symbol}</span> présent dans {n} posts</p>)}</div>
-      <div className="card"><h3>Jours de publication</h3>{Object.entries(stats.weekday_distribution || {}).map(([label, n]) => <Bar key={label} label={label} value={Number(n)} max={Math.max(1, ...Object.values(stats.weekday_distribution || {}).map(Number))} />)}</div>
+      {shown}
+      {gated && onUnlock ? (
+        <LockedCard
+          title={`+${cards.length - shown.length} patterns à débloquer`}
+          subtitle="Crée ton compte gratuit pour voir tous les patterns détectés (rythme, signatures, jours…)."
+          ghostLines={4}
+          onUnlock={onUnlock}
+        />
+      ) : null}
     </div>
   );
 }
 
-function TopPosts({ result }: { result: Analysis }) {
-  const posts = result.stats?.top_posts_by_comments || [];
+function TopPosts({ result, limit, onUnlock }: { result: Analysis; limit?: number; onUnlock?: () => void }) {
+  const allPosts = result.stats?.top_posts_by_comments || [];
+  const gated = limit != null && limit < allPosts.length;
+  const posts = gated ? allPosts.slice(0, limit) : allPosts;
   return (
     <div className="post-list">
       {posts.map((post: any, i: number) => (
@@ -432,26 +624,86 @@ function TopPosts({ result }: { result: Analysis }) {
           </div>
         </div>
       ))}
+      {gated && onUnlock ? (
+        <LockedCard
+          title={`+${allPosts.length - posts.length} top posts à débloquer`}
+          subtitle="Crée ton compte gratuit pour voir tous les meilleurs posts et leurs métriques."
+          ghostLines={3}
+          onUnlock={onUnlock}
+        />
+      ) : null}
     </div>
   );
 }
 
-function Dashboard({ result }: { result: Analysis }) {
+const LOCKED_TABS = new Set(["Tous les posts", "JSON brut"]);
+
+function Dashboard({
+  result,
+  isAuthed,
+  requireAuth,
+}: {
+  result: Analysis;
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
   const [tab, setTab] = useState("Rapport");
+  const unlock = () => requireAuth("Crée un compte gratuit pour débloquer l'analyse complète et conserver ton historique.");
+
+  const actionsCount = result.synthesis?.actions_to_replicate?.length ?? 0;
+  const topPostsCount = result.stats?.top_posts_by_comments?.length ?? 0;
+
   return (
     <>
-      {(result as any).save_error && (
+      {isAuthed && (result as any).save_error && (
         <div className="error">⚠️ Analyse non sauvegardée : {(result as any).save_error}</div>
       )}
       <Kpis result={result} />
       <div className="tabs">
-        {tabs.map((t) => (
-          <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>{t}</button>
-        ))}
+        {tabs.map((t) => {
+          const locked = LOCKED_TABS.has(t) && !isAuthed;
+          return (
+            <button
+              key={t}
+              className={`tab ${tab === t ? "active" : ""} ${locked ? "locked" : ""}`}
+              onClick={() => (locked ? unlock() : setTab(t))}
+            >
+              {t}
+              {locked ? <Lock size={11} className="lock-ico" /> : null}
+            </button>
+          );
+        })}
       </div>
-      {tab === "Rapport" && <div className="markdown card"><ReactMarkdown>{result.markdown}</ReactMarkdown></div>}
-      {tab === "Top posts" && <TopPosts result={result} />}
-      {tab === "Patterns" && <Patterns result={result} />}
+
+      {tab === "Rapport" && (
+        isAuthed ? (
+          <div className="markdown card"><ReactMarkdown>{result.markdown}</ReactMarkdown></div>
+        ) : (
+          <>
+            <div className="markdown card">
+              <ReactMarkdown components={reportComponents(unlock)}>
+                {truncateLists(reportBeforeActions(result.markdown || ""))}
+              </ReactMarkdown>
+            </div>
+            {actionsCount > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <LockedCard
+                  title={`${actionsCount} action${actionsCount > 1 ? "s" : ""} à répliquer`}
+                  subtitle="Le plan d'action concret pour répliquer cette stratégie. Crée ton compte gratuit pour le débloquer."
+                  ghostLines={Math.min(actionsCount, 5)}
+                  onUnlock={unlock}
+                />
+              </div>
+            )}
+          </>
+        )
+      )}
+      {tab === "Top posts" && (
+        <TopPosts result={result} limit={isAuthed ? undefined : keepTwoThirds(topPostsCount)} onUnlock={unlock} />
+      )}
+      {tab === "Patterns" && (
+        <Patterns result={result} limit={isAuthed ? undefined : 4} onUnlock={unlock} />
+      )}
       {tab === "Usage" && <pre className="raw-json">{JSON.stringify(result.usage, null, 2)}</pre>}
       {tab === "Tous les posts" && <pre className="raw-json">{JSON.stringify(result.posts, null, 2)}</pre>}
       {tab === "JSON brut" && <pre className="raw-json">{JSON.stringify(result, null, 2)}</pre>}
@@ -822,7 +1074,21 @@ export default function Home() {
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("analyze");
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authReason, setAuthReason] = useState("");
+  const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const userIdRef = useRef<string | null>(null);
+  // Analyse anonyme affichée mais pas encore sauvegardée : sauvée dès l'inscription.
+  const pendingAnonResultRef = useRef<Analysis | null>(null);
+
+  const isAuthed = !!session;
+
+  function requireAuth(reason?: string, mode: AuthMode = "signup") {
+    setAuthReason(reason || "");
+    setAuthMode(mode);
+    setAuthOpen(true);
+  }
 
   async function loadReports() {
     try {
@@ -832,15 +1098,48 @@ export default function Home() {
     } catch { /* ignore */ }
   }
 
+  async function persistAnonResult(anon: Analysis) {
+    try {
+      await fetch(`${DIRECT_API_URL}/analyses/persist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify(anon),
+      });
+    } catch { /* best-effort : on ne bloque pas l'UX sur une erreur de save */ }
+    loadReports();
+  }
+
   useEffect(() => {
     fetch(`${API_URL}/health`).then((r) => r.json()).then(setHealth).catch(() => null);
-    // Home ne se démonte pas au logout (AuthGate est rendu en dessous) : son
-    // state doit être purgé à chaque changement d'utilisateur, sinon le compte
-    // suivant voit les rapports du précédent.
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      const uid = session?.user?.id ?? null;
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+
+    // Home ne se démonte jamais : son state par-utilisateur doit être purgé à
+    // chaque changement de compte, sinon l'utilisateur suivant voit les données
+    // du précédent. Exception : passage anonyme → connecté avec une analyse à
+    // l'écran, qu'on conserve et qu'on sauvegarde dans le nouveau compte.
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s);
+      const uid = s?.user?.id ?? null;
       if (uid === userIdRef.current) return;
+      const prev = userIdRef.current;
       userIdRef.current = uid;
+
+      if (prev === null && uid && pendingAnonResultRef.current) {
+        const anon = pendingAnonResultRef.current;
+        pendingAnonResultRef.current = null;
+        setAuthOpen(false);
+        setError("");
+        // L'analyse anonyme portait save_error="aucune session" : on le retire
+        // puisqu'on la sauvegarde maintenant dans le compte fraîchement créé.
+        const cleaned = { ...anon } as Record<string, unknown>;
+        delete cleaned.save_error;
+        setResult(cleaned as Analysis);
+        setTimeout(() => persistAnonResult(anon), 0);
+        return;
+      }
+
+      pendingAnonResultRef.current = null;
+      setAuthOpen(false);
       setReports([]);
       setResult(null);
       setLoadedReport(null);
@@ -854,6 +1153,10 @@ export default function Home() {
   async function analyze(payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) {
     setError("");
     if (!payload.url.trim()) { setError("Colle d'abord une URL de profil LinkedIn."); return; }
+    if (!isAuthed && anonAnalysisUsed()) {
+      requireAuth("Tu as déjà utilisé ton analyse gratuite. Crée un compte gratuit pour continuer.");
+      return;
+    }
     setLoading(true);
     try {
       const response = await fetch(`${DIRECT_API_URL}/analyze`, {
@@ -864,7 +1167,12 @@ export default function Home() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Échec de l'analyse");
       setResult(data);
-      loadReports();
+      if (isAuthed) {
+        loadReports();
+      } else {
+        markAnonAnalysisUsed();
+        pendingAnonResultRef.current = data;
+      }
     } catch (err: any) {
       setError(err.message || "Échec de l'analyse");
     } finally {
@@ -873,16 +1181,33 @@ export default function Home() {
   }
 
   return (
-    <AuthGate>
+    <>
       <div className="app-shell">
-        <Sidebar health={health} reports={reports} view={view} onNavigate={(v) => { setView(v); if (v === "analyze") { setResult(null); setLoadedReport(null); setError(""); } }} onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }} />
-        <TopHeader result={result} view={view} onReset={() => { setResult(null); setLoadedReport(null); }} />
+        <Sidebar
+          health={health}
+          reports={reports}
+          view={view}
+          isAuthed={isAuthed}
+          onNavigate={(v) => { setView(v); if (v === "analyze") { setResult(null); setLoadedReport(null); setError(""); } }}
+          onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
+          requireAuth={requireAuth}
+        />
+        <TopHeader
+          result={result}
+          view={view}
+          isAuthed={isAuthed}
+          userEmail={session?.user?.email ?? undefined}
+          onReset={() => { setResult(null); setLoadedReport(null); }}
+          onSignIn={() => requireAuth(undefined, "signin")}
+          onSignUp={() => requireAuth(undefined, "signup")}
+          onSignOut={() => supabase.auth.signOut()}
+        />
         <main className="main">
           {view === "analyze" && (
             loading
               ? <LoadingState />
               : result
-                ? <Dashboard result={result} />
+                ? <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
                 : loadedReport
                   ? <div className="markdown card"><ReactMarkdown>{loadedReport.content}</ReactMarkdown></div>
                   : <Landing onSubmit={analyze} loading={loading} error={error} />
@@ -891,6 +1216,7 @@ export default function Home() {
           {view === "dashboard" && <GlobalDashboard />}
         </main>
       </div>
-    </AuthGate>
+      <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} reason={authReason} defaultMode={authMode} />
+    </>
   );
 }
