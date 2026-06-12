@@ -587,6 +587,15 @@ a { color: inherit; text-decoration: none; }
   color: var(--muted);
 }
 
+/* Termes techniques entre parenthèses (TOFU, bold_claim…) : discrets mais lisibles */
+.markdown table em,
+.markdown li em {
+  font-size: 11px;
+  color: var(--muted);
+  font-style: normal;
+  opacity: 0.8;
+}
+
 .markdown pre, .raw-json {
   overflow: auto;
   padding: 16px;

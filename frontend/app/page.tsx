@@ -118,6 +118,21 @@ function fmt(value: any) {
   return String(value);
 }
 
+const HOOK_LABELS: Record<string, string> = {
+  question: "Question directe",
+  story: "Histoire / anecdote",
+  stat: "Chiffre choc",
+  bold_claim: "Affirmation tranchée",
+  list: "Liste",
+  result: "Résultat chiffré",
+  contrarian: "Contre-pied",
+  other: "Autre",
+};
+
+function hookLabel(key: string) {
+  return HOOK_LABELS[key] || key;
+}
+
 /* ── Freemium gating helpers ───────────────────────────────────────────── */
 
 const ANON_USED_KEY = "lkd_anon_used";
@@ -550,7 +565,7 @@ function Patterns({ result, limit, onUnlock }: { result: Analysis; limit?: numbe
   const heat = Array.from({ length: 84 }, (_, i) => ((i * 7) % 11) / 10 + 0.08);
 
   const cards = [
-    <div className="card" key="hooks"><h3>Hooks (1ère ligne)</h3>{hookEntries.map(([label, n]) => <Bar key={label} label={label} value={n} max={maxHook} />)}</div>,
+    <div className="card" key="hooks"><h3>Accroches (1ère ligne)</h3>{hookEntries.map(([label, n]) => <Bar key={label} label={hookLabel(label)} value={n} max={maxHook} />)}</div>,
     <div className="card" key="length"><h3>Longueur des posts</h3>{lengthEntries.map(([label, n]) => <Bar key={label} label={label} value={n} max={maxLength} />)}</div>,
     <div className="card" key="cta">
       <h3>CTA détectés</h3>

@@ -132,6 +132,10 @@ def synthesize_strategy(stats: dict, classifications: list[dict], posts: list[di
         "- `has_cta: true` signifie que les commentaires sont en partie mécaniques "
         "(CTA 'commente X pour recevoir') : tiens-en compte avant de parler d'audience engagée.\n"
         "- Ne tire aucune conclusion sur les formats au-delà de `format_mix_pct` fourni.\n"
+        "- Écris pour un lecteur non technique : désigne les accroches par leur libellé français "
+        "(« question directe », « histoire/anecdote », « chiffre choc », « affirmation tranchée », "
+        "« liste », « résultat chiffré », « contre-pied »), jamais par les codes (bold_claim, stat…). "
+        "Pareil pour le funnel : « attraction (TOFU) », « éducation (MOFU) », « conversion (BOFU) ».\n"
         "Réponds UNIQUEMENT avec un objet JSON, sans texte avant ni après, sans balise markdown."
     )
     payload = {
