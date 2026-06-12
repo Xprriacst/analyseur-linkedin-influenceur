@@ -11,6 +11,7 @@ APIFY_COSTS = {
     "harvestapi/linkedin-company-posts": {"per_run": 0.0, "per_item": 0.002},
     "harvestapi/linkedin-profile-posts": {"per_run": 0.00005, "per_item": 0.002},
     "harvestapi/linkedin-profile-scraper": {"per_run": 0.00005, "per_item": 0.004},
+    "apimaestro/linkedin-profile-detail": {"per_run": 0.0, "per_item": 0.005},
 }
 
 # Actor inconnu : estimation prudente plutôt que $0.0 trompeur
