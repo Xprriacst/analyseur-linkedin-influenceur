@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote
 
 
 REPORTS_DIR = Path("reports")
@@ -45,13 +46,14 @@ def render_markdown(
     usage = usage or {}
 
     lines: list[str] = []
-    lines.append(f"# Stratégie LinkedIn — `{handle}`")
+    lines.append(f"# Stratégie LinkedIn — `{unquote(handle)}`")
     lines.append("")
     lines.append(f"_Profil_ : {profile_url}  ")
     lines.append(f"_Analyse générée le_ : {datetime.now().strftime('%Y-%m-%d %H:%M')}  ")
     excluded = stats.get("excluded_recent_count", 0)
     suffix = f" (— {excluded} post(s) <24h exclus)" if excluded else ""
-    lines.append(f"_Posts analysés_ : **{stats['count']}** sur {stats['span_days']} jours{suffix}")
+    span = f"sur {stats['span_days']} jours" if stats.get("span_days") else "(dates indisponibles)"
+    lines.append(f"_Posts analysés_ : **{stats['count']}** {span}{suffix}")
     lines.append("")
 
     # ========== BLOC 1 : Profil en chiffres ==========
@@ -81,6 +83,10 @@ def render_markdown(
                 f"- **Taux d'engagement médian** : {eng['engagement_rate_pct']}% "
                 f"(commentaires : {eng['comments_rate_pct']}%)"
             )
+        if eng.get("organic_rate_pct") is not None:
+            lines.append(
+                f"- **Taux organique médian** (likes + reposts, hors commentaires CTA) : {eng['organic_rate_pct']}%"
+            )
         lines.append("")
 
     lines.append("## Positionnement")
@@ -89,6 +95,39 @@ def render_markdown(
     lines.append("")
     lines.append(f"**Audience** : {synthesis['audience']}")
     lines.append("")
+
+    # ========== Fréquence & timing (uniquement si les dates sont exploitables) ==========
+    weekday_dist = stats.get("weekday_distribution") or {}
+    if weekday_dist:
+        lines.append("## Fréquence & timing")
+        lines.append("")
+        if stats.get("first_post_date") and stats.get("last_post_date"):
+            lines.append(
+                f"_Période analysée_ : {stats['first_post_date'][:10]} → {stats['last_post_date'][:10]} "
+                f"({stats.get('dated_count', 0)} posts datés sur {stats['count']})"
+            )
+            lines.append("")
+        weekdays_order = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+        max_day = max(weekday_dist.values())
+        lines.append("**Jours de publication**")
+        lines.append("")
+        lines.append("| Jour | Posts | |")
+        lines.append("|---|---|---|")
+        for day in weekdays_order:
+            n = weekday_dist.get(day, 0)
+            lines.append(f"| {day} | {n} | {_bar(n, max_day)} |")
+        lines.append("")
+        hour_dist = stats.get("hour_distribution") or {}
+        if hour_dist:
+            max_hour = max(hour_dist.values())
+            lines.append("**Heures de publication** (heure de Paris)")
+            lines.append("")
+            lines.append("| Heure | Posts | |")
+            lines.append("|---|---|---|")
+            for hour in sorted(hour_dist, key=int):
+                n = hour_dist[hour]
+                lines.append(f"| {int(hour):02d}h | {n} | {_bar(n, max_hour)} |")
+            lines.append("")
 
     lines.append("## Mix de formats")
     lines.append("")
@@ -107,19 +146,36 @@ def render_markdown(
     lines.append("")
     lines.append("**BOFU** (*Bottom of Funnel*) : contenu de conversion — preuves, offres, CTA commerciaux, témoignages, posts orientés vente ou prise de rendez-vous.")
     lines.append("")
-    lines.append("| Stage | % | Nb |")
-    lines.append("|---|---|---|")
-    for stage in ["TOFU", "MOFU", "BOFU"]:
-        n = stage_dist.get(stage, 0)
-        pct = round((n / total_class) * 100, 1)
-        lines.append(f"| {stage} | {pct}% | {n} |")
-    lines.append("")
+    if classifications:
+        stage_eng = {row["stage"]: row for row in stats.get("stage_engagement") or []}
+        lines.append("| Stage | % | Nb | Engagement médian |")
+        lines.append("|---|---|---|---|")
+        for stage in ["TOFU", "MOFU", "BOFU"]:
+            n = stage_dist.get(stage, 0)
+            pct = round((n / total_class) * 100, 1)
+            med = stage_eng.get(stage, {}).get("median_engagement")
+            lines.append(f"| {stage} | {pct}% | {n} | {med if med is not None else '–'} |")
+        lines.append("")
 
-    lines.append("**Types de hooks**")
-    lines.append("")
-    for hook, n in sorted(hook_dist.items(), key=lambda x: -x[1]):
-        lines.append(f"- `{hook}` : {n}")
-    lines.append("")
+        lines.append("**Types de hooks (classification LLM)**")
+        lines.append("")
+        hook_eng = {row["hook_type"]: row for row in stats.get("hook_engagement") or []}
+        if hook_eng:
+            lines.append("| Hook | Nb | Engagement médian | Max |")
+            lines.append("|---|---|---|---|")
+            for hook, n in sorted(hook_dist.items(), key=lambda x: -x[1]):
+                row = hook_eng.get(hook, {})
+                lines.append(
+                    f"| `{hook}` | {n} | {row.get('median_engagement', '–')} | {row.get('max_engagement', '–')} |"
+                )
+            lines.append("")
+        else:
+            for hook, n in sorted(hook_dist.items(), key=lambda x: -x[1]):
+                lines.append(f"- `{hook}` : {n}")
+            lines.append("")
+    else:
+        lines.append("_Classification LLM désactivée._")
+        lines.append("")
 
     lines.append("## Engagement")
     lines.append("")
@@ -128,20 +184,32 @@ def render_markdown(
     lines.append(f"- **Comments médian / moyen** : {eng['median_comments']} / {eng['mean_comments']}")
     lines.append(f"- **Reposts médian / moyen** : {eng.get('median_reposts', '–')} / {eng['mean_reposts']}")
     lines.append(f"- **Engagement total médian** : {eng.get('median_engagement', '–')}")
+    if eng.get("median_organic") is not None:
+        lines.append(f"- **Engagement organique médian** (likes + reposts) : {eng['median_organic']}")
     lines.append(f"- **Longueur médiane** : {stats['length']['median_words']} mots")
     lines.append("")
 
-    # ========== BLOC 2 : Top 5 posts par commentaires ==========
-    top5 = stats.get("top_posts_by_comments", [])
+    # ========== BLOC 2 : Top 5 posts par engagement ==========
+    top5 = stats.get("top_posts") or stats.get("top_posts_by_comments", [])
     if top5:
-        lines.append("## Top 5 posts (par commentaires)")
+        has_cta_by_url = {
+            p.get("url"): p.get("has_cta", False)
+            for p in (patterns.get("posts_enriched") or [])
+            if p.get("url")
+        }
+        lines.append("## Top 5 posts (par engagement total)")
         lines.append("")
-        lines.append("| # | Format | Sujet (extrait) | Likes | Comments | Shares |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append("| # | Format | Sujet (extrait) | Likes | Comments | Shares | Eng. | CTA |")
+        lines.append("|---|---|---|---|---|---|---|---|")
         for i, p in enumerate(top5, 1):
             txt = p["text"].replace("\n", " ").replace("|", "/")
             snippet = (txt[:90] + "…") if len(txt) > 90 else txt
-            lines.append(f"| {i} | {p['format']} | {snippet} | {p['likes']} | {p['comments']} | {p['reposts']} |")
+            cta = "✅" if has_cta_by_url.get(p.get("url")) else "—"
+            lines.append(
+                f"| {i} | {p['format']} | {snippet} | {p['likes']} | {p['comments']} | {p['reposts']} | {p['engagement']} | {cta} |"
+            )
+        lines.append("")
+        lines.append("_CTA ✅ = post avec appel à commenter (« commente X pour recevoir ») : les commentaires y sont en partie mécaniques._")
         lines.append("")
         for i, p in enumerate(top5, 1):
             if p.get("url"):
@@ -155,7 +223,7 @@ def render_markdown(
 
         hook_d = patterns.get("hook_distribution", {})
         if hook_d:
-            lines.append("**Types de hooks (1ère ligne)**")
+            lines.append("**Types de hooks (heuristique 1ère ligne — peut différer de la classification LLM ci-dessus)**")
             for h, n in sorted(hook_d.items(), key=lambda x: -x[1]):
                 lines.append(f"- `{h}` : {n}")
             lines.append("")

@@ -26,6 +26,18 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 
 ## Changelog
 
+### 2026-06-12 (fiabilité des analyses : dates, formats, corpus, croisements)
+- **Bug dates** : `_parse_date` ne gérait pas les timestamps epoch ms → en prod (schéma harvestapi, `postedAt.timestamp` int matché en premier) toutes les dates étaient perdues ("25 posts sur 0 jours", cadence/timing vides). Fix : parse epoch s/ms (int et str), dates ISO prioritaires, fallback URN (`activity_id >> 22` = epoch ms), garde-fou années 2005..now+1 (élimine le "1781-07-12").
+- **Bug formats** : `_detect_format` ignorait `media.type` (apimaestro) et `postImages`/`article`/`repost` (harvestapi) → tout sortait "100% text" alors qu'Ugo Sartini a 21 images + 3 vidéos sur 25 posts. Les recos LLM "lance des carrousels" étaient un artefact.
+- **Bug corpus (cas Lorenzo)** : `compute_stats` réduisait le corpus aux seuls posts datés dès qu'une date parsait → stats d'engagement sur 1 post pendant que les patterns tournaient sur 50. Fix : l'engagement porte toujours sur tous les posts (moins les <24h datés) ; seules les métriques temporelles utilisent le sous-ensemble daté ; cadence seulement si ≥5 posts datés.
+- **Likes sous-comptés ~10%** : `stats.total_reactions` prioritaire sur `stats.like` (qui excluait love/support/celebrate/insight).
+- **Engagement organique** : nouveau `median_organic` (likes+reposts) + `organic_rate_pct` — les commentaires sont gonflés par les CTA "commente X pour recevoir" (Ugo : 3.4% brut vs 0.77% organique). Colonne CTA ✅ dans le top 5.
+- **Croisements** : `engagement_by_classification()` → engagement médian par stage TOFU/MOFU/BOFU et par hook_type (colonnes dans les tables du rapport + payload LLM `stage_engagement`/`hook_engagement`/`cta_effect`).
+- **Grounding LLM** : la synthèse reçoit url/likes/comments/has_cta par post + règles strictes (chiffres exacts uniquement, pas de conclusion format hors `format_mix_pct`).
+- **Rapport** : section "Fréquence & timing" réaffichée uniquement si dates dispo (heures de Paris), top 5 par engagement total, labels distincts pour les 2 classifications de hooks, handle URL-décodé, "(dates indisponibles)" au lieu de "sur 0 jours".
+- **Coûts Apify** : pricing harvestapi ajouté ($0.002/post, $0.004/profil) + fallback $0.002/item pour actor inconnu (fini le "~$0.0").
+- **Reste à faire (proposé)** : détection de near-duplicates/recyclage de templates, scraper de commentaires Apify sur les top posts (qualité d'audience + leads).
+
 ### 2026-06-11 (config Supabase Auth manquante après renommage Netlify)
 - **Bug** : après le renommage Netlify en `lkd-outreach.netlify.app`, la **Site URL** Supabase pointait encore vers `localhost` → les redirections OAuth et confirmations email échouaient → les analyses ne s'enregistraient pas en prod.
 - **Fix** : dans le dashboard Supabase → Authentication → URL Configuration :

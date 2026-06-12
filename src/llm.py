@@ -112,6 +112,10 @@ def synthesize_strategy(stats: dict, classifications: list[dict], posts: list[di
             "hook_type": c["hook_type"],
             "format": posts[c["index"]]["format"],
             "engagement": posts[c["index"]]["engagement"],
+            "likes": posts[c["index"]]["likes"],
+            "comments": posts[c["index"]]["comments"],
+            "has_cta": posts[c["index"]].get("has_cta", False),
+            "url": posts[c["index"]].get("url", ""),
             "first_lines": "\n".join(posts[c["index"]]["text"].splitlines()[:3]),
         }
         for c in classifications
@@ -121,8 +125,14 @@ def synthesize_strategy(stats: dict, classifications: list[dict], posts: list[di
     system = (
         "Tu es un stratège contenu LinkedIn. À partir des stats et des posts classés, "
         "extrais une synthèse stratégique actionnable. Sois concret, factuel, cite des "
-        "extraits réels quand utile, évite les généralités. Réponds UNIQUEMENT avec un "
-        "objet JSON, sans texte avant ni après, sans balise markdown."
+        "extraits réels quand utile, évite les généralités. "
+        "Règles de fiabilité impératives :\n"
+        "- Tout chiffre d'engagement cité doit correspondre EXACTEMENT au champ `engagement` "
+        "d'un post fourni ou à une valeur des stats agrégées. N'invente ni n'arrondis aucun chiffre.\n"
+        "- `has_cta: true` signifie que les commentaires sont en partie mécaniques "
+        "(CTA 'commente X pour recevoir') : tiens-en compte avant de parler d'audience engagée.\n"
+        "- Ne tire aucune conclusion sur les formats au-delà de `format_mix_pct` fourni.\n"
+        "Réponds UNIQUEMENT avec un objet JSON, sans texte avant ni après, sans balise markdown."
     )
     payload = {
         "stats": {
@@ -132,6 +142,9 @@ def synthesize_strategy(stats: dict, classifications: list[dict], posts: list[di
             "format_mix_pct": stats.get("format_mix_pct"),
             "engagement": stats.get("engagement"),
             "length": stats.get("length"),
+            "stage_engagement": stats.get("stage_engagement"),
+            "hook_engagement": stats.get("hook_engagement"),
+            "cta_effect": stats.get("cta_effect"),
         },
         "classifications": sample_posts,
     }
