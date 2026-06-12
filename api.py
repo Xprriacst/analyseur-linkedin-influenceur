@@ -31,6 +31,7 @@ app.add_middleware(
         "http://127.0.0.1:3002",
         "https://courageous-strudel-2d8ba3.netlify.app",
         "https://lkd-outreach.netlify.app",
+        "https://lkd-outreach-dev.netlify.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
