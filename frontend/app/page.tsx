@@ -225,12 +225,13 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
   );
 }
 
-function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth }: {
+function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, onAnonTrial, requireAuth }: {
   jobs: Job[];
   loading: boolean;
   isAuthed: boolean;
   onCreated: (job: Job) => void;
   onOpenReport: (markdown: string, name: string) => void;
+  onAnonTrial: (payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 }) {
   const [urls, setUrls] = useState("");
@@ -245,7 +246,12 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
 
   async function submit() {
     if (urlList.length === 0) { setError("Colle au moins une URL de profil LinkedIn."); return; }
-    if (!isAuthed) { requireAuth("Crée un compte gratuit pour lancer tes analyses et conserver ton historique."); return; }
+    // Visiteur non connecté : essai gratuit = 1 profil en analyse synchrone
+    // (le flux freemium gère le « déjà utilisé » et l'upsell sur le rapport).
+    if (!isAuthed) {
+      onAnonTrial({ url: urlList[0], limit, useCache, runLlm });
+      return;
+    }
     setSubmitting(true); setError("");
     try {
       const res = await fetch(`${DIRECT_API_URL}/jobs`, {
@@ -305,13 +311,15 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
         </div>
         <div className="batch-submit-row">
           <span className="batch-count">
-            {urlList.length === 0
-              ? "Un profil par ligne — ⌘/Ctrl + Entrée pour lancer"
-              : `${urlList.length} profil${urlList.length > 1 ? "s" : ""} dans la série`}
+            {!isAuthed
+              ? (urlList.length > 1 ? "Essai gratuit : seul le 1er profil sera analysé. Crée un compte pour lancer une série." : "Essai gratuit — analyse 1 profil sans compte")
+              : urlList.length === 0
+                ? "Un profil par ligne — ⌘/Ctrl + Entrée pour lancer"
+                : `${urlList.length} profil${urlList.length > 1 ? "s" : ""} dans la série`}
           </span>
           <button className="primary-button" disabled={submitting || urlList.length === 0} onClick={submit}>
             {submitting ? <Loader2 size={14} className="spinning" /> : <Zap size={14} />}
-            Lancer la série
+            {isAuthed ? "Lancer la série" : "Analyser gratuitement"}
           </button>
         </div>
         <div className="controls">
@@ -332,8 +340,13 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
 
       {error ? <div className="error">{error}</div> : null}
 
-      {/* Séries existantes */}
-      {loading ? (
+      {/* Séries existantes (connectés uniquement — l'anonyme n'a qu'un essai) */}
+      {!isAuthed ? (
+        <div className="report-card" style={{ maxWidth: 720, cursor: "pointer" }} onClick={() => requireAuth("Crée un compte gratuit pour lancer des séries de plusieurs profils et conserver ton historique.")}>
+          <div className="report-icon"><Lock size={13} /></div>
+          <div><strong>Séries multi-profils & historique</strong><span>Crée un compte gratuit pour analyser plusieurs profils d'un coup et garder tes rapports.</span></div>
+        </div>
+      ) : loading ? (
         <p style={{ color: "var(--muted)" }}>Chargement des séries…</p>
       ) : jobs.length === 0 ? (
         <div className="report-card" style={{ maxWidth: 720 }}>
@@ -1481,16 +1494,20 @@ export default function Home() {
         />
         <main className="main">
           {view === "analyze" && (
-            loadedReport
-              ? (
-                <>
-                  <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => setLoadedReport(null)}>
-                    ← Retour aux analyses
-                  </button>
-                  <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
-                </>
-              )
-              : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} requireAuth={requireAuth} />
+            loading
+              ? <LoadingState />
+              : result
+                ? <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
+                : loadedReport
+                  ? (
+                    <>
+                      <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => setLoadedReport(null)}>
+                        ← Retour aux analyses
+                      </button>
+                      <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
+                    </>
+                  )
+                  : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} onAnonTrial={analyze} requireAuth={requireAuth} />
           )}
           {view === "generator" && <Generator />}
           {view === "dashboard" && <GlobalDashboard />}
