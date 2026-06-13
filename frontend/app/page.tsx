@@ -12,6 +12,7 @@ import {
   FileText,
   Lightbulb,
   Link2,
+  ListChecks,
   Loader2,
   Lock,
   LogIn,
@@ -133,6 +134,253 @@ function hookLabel(key: string) {
   return HOOK_LABELS[key] || key;
 }
 
+/* ── Backlog serveur (job queue) ───────────────────────────────────────── */
+
+type JobStatus = "queued" | "running" | "done" | "error";
+type ItemStatus = "pending" | "running" | "done" | "error";
+
+type JobItem = {
+  id: string;
+  position: number;
+  url: string;
+  handle: string | null;
+  name: string | null;
+  status: ItemStatus;
+  error: string | null;
+  analysis_id: string | null;
+  follower_count: number | null;
+  posts_count: number | null;
+};
+
+type Job = {
+  id: string;
+  status: JobStatus;
+  total: number;
+  completed: number;
+  failed: number;
+  limit_posts: number | null;
+  run_llm: boolean;
+  use_cache: boolean;
+  created_at: string;
+  updated_at: string;
+  items: JobItem[];
+};
+
+const ITEM_STATUS_LABELS: Record<ItemStatus, string> = {
+  pending: "En attente",
+  running: "Analyse en cours…",
+  done: "Terminé",
+  error: "Échec",
+};
+
+/** Découpe un bloc de texte en URLs LinkedIn distinctes (une par ligne, dédupliquées). */
+function parseUrls(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of raw.split(/[\n,]/)) {
+    const url = line.trim();
+    if (!url || !/linkedin\.com\/in\//i.test(url)) continue;
+    const key = url.replace(/\/+$/, "").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(url);
+  }
+  return out;
+}
+
+function jobIsActive(j: Job): boolean {
+  return j.status === "queued" || j.status === "running";
+}
+
+function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean }) {
+  const clickable = item.status === "done" && !!item.analysis_id;
+  return (
+    <div
+      className={`backlog-row ${item.status} ${clickable ? "clickable" : ""}`}
+      onClick={() => clickable && onOpen(item)}
+      role={clickable ? "button" : undefined}
+    >
+      <span className="backlog-rank">{item.position + 1}</span>
+      <span className="backlog-status-ico">
+        {opening || item.status === "running" ? <Loader2 size={16} className="spinning" />
+          : item.status === "done" ? <CheckCircle2 size={16} color="#10b981" />
+          : item.status === "error" ? <span style={{ color: "#ef4444", fontWeight: 700 }}>✕</span>
+          : <Clock3 size={16} color="var(--muted)" />}
+      </span>
+      <div className="backlog-main">
+        <strong>{item.name || item.handle || item.url}</strong>
+        <span className="backlog-url">{item.url}</span>
+        {item.status === "error" && item.error ? <span className="backlog-error">{item.error}</span> : null}
+      </div>
+      {item.status === "done" ? (
+        <div className="backlog-meta">
+          {item.posts_count != null ? <span className="badge">{fmt(item.posts_count)} posts</span> : null}
+          {item.follower_count != null ? <span className="badge">👍 {fmt(item.follower_count)}</span> : null}
+        </div>
+      ) : null}
+      <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : ""}`}>
+        {ITEM_STATUS_LABELS[item.status]}
+      </span>
+    </div>
+  );
+}
+
+function JobsView({ onOpenReport }: { onOpenReport: (markdown: string, name: string) => void }) {
+  const [urls, setUrls] = useState("");
+  const [limit, setLimit] = useState(25);
+  const [useCache, setUseCache] = useState(true);
+  const [runLlm, setRunLlm] = useState(true);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [openingId, setOpeningId] = useState<string | null>(null);
+
+  const urlList = parseUrls(urls);
+  const anyActive = jobs.some(jobIsActive);
+
+  async function loadJobs() {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data)) setJobs(data);
+    } catch { /* ignore */ } finally { setLoading(false); }
+  }
+
+  useEffect(() => { loadJobs(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  // Polling tant qu'une série est en attente/en cours côté serveur.
+  useEffect(() => {
+    if (!anyActive) return;
+    const t = setInterval(loadJobs, 3000);
+    return () => clearInterval(t);
+  }, [anyActive]);
+
+  async function submit() {
+    if (urlList.length === 0) { setError("Colle au moins une URL de profil LinkedIn."); return; }
+    setSubmitting(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ profile_urls: urlList, limit, use_cache: useCache, run_llm: runLlm }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Échec de la création de la série");
+      setUrls("");
+      setJobs((prev) => [data as Job, ...prev]);
+    } catch (err: any) {
+      setError(err.message || "Échec de la création de la série");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function openItem(item: JobItem) {
+    if (!item.analysis_id) return;
+    setOpeningId(item.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/analyses/${item.analysis_id}`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && data?.report_markdown) {
+        onOpenReport(data.report_markdown, item.name || item.handle || "Rapport");
+      } else {
+        setError(data?.detail || "Rapport introuvable.");
+      }
+    } catch (err: any) {
+      setError(err.message || "Impossible d'ouvrir le rapport");
+    } finally {
+      setOpeningId(null);
+    }
+  }
+
+  return (
+    <div>
+      <div className="section-header" style={{ marginBottom: 16 }}>
+        <div>
+          <h2 className="section-title"><Activity size={20} /> Backlog d'analyses</h2>
+          <p className="section-desc">Colle plusieurs profils (un par ligne). Chaque série tourne côté serveur : tu peux fermer l'onglet, la progression est conservée.</p>
+        </div>
+      </div>
+
+      {/* Soumission d'une nouvelle série */}
+      <div className="analyzer-card" style={{ marginBottom: 20 }}>
+        <div className="url-input url-input--multi">
+          <Link2 size={16} color="var(--primary)" style={{ marginTop: 10, flexShrink: 0 }} />
+          <textarea
+            value={urls}
+            onChange={(e) => setUrls(e.target.value)}
+            placeholder={"https://www.linkedin.com/in/profil-1/\nhttps://www.linkedin.com/in/profil-2/\nhttps://www.linkedin.com/in/profil-3/"}
+            rows={Math.min(8, Math.max(3, urlList.length + 1))}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }}
+          />
+        </div>
+        <div className="batch-submit-row">
+          <span className="batch-count">
+            {urlList.length === 0
+              ? "Un profil par ligne — ⌘/Ctrl + Entrée pour lancer"
+              : `${urlList.length} profil${urlList.length > 1 ? "s" : ""} dans la série`}
+          </span>
+          <button className="primary-button" disabled={submitting || urlList.length === 0} onClick={submit}>
+            {submitting ? <Loader2 size={14} className="spinning" /> : <Zap size={14} />}
+            Lancer la série
+          </button>
+        </div>
+        <div className="controls">
+          <label className="control">
+            <span>Posts à analyser : <b>{limit}</b></span>
+            <input type="range" min="10" max="50" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
+          </label>
+          <label className="control" onClick={() => setUseCache(!useCache)} style={{ cursor: "pointer" }}>
+            <span>Utiliser le cache</span>
+            <button className={`switch ${useCache ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setUseCache(!useCache); }} />
+          </label>
+          <label className="control" onClick={() => setRunLlm(!runLlm)} style={{ cursor: "pointer" }}>
+            <span>Synthèse Claude</span>
+            <button className={`switch ${runLlm ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setRunLlm(!runLlm); }} />
+          </label>
+        </div>
+      </div>
+
+      {error ? <div className="error">{error}</div> : null}
+
+      {/* Séries existantes */}
+      {loading ? (
+        <p style={{ color: "var(--muted)" }}>Chargement des séries…</p>
+      ) : jobs.length === 0 ? (
+        <div className="report-card" style={{ maxWidth: 720 }}>
+          <div className="report-icon"><Activity size={13} /></div>
+          <div><strong>Aucune série pour l'instant</strong><span>Colle des profils ci-dessus pour lancer ton premier backlog.</span></div>
+        </div>
+      ) : (
+        <div className="jobs-list">
+          {jobs.map((job) => {
+            const active = jobIsActive(job);
+            const date = new Date(job.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+            return (
+              <div className="job-block" key={job.id}>
+                <div className="job-head">
+                  <div className="job-head-main">
+                    {active ? <Loader2 size={15} className="spinning" /> : job.failed && !job.completed ? <span style={{ color: "#ef4444" }}>✕</span> : <CheckCircle2 size={15} color="#10b981" />}
+                    <strong>Série du {date}</strong>
+                    <span className="badge">{job.completed}/{job.total} terminé{job.completed > 1 ? "s" : ""}</span>
+                    {job.failed > 0 ? <span className="status-pill no">{job.failed} échec{job.failed > 1 ? "s" : ""}</span> : null}
+                  </div>
+                </div>
+                <div className="backlog-list">
+                  {job.items.map((item) => (
+                    <ItemRow key={item.id} item={item} onOpen={openItem} opening={openingId === item.id} />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Freemium gating helpers ───────────────────────────────────────────── */
 
 const ANON_USED_KEY = "lkd_anon_used";
@@ -240,6 +488,7 @@ function Sidebar({
 
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <Zap size={14} /> },
+    { key: "backlog", label: "Backlog", icon: <ListChecks size={14} />, premium: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
   ];
@@ -372,6 +621,7 @@ function TopHeader({
 }) {
   const viewTitles: Record<MainView, string> = {
     analyze: "Décodeur de stratégie LinkedIn",
+    backlog: "Backlog d'analyses",
     generator: "Générateur de posts",
     dashboard: "Dashboard global",
   };
@@ -431,10 +681,11 @@ function TopHeader({
   );
 }
 
-function Landing({ onSubmit, loading, error }: {
+function Landing({ onSubmit, loading, error, onBatch }: {
   onSubmit: (payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) => void;
   loading: boolean;
   error: string;
+  onBatch: () => void;
 }) {
   const [url, setUrl] = useState("");
   const [limit, setLimit] = useState(25);
@@ -446,7 +697,7 @@ function Landing({ onSubmit, loading, error }: {
       <div className="hero-content">
         <p className="eyebrow">Décodeur de stratégie LinkedIn</p>
         <h1>Décrypte n'importe quelle <span className="gradient-text">stratégie LinkedIn</span> en 60 secondes</h1>
-        <p>Colle l'URL d'un profil. On scrape ses posts récents, on extrait hooks, CTAs, mix funnel, et on te dit quoi répliquer.</p>
+        <p>Colle l'URL d'un profil. On scrape ses posts récents, on extrait hooks, CTAs, mix funnel, et on te dit quoi répliquer. <button type="button" className="link-button" onClick={onBatch}>Plusieurs profils ? → Backlog</button></p>
 
         <div className="analyzer-card">
           <div className="url-input">
@@ -1054,7 +1305,7 @@ function GlobalDashboard() {
   );
 }
 
-const mainViews = ["analyze", "generator", "dashboard"] as const;
+const mainViews = ["analyze", "backlog", "generator", "dashboard"] as const;
 type MainView = typeof mainViews[number];
 
 export default function Home() {
@@ -1141,6 +1392,13 @@ export default function Home() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  /** Ouvre un rapport (depuis le backlog) dans la vue markdown de l'onglet Analyser. */
+  function openReport(markdown: string, name: string) {
+    setLoadedReport({ name, path: name, updated_at: Date.now() / 1000, content: markdown });
+    setResult(null);
+    setView("analyze");
+  }
+
   async function analyze(payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) {
     setError("");
     if (!payload.url.trim()) { setError("Colle d'abord une URL de profil LinkedIn."); return; }
@@ -1201,8 +1459,9 @@ export default function Home() {
                 ? <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
                 : loadedReport
                   ? <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
-                  : <Landing onSubmit={analyze} loading={loading} error={error} />
+                  : <Landing onSubmit={analyze} loading={loading} error={error} onBatch={() => isAuthed ? setView("backlog") : requireAuth("Crée un compte gratuit pour lancer un backlog de plusieurs profils.")} />
           )}
+          {view === "backlog" && <JobsView onOpenReport={openReport} />}
           {view === "generator" && <Generator />}
           {view === "dashboard" && <GlobalDashboard />}
         </main>
