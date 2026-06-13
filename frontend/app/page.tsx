@@ -328,7 +328,10 @@ function Sidebar({
   reports,
   view,
   isAuthed,
+  backlog,
+  backlogActive,
   onNavigate,
+  onShowBacklog,
   onLoadReport,
   requireAuth,
 }: {
@@ -336,12 +339,17 @@ function Sidebar({
   reports: Report[];
   view: MainView;
   isAuthed: boolean;
+  backlog: BacklogItem[];
+  backlogActive: boolean;
   onNavigate: (v: MainView) => void;
+  onShowBacklog: () => void;
   onLoadReport: (report: Report) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 
 }) {
   const [configOpen, setConfigOpen] = useState(false);
+  const backlogDone = backlog.filter((b) => b.status === "done").length;
+  const backlogRunning = backlog.some((b) => b.status === "running" || b.status === "pending");
 
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <Zap size={14} /> },
@@ -362,6 +370,18 @@ function Sidebar({
       <button className="primary-button" style={{ width: "100%", marginBottom: 12 }} onClick={() => onNavigate("analyze")}>
         <Sparkles size={14} /> Nouvelle analyse
       </button>
+
+      {backlog.length > 0 && (
+        <button
+          className={`nav-item backlog-nav ${backlogActive ? "active" : ""}`}
+          style={{ width: "100%", marginBottom: 12 }}
+          onClick={onShowBacklog}
+        >
+          {backlogRunning ? <Loader2 size={14} className="spinning" /> : <Activity size={14} />}
+          <span>Série en cours</span>
+          <span className="backlog-nav-count">{backlogDone}/{backlog.length}</span>
+        </button>
+      )}
 
       {/* Sidebar navigation */}
       <section className="sidebar-section">
@@ -1160,6 +1180,7 @@ export default function Home() {
   const [result, setResult] = useState<Analysis | null>(null);
   const [backlog, setBacklog] = useState<BacklogItem[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
+  const [analyzeScreen, setAnalyzeScreen] = useState<"form" | "backlog">("form");
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("analyze");
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
@@ -1232,6 +1253,7 @@ export default function Home() {
       setReports([]);
       setResult(null);
       setBacklog([]);
+      setAnalyzeScreen("form");
       setLoadedReport(null);
       setError("");
       setView("analyze");
@@ -1258,7 +1280,24 @@ export default function Home() {
     setBacklog([]);
     setResult(null);
     setLoadedReport(null);
+    setAnalyzeScreen("form");
     setError("");
+  }
+
+  /** Affiche le formulaire d'analyse sans détruire un backlog en cours. */
+  function showAnalyzeForm() {
+    setView("analyze");
+    setResult(null);
+    setLoadedReport(null);
+    setAnalyzeScreen("form");
+  }
+
+  /** Revient à la liste du backlog (depuis un rapport ou la sidebar). */
+  function showBacklog() {
+    setView("analyze");
+    setResult(null);
+    setLoadedReport(null);
+    setAnalyzeScreen("backlog");
   }
 
   async function analyze(payload: { urls: string[]; limit: number; useCache: boolean; runLlm: boolean }) {
@@ -1283,6 +1322,7 @@ export default function Home() {
     setResult(null);
     setLoadedReport(null);
     setBacklog(items);
+    setAnalyzeScreen(urls.length > 1 ? "backlog" : "form");
     setBatchRunning(true);
 
     const mark = (idx: number, patch: Partial<BacklogItem>) =>
@@ -1318,8 +1358,11 @@ export default function Home() {
           reports={reports}
           view={view}
           isAuthed={isAuthed}
-          onNavigate={(v) => { setView(v); if (v === "analyze") resetBacklog(); }}
-          onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); setBacklog([]); }}
+          backlog={backlog}
+          backlogActive={view === "analyze" && analyzeScreen === "backlog" && !result && !loadedReport}
+          onNavigate={(v) => { if (v === "analyze") showAnalyzeForm(); else setView(v); }}
+          onShowBacklog={showBacklog}
+          onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
           requireAuth={requireAuth}
         />
         <TopHeader
@@ -1327,7 +1370,7 @@ export default function Home() {
           view={view}
           isAuthed={isAuthed}
           userEmail={session?.user?.email ?? undefined}
-          onReset={() => { if (backlog.length > 1) { setResult(null); } else { resetBacklog(); } }}
+          onReset={() => { if (backlog.length > 1) { showBacklog(); } else { resetBacklog(); } }}
           onSignIn={() => requireAuth(undefined, "signin")}
           onSignUp={() => requireAuth(undefined, "signup")}
           onSignOut={() => supabase.auth.signOut()}
@@ -1338,17 +1381,17 @@ export default function Home() {
               ? (
                 <>
                   {backlog.length > 1 && (
-                    <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => setResult(null)}>
-                      ← Retour au backlog
+                    <button className="secondary-button" style={{ marginBottom: 12 }} onClick={showBacklog}>
+                      ← Retour au backlog ({backlog.filter((b) => b.status === "done").length}/{backlog.length})
                     </button>
                   )}
                   <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
                 </>
               )
-              : backlog.length > 0
-                ? <BacklogView items={backlog} running={batchRunning} onOpen={(it) => it.result && setResult(it.result)} onReset={resetBacklog} />
-                : loadedReport
-                  ? <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
+              : loadedReport
+                ? <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
+                : analyzeScreen === "backlog" && backlog.length > 0
+                  ? <BacklogView items={backlog} running={batchRunning} onOpen={(it) => it.result && setResult(it.result)} onReset={resetBacklog} />
                   : <Landing onSubmit={analyze} loading={batchRunning} error={error} />
           )}
           {view === "generator" && <Generator />}
