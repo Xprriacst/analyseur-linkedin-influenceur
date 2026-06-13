@@ -374,6 +374,19 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* ── Backlog d'analyses ── */
+.nav-job-badge {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(124,92,252,0.15);
+  color: var(--primary);
+}
+
 .link-button {
   border: 0;
   background: none;

@@ -225,39 +225,27 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
   );
 }
 
-function JobsView({ onOpenReport }: { onOpenReport: (markdown: string, name: string) => void }) {
+function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth }: {
+  jobs: Job[];
+  loading: boolean;
+  isAuthed: boolean;
+  onCreated: (job: Job) => void;
+  onOpenReport: (markdown: string, name: string) => void;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
   const [urls, setUrls] = useState("");
   const [limit, setLimit] = useState(25);
   const [useCache, setUseCache] = useState(true);
   const [runLlm, setRunLlm] = useState(true);
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [openingId, setOpeningId] = useState<string | null>(null);
 
   const urlList = parseUrls(urls);
-  const anyActive = jobs.some(jobIsActive);
-
-  async function loadJobs() {
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/jobs`, { headers: await authHeaders() });
-      const data = await res.json();
-      if (res.ok && Array.isArray(data)) setJobs(data);
-    } catch { /* ignore */ } finally { setLoading(false); }
-  }
-
-  useEffect(() => { loadJobs(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
-
-  // Polling tant qu'une série est en attente/en cours côté serveur.
-  useEffect(() => {
-    if (!anyActive) return;
-    const t = setInterval(loadJobs, 3000);
-    return () => clearInterval(t);
-  }, [anyActive]);
 
   async function submit() {
     if (urlList.length === 0) { setError("Colle au moins une URL de profil LinkedIn."); return; }
+    if (!isAuthed) { requireAuth("Crée un compte gratuit pour lancer tes analyses et conserver ton historique."); return; }
     setSubmitting(true); setError("");
     try {
       const res = await fetch(`${DIRECT_API_URL}/jobs`, {
@@ -268,7 +256,7 @@ function JobsView({ onOpenReport }: { onOpenReport: (markdown: string, name: str
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la création de la série");
       setUrls("");
-      setJobs((prev) => [data as Job, ...prev]);
+      onCreated(data as Job);
     } catch (err: any) {
       setError(err.message || "Échec de la création de la série");
     } finally {
@@ -298,8 +286,8 @@ function JobsView({ onOpenReport }: { onOpenReport: (markdown: string, name: str
     <div>
       <div className="section-header" style={{ marginBottom: 16 }}>
         <div>
-          <h2 className="section-title"><Activity size={20} /> Backlog d'analyses</h2>
-          <p className="section-desc">Colle plusieurs profils (un par ligne). Chaque série tourne côté serveur : tu peux fermer l'onglet, la progression est conservée.</p>
+          <h2 className="section-title"><ListChecks size={20} /> Analyser des profils</h2>
+          <p className="section-desc">Colle un ou plusieurs profils (un par ligne). Chaque série tourne côté serveur : tu peux changer d'onglet ou fermer la page, la progression est conservée.</p>
         </div>
       </div>
 
@@ -471,6 +459,7 @@ function Sidebar({
   reports,
   view,
   isAuthed,
+  jobBadge,
   onNavigate,
   onLoadReport,
   requireAuth,
@@ -479,6 +468,7 @@ function Sidebar({
   reports: Report[];
   view: MainView;
   isAuthed: boolean;
+  jobBadge: { completed: number; total: number } | null;
   onNavigate: (v: MainView) => void;
   onLoadReport: (report: Report) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
@@ -487,8 +477,7 @@ function Sidebar({
   const [configOpen, setConfigOpen] = useState(false);
 
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
-    { key: "analyze", label: "Analyser", icon: <Zap size={14} /> },
-    { key: "backlog", label: "Backlog", icon: <ListChecks size={14} />, premium: true },
+    { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
   ];
@@ -525,6 +514,9 @@ function Sidebar({
               >
                 {item.icon}
                 <span>{item.label}</span>
+                {item.key === "analyze" && jobBadge ? (
+                  <span className="nav-job-badge"><Loader2 size={11} className="spinning" />{jobBadge.completed}/{jobBadge.total}</span>
+                ) : null}
                 {locked ? <Lock size={12} className="lock-ico" /> : null}
               </button>
             );
@@ -620,8 +612,7 @@ function TopHeader({
   onSignOut: () => void;
 }) {
   const viewTitles: Record<MainView, string> = {
-    analyze: "Décodeur de stratégie LinkedIn",
-    backlog: "Backlog d'analyses",
+    analyze: "Analyser des profils LinkedIn",
     generator: "Générateur de posts",
     dashboard: "Dashboard global",
   };
@@ -1305,7 +1296,7 @@ function GlobalDashboard() {
   );
 }
 
-const mainViews = ["analyze", "backlog", "generator", "dashboard"] as const;
+const mainViews = ["analyze", "generator", "dashboard"] as const;
 type MainView = typeof mainViews[number];
 
 export default function Home() {
@@ -1316,6 +1307,8 @@ export default function Home() {
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("analyze");
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authReason, setAuthReason] = useState("");
@@ -1339,6 +1332,39 @@ export default function Home() {
       if (res.ok && Array.isArray(data)) setReports(data);
     } catch { /* ignore */ }
   }
+
+  // Les séries vivent dans Home (pas dans JobsView) : le polling continue quand
+  // on change d'onglet, et la sidebar affiche un badge de progression partout.
+  async function loadJobs() {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data)) setJobs(data);
+    } catch { /* ignore */ } finally { setJobsLoading(false); }
+  }
+
+  function onJobCreated(job: Job) {
+    setJobs((prev) => [job, ...prev]);
+    loadReports();
+  }
+
+  const activeJob = jobs.find(jobIsActive) ?? null;
+  const anyJobActive = !!activeJob;
+
+  // Premier chargement des séries + polling tant qu'une série tourne (toutes pages).
+  useEffect(() => {
+    if (!isAuthed) { setJobs([]); return; }
+    setJobsLoading(true);
+    loadJobs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  useEffect(() => {
+    if (!isAuthed || !anyJobActive) return;
+    const t = setInterval(loadJobs, 3000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, anyJobActive]);
 
   async function persistAnonResult(anon: Analysis) {
     try {
@@ -1385,9 +1411,10 @@ export default function Home() {
       setReports([]);
       setResult(null);
       setLoadedReport(null);
+      setJobs([]);
       setError("");
       setView("analyze");
-      if (uid) setTimeout(() => loadReports(), 0);
+      if (uid) setTimeout(() => { loadReports(); loadJobs(); }, 0);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -1437,6 +1464,7 @@ export default function Home() {
           reports={reports}
           view={view}
           isAuthed={isAuthed}
+          jobBadge={activeJob ? { completed: activeJob.completed, total: activeJob.total } : null}
           onNavigate={(v) => { setView(v); if (v === "analyze") { setResult(null); setLoadedReport(null); setError(""); } }}
           onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
           requireAuth={requireAuth}
@@ -1453,15 +1481,17 @@ export default function Home() {
         />
         <main className="main">
           {view === "analyze" && (
-            loading
-              ? <LoadingState />
-              : result
-                ? <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
-                : loadedReport
-                  ? <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
-                  : <Landing onSubmit={analyze} loading={loading} error={error} onBatch={() => isAuthed ? setView("backlog") : requireAuth("Crée un compte gratuit pour lancer un backlog de plusieurs profils.")} />
+            loadedReport
+              ? (
+                <>
+                  <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => setLoadedReport(null)}>
+                    ← Retour aux analyses
+                  </button>
+                  <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
+                </>
+              )
+              : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} requireAuth={requireAuth} />
           )}
-          {view === "backlog" && <JobsView onOpenReport={openReport} />}
           {view === "generator" && <Generator />}
           {view === "dashboard" && <GlobalDashboard />}
         </main>
