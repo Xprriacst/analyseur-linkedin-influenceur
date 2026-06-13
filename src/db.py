@@ -312,6 +312,139 @@ def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
     return resp.data if resp.data else ideas
 
 
+import re as _re
+
+
+def _handle_from_url(url: str) -> str | None:
+    """Handle lisible extrait d'une URL LinkedIn (sans importer le scraper)."""
+    m = _re.search(r"/in/([^/?#]+)", url or "")
+    if not m:
+        return None
+    try:
+        return unquote(m.group(1))
+    except Exception:
+        return m.group(1)
+
+
+_JOB_ITEM_COLS = (
+    "id,position,url,handle,name,status,error,analysis_id,"
+    "influencer_id,follower_count,posts_count,updated_at"
+)
+
+
+def create_job(
+    access_token: str,
+    urls: list[str],
+    limit_posts: int,
+    run_llm: bool,
+    use_cache: bool,
+) -> dict | None:
+    """Crée une série (job) + ses items (un par URL). Retourne le job complet."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    job_resp = (
+        db.table("analysis_jobs")
+        .insert({
+            "user_id": user["id"],
+            "status": "queued",
+            "total": len(urls),
+            "limit_posts": limit_posts,
+            "run_llm": run_llm,
+            "use_cache": use_cache,
+        })
+        .execute()
+    )
+    if not job_resp.data:
+        return None
+    job = job_resp.data[0]
+    items = [
+        {
+            "job_id": job["id"],
+            "user_id": user["id"],
+            "position": i,
+            "url": url,
+            "handle": _handle_from_url(url),
+            "status": "pending",
+        }
+        for i, url in enumerate(urls)
+    ]
+    db.table("analysis_job_items").insert(items).execute()
+    return get_job(access_token, job["id"])
+
+
+def get_job(access_token: str, job_id: str) -> dict | None:
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    jr = (
+        db.table("analysis_jobs")
+        .select("*")
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    if not jr.data:
+        return None
+    job = jr.data[0]
+    ir = (
+        db.table("analysis_job_items")
+        .select(_JOB_ITEM_COLS)
+        .eq("job_id", job_id)
+        .order("position")
+        .execute()
+    )
+    job["items"] = ir.data or []
+    return job
+
+
+def list_jobs(access_token: str, limit: int = 20) -> list[dict]:
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    jr = (
+        db.table("analysis_jobs")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    jobs = jr.data or []
+    if not jobs:
+        return []
+    ids = [j["id"] for j in jobs]
+    ir = (
+        db.table("analysis_job_items")
+        .select(_JOB_ITEM_COLS + ",job_id")
+        .in_("job_id", ids)
+        .order("position")
+        .execute()
+    )
+    by_job: dict[str, list[dict]] = {}
+    for it in ir.data or []:
+        by_job.setdefault(it["job_id"], []).append(it)
+    for j in jobs:
+        j["items"] = by_job.get(j["id"], [])
+    return jobs
+
+
+def update_job(access_token: str, job_id: str, **fields: Any) -> None:
+    db = client_for_token(access_token)
+    fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db.table("analysis_jobs").update(fields).eq("id", job_id).execute()
+
+
+def update_job_item(access_token: str, item_id: str, **fields: Any) -> None:
+    db = client_for_token(access_token)
+    fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db.table("analysis_job_items").update(fields).eq("id", item_id).execute()
+
+
 def get_analysis(access_token: str, analysis_id: str) -> dict | None:
     user = get_user(access_token)
     if not user:

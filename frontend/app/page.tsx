@@ -12,6 +12,7 @@ import {
   FileText,
   Lightbulb,
   Link2,
+  ListChecks,
   Loader2,
   Lock,
   LogIn,
@@ -103,6 +104,14 @@ type GrowthRow = {
 };
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
+const steps = [
+  "Scraping du profil",
+  "Récupération des posts récents",
+  "Calcul des statistiques",
+  "Détection des patterns",
+  "Classification TOFU/MOFU/BOFU",
+  "Génération du rapport",
+];
 
 function fmt(value: any) {
   if (value === null || value === undefined || value === "") return "—";
@@ -125,15 +134,43 @@ function hookLabel(key: string) {
   return HOOK_LABELS[key] || key;
 }
 
-/* ── Backlog multi-profils ─────────────────────────────────────────────── */
+/* ── Backlog serveur (job queue) ───────────────────────────────────────── */
 
-type BacklogStatus = "pending" | "running" | "done" | "error";
-type BacklogItem = {
+type JobStatus = "queued" | "running" | "done" | "error";
+type ItemStatus = "pending" | "running" | "done" | "error";
+
+type JobItem = {
+  id: string;
+  position: number;
   url: string;
-  handle: string;
-  status: BacklogStatus;
-  result?: Analysis;
-  error?: string;
+  handle: string | null;
+  name: string | null;
+  status: ItemStatus;
+  error: string | null;
+  analysis_id: string | null;
+  follower_count: number | null;
+  posts_count: number | null;
+};
+
+type Job = {
+  id: string;
+  status: JobStatus;
+  total: number;
+  completed: number;
+  failed: number;
+  limit_posts: number | null;
+  run_llm: boolean;
+  use_cache: boolean;
+  created_at: string;
+  updated_at: string;
+  items: JobItem[];
+};
+
+const ITEM_STATUS_LABELS: Record<ItemStatus, string> = {
+  pending: "En attente",
+  running: "Analyse en cours…",
+  done: "Terminé",
+  error: "Échec",
 };
 
 /** Découpe un bloc de texte en URLs LinkedIn distinctes (une par ligne, dédupliquées). */
@@ -151,89 +188,195 @@ function parseUrls(raw: string): string[] {
   return out;
 }
 
-/** Handle lisible extrait d'une URL LinkedIn, pour l'affichage du backlog. */
-function handleFromUrl(url: string): string {
-  const m = url.match(/\/in\/([^/?#]+)/i);
-  if (!m) return url;
-  try {
-    return decodeURIComponent(m[1]);
-  } catch {
-    return m[1];
-  }
+function jobIsActive(j: Job): boolean {
+  return j.status === "queued" || j.status === "running";
 }
 
-const BACKLOG_STATUS_LABELS: Record<BacklogStatus, string> = {
-  pending: "En attente",
-  running: "Analyse en cours…",
-  done: "Terminé",
-  error: "Échec",
-};
+function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean }) {
+  const clickable = item.status === "done" && !!item.analysis_id;
+  return (
+    <div
+      className={`backlog-row ${item.status} ${clickable ? "clickable" : ""}`}
+      onClick={() => clickable && onOpen(item)}
+      role={clickable ? "button" : undefined}
+    >
+      <span className="backlog-rank">{item.position + 1}</span>
+      <span className="backlog-status-ico">
+        {opening || item.status === "running" ? <Loader2 size={16} className="spinning" />
+          : item.status === "done" ? <CheckCircle2 size={16} color="#10b981" />
+          : item.status === "error" ? <span style={{ color: "#ef4444", fontWeight: 700 }}>✕</span>
+          : <Clock3 size={16} color="var(--muted)" />}
+      </span>
+      <div className="backlog-main">
+        <strong>{item.name || item.handle || item.url}</strong>
+        <span className="backlog-url">{item.url}</span>
+        {item.status === "error" && item.error ? <span className="backlog-error">{item.error}</span> : null}
+      </div>
+      {item.status === "done" ? (
+        <div className="backlog-meta">
+          {item.posts_count != null ? <span className="badge">{fmt(item.posts_count)} posts</span> : null}
+          {item.follower_count != null ? <span className="badge">👍 {fmt(item.follower_count)}</span> : null}
+        </div>
+      ) : null}
+      <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : ""}`}>
+        {ITEM_STATUS_LABELS[item.status]}
+      </span>
+    </div>
+  );
+}
 
-function BacklogView({
-  items,
-  running,
-  onOpen,
-  onReset,
-}: {
-  items: BacklogItem[];
-  running: boolean;
-  onOpen: (item: BacklogItem) => void;
-  onReset: () => void;
-}) {
-  const done = items.filter((i) => i.status === "done").length;
-  const failed = items.filter((i) => i.status === "error").length;
+function JobsView({ onOpenReport }: { onOpenReport: (markdown: string, name: string) => void }) {
+  const [urls, setUrls] = useState("");
+  const [limit, setLimit] = useState(25);
+  const [useCache, setUseCache] = useState(true);
+  const [runLlm, setRunLlm] = useState(true);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [openingId, setOpeningId] = useState<string | null>(null);
+
+  const urlList = parseUrls(urls);
+  const anyActive = jobs.some(jobIsActive);
+
+  async function loadJobs() {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data)) setJobs(data);
+    } catch { /* ignore */ } finally { setLoading(false); }
+  }
+
+  useEffect(() => { loadJobs(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  // Polling tant qu'une série est en attente/en cours côté serveur.
+  useEffect(() => {
+    if (!anyActive) return;
+    const t = setInterval(loadJobs, 3000);
+    return () => clearInterval(t);
+  }, [anyActive]);
+
+  async function submit() {
+    if (urlList.length === 0) { setError("Colle au moins une URL de profil LinkedIn."); return; }
+    setSubmitting(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ profile_urls: urlList, limit, use_cache: useCache, run_llm: runLlm }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Échec de la création de la série");
+      setUrls("");
+      setJobs((prev) => [data as Job, ...prev]);
+    } catch (err: any) {
+      setError(err.message || "Échec de la création de la série");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function openItem(item: JobItem) {
+    if (!item.analysis_id) return;
+    setOpeningId(item.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/analyses/${item.analysis_id}`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && data?.report_markdown) {
+        onOpenReport(data.report_markdown, item.name || item.handle || "Rapport");
+      } else {
+        setError(data?.detail || "Rapport introuvable.");
+      }
+    } catch (err: any) {
+      setError(err.message || "Impossible d'ouvrir le rapport");
+    } finally {
+      setOpeningId(null);
+    }
+  }
+
   return (
     <div>
       <div className="section-header" style={{ marginBottom: 16 }}>
         <div>
           <h2 className="section-title"><Activity size={20} /> Backlog d'analyses</h2>
-          <p className="section-desc">
-            {running
-              ? `Analyse en cours — ${done}/${items.length} terminé${done > 1 ? "s" : ""}…`
-              : `${done}/${items.length} analysé${done > 1 ? "s" : ""}${failed ? ` · ${failed} en échec` : ""}`}
-          </p>
+          <p className="section-desc">Colle plusieurs profils (un par ligne). Chaque série tourne côté serveur : tu peux fermer l'onglet, la progression est conservée.</p>
         </div>
-        {!running && (
-          <button className="secondary-button" onClick={onReset}>
-            <RefreshCw size={13} /> Nouvelle série
-          </button>
-        )}
       </div>
 
-      <div className="backlog-list">
-        {items.map((item, i) => (
-          <div
-            className={`backlog-row ${item.status} ${item.status === "done" ? "clickable" : ""}`}
-            key={`${item.url}-${i}`}
-            onClick={() => item.status === "done" && onOpen(item)}
-            role={item.status === "done" ? "button" : undefined}
-          >
-            <span className="backlog-rank">{i + 1}</span>
-            <span className="backlog-status-ico">
-              {item.status === "running" ? <Loader2 size={16} className="spinning" />
-                : item.status === "done" ? <CheckCircle2 size={16} color="#10b981" />
-                : item.status === "error" ? <span style={{ color: "#ef4444", fontWeight: 700 }}>✕</span>
-                : <Clock3 size={16} color="var(--muted)" />}
-            </span>
-            <div className="backlog-main">
-              <strong>{item.result?.profile?.name || item.handle}</strong>
-              <span className="backlog-url">{item.url}</span>
-              {item.status === "error" && item.error ? (
-                <span className="backlog-error">{item.error}</span>
-              ) : null}
-            </div>
-            {item.status === "done" && item.result ? (
-              <div className="backlog-meta">
-                <span className="badge">{fmt(item.result.stats?.count)} posts</span>
-                <span className="badge">👍 {fmt(item.result.profile?.follower_count)}</span>
-              </div>
-            ) : null}
-            <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : ""}`}>
-              {BACKLOG_STATUS_LABELS[item.status]}
-            </span>
-          </div>
-        ))}
+      {/* Soumission d'une nouvelle série */}
+      <div className="analyzer-card" style={{ marginBottom: 20 }}>
+        <div className="url-input url-input--multi">
+          <Link2 size={16} color="var(--primary)" style={{ marginTop: 10, flexShrink: 0 }} />
+          <textarea
+            value={urls}
+            onChange={(e) => setUrls(e.target.value)}
+            placeholder={"https://www.linkedin.com/in/profil-1/\nhttps://www.linkedin.com/in/profil-2/\nhttps://www.linkedin.com/in/profil-3/"}
+            rows={Math.min(8, Math.max(3, urlList.length + 1))}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }}
+          />
+        </div>
+        <div className="batch-submit-row">
+          <span className="batch-count">
+            {urlList.length === 0
+              ? "Un profil par ligne — ⌘/Ctrl + Entrée pour lancer"
+              : `${urlList.length} profil${urlList.length > 1 ? "s" : ""} dans la série`}
+          </span>
+          <button className="primary-button" disabled={submitting || urlList.length === 0} onClick={submit}>
+            {submitting ? <Loader2 size={14} className="spinning" /> : <Zap size={14} />}
+            Lancer la série
+          </button>
+        </div>
+        <div className="controls">
+          <label className="control">
+            <span>Posts à analyser : <b>{limit}</b></span>
+            <input type="range" min="10" max="50" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
+          </label>
+          <label className="control" onClick={() => setUseCache(!useCache)} style={{ cursor: "pointer" }}>
+            <span>Utiliser le cache</span>
+            <button className={`switch ${useCache ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setUseCache(!useCache); }} />
+          </label>
+          <label className="control" onClick={() => setRunLlm(!runLlm)} style={{ cursor: "pointer" }}>
+            <span>Synthèse Claude</span>
+            <button className={`switch ${runLlm ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setRunLlm(!runLlm); }} />
+          </label>
+        </div>
       </div>
+
+      {error ? <div className="error">{error}</div> : null}
+
+      {/* Séries existantes */}
+      {loading ? (
+        <p style={{ color: "var(--muted)" }}>Chargement des séries…</p>
+      ) : jobs.length === 0 ? (
+        <div className="report-card" style={{ maxWidth: 720 }}>
+          <div className="report-icon"><Activity size={13} /></div>
+          <div><strong>Aucune série pour l'instant</strong><span>Colle des profils ci-dessus pour lancer ton premier backlog.</span></div>
+        </div>
+      ) : (
+        <div className="jobs-list">
+          {jobs.map((job) => {
+            const active = jobIsActive(job);
+            const date = new Date(job.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+            return (
+              <div className="job-block" key={job.id}>
+                <div className="job-head">
+                  <div className="job-head-main">
+                    {active ? <Loader2 size={15} className="spinning" /> : job.failed && !job.completed ? <span style={{ color: "#ef4444" }}>✕</span> : <CheckCircle2 size={15} color="#10b981" />}
+                    <strong>Série du {date}</strong>
+                    <span className="badge">{job.completed}/{job.total} terminé{job.completed > 1 ? "s" : ""}</span>
+                    {job.failed > 0 ? <span className="status-pill no">{job.failed} échec{job.failed > 1 ? "s" : ""}</span> : null}
+                  </div>
+                </div>
+                <div className="backlog-list">
+                  {job.items.map((item) => (
+                    <ItemRow key={item.id} item={item} onOpen={openItem} opening={openingId === item.id} />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -328,10 +471,7 @@ function Sidebar({
   reports,
   view,
   isAuthed,
-  backlog,
-  backlogActive,
   onNavigate,
-  onShowBacklog,
   onLoadReport,
   requireAuth,
 }: {
@@ -339,20 +479,16 @@ function Sidebar({
   reports: Report[];
   view: MainView;
   isAuthed: boolean;
-  backlog: BacklogItem[];
-  backlogActive: boolean;
   onNavigate: (v: MainView) => void;
-  onShowBacklog: () => void;
   onLoadReport: (report: Report) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 
 }) {
   const [configOpen, setConfigOpen] = useState(false);
-  const backlogDone = backlog.filter((b) => b.status === "done").length;
-  const backlogRunning = backlog.some((b) => b.status === "running" || b.status === "pending");
 
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <Zap size={14} /> },
+    { key: "backlog", label: "Backlog", icon: <ListChecks size={14} />, premium: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
   ];
@@ -370,18 +506,6 @@ function Sidebar({
       <button className="primary-button" style={{ width: "100%", marginBottom: 12 }} onClick={() => onNavigate("analyze")}>
         <Sparkles size={14} /> Nouvelle analyse
       </button>
-
-      {backlog.length > 0 && (
-        <button
-          className={`nav-item backlog-nav ${backlogActive ? "active" : ""}`}
-          style={{ width: "100%", marginBottom: 12 }}
-          onClick={onShowBacklog}
-        >
-          {backlogRunning ? <Loader2 size={14} className="spinning" /> : <Activity size={14} />}
-          <span>Série en cours</span>
-          <span className="backlog-nav-count">{backlogDone}/{backlog.length}</span>
-        </button>
-      )}
 
       {/* Sidebar navigation */}
       <section className="sidebar-section">
@@ -497,6 +621,7 @@ function TopHeader({
 }) {
   const viewTitles: Record<MainView, string> = {
     analyze: "Décodeur de stratégie LinkedIn",
+    backlog: "Backlog d'analyses",
     generator: "Générateur de posts",
     dashboard: "Dashboard global",
   };
@@ -556,54 +681,39 @@ function TopHeader({
   );
 }
 
-function Landing({ onSubmit, loading, error }: {
-  onSubmit: (payload: { urls: string[]; limit: number; useCache: boolean; runLlm: boolean }) => void;
+function Landing({ onSubmit, loading, error, onBatch }: {
+  onSubmit: (payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) => void;
   loading: boolean;
   error: string;
+  onBatch: () => void;
 }) {
-  const [urls, setUrls] = useState("");
+  const [url, setUrl] = useState("");
   const [limit, setLimit] = useState(25);
   const [useCache, setUseCache] = useState(true);
   const [runLlm, setRunLlm] = useState(true);
-
-  const urlList = parseUrls(urls);
-
-  function submit() {
-    onSubmit({ urls: urlList, limit, useCache, runLlm });
-  }
 
   return (
     <section className="hero">
       <div className="hero-content">
         <p className="eyebrow">Décodeur de stratégie LinkedIn</p>
         <h1>Décrypte n'importe quelle <span className="gradient-text">stratégie LinkedIn</span> en 60 secondes</h1>
-        <p>Colle un ou plusieurs profils (un par ligne). On scrape leurs posts récents, on extrait hooks, CTAs, mix funnel, et on te dit quoi répliquer.</p>
+        <p>Colle l'URL d'un profil. On scrape ses posts récents, on extrait hooks, CTAs, mix funnel, et on te dit quoi répliquer. <button type="button" className="link-button" onClick={onBatch}>Plusieurs profils ? → Backlog</button></p>
 
         <div className="analyzer-card">
-          <div className="url-input url-input--multi">
-            <Link2 size={16} color="var(--primary)" style={{ marginTop: 10, flexShrink: 0 }} />
-            <textarea
-              value={urls}
-              onChange={(e) => setUrls(e.target.value)}
-              placeholder={"https://www.linkedin.com/in/profil-1/\nhttps://www.linkedin.com/in/profil-2/\nhttps://www.linkedin.com/in/profil-3/"}
-              rows={Math.min(8, Math.max(3, urlList.length + 1))}
-              onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }}
+          <div className="url-input">
+            <Link2 size={16} color="var(--primary)" />
+            <input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://www.linkedin.com/in/nom-influenceur/"
+              onKeyDown={(e) => e.key === "Enter" && onSubmit({ url, limit, useCache, runLlm })}
             />
-          </div>
-
-          <div className="batch-submit-row">
-            <span className="batch-count">
-              {urlList.length === 0
-                ? "Un profil par ligne — ⌘/Ctrl + Entrée pour lancer"
-                : `${urlList.length} profil${urlList.length > 1 ? "s" : ""} à analyser`}
-            </span>
             <button
               className="primary-button"
-              disabled={loading || urlList.length === 0}
-              onClick={submit}
+              disabled={loading}
+              onClick={() => onSubmit({ url, limit, useCache, runLlm })}
             >
-              {loading ? <Loader2 size={14} /> : <Zap size={14} />}
-              {urlList.length > 1 ? `Analyser les ${urlList.length}` : "Analyser"}
+              {loading ? <Loader2 size={14} /> : <Zap size={14} />} Analyser
             </button>
           </div>
 
@@ -641,6 +751,30 @@ function Landing({ onSubmit, loading, error }: {
             <h3>Synthèse IA</h3>
             <p>Classification TOFU/MOFU/BOFU et actions à répliquer.</p>
           </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LoadingState() {
+  return (
+    <section className="hero">
+      <div className="hero-content">
+        <p className="eyebrow">Analyse en cours</p>
+        <h1>Construction de ton <span className="gradient-text">rapport stratégique</span></h1>
+        <p>Scraping, normalisation et synthèse des derniers signaux de contenu.</p>
+        <div className="loading-panel card">
+          {steps.map((step, index) => (
+            <div className="step" key={step}>
+              {index < 2
+                ? <CheckCircle2 size={16} color="#10b981" />
+                : index === 2
+                  ? <span className="spinner" />
+                  : <Clock3 size={16} color="var(--muted)" />}
+              <span>{step}</span>
+            </div>
+          ))}
         </div>
       </div>
     </section>
@@ -1171,16 +1305,14 @@ function GlobalDashboard() {
   );
 }
 
-const mainViews = ["analyze", "generator", "dashboard"] as const;
+const mainViews = ["analyze", "backlog", "generator", "dashboard"] as const;
 type MainView = typeof mainViews[number];
 
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [result, setResult] = useState<Analysis | null>(null);
-  const [backlog, setBacklog] = useState<BacklogItem[]>([]);
-  const [batchRunning, setBatchRunning] = useState(false);
-  const [analyzeScreen, setAnalyzeScreen] = useState<"form" | "backlog">("form");
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("analyze");
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
@@ -1252,8 +1384,6 @@ export default function Home() {
       setAuthOpen(false);
       setReports([]);
       setResult(null);
-      setBacklog([]);
-      setAnalyzeScreen("form");
       setLoadedReport(null);
       setError("");
       setView("analyze");
@@ -1262,92 +1392,41 @@ export default function Home() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  async function runAnalysis(
-    url: string,
-    opts: { limit: number; useCache: boolean; runLlm: boolean },
-  ): Promise<Analysis> {
-    const response = await fetch(`${DIRECT_API_URL}/analyze`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-      body: JSON.stringify({ profile_url: url, limit: opts.limit, use_cache: opts.useCache, run_llm: opts.runLlm }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Échec de l'analyse");
-    return data;
-  }
-
-  function resetBacklog() {
-    setBacklog([]);
+  /** Ouvre un rapport (depuis le backlog) dans la vue markdown de l'onglet Analyser. */
+  function openReport(markdown: string, name: string) {
+    setLoadedReport({ name, path: name, updated_at: Date.now() / 1000, content: markdown });
     setResult(null);
-    setLoadedReport(null);
-    setAnalyzeScreen("form");
-    setError("");
-  }
-
-  /** Affiche le formulaire d'analyse sans détruire un backlog en cours. */
-  function showAnalyzeForm() {
     setView("analyze");
-    setResult(null);
-    setLoadedReport(null);
-    setAnalyzeScreen("form");
   }
 
-  /** Revient à la liste du backlog (depuis un rapport ou la sidebar). */
-  function showBacklog() {
-    setView("analyze");
-    setResult(null);
-    setLoadedReport(null);
-    setAnalyzeScreen("backlog");
-  }
-
-  async function analyze(payload: { urls: string[]; limit: number; useCache: boolean; runLlm: boolean }) {
+  async function analyze(payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) {
     setError("");
-    const urls = payload.urls;
-    if (urls.length === 0) { setError("Colle au moins une URL de profil LinkedIn."); return; }
-
-    // Freemium : l'anonyme est limité à une seule analyse gratuite.
-    if (!isAuthed) {
-      if (urls.length > 1) {
-        requireAuth("Crée un compte gratuit pour analyser plusieurs profils d'un coup.");
-        return;
-      }
-      if (anonAnalysisUsed()) {
-        requireAuth("Tu as déjà utilisé ton analyse gratuite. Crée un compte gratuit pour continuer.");
-        return;
-      }
+    if (!payload.url.trim()) { setError("Colle d'abord une URL de profil LinkedIn."); return; }
+    if (!isAuthed && anonAnalysisUsed()) {
+      requireAuth("Tu as déjà utilisé ton analyse gratuite. Crée un compte gratuit pour continuer.");
+      return;
     }
-
-    const opts = { limit: payload.limit, useCache: payload.useCache, runLlm: payload.runLlm };
-    const items: BacklogItem[] = urls.map((url) => ({ url, handle: handleFromUrl(url), status: "pending" }));
-    setResult(null);
-    setLoadedReport(null);
-    setBacklog(items);
-    setAnalyzeScreen(urls.length > 1 ? "backlog" : "form");
-    setBatchRunning(true);
-
-    const mark = (idx: number, patch: Partial<BacklogItem>) =>
-      setBacklog((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
-
-    let firstDone: Analysis | null = null;
-    for (let i = 0; i < urls.length; i++) {
-      mark(i, { status: "running" });
-      try {
-        const data = await runAnalysis(urls[i], opts);
-        mark(i, { status: "done", result: data });
-        if (!firstDone) firstDone = data;
-        if (!isAuthed) {
-          markAnonAnalysisUsed();
-          pendingAnonResultRef.current = data;
-        }
-      } catch (err: any) {
-        mark(i, { status: "error", error: err?.message || "Échec de l'analyse" });
+    setLoading(true);
+    try {
+      const response = await fetch(`${DIRECT_API_URL}/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ profile_url: payload.url, limit: payload.limit, use_cache: payload.useCache, run_llm: payload.runLlm }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Échec de l'analyse");
+      setResult(data);
+      if (isAuthed) {
+        loadReports();
+      } else {
+        markAnonAnalysisUsed();
+        pendingAnonResultRef.current = data;
       }
+    } catch (err: any) {
+      setError(err.message || "Échec de l'analyse");
+    } finally {
+      setLoading(false);
     }
-
-    setBatchRunning(false);
-    if (isAuthed) loadReports();
-    // Un seul profil : on ouvre directement son rapport (UX historique conservée).
-    if (urls.length === 1 && firstDone) setResult(firstDone);
   }
 
   return (
@@ -1358,10 +1437,7 @@ export default function Home() {
           reports={reports}
           view={view}
           isAuthed={isAuthed}
-          backlog={backlog}
-          backlogActive={view === "analyze" && analyzeScreen === "backlog" && !result && !loadedReport}
-          onNavigate={(v) => { if (v === "analyze") showAnalyzeForm(); else setView(v); }}
-          onShowBacklog={showBacklog}
+          onNavigate={(v) => { setView(v); if (v === "analyze") { setResult(null); setLoadedReport(null); setError(""); } }}
           onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
           requireAuth={requireAuth}
         />
@@ -1370,30 +1446,22 @@ export default function Home() {
           view={view}
           isAuthed={isAuthed}
           userEmail={session?.user?.email ?? undefined}
-          onReset={() => { if (backlog.length > 1) { showBacklog(); } else { resetBacklog(); } }}
+          onReset={() => { setResult(null); setLoadedReport(null); }}
           onSignIn={() => requireAuth(undefined, "signin")}
           onSignUp={() => requireAuth(undefined, "signup")}
           onSignOut={() => supabase.auth.signOut()}
         />
         <main className="main">
           {view === "analyze" && (
-            result
-              ? (
-                <>
-                  {backlog.length > 1 && (
-                    <button className="secondary-button" style={{ marginBottom: 12 }} onClick={showBacklog}>
-                      ← Retour au backlog ({backlog.filter((b) => b.status === "done").length}/{backlog.length})
-                    </button>
-                  )}
-                  <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
-                </>
-              )
-              : loadedReport
-                ? <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
-                : analyzeScreen === "backlog" && backlog.length > 0
-                  ? <BacklogView items={backlog} running={batchRunning} onOpen={(it) => it.result && setResult(it.result)} onReset={resetBacklog} />
-                  : <Landing onSubmit={analyze} loading={batchRunning} error={error} />
+            loading
+              ? <LoadingState />
+              : result
+                ? <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
+                : loadedReport
+                  ? <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
+                  : <Landing onSubmit={analyze} loading={loading} error={error} onBatch={() => isAuthed ? setView("backlog") : requireAuth("Crée un compte gratuit pour lancer un backlog de plusieurs profils.")} />
           )}
+          {view === "backlog" && <JobsView onOpenReport={openReport} />}
           {view === "generator" && <Generator />}
           {view === "dashboard" && <GlobalDashboard />}
         </main>

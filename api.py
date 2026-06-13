@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from src import db
 from src.pipeline import run_analysis
+from src.jobs import start_job_thread
 from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
@@ -489,6 +490,83 @@ def analyze(
         result["save_error"] = "Aucune session utilisateur : analyse non sauvegardée."
 
     return result
+
+
+class JobRequest(BaseModel):
+    profile_urls: list[str] = Field(..., min_length=1, max_length=25)
+    limit: int = Field(default=25, ge=10, le=50)
+    use_cache: bool = True
+    run_llm: bool = True
+
+
+def _clean_urls(raw: list[str]) -> list[str]:
+    """Filtre les URLs LinkedIn valides et déduplique (insensible à la casse/slash)."""
+    import re
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        url = (item or "").strip()
+        if not url or not re.search(r"linkedin\.com/in/", url, re.IGNORECASE):
+            continue
+        key = url.rstrip("/").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(url)
+    return out
+
+
+@app.post("/jobs")
+def create_job(payload: JobRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Crée une série d'analyses (backlog) traitée en fond, profil par profil."""
+    if not os.environ.get("APIFY_TOKEN"):
+        raise HTTPException(status_code=400, detail="APIFY_TOKEN manquant dans .env")
+    if payload.run_llm and not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    urls = _clean_urls(payload.profile_urls)
+    if not urls:
+        raise HTTPException(status_code=400, detail="Aucune URL de profil LinkedIn valide.")
+
+    try:
+        job = db.create_job(token, urls, payload.limit, payload.run_llm, payload.use_cache)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Création de la série échouée (table analysis_jobs en place ?) : {exc}",
+        ) from exc
+    if not job:
+        raise HTTPException(status_code=500, detail="Création de la série échouée.")
+
+    start_job_thread(token, job["id"])
+    return job
+
+
+@app.get("/jobs")
+def list_jobs(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """Liste les séries de l'utilisateur (la plus récente en premier), avec items."""
+    return db.list_jobs(token)
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """État d'une série + statut de chaque profil (pour le polling frontend)."""
+    job = db.get_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Série introuvable.")
+    return job
+
+
+@app.post("/jobs/{job_id}/resume")
+def resume_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Relance le traitement des profils non terminés (après un redémarrage serveur)."""
+    job = db.get_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Série introuvable.")
+    pending = [it for it in job.get("items", []) if it.get("status") != "done"]
+    if pending:
+        start_job_thread(token, job_id)
+    return job
 
 
 @app.post("/analyses/persist")

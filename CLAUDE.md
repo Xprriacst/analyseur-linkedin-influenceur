@@ -26,6 +26,14 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 
 ## Changelog
 
+### 2026-06-13 (job queue serveur : backlog multi-profils persistant + onglet dédié)
+- **Nouvel onglet « Backlog »** (`view === "backlog"` → `JobsView` dans `page.tsx`, premium/auth requise) : on colle plusieurs profils (un par ligne), ça crée une **série** traitée côté serveur, profil par profil, avec statut live par ligne (polling `/jobs` toutes les 3 s tant qu'une série tourne). L'état vit en base → survit au refresh, à la fermeture d'onglet et à la reconnexion.
+- **Backend** : `src/jobs.py` traite chaque série dans un **thread de fond** (verrou global `_compute_lock` pour sérialiser `run_analysis` — usage global + rate limit Apify). Endpoints `POST /jobs`, `GET /jobs`, `GET /jobs/{id}`, `POST /jobs/{id}/resume` (relance les items non terminés après un redémarrage). Helpers `create_job`/`get_job`/`list_jobs`/`update_job`/`update_job_item` dans `db.py`. Chaque item terminé appelle `save_analysis` → le rapport apparaît aussi dans « Analyses récentes ».
+- **DB** : migration `supabase/migrations/0001_analysis_jobs.sql` → tables `analysis_jobs` + `analysis_job_items` (RLS `auth.uid() = user_id`). **À exécuter manuellement dans le SQL editor Supabase** (le MCP n'a pas les droits DDL, pas de service-role en local).
+- **Analyse unique inchangée** : l'onglet « Analyser » reste synchrone (résultat instantané, flow freemium anonyme préservé). Le backlog client-side éphémère précédent a été remplacé par ce queue serveur.
+- ⚠️ **Déploiement** : le backend Render déploie depuis `main` (partagé prod/dev) → la feature nécessite un merge `dev → main` pour être active en ligne (touche aussi la prod). Ordre : (1) exécuter la migration SQL, (2) merger dev→main, (3) vérifier `/health`.
+- **Limite connue** : le thread porte le JWT user (~1 h de validité) → une série très longue pourrait expirer en cours ; OK pour des séries de quelques profils.
+
 ### 2026-06-12 (fiabilité des analyses : dates, formats, corpus, croisements)
 - **Bug dates** : `_parse_date` ne gérait pas les timestamps epoch ms → en prod (schéma harvestapi, `postedAt.timestamp` int matché en premier) toutes les dates étaient perdues ("25 posts sur 0 jours", cadence/timing vides). Fix : parse epoch s/ms (int et str), dates ISO prioritaires, fallback URN (`activity_id >> 22` = epoch ms), garde-fou années 2005..now+1 (élimine le "1781-07-12").
 - **Bug formats** : `_detect_format` ignorait `media.type` (apimaestro) et `postImages`/`article`/`repost` (harvestapi) → tout sortait "100% text" alors qu'Ugo Sartini a 21 images + 3 vidéos sur 25 posts. Les recos LLM "lance des carrousels" étaient un artefact.
