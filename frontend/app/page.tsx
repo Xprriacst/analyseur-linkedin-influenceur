@@ -103,14 +103,6 @@ type GrowthRow = {
 };
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
-const steps = [
-  "Scraping du profil",
-  "Récupération des posts récents",
-  "Calcul des statistiques",
-  "Détection des patterns",
-  "Classification TOFU/MOFU/BOFU",
-  "Génération du rapport",
-];
 
 function fmt(value: any) {
   if (value === null || value === undefined || value === "") return "—";
@@ -131,6 +123,119 @@ const HOOK_LABELS: Record<string, string> = {
 
 function hookLabel(key: string) {
   return HOOK_LABELS[key] || key;
+}
+
+/* ── Backlog multi-profils ─────────────────────────────────────────────── */
+
+type BacklogStatus = "pending" | "running" | "done" | "error";
+type BacklogItem = {
+  url: string;
+  handle: string;
+  status: BacklogStatus;
+  result?: Analysis;
+  error?: string;
+};
+
+/** Découpe un bloc de texte en URLs LinkedIn distinctes (une par ligne, dédupliquées). */
+function parseUrls(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of raw.split(/[\n,]/)) {
+    const url = line.trim();
+    if (!url || !/linkedin\.com\/in\//i.test(url)) continue;
+    const key = url.replace(/\/+$/, "").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(url);
+  }
+  return out;
+}
+
+/** Handle lisible extrait d'une URL LinkedIn, pour l'affichage du backlog. */
+function handleFromUrl(url: string): string {
+  const m = url.match(/\/in\/([^/?#]+)/i);
+  if (!m) return url;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return m[1];
+  }
+}
+
+const BACKLOG_STATUS_LABELS: Record<BacklogStatus, string> = {
+  pending: "En attente",
+  running: "Analyse en cours…",
+  done: "Terminé",
+  error: "Échec",
+};
+
+function BacklogView({
+  items,
+  running,
+  onOpen,
+  onReset,
+}: {
+  items: BacklogItem[];
+  running: boolean;
+  onOpen: (item: BacklogItem) => void;
+  onReset: () => void;
+}) {
+  const done = items.filter((i) => i.status === "done").length;
+  const failed = items.filter((i) => i.status === "error").length;
+  return (
+    <div>
+      <div className="section-header" style={{ marginBottom: 16 }}>
+        <div>
+          <h2 className="section-title"><Activity size={20} /> Backlog d'analyses</h2>
+          <p className="section-desc">
+            {running
+              ? `Analyse en cours — ${done}/${items.length} terminé${done > 1 ? "s" : ""}…`
+              : `${done}/${items.length} analysé${done > 1 ? "s" : ""}${failed ? ` · ${failed} en échec` : ""}`}
+          </p>
+        </div>
+        {!running && (
+          <button className="secondary-button" onClick={onReset}>
+            <RefreshCw size={13} /> Nouvelle série
+          </button>
+        )}
+      </div>
+
+      <div className="backlog-list">
+        {items.map((item, i) => (
+          <div
+            className={`backlog-row ${item.status} ${item.status === "done" ? "clickable" : ""}`}
+            key={`${item.url}-${i}`}
+            onClick={() => item.status === "done" && onOpen(item)}
+            role={item.status === "done" ? "button" : undefined}
+          >
+            <span className="backlog-rank">{i + 1}</span>
+            <span className="backlog-status-ico">
+              {item.status === "running" ? <Loader2 size={16} className="spinning" />
+                : item.status === "done" ? <CheckCircle2 size={16} color="#10b981" />
+                : item.status === "error" ? <span style={{ color: "#ef4444", fontWeight: 700 }}>✕</span>
+                : <Clock3 size={16} color="var(--muted)" />}
+            </span>
+            <div className="backlog-main">
+              <strong>{item.result?.profile?.name || item.handle}</strong>
+              <span className="backlog-url">{item.url}</span>
+              {item.status === "error" && item.error ? (
+                <span className="backlog-error">{item.error}</span>
+              ) : null}
+            </div>
+            {item.status === "done" && item.result ? (
+              <div className="backlog-meta">
+                <span className="badge">{fmt(item.result.stats?.count)} posts</span>
+                <span className="badge">👍 {fmt(item.result.profile?.follower_count)}</span>
+              </div>
+            ) : null}
+            <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : ""}`}>
+              {BACKLOG_STATUS_LABELS[item.status]}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /* ── Freemium gating helpers ───────────────────────────────────────────── */
@@ -432,37 +537,53 @@ function TopHeader({
 }
 
 function Landing({ onSubmit, loading, error }: {
-  onSubmit: (payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) => void;
+  onSubmit: (payload: { urls: string[]; limit: number; useCache: boolean; runLlm: boolean }) => void;
   loading: boolean;
   error: string;
 }) {
-  const [url, setUrl] = useState("");
+  const [urls, setUrls] = useState("");
   const [limit, setLimit] = useState(25);
   const [useCache, setUseCache] = useState(true);
   const [runLlm, setRunLlm] = useState(true);
+
+  const urlList = parseUrls(urls);
+
+  function submit() {
+    onSubmit({ urls: urlList, limit, useCache, runLlm });
+  }
 
   return (
     <section className="hero">
       <div className="hero-content">
         <p className="eyebrow">Décodeur de stratégie LinkedIn</p>
         <h1>Décrypte n'importe quelle <span className="gradient-text">stratégie LinkedIn</span> en 60 secondes</h1>
-        <p>Colle l'URL d'un profil. On scrape ses posts récents, on extrait hooks, CTAs, mix funnel, et on te dit quoi répliquer.</p>
+        <p>Colle un ou plusieurs profils (un par ligne). On scrape leurs posts récents, on extrait hooks, CTAs, mix funnel, et on te dit quoi répliquer.</p>
 
         <div className="analyzer-card">
-          <div className="url-input">
-            <Link2 size={16} color="var(--primary)" />
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://www.linkedin.com/in/nom-influenceur/"
-              onKeyDown={(e) => e.key === "Enter" && onSubmit({ url, limit, useCache, runLlm })}
+          <div className="url-input url-input--multi">
+            <Link2 size={16} color="var(--primary)" style={{ marginTop: 10, flexShrink: 0 }} />
+            <textarea
+              value={urls}
+              onChange={(e) => setUrls(e.target.value)}
+              placeholder={"https://www.linkedin.com/in/profil-1/\nhttps://www.linkedin.com/in/profil-2/\nhttps://www.linkedin.com/in/profil-3/"}
+              rows={Math.min(8, Math.max(3, urlList.length + 1))}
+              onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }}
             />
+          </div>
+
+          <div className="batch-submit-row">
+            <span className="batch-count">
+              {urlList.length === 0
+                ? "Un profil par ligne — ⌘/Ctrl + Entrée pour lancer"
+                : `${urlList.length} profil${urlList.length > 1 ? "s" : ""} à analyser`}
+            </span>
             <button
               className="primary-button"
-              disabled={loading}
-              onClick={() => onSubmit({ url, limit, useCache, runLlm })}
+              disabled={loading || urlList.length === 0}
+              onClick={submit}
             >
-              {loading ? <Loader2 size={14} /> : <Zap size={14} />} Analyser
+              {loading ? <Loader2 size={14} /> : <Zap size={14} />}
+              {urlList.length > 1 ? `Analyser les ${urlList.length}` : "Analyser"}
             </button>
           </div>
 
@@ -500,30 +621,6 @@ function Landing({ onSubmit, loading, error }: {
             <h3>Synthèse IA</h3>
             <p>Classification TOFU/MOFU/BOFU et actions à répliquer.</p>
           </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function LoadingState() {
-  return (
-    <section className="hero">
-      <div className="hero-content">
-        <p className="eyebrow">Analyse en cours</p>
-        <h1>Construction de ton <span className="gradient-text">rapport stratégique</span></h1>
-        <p>Scraping, normalisation et synthèse des derniers signaux de contenu.</p>
-        <div className="loading-panel card">
-          {steps.map((step, index) => (
-            <div className="step" key={step}>
-              {index < 2
-                ? <CheckCircle2 size={16} color="#10b981" />
-                : index === 2
-                  ? <span className="spinner" />
-                  : <Clock3 size={16} color="var(--muted)" />}
-              <span>{step}</span>
-            </div>
-          ))}
         </div>
       </div>
     </section>
@@ -1061,7 +1158,8 @@ export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [result, setResult] = useState<Analysis | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [backlog, setBacklog] = useState<BacklogItem[]>([]);
+  const [batchRunning, setBatchRunning] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("analyze");
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
@@ -1133,6 +1231,7 @@ export default function Home() {
       setAuthOpen(false);
       setReports([]);
       setResult(null);
+      setBacklog([]);
       setLoadedReport(null);
       setError("");
       setView("analyze");
@@ -1141,34 +1240,74 @@ export default function Home() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  async function analyze(payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) {
+  async function runAnalysis(
+    url: string,
+    opts: { limit: number; useCache: boolean; runLlm: boolean },
+  ): Promise<Analysis> {
+    const response = await fetch(`${DIRECT_API_URL}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+      body: JSON.stringify({ profile_url: url, limit: opts.limit, use_cache: opts.useCache, run_llm: opts.runLlm }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Échec de l'analyse");
+    return data;
+  }
+
+  function resetBacklog() {
+    setBacklog([]);
+    setResult(null);
+    setLoadedReport(null);
     setError("");
-    if (!payload.url.trim()) { setError("Colle d'abord une URL de profil LinkedIn."); return; }
-    if (!isAuthed && anonAnalysisUsed()) {
-      requireAuth("Tu as déjà utilisé ton analyse gratuite. Crée un compte gratuit pour continuer.");
-      return;
-    }
-    setLoading(true);
-    try {
-      const response = await fetch(`${DIRECT_API_URL}/analyze`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ profile_url: payload.url, limit: payload.limit, use_cache: payload.useCache, run_llm: payload.runLlm }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Échec de l'analyse");
-      setResult(data);
-      if (isAuthed) {
-        loadReports();
-      } else {
-        markAnonAnalysisUsed();
-        pendingAnonResultRef.current = data;
+  }
+
+  async function analyze(payload: { urls: string[]; limit: number; useCache: boolean; runLlm: boolean }) {
+    setError("");
+    const urls = payload.urls;
+    if (urls.length === 0) { setError("Colle au moins une URL de profil LinkedIn."); return; }
+
+    // Freemium : l'anonyme est limité à une seule analyse gratuite.
+    if (!isAuthed) {
+      if (urls.length > 1) {
+        requireAuth("Crée un compte gratuit pour analyser plusieurs profils d'un coup.");
+        return;
       }
-    } catch (err: any) {
-      setError(err.message || "Échec de l'analyse");
-    } finally {
-      setLoading(false);
+      if (anonAnalysisUsed()) {
+        requireAuth("Tu as déjà utilisé ton analyse gratuite. Crée un compte gratuit pour continuer.");
+        return;
+      }
     }
+
+    const opts = { limit: payload.limit, useCache: payload.useCache, runLlm: payload.runLlm };
+    const items: BacklogItem[] = urls.map((url) => ({ url, handle: handleFromUrl(url), status: "pending" }));
+    setResult(null);
+    setLoadedReport(null);
+    setBacklog(items);
+    setBatchRunning(true);
+
+    const mark = (idx: number, patch: Partial<BacklogItem>) =>
+      setBacklog((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+
+    let firstDone: Analysis | null = null;
+    for (let i = 0; i < urls.length; i++) {
+      mark(i, { status: "running" });
+      try {
+        const data = await runAnalysis(urls[i], opts);
+        mark(i, { status: "done", result: data });
+        if (!firstDone) firstDone = data;
+        if (!isAuthed) {
+          markAnonAnalysisUsed();
+          pendingAnonResultRef.current = data;
+        }
+      } catch (err: any) {
+        mark(i, { status: "error", error: err?.message || "Échec de l'analyse" });
+      }
+    }
+
+    setBatchRunning(false);
+    if (isAuthed) loadReports();
+    // Un seul profil : on ouvre directement son rapport (UX historique conservée).
+    if (urls.length === 1 && firstDone) setResult(firstDone);
   }
 
   return (
@@ -1179,8 +1318,8 @@ export default function Home() {
           reports={reports}
           view={view}
           isAuthed={isAuthed}
-          onNavigate={(v) => { setView(v); if (v === "analyze") { setResult(null); setLoadedReport(null); setError(""); } }}
-          onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
+          onNavigate={(v) => { setView(v); if (v === "analyze") resetBacklog(); }}
+          onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); setBacklog([]); }}
           requireAuth={requireAuth}
         />
         <TopHeader
@@ -1188,20 +1327,29 @@ export default function Home() {
           view={view}
           isAuthed={isAuthed}
           userEmail={session?.user?.email ?? undefined}
-          onReset={() => { setResult(null); setLoadedReport(null); }}
+          onReset={() => { if (backlog.length > 1) { setResult(null); } else { resetBacklog(); } }}
           onSignIn={() => requireAuth(undefined, "signin")}
           onSignUp={() => requireAuth(undefined, "signup")}
           onSignOut={() => supabase.auth.signOut()}
         />
         <main className="main">
           {view === "analyze" && (
-            loading
-              ? <LoadingState />
-              : result
-                ? <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
+            result
+              ? (
+                <>
+                  {backlog.length > 1 && (
+                    <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => setResult(null)}>
+                      ← Retour au backlog
+                    </button>
+                  )}
+                  <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
+                </>
+              )
+              : backlog.length > 0
+                ? <BacklogView items={backlog} running={batchRunning} onOpen={(it) => it.result && setResult(it.result)} onReset={resetBacklog} />
                 : loadedReport
                   ? <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
-                  : <Landing onSubmit={analyze} loading={loading} error={error} />
+                  : <Landing onSubmit={analyze} loading={batchRunning} error={error} />
           )}
           {view === "generator" && <Generator />}
           {view === "dashboard" && <GlobalDashboard />}
