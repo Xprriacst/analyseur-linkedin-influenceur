@@ -225,13 +225,12 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
   );
 }
 
-function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, onAnonTrial, requireAuth }: {
+function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth }: {
   jobs: Job[];
   loading: boolean;
   isAuthed: boolean;
   onCreated: (job: Job) => void;
   onOpenReport: (markdown: string, name: string) => void;
-  onAnonTrial: (payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 }) {
   const [urls, setUrls] = useState("");
@@ -246,10 +245,9 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, onAnonTria
 
   async function submit() {
     if (urlList.length === 0) { setError("Colle au moins une URL de profil LinkedIn."); return; }
-    // Visiteur non connecté : essai gratuit = 1 profil en analyse synchrone
-    // (le flux freemium gère le « déjà utilisé » et l'upsell sur le rapport).
+    // Auth requise dans tous les cas (pas d'essai anonyme).
     if (!isAuthed) {
-      onAnonTrial({ url: urlList[0], limit, useCache, runLlm });
+      requireAuth("Crée un compte gratuit pour lancer ton analyse et conserver ton historique.");
       return;
     }
     setSubmitting(true); setError("");
@@ -311,15 +309,13 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, onAnonTria
         </div>
         <div className="batch-submit-row">
           <span className="batch-count">
-            {!isAuthed
-              ? (urlList.length > 1 ? "Essai gratuit : seul le 1er profil sera analysé. Crée un compte pour lancer une série." : "Essai gratuit — analyse 1 profil sans compte")
-              : urlList.length === 0
-                ? "Un profil par ligne — ⌘/Ctrl + Entrée pour lancer"
-                : `${urlList.length} profil${urlList.length > 1 ? "s" : ""} dans la série`}
+            {urlList.length === 0
+              ? "Un profil par ligne — ⌘/Ctrl + Entrée pour lancer"
+              : `${urlList.length} profil${urlList.length > 1 ? "s" : ""} dans la série`}
           </span>
           <button className="primary-button" disabled={submitting || urlList.length === 0} onClick={submit}>
             {submitting ? <Loader2 size={14} className="spinning" /> : <Zap size={14} />}
-            {isAuthed ? "Lancer la série" : "Analyser gratuitement"}
+            Lancer la série
           </button>
         </div>
         <div className="controls">
@@ -1507,7 +1503,7 @@ export default function Home() {
                       <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
                     </>
                   )
-                  : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} onAnonTrial={analyze} requireAuth={requireAuth} />
+                  : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} requireAuth={requireAuth} />
           )}
           {view === "generator" && <Generator />}
           {view === "dashboard" && <GlobalDashboard />}
