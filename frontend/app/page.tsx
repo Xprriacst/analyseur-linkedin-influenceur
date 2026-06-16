@@ -1633,15 +1633,8 @@ export default function Home() {
     setInfluencersLoading(true);
     try {
       const headers = await authHeaders();
-      const libRes = await fetch(`${API_URL}/me/influencers/library`, { headers });
-      if (libRes.ok) {
-        const data = await libRes.json();
-        if (Array.isArray(data)) {
-          setInfluencers(data);
-          return;
-        }
-      }
-      // Fallback : le backend Render prod déploie depuis main — /library absent tant que dev n'est pas mergé.
+      // Backend Render déploie depuis main : /me/influencers/library pas encore dispo.
+      // Deux appels existants suffisent ; réactiver /library après merge dev→main.
       const [infRes, anaRes] = await Promise.all([
         fetch(`${API_URL}/me/influencers`, { headers }),
         fetch(`${API_URL}/me/analyses?limit=100`, { headers }),
