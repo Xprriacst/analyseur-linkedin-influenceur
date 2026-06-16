@@ -22,7 +22,7 @@ _compute_lock = threading.Lock()
 
 def _counts(items: list[dict]) -> tuple[int, int]:
     done = sum(1 for it in items if it.get("status") == "done")
-    failed = sum(1 for it in items if it.get("status") == "error")
+    failed = sum(1 for it in items if it.get("status") in ("error", "cancelled"))
     return done, failed
 
 
@@ -46,6 +46,13 @@ def process_job(access_token: str, job_id: str) -> None:
 
     for item in items:
         if item.get("status") == "done":
+            continue
+
+        # Vérification d'annulation avant chaque profil (ne peut pas interrompre
+        # un appel Apify en cours, mais stoppe proprement entre deux profils).
+        if db.get_job_status(access_token, job_id) == "cancelled":
+            db.update_job_item(access_token, item["id"], status="cancelled")
+            item["status"] = "cancelled"
             continue
 
         db.update_job_item(access_token, item["id"], status="running", error=None)

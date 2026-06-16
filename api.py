@@ -569,6 +569,26 @@ def resume_job(job_id: str, token: str = Depends(require_token)) -> dict[str, An
     return job
 
 
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Annule une série en cours.
+
+    Pose le statut `cancelled` en base — le thread de traitement s'en aperçoit
+    avant chaque nouveau profil et stoppe proprement. Le profil en cours de
+    scraping (appel Apify bloquant) se terminera néanmoins avant l'arrêt.
+    """
+    job = db.get_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Série introuvable.")
+    if job.get("status") not in ("queued", "running"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"La série est déjà terminée (statut : {job.get('status')}).",
+        )
+    db.update_job(token, job_id, status="cancelled")
+    return db.get_job(token, job_id)
+
+
 @app.post("/analyses/persist")
 def persist_analysis(
     result: dict[str, Any],

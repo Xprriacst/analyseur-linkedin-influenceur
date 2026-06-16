@@ -433,6 +433,23 @@ def list_jobs(access_token: str, limit: int = 20) -> list[dict]:
     return jobs
 
 
+def get_job_status(access_token: str, job_id: str) -> str | None:
+    """Retourne uniquement le statut du job (lecture légère, sans items)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("analysis_jobs")
+        .select("status")
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0]["status"] if r.data else None
+
+
 def update_job(access_token: str, job_id: str, **fields: Any) -> None:
     db = client_for_token(access_token)
     fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()

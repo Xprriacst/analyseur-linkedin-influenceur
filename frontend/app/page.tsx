@@ -136,8 +136,8 @@ function hookLabel(key: string) {
 
 /* ── Backlog serveur (job queue) ───────────────────────────────────────── */
 
-type JobStatus = "queued" | "running" | "done" | "error";
-type ItemStatus = "pending" | "running" | "done" | "error";
+type JobStatus = "queued" | "running" | "done" | "error" | "cancelled";
+type ItemStatus = "pending" | "running" | "done" | "error" | "cancelled";
 
 type JobItem = {
   id: string;
@@ -171,6 +171,7 @@ const ITEM_STATUS_LABELS: Record<ItemStatus, string> = {
   running: "Analyse en cours…",
   done: "Terminé",
   error: "Échec",
+  cancelled: "Annulé",
 };
 
 /** Découpe un bloc de texte en URLs LinkedIn distinctes (une par ligne, dédupliquées). */
@@ -192,6 +193,10 @@ function jobIsActive(j: Job): boolean {
   return j.status === "queued" || j.status === "running";
 }
 
+function jobIsCancelled(j: Job): boolean {
+  return j.status === "cancelled";
+}
+
 function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean }) {
   const clickable = item.status === "done" && !!item.analysis_id;
   return (
@@ -205,6 +210,7 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
         {opening || item.status === "running" ? <Loader2 size={16} className="spinning" />
           : item.status === "done" ? <CheckCircle2 size={16} color="#10b981" />
           : item.status === "error" ? <span style={{ color: "#ef4444", fontWeight: 700 }}>✕</span>
+          : item.status === "cancelled" ? <span style={{ color: "var(--muted)", fontWeight: 700 }}>–</span>
           : <Clock3 size={16} color="var(--muted)" />}
       </span>
       <div className="backlog-main">
@@ -218,7 +224,7 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
           {item.follower_count != null ? <span className="badge">👍 {fmt(item.follower_count)}</span> : null}
         </div>
       ) : null}
-      <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : ""}`}>
+      <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : item.status === "cancelled" ? "no" : ""}`}>
         {ITEM_STATUS_LABELS[item.status]}
       </span>
     </div>
@@ -240,6 +246,7 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [openingId, setOpeningId] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const urlList = parseUrls(urls);
 
@@ -265,6 +272,20 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
       setError(err.message || "Échec de la création de la série");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function cancelJob(jobId: string) {
+    setCancellingId(jobId);
+    try {
+      await fetch(`${DIRECT_API_URL}/jobs/${jobId}/cancel`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+    } catch {
+      /* le polling remettra le statut à jour */
+    } finally {
+      setCancellingId(null);
     }
   }
 
@@ -358,11 +379,22 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
               <div className="job-block" key={job.id}>
                 <div className="job-head">
                   <div className="job-head-main">
-                    {active ? <Loader2 size={15} className="spinning" /> : job.failed && !job.completed ? <span style={{ color: "#ef4444" }}>✕</span> : <CheckCircle2 size={15} color="#10b981" />}
+                    {active ? <Loader2 size={15} className="spinning" /> : job.status === "cancelled" ? <span style={{ color: "var(--muted)" }}>–</span> : job.failed && !job.completed ? <span style={{ color: "#ef4444" }}>✕</span> : <CheckCircle2 size={15} color="#10b981" />}
                     <strong>Série du {date}</strong>
                     <span className="badge">{job.completed}/{job.total} terminé{job.completed > 1 ? "s" : ""}</span>
                     {job.failed > 0 ? <span className="status-pill no">{job.failed} échec{job.failed > 1 ? "s" : ""}</span> : null}
+                    {job.status === "cancelled" ? <span className="status-pill">Annulée</span> : null}
                   </div>
+                  {active ? (
+                    <button
+                      className="ghost-button"
+                      style={{ fontSize: 12, padding: "2px 10px", color: "var(--muted)" }}
+                      disabled={cancellingId === job.id}
+                      onClick={() => cancelJob(job.id)}
+                    >
+                      {cancellingId === job.id ? <Loader2 size={12} className="spinning" /> : "Annuler"}
+                    </button>
+                  ) : null}
                 </div>
                 <div className="backlog-list">
                   {job.items.map((item) => (
