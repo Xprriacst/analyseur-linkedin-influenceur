@@ -87,6 +87,12 @@ def me_influencers(token: str = Depends(require_token)) -> list[dict[str, Any]]:
     return db.list_influencers(token)
 
 
+@app.get("/me/influencers/library")
+def me_influencer_library(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """All analyzed influencers with current analysis metadata (no markdown)."""
+    return db.list_influencer_library(token)
+
+
 @app.get("/me/analyses")
 def me_analyses(token: str = Depends(require_token)) -> list[dict[str, Any]]:
     """List the authenticated user's analysis history."""
@@ -103,16 +109,20 @@ def me_analysis(analysis_id: str, token: str = Depends(require_token)) -> dict[s
 
 
 @app.get("/reports")
-def reports(token: Optional[str] = Depends(optional_token)) -> list[dict[str, Any]]:
+def reports(
+    limit: int = 3,
+    token: Optional[str] = Depends(optional_token),
+) -> list[dict[str, Any]]:
     """Recent analysis reports, scoped to the authenticated user.
 
     Supabase-backed in production; falls back to the local reports/ folder
     only when Supabase is not configured (single-user dev mode).
     """
+    safe_limit = max(1, min(limit, 100))
     if db.supabase_enabled():
         if not token or not db.get_user(token):
             raise HTTPException(status_code=401, detail="Authentification requise.")
-        return db.list_reports(token)
+        return db.list_reports(token, limit=safe_limit)
 
     reports_dir = Path("reports")
     if not reports_dir.exists():
@@ -125,7 +135,7 @@ def reports(token: Optional[str] = Depends(optional_token)) -> list[dict[str, An
             "updated_at": path.stat().st_mtime,
             "content": path.read_text(encoding="utf-8"),
         }
-        for path in files[:10]
+        for path in files[:safe_limit]
     ]
 
 

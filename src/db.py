@@ -252,7 +252,53 @@ def list_analyses(access_token: str, limit: int = 20) -> list[dict]:
     return resp.data or []
 
 
-def list_reports(access_token: str, limit: int = 10) -> list[dict]:
+def list_influencer_library(access_token: str) -> list[dict]:
+    """One row per analyzed influencer — current analysis metadata only (no markdown)."""
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("influencers")
+        .select("id,handle,name,headline,follower_count,profile_url,updated_at,analyses(id,updated_at,created_at)")
+        .eq("user_id", user["id"])
+        .order("updated_at", desc=True)
+        .execute()
+    )
+    rows: list[dict] = []
+    for inf in resp.data or []:
+        analyses = inf.get("analyses") or []
+        if isinstance(analyses, dict):
+            analyses = [analyses]
+        if not analyses:
+            continue
+        analysis = max(
+            analyses,
+            key=lambda a: (a.get("updated_at") or a.get("created_at") or ""),
+        )
+        analyzed_at = analysis.get("updated_at") or analysis.get("created_at") or ""
+        try:
+            ts = datetime.datetime.fromisoformat(analyzed_at.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            ts = 0
+        handle = unquote(inf["handle"])
+        name = (inf.get("name") or "").strip() or handle
+        profile_url = inf.get("profile_url") or f"https://www.linkedin.com/in/{inf['handle']}/"
+        rows.append({
+            "influencer_id": inf["id"],
+            "analysis_id": analysis["id"],
+            "handle": handle,
+            "name": name,
+            "headline": (inf.get("headline") or "").strip(),
+            "follower_count": int(inf.get("follower_count") or 0),
+            "profile_url": profile_url,
+            "analyzed_at": ts,
+        })
+    rows.sort(key=lambda r: r.get("analyzed_at") or 0, reverse=True)
+    return rows
+
+
+def list_reports(access_token: str, limit: int = 3) -> list[dict]:
     """User's recent analysis reports, shaped like the disk-based /reports payload."""
     user = get_user(access_token)
     if not user:

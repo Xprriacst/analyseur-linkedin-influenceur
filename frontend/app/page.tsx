@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Sparkles,
   TrendingUp,
+  Users,
   Zap,
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
@@ -34,6 +35,16 @@ const DIRECT_API_URL =
 
 type Health = { ok: boolean; apify: boolean; anthropic: boolean; model: string };
 type Report = { name: string; path: string; updated_at: number; content: string };
+type InfluencerLibraryEntry = {
+  influencer_id: string;
+  analysis_id: string;
+  handle: string;
+  name: string;
+  headline: string;
+  follower_count: number;
+  profile_url: string;
+  analyzed_at: number;
+};
 type Analysis = {
   handle: string;
   profile: Record<string, any>;
@@ -102,6 +113,9 @@ type GrowthRow = {
   avg_eng_after: number | null;
   growth_pct: number | null;
 };
+
+const mainViews = ["analyze", "influencers", "generator", "dashboard"] as const;
+type MainView = typeof mainViews[number];
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
 const steps = [
@@ -519,8 +533,9 @@ function Sidebar({
 }) {
   const [configOpen, setConfigOpen] = useState(false);
 
-  const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
+  const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean; auth?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
+    { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} />, auth: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
   ];
@@ -544,16 +559,22 @@ function Sidebar({
         <p className="eyebrow">Navigation</p>
         <div className="nav-list">
           {navItems.map((item) => {
-            const locked = !!item.premium && !isAuthed;
+            const locked = (!!item.premium || !!item.auth) && !isAuthed;
             return (
               <button
                 key={item.key}
                 className={`nav-item ${view === item.key ? "active" : ""} ${locked ? "locked" : ""}`}
-                onClick={() =>
-                  locked
-                    ? requireAuth("Crée un compte gratuit pour débloquer le générateur de posts et le dashboard global.")
-                    : onNavigate(item.key)
-                }
+                onClick={() => {
+                  if (locked) {
+                    requireAuth(
+                      item.auth
+                        ? "Crée un compte gratuit pour voir tes influenceurs analysés."
+                        : "Crée un compte gratuit pour débloquer le générateur de posts et le dashboard global."
+                    );
+                    return;
+                  }
+                  onNavigate(item.key);
+                }}
               >
                 {item.icon}
                 <span>{item.label}</span>
@@ -569,13 +590,14 @@ function Sidebar({
 
       <section className="sidebar-section">
         <p className="eyebrow">Analyses récentes</p>
+        <p style={{ margin: "0 0 8px", fontSize: 11, opacity: 0.45 }}>3 derniers profils analysés</p>
         <div className="report-list">
           {!isAuthed ? (
-            <div className="report-card" onClick={() => requireAuth("Crée un compte gratuit pour conserver ton historique d'analyses.")} style={{ cursor: "pointer" }}>
+            <div className="report-card" onClick={() => requireAuth("Crée un compte gratuit pour conserver tes analyses.")} style={{ cursor: "pointer" }}>
               <div className="report-icon"><Lock size={13} /></div>
               <div>
-                <strong>Historique verrouillé</strong>
-                <span>Crée un compte pour le conserver</span>
+                <strong>Analyses verrouillées</strong>
+                <span>Crée un compte pour les conserver</span>
               </div>
             </div>
           ) : reports.length ? reports.map((report) => (
@@ -664,6 +686,7 @@ function TopHeader({
 }) {
   const viewTitles: Record<MainView, string> = {
     analyze: "Analyser des profils LinkedIn",
+    influencers: "Mes influenceurs",
     generator: "Générateur de posts",
     dashboard: "Dashboard global",
   };
@@ -1347,13 +1370,186 @@ function GlobalDashboard() {
   );
 }
 
-const mainViews = ["analyze", "generator", "dashboard"] as const;
-type MainView = typeof mainViews[number];
+function InfluencersView({
+  entries,
+  loading,
+  isAuthed,
+  requireAuth,
+  onOpenReport,
+}: {
+  entries: InfluencerLibraryEntry[];
+  loading: boolean;
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onOpenReport: (entry: InfluencerLibraryEntry) => Promise<void>;
+}) {
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<"date" | "name">("date");
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Lock size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Mes influenceurs</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Connecte-toi pour retrouver tous tes profils analysés et leurs rapports.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour voir tes influenceurs analysés.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  const q = query.trim().toLowerCase();
+  const filtered = entries
+    .filter((e) => {
+      if (!q) return true;
+      return (
+        e.name.toLowerCase().includes(q)
+        || e.handle.toLowerCase().includes(q)
+        || e.headline.toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => {
+      if (sort === "name") return a.name.localeCompare(b.name, "fr");
+      return (b.analyzed_at || 0) - (a.analyzed_at || 0);
+    });
+
+  async function open(entry: InfluencerLibraryEntry) {
+    setError("");
+    setOpeningId(entry.analysis_id);
+    try {
+      await onOpenReport(entry);
+    } catch (err: any) {
+      setError(err.message || "Impossible d'ouvrir le rapport");
+    } finally {
+      setOpeningId(null);
+    }
+  }
+
+  return (
+    <div>
+      <div className="section-header" style={{ marginBottom: 16 }}>
+        <div>
+          <h2 className="section-title"><Users size={20} /> Mes influenceurs</h2>
+          <p className="section-desc">
+            Tous tes profils analysés — une ligne par influenceur, avec la dernière analyse à date.
+          </p>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          type="search"
+          className="url-input"
+          style={{ flex: "1 1 220px", minHeight: 40, padding: "8px 12px" }}
+          placeholder="Rechercher par nom, handle ou headline…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <label className="control" style={{ margin: 0 }}>
+          <span>Trier par</span>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as "date" | "name")}
+            style={{ marginLeft: 8, padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)" }}
+          >
+            <option value="date">Date d'analyse</option>
+            <option value="name">Nom</option>
+          </select>
+        </label>
+        <span style={{ fontSize: 13, color: "var(--muted)" }}>
+          {filtered.length} profil{filtered.length > 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {loading ? (
+        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+          <Loader2 size={24} className="spinning" style={{ opacity: 0.5 }} />
+          <p style={{ marginTop: 12, color: "var(--muted)" }}>Chargement de tes influenceurs…</p>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+          <FileText size={24} style={{ opacity: 0.35, marginBottom: 8 }} />
+          <p style={{ margin: 0, color: "var(--muted)" }}>
+            {entries.length === 0
+              ? "Aucun profil analysé pour l'instant. Lance une série dans l'onglet Analyser."
+              : "Aucun profil ne correspond à ta recherche."}
+          </p>
+        </div>
+      ) : (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table className="dash-table">
+              <thead>
+                <tr>
+                  <th>Influenceur</th>
+                  <th>Handle</th>
+                  <th>Abonnés</th>
+                  <th>Dernière analyse</th>
+                  <th>Profil</th>
+                  <th>Rapport</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((entry) => (
+                  <tr key={entry.influencer_id}>
+                    <td>
+                      <strong>{entry.name}</strong>
+                      {entry.headline ? (
+                        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2, maxWidth: 280 }}>
+                          {entry.headline.slice(0, 80)}{entry.headline.length > 80 ? "…" : ""}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td style={{ color: "var(--muted)", fontSize: 12 }}>{entry.handle}</td>
+                    <td>{entry.follower_count ? fmt(entry.follower_count) : "—"}</td>
+                    <td>
+                      {entry.analyzed_at
+                        ? new Date(entry.analyzed_at * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" })
+                        : "—"}
+                    </td>
+                    <td>
+                      <a href={entry.profile_url} target="_blank" rel="noopener noreferrer" className="secondary-button" style={{ padding: "4px 10px", fontSize: 12 }}>
+                        LinkedIn
+                      </a>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        style={{ padding: "4px 12px", fontSize: 12 }}
+                        disabled={openingId === entry.analysis_id}
+                        onClick={() => open(entry)}
+                      >
+                        {openingId === entry.analysis_id
+                          ? <Loader2 size={12} className="spinning" />
+                          : <FileText size={12} />}
+                        Voir
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [reportsLoading, setReportsLoading] = useState(false);
+  const [influencers, setInfluencers] = useState<InfluencerLibraryEntry[]>([]);
+  const [influencersLoading, setInfluencersLoading] = useState(false);
   const [result, setResult] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -1366,6 +1562,7 @@ export default function Home() {
   const [authReason, setAuthReason] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const userIdRef = useRef<string | null>(null);
+  const prevJobActiveRef = useRef(false);
   // Analyse anonyme affichée mais pas encore sauvegardée : sauvée dès l'inscription.
   const pendingAnonResultRef = useRef<Analysis | null>(null);
 
@@ -1380,10 +1577,19 @@ export default function Home() {
   async function loadReports() {
     setReportsLoading(true);
     try {
-      const res = await fetch(`${API_URL}/reports`, { headers: await authHeaders() });
+      const res = await fetch(`${API_URL}/reports?limit=3`, { headers: await authHeaders() });
       const data = await res.json();
       if (res.ok && Array.isArray(data)) setReports(data);
     } catch { /* ignore */ } finally { setReportsLoading(false); }
+  }
+
+  async function loadInfluencerLibrary() {
+    setInfluencersLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/me/influencers/library`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data)) setInfluencers(data);
+    } catch { /* ignore */ } finally { setInfluencersLoading(false); }
   }
 
   // Les séries vivent dans Home (pas dans JobsView) : le polling continue quand
@@ -1399,6 +1605,7 @@ export default function Home() {
   function onJobCreated(job: Job) {
     setJobs((prev) => [job, ...prev]);
     loadReports();
+    loadInfluencerLibrary();
   }
 
   const activeJob = jobs.find(jobIsActive) ?? null;
@@ -1411,6 +1618,12 @@ export default function Home() {
   useEffect(() => {
     if (!isAuthed) { setReports([]); return; }
     loadReports();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.access_token]);
+
+  useEffect(() => {
+    if (!isAuthed) { setInfluencers([]); return; }
+    loadInfluencerLibrary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, session?.access_token]);
 
@@ -1430,6 +1643,15 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, anyJobActive]);
 
+  useEffect(() => {
+    if (prevJobActiveRef.current && !anyJobActive && isAuthed) {
+      loadReports();
+      loadInfluencerLibrary();
+    }
+    prevJobActiveRef.current = anyJobActive;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anyJobActive, isAuthed]);
+
   async function persistAnonResult(anon: Analysis) {
     try {
       await fetch(`${DIRECT_API_URL}/analyses/persist`, {
@@ -1439,6 +1661,7 @@ export default function Home() {
       });
     } catch { /* best-effort : on ne bloque pas l'UX sur une erreur de save */ }
     loadReports();
+    loadInfluencerLibrary();
   }
 
   useEffect(() => {
@@ -1473,12 +1696,13 @@ export default function Home() {
       pendingAnonResultRef.current = null;
       setAuthOpen(false);
       setReports([]);
+      setInfluencers([]);
       setResult(null);
       setLoadedReport(null);
       setJobs([]);
       setError("");
       setView("analyze");
-      if (uid) setTimeout(() => { loadReports(); loadJobs(); }, 0);
+      if (uid) setTimeout(() => { loadReports(); loadJobs(); loadInfluencerLibrary(); }, 0);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -1486,6 +1710,22 @@ export default function Home() {
   /** Ouvre un rapport (depuis le backlog) dans la vue markdown de l'onglet Analyser. */
   function openReport(markdown: string, name: string) {
     setLoadedReport({ name, path: name, updated_at: Date.now() / 1000, content: markdown });
+    setResult(null);
+    setView("analyze");
+  }
+
+  async function openLibraryReport(entry: InfluencerLibraryEntry) {
+    const res = await fetch(`${DIRECT_API_URL}/me/analyses/${entry.analysis_id}`, { headers: await authHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data?.report_markdown) {
+      throw new Error(data?.detail || "Rapport introuvable.");
+    }
+    setLoadedReport({
+      name: entry.name,
+      path: entry.analysis_id,
+      updated_at: entry.analyzed_at || Date.now() / 1000,
+      content: data.report_markdown,
+    });
     setResult(null);
     setView("analyze");
   }
@@ -1530,7 +1770,14 @@ export default function Home() {
           view={view}
           isAuthed={isAuthed}
           jobBadge={activeJob ? { completed: activeJob.completed, total: activeJob.total } : null}
-          onNavigate={(v) => { setView(v); if (v === "analyze") { setResult(null); setLoadedReport(null); setError(""); } }}
+          onNavigate={(v) => {
+            setView(v);
+            if (v === "analyze" || v === "influencers") {
+              setResult(null);
+              setLoadedReport(null);
+              setError("");
+            }
+          }}
           onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
           requireAuth={requireAuth}
         />
@@ -1560,6 +1807,15 @@ export default function Home() {
                     </>
                   )
                   : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} requireAuth={requireAuth} />
+          )}
+          {view === "influencers" && (
+            <InfluencersView
+              entries={influencers}
+              loading={influencersLoading}
+              isAuthed={isAuthed}
+              requireAuth={requireAuth}
+              onOpenReport={openLibraryReport}
+            />
           )}
           {view === "generator" && <Generator />}
           {view === "dashboard" && <GlobalDashboard />}
