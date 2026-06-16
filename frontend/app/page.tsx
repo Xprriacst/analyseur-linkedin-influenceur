@@ -5,9 +5,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Activity,
+  Archive,
   BarChart3,
+  BookOpen,
   CheckCircle2,
   Clock3,
+  Copy,
   Download,
   FileText,
   Lightbulb,
@@ -19,6 +22,8 @@ import {
   LogOut,
   PenTool,
   RefreshCw,
+  Save,
+  Search,
   Sparkles,
   TrendingUp,
   Zap,
@@ -47,6 +52,7 @@ type Analysis = {
   path: string;
 };
 type Idea = {
+  id?: string;
   title: string;
   hook: string;
   hook_type: string;
@@ -55,13 +61,27 @@ type Idea = {
   why_it_works: string;
   difficulty: string;
   estimated_lift: string;
+  status?: "draft" | "saved" | "validated" | "archived";
+  created_at?: string;
+  updated_at?: string;
 };
 type Variant = {
+  id?: string;
+  idea_id?: string | null;
+  topic?: string;
   hook_type: string;
   strategy: string;
   predicted_lift: string;
   post: string;
+  post_text?: string;
+  variant_index?: number;
+  status?: "draft" | "ready" | "published" | "archived";
+  created_at?: string;
+  updated_at?: string;
+  linkedin_post_url?: string | null;
+  published_at?: string | null;
 };
+type GeneratorSeed = { topic: string; ideaId?: string | null } | null;
 type DashboardData = {
   influencer_count: number;
   influencers: {
@@ -488,6 +508,7 @@ function Sidebar({
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
+    { key: "library", label: "Bibliothèque", icon: <BookOpen size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
   ];
 
@@ -623,6 +644,7 @@ function TopHeader({
   const viewTitles: Record<MainView, string> = {
     analyze: "Analyser des profils LinkedIn",
     generator: "Générateur de posts",
+    library: "Bibliothèque",
     dashboard: "Dashboard global",
   };
 
@@ -953,13 +975,21 @@ function Dashboard({
   );
 }
 
-function Generator() {
+function Generator({ seed, onSeedConsumed }: { seed?: GeneratorSeed; onSeedConsumed?: () => void }) {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
   const [topic, setTopic] = useState("");
+  const [selectedIdeaId, setSelectedIdeaId] = useState<string | null>(null);
   const [loadingIdeas, setLoadingIdeas] = useState(false);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!seed) return;
+    setTopic(seed.topic);
+    setSelectedIdeaId(seed.ideaId ?? null);
+    onSeedConsumed?.();
+  }, [seed, onSeedConsumed]);
 
   async function fetchIdeas() {
     setError("");
@@ -980,7 +1010,7 @@ function Generator() {
     }
   }
 
-  async function generateFromTopic(t: string) {
+  async function generateFromTopic(t: string, ideaId: string | null = selectedIdeaId) {
     setError("");
     if (!t.trim()) { setError("Entre un sujet pour le post."); return; }
     setLoadingPosts(true);
@@ -988,11 +1018,12 @@ function Generator() {
       const res = await fetch(`${DIRECT_API_URL}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ topic: t.trim() }),
+        body: JSON.stringify({ topic: t.trim(), ...(ideaId ? { idea_id: ideaId } : {}) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération de posts");
       setVariants(data.variants || []);
+      if (data.save_error) setError(`Posts générés, mais sauvegarde échouée : ${data.save_error}`);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -1039,7 +1070,11 @@ function Generator() {
                 <button
                   className="primary-button"
                   style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                  onClick={() => { setTopic(idea.title); generateFromTopic(idea.title); }}
+                  onClick={() => {
+                    setTopic(idea.title);
+                    setSelectedIdeaId(idea.id ?? null);
+                    generateFromTopic(idea.title, idea.id ?? null);
+                  }}
                 >
                   <Sparkles size={12} /> Générer ce post
                 </button>
@@ -1057,7 +1092,7 @@ function Generator() {
             <PenTool size={16} color="var(--primary)" />
             <input
               value={topic}
-              onChange={(e) => setTopic(e.target.value)}
+              onChange={(e) => { setTopic(e.target.value); setSelectedIdeaId(null); }}
               placeholder="Sujet du post : ex. les 5 erreurs avec Claude AI…"
               onKeyDown={(e) => e.key === "Enter" && generateFromTopic(topic)}
             />
@@ -1083,12 +1118,260 @@ function Generator() {
                 <p className="variant-strategy">{v.strategy}</p>
                 <textarea className="variant-text" readOnly value={v.post} rows={14} />
                 <button className="secondary-button" onClick={() => navigator.clipboard.writeText(v.post)} style={{ marginTop: 8 }}>
-                  Copier le post
+                  <Copy size={13} /> Copier le post
                 </button>
               </div>
             );
           })}
         </div>
+      )}
+    </div>
+  );
+}
+
+function LibraryView({
+  isAuthed,
+  requireAuth,
+  onGenerateFromIdea,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onGenerateFromIdea: (idea: Idea) => void;
+}) {
+  const [ideas, setIdeas] = useState<Idea[]>([]);
+  const [posts, setPosts] = useState<Variant[]>([]);
+  const [tab, setTab] = useState<"ideas" | "posts">("ideas");
+  const [status, setStatus] = useState("active");
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [postEdits, setPostEdits] = useState<Record<string, string>>({});
+
+  async function loadLibrary() {
+    if (!isAuthed) return;
+    setLoading(true);
+    setError("");
+    try {
+      const headers = await authHeaders();
+      const [ideasRes, postsRes] = await Promise.all([
+        fetch(`${DIRECT_API_URL}/me/ideas`, { headers }),
+        fetch(`${DIRECT_API_URL}/me/posts`, { headers }),
+      ]);
+      const ideasData = await ideasRes.json();
+      const postsData = await postsRes.json();
+      if (!ideasRes.ok) throw new Error(ideasData.detail || "Impossible de charger les idées.");
+      if (!postsRes.ok) throw new Error(postsData.detail || "Impossible de charger les posts.");
+      const loadedPosts = Array.isArray(postsData) ? postsData : [];
+      setIdeas(Array.isArray(ideasData) ? ideasData : []);
+      setPosts(loadedPosts);
+      setPostEdits(Object.fromEntries(loadedPosts.filter((p: Variant) => p.id).map((p: Variant) => [p.id as string, p.post || p.post_text || ""])));
+    } catch (err: any) {
+      setError(err.message || "Chargement de la bibliothèque impossible.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadLibrary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  async function updateIdeaStatus(idea: Idea, nextStatus: NonNullable<Idea["status"]>) {
+    if (!idea.id) return;
+    setSavingId(idea.id);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ideas/${idea.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Mise à jour de l'idée impossible.");
+      setIdeas((prev) => prev.map((item) => item.id === idea.id ? data : item));
+    } catch (err: any) {
+      setError(err.message || "Mise à jour de l'idée impossible.");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function updatePost(post: Variant, fields: Partial<Variant> & { post_text?: string }) {
+    if (!post.id) return;
+    setSavingId(post.id);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/posts/${post.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify(fields),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Mise à jour du post impossible.");
+      setPosts((prev) => prev.map((item) => item.id === post.id ? data : item));
+      if (data.id) setPostEdits((prev) => ({ ...prev, [data.id]: data.post || data.post_text || "" }));
+    } catch (err: any) {
+      setError(err.message || "Mise à jour du post impossible.");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  function matchesStatus(itemStatus?: string) {
+    if (status === "all") return true;
+    if (status === "active") return itemStatus !== "archived";
+    return itemStatus === status;
+  }
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredIdeas = ideas.filter((idea) => {
+    const text = `${idea.title} ${idea.hook} ${idea.angle} ${idea.funnel} ${idea.hook_type}`.toLowerCase();
+    return matchesStatus(idea.status || "saved") && (!normalizedQuery || text.includes(normalizedQuery));
+  });
+  const filteredPosts = posts.filter((post) => {
+    const text = `${post.topic} ${post.hook_type} ${post.strategy} ${post.post || post.post_text}`.toLowerCase();
+    return matchesStatus(post.status || "draft") && (!normalizedQuery || text.includes(normalizedQuery));
+  });
+
+  if (!isAuthed) {
+    return (
+      <LockedCard
+        title="Bibliothèque verrouillée"
+        subtitle="Crée un compte gratuit pour retrouver tes idées et posts générés plus tard."
+        onUnlock={() => requireAuth("Crée un compte gratuit pour sauvegarder tes idées et posts générés.")}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><BookOpen size={20} /> Bibliothèque</h2>
+          <p className="section-desc">Retrouve les idées et posts générés par l'IA, sans obligation de publier tout de suite.</p>
+        </div>
+        <button className="secondary-button" onClick={loadLibrary} disabled={loading}>
+          {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+          Actualiser
+        </button>
+      </div>
+
+      <div className="library-toolbar">
+        <div className="tabs" style={{ margin: 0 }}>
+          <button className={`tab ${tab === "ideas" ? "active" : ""}`} onClick={() => setTab("ideas")}>
+            Idées enregistrées <span className="badge">{ideas.length}</span>
+          </button>
+          <button className={`tab ${tab === "posts" ? "active" : ""}`} onClick={() => setTab("posts")}>
+            Posts enregistrés <span className="badge">{posts.length}</span>
+          </button>
+        </div>
+        <div className="library-filters">
+          <label className="url-input library-search">
+            <Search size={15} color="var(--muted)" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Rechercher titre, hook, texte..." />
+          </label>
+          <select className="status-select" value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="active">Actifs</option>
+            <option value="all">Tous</option>
+            <option value="draft">Draft</option>
+            <option value="saved">Saved</option>
+            <option value="validated">Validated</option>
+            <option value="ready">Ready</option>
+            <option value="published">Published</option>
+            <option value="archived">Archived</option>
+          </select>
+        </div>
+      </div>
+
+      {error ? <div className="error">{error}</div> : null}
+
+      {loading ? (
+        <p style={{ color: "var(--muted)" }}>Chargement de la bibliothèque...</p>
+      ) : tab === "ideas" ? (
+        filteredIdeas.length ? (
+          <div className="ideas-grid">
+            {filteredIdeas.map((idea, i) => (
+              <div className="idea-card" key={idea.id || `${idea.title}-${i}`}>
+                <div className="idea-header">
+                  <span className="idea-funnel">{idea.funnel || "—"}</span>
+                  <span className="badge">{idea.hook_type || "hook"}</span>
+                  <span className="status-pill">{idea.status || "saved"}</span>
+                </div>
+                <h3 className="idea-title">{idea.title}</h3>
+                <p className="idea-hook">"{idea.hook}"</p>
+                <p className="idea-angle">{idea.angle}</p>
+                <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>
+                <div className="idea-footer">
+                  <span className={`idea-difficulty ${idea.difficulty}`}>{idea.difficulty || "—"}</span>
+                  <div className="variant-actions">
+                    <button className="primary-button" onClick={() => onGenerateFromIdea(idea)}>
+                      <Sparkles size={12} /> Générer le post
+                    </button>
+                    <button
+                      className="secondary-button"
+                      disabled={savingId === idea.id}
+                      onClick={() => updateIdeaStatus(idea, idea.status === "archived" ? "saved" : "archived")}
+                    >
+                      <Archive size={12} /> {idea.status === "archived" ? "Restaurer" : "Archiver"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="library-empty">Aucune idée ne correspond aux filtres.</div>
+        )
+      ) : filteredPosts.length ? (
+        <div className="variants-list">
+          {filteredPosts.map((post, i) => {
+            const key = post.id || `${post.topic}-${i}`;
+            const text = postEdits[key] ?? post.post ?? post.post_text ?? "";
+            return (
+              <div className="variant-card" key={key}>
+                <div className="variant-header">
+                  <span className="variant-number" style={{ background: "var(--primary)" }}>{(post.variant_index ?? i) + 1}</span>
+                  <span className="badge">{post.hook_type || "hook"}</span>
+                  <span className="status-pill">{post.status || "draft"}</span>
+                  {post.topic ? <span className="idea-lift">{post.topic}</span> : null}
+                </div>
+                {post.strategy ? <p className="variant-strategy">{post.strategy}</p> : null}
+                <textarea
+                  className="variant-text"
+                  value={text}
+                  rows={14}
+                  onChange={(e) => post.id && setPostEdits((prev) => ({ ...prev, [post.id as string]: e.target.value }))}
+                />
+                <div className="variant-actions">
+                  <button className="secondary-button" onClick={() => navigator.clipboard.writeText(text)}>
+                    <Copy size={13} /> Copier
+                  </button>
+                  <button className="secondary-button" disabled={savingId === post.id} onClick={() => updatePost(post, { post_text: text })}>
+                    <Save size={13} /> Enregistrer
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={savingId === post.id}
+                    onClick={() => updatePost(post, { status: post.status === "ready" ? "draft" : "ready" })}
+                  >
+                    {post.status === "ready" ? "Repasser draft" : "Marquer ready"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={savingId === post.id}
+                    onClick={() => updatePost(post, { status: post.status === "archived" ? "draft" : "archived" })}
+                  >
+                    <Archive size={13} /> {post.status === "archived" ? "Restaurer" : "Archiver"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="library-empty">Aucun post ne correspond aux filtres.</div>
       )}
     </div>
   );
@@ -1305,7 +1588,7 @@ function GlobalDashboard() {
   );
 }
 
-const mainViews = ["analyze", "generator", "dashboard"] as const;
+const mainViews = ["analyze", "generator", "library", "dashboard"] as const;
 type MainView = typeof mainViews[number];
 
 export default function Home() {
@@ -1317,6 +1600,7 @@ export default function Home() {
   const [view, setView] = useState<MainView>("analyze");
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [generatorSeed, setGeneratorSeed] = useState<GeneratorSeed>(null);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
@@ -1421,6 +1705,7 @@ export default function Home() {
       setResult(null);
       setLoadedReport(null);
       setJobs([]);
+      setGeneratorSeed(null);
       setError("");
       setView("analyze");
       if (uid) setTimeout(() => { loadReports(); loadJobs(); }, 0);
@@ -1505,7 +1790,17 @@ export default function Home() {
                   )
                   : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} requireAuth={requireAuth} />
           )}
-          {view === "generator" && <Generator />}
+          {view === "generator" && <Generator seed={generatorSeed} onSeedConsumed={() => setGeneratorSeed(null)} />}
+          {view === "library" && (
+            <LibraryView
+              isAuthed={isAuthed}
+              requireAuth={requireAuth}
+              onGenerateFromIdea={(idea) => {
+                setGeneratorSeed({ topic: idea.title, ideaId: idea.id ?? null });
+                setView("generator");
+              }}
+            />
+          )}
           {view === "dashboard" && <GlobalDashboard />}
         </main>
       </div>

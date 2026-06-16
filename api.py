@@ -414,6 +414,38 @@ class IdeasRequest(BaseModel):
 
 class GenerateRequest(BaseModel):
     topic: str = Field(..., min_length=3)
+    idea_id: Optional[str] = None
+
+
+class IdeaUpdateRequest(BaseModel):
+    status: Optional[str] = None
+
+
+class GeneratedPostUpdateRequest(BaseModel):
+    status: Optional[str] = None
+    post_text: Optional[str] = None
+    linkedin_post_url: Optional[str] = None
+    published_at: Optional[str] = None
+
+
+def _saved_post_to_variant(row: dict[str, Any]) -> dict[str, Any]:
+    """Expose saved post rows with the same `post` key used by /generate."""
+    return {
+        "id": row.get("id"),
+        "idea_id": row.get("idea_id"),
+        "topic": row.get("topic"),
+        "hook_type": row.get("hook_type"),
+        "strategy": row.get("strategy"),
+        "predicted_lift": row.get("predicted_lift"),
+        "variant_index": row.get("variant_index"),
+        "status": row.get("status"),
+        "post": row.get("post_text") or "",
+        "post_text": row.get("post_text") or "",
+        "published_at": row.get("published_at"),
+        "linkedin_post_url": row.get("linkedin_post_url"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
 
 
 @app.post("/ideas")
@@ -437,6 +469,28 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
     return {"ideas": ideas_list, "influencer_count": len(influencers), "save_error": save_error}
 
 
+@app.get("/me/ideas")
+def me_ideas(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List saved generated ideas for the authenticated user."""
+    return db.list_generated_ideas(token)
+
+
+@app.patch("/me/ideas/{idea_id}")
+def update_me_idea(
+    idea_id: str,
+    payload: IdeaUpdateRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Update mutable metadata on a saved generated idea."""
+    try:
+        idea = db.update_generated_idea(token, idea_id, status=payload.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not idea:
+        raise HTTPException(status_code=404, detail="Idee introuvable.")
+    return idea
+
+
 @app.post("/generate")
 def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
     """Generate optimized post variants for a given topic."""
@@ -446,10 +500,55 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
     influencers = _get_influencers(token)
     if not influencers:
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
+    if payload.idea_id:
+        if not token:
+            raise HTTPException(status_code=401, detail="Authentification requise pour lier une idee.")
+        if not db.get_generated_idea(token, payload.idea_id):
+            raise HTTPException(status_code=404, detail="Idee source introuvable.")
 
     top_posts, benchmark = _build_benchmark(influencers)
-    variants = generate_posts(payload.topic.strip(), top_posts, benchmark)
-    return {"variants": variants}
+    topic = payload.topic.strip()
+    variants = generate_posts(topic, top_posts, benchmark)
+    save_error: str | None = None
+    if token:
+        try:
+            saved = db.save_generated_posts(token, topic, variants, idea_id=payload.idea_id)
+            if saved and all("post_text" in row for row in saved):
+                variants = [_saved_post_to_variant(row) for row in saved]
+            else:
+                variants = saved
+        except Exception as exc:
+            save_error = str(exc)
+    return {"variants": variants, "save_error": save_error}
+
+
+@app.get("/me/posts")
+def me_posts(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List saved generated posts for the authenticated user."""
+    return [_saved_post_to_variant(row) for row in db.list_generated_posts(token)]
+
+
+@app.patch("/me/posts/{post_id}")
+def update_me_post(
+    post_id: str,
+    payload: GeneratedPostUpdateRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Update editable text/status metadata on a saved generated post."""
+    try:
+        post = db.update_generated_post(
+            token,
+            post_id,
+            status=payload.status,
+            post_text=payload.post_text,
+            linkedin_post_url=payload.linkedin_post_url,
+            published_at=payload.published_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not post:
+        raise HTTPException(status_code=404, detail="Post introuvable.")
+    return _saved_post_to_variant(post)
 
 
 @app.post("/analyze")

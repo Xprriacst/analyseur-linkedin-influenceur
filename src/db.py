@@ -314,11 +314,194 @@ def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
             "why_it_works": idea.get("why_it_works"),
             "difficulty": idea.get("difficulty"),
             "estimated_lift": idea.get("estimated_lift"),
+            "status": idea.get("status") or "saved",
         }
         for idea in ideas
     ]
     resp = db.table("generated_ideas").insert(rows).execute()
     return resp.data if resp.data else ideas
+
+
+IDEA_STATUSES = {"draft", "saved", "validated", "archived"}
+POST_STATUSES = {"draft", "ready", "published", "archived"}
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def list_generated_ideas(access_token: str, limit: int = 100) -> list[dict]:
+    """List the authenticated user's saved generated ideas."""
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_ideas")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_generated_idea(access_token: str, idea_id: str) -> dict | None:
+    """Fetch one generated idea owned by the authenticated user."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_ideas")
+        .select("*")
+        .eq("id", idea_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_generated_idea(access_token: str, idea_id: str, *, status: str | None = None) -> dict | None:
+    """Update mutable fields on a saved idea and return the row."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    fields: dict[str, Any] = {"updated_at": _now_iso()}
+    if status is not None:
+        if status not in IDEA_STATUSES:
+            raise ValueError(f"Statut d'idee invalide: {status}")
+        fields["status"] = status
+    if len(fields) == 1:
+        return get_generated_idea(access_token, idea_id)
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_ideas")
+        .update(fields)
+        .eq("id", idea_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def _generated_post_row(
+    user_id: str,
+    topic: str,
+    variant: dict,
+    *,
+    idea_id: str | None,
+    variant_index: int,
+) -> dict:
+    return {
+        "user_id": user_id,
+        "idea_id": idea_id,
+        "topic": topic,
+        "post_text": variant.get("post") or variant.get("post_text") or "",
+        "hook_type": variant.get("hook_type"),
+        "strategy": variant.get("strategy"),
+        "predicted_lift": variant.get("predicted_lift"),
+        "variant_index": variant_index,
+        "status": variant.get("status") or "draft",
+    }
+
+
+def save_generated_posts(
+    access_token: str,
+    topic: str,
+    variants: list[dict],
+    *,
+    idea_id: str | None = None,
+) -> list[dict]:
+    """Persist generated post variants for the authenticated user."""
+    if not variants or not supabase_enabled():
+        return variants
+    user = get_user(access_token)
+    if not user:
+        return variants
+    db = client_for_token(access_token)
+    rows = [
+        _generated_post_row(user["id"], topic, variant, idea_id=idea_id, variant_index=i)
+        for i, variant in enumerate(variants)
+        if (variant.get("post") or variant.get("post_text") or "").strip()
+    ]
+    if not rows:
+        return variants
+    resp = db.table("generated_posts").insert(rows).execute()
+    return resp.data if resp.data else variants
+
+
+def list_generated_posts(access_token: str, limit: int = 100) -> list[dict]:
+    """List the authenticated user's saved generated posts."""
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_generated_post(access_token: str, post_id: str) -> dict | None:
+    """Fetch one generated post owned by the authenticated user."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .select("*")
+        .eq("id", post_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_generated_post(
+    access_token: str,
+    post_id: str,
+    *,
+    status: str | None = None,
+    post_text: str | None = None,
+    linkedin_post_url: str | None = None,
+    published_at: str | None = None,
+) -> dict | None:
+    """Update mutable fields on a saved generated post and return the row."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    fields: dict[str, Any] = {"updated_at": _now_iso()}
+    if status is not None:
+        if status not in POST_STATUSES:
+            raise ValueError(f"Statut de post invalide: {status}")
+        fields["status"] = status
+    if post_text is not None:
+        fields["post_text"] = post_text
+    if linkedin_post_url is not None:
+        fields["linkedin_post_url"] = linkedin_post_url or None
+    if published_at is not None:
+        fields["published_at"] = published_at or None
+    if len(fields) == 1:
+        return get_generated_post(access_token, post_id)
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update(fields)
+        .eq("id", post_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
 
 
 import re as _re

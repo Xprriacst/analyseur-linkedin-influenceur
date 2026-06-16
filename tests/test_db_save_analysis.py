@@ -25,6 +25,11 @@ class FakeTable:
         self.calls.append(("insert", self.name, rows, None))
         return self
 
+    def update(self, fields):
+        self.last_operation = "update"
+        self.calls.append(("update", self.name, fields, None))
+        return self
+
     def delete(self):
         self.last_operation = "delete"
         self.calls.append(("delete", self.name, None, None))
@@ -38,11 +43,26 @@ class FakeTable:
         self.calls.append(("eq", self.name, column, value))
         return self
 
+    def order(self, column, desc=False):
+        self.calls.append(("order", self.name, column, desc))
+        return self
+
+    def limit(self, value):
+        self.calls.append(("limit", self.name, value, None))
+        return self
+
     def execute(self):
         if self.name == "influencers" and self.last_operation == "upsert":
             return FakeResponse([{"id": "influencer-1"}])
         if self.name == "analyses" and self.last_operation == "upsert":
             return FakeResponse([{"id": "analysis-1"}])
+        if self.name == "generated_posts" and self.last_operation == "insert":
+            insert_call = next(
+                call for call in reversed(self.calls)
+                if call[0] == "insert" and call[1] == "generated_posts"
+            )
+            rows = insert_call[2]
+            return FakeResponse([{**row, "id": f"post-{i}"} for i, row in enumerate(rows)])
         return FakeResponse()
 
 
@@ -89,6 +109,44 @@ class SaveAnalysisTest(unittest.TestCase):
             if call[0] == "insert" and call[1] == "analyses"
         ]
         self.assertEqual(analysis_inserts, [])
+
+    def test_saves_generated_post_variants(self):
+        client = FakeClient()
+        variants = [
+            {
+                "hook_type": "question",
+                "strategy": "Tester un angle direct",
+                "predicted_lift": "+40%",
+                "post": "Et si ton process IA tenait en 3 questions ?",
+            },
+            {
+                "hook_type": "story+result",
+                "strategy": "Preuve narrative",
+                "predicted_lift": "+60%",
+                "post": "Hier, un client a gagne 4h avec ce workflow.",
+            },
+        ]
+
+        with (
+            patch.object(db, "supabase_enabled", return_value=True),
+            patch.object(db, "get_user", return_value={"id": "user-1", "email": "ada@example.com"}),
+            patch.object(db, "client_for_token", return_value=client),
+        ):
+            saved = db.save_generated_posts("token", "Automatiser la prospection", variants, idea_id="idea-1")
+
+        self.assertEqual([row["id"] for row in saved], ["post-0", "post-1"])
+        post_inserts = [
+            call for call in client.calls
+            if call[0] == "insert" and call[1] == "generated_posts"
+        ]
+        self.assertEqual(len(post_inserts), 1)
+        rows = post_inserts[0][2]
+        self.assertEqual(rows[0]["user_id"], "user-1")
+        self.assertEqual(rows[0]["idea_id"], "idea-1")
+        self.assertEqual(rows[0]["topic"], "Automatiser la prospection")
+        self.assertEqual(rows[0]["post_text"], variants[0]["post"])
+        self.assertEqual(rows[0]["variant_index"], 0)
+        self.assertEqual(rows[0]["status"], "draft")
 
 
 if __name__ == "__main__":
