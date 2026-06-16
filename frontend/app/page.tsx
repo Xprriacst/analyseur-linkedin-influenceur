@@ -133,6 +133,52 @@ function fmt(value: any) {
   return String(value);
 }
 
+function decodeHandle(handle: string) {
+  try {
+    return decodeURIComponent(handle);
+  } catch {
+    return handle;
+  }
+}
+
+function buildInfluencerLibraryFromLegacy(
+  influencersRaw: Record<string, unknown>[],
+  analysesRaw: Record<string, unknown>[],
+): InfluencerLibraryEntry[] {
+  const analysisByHandle = new Map<string, { id: string; created_at: string }>();
+  for (const row of analysesRaw) {
+    const handle = String(row.handle || "");
+    if (!handle || !row.id) continue;
+    const entry = { id: String(row.id), created_at: String(row.created_at || "") };
+    analysisByHandle.set(handle, entry);
+    analysisByHandle.set(decodeHandle(handle), entry);
+  }
+
+  const entries: InfluencerLibraryEntry[] = [];
+  for (const inf of influencersRaw) {
+    const rawHandle = String(inf.handle || "");
+    const handle = decodeHandle(rawHandle);
+    const analysis = analysisByHandle.get(handle) || analysisByHandle.get(rawHandle);
+    if (!analysis) continue;
+    let analyzedAt = 0;
+    if (analysis.created_at) {
+      const ts = Date.parse(analysis.created_at);
+      if (!Number.isNaN(ts)) analyzedAt = ts / 1000;
+    }
+    entries.push({
+      influencer_id: String(inf.id),
+      analysis_id: analysis.id,
+      handle,
+      name: (String(inf.name || "")).trim() || handle,
+      headline: (String(inf.headline || "")).trim(),
+      follower_count: Number(inf.follower_count) || 0,
+      profile_url: String(inf.profile_url || `https://www.linkedin.com/in/${rawHandle}/`),
+      analyzed_at: analyzedAt,
+    });
+  }
+  return entries.sort((a, b) => (b.analyzed_at || 0) - (a.analyzed_at || 0));
+}
+
 const HOOK_LABELS: Record<string, string> = {
   question: "Question directe",
   story: "Histoire / anecdote",
@@ -1579,16 +1625,32 @@ export default function Home() {
     try {
       const res = await fetch(`${API_URL}/reports?limit=3`, { headers: await authHeaders() });
       const data = await res.json();
-      if (res.ok && Array.isArray(data)) setReports(data);
+      if (res.ok && Array.isArray(data)) setReports(data.slice(0, 3));
     } catch { /* ignore */ } finally { setReportsLoading(false); }
   }
 
   async function loadInfluencerLibrary() {
     setInfluencersLoading(true);
     try {
-      const res = await fetch(`${API_URL}/me/influencers/library`, { headers: await authHeaders() });
-      const data = await res.json();
-      if (res.ok && Array.isArray(data)) setInfluencers(data);
+      const headers = await authHeaders();
+      const libRes = await fetch(`${API_URL}/me/influencers/library`, { headers });
+      if (libRes.ok) {
+        const data = await libRes.json();
+        if (Array.isArray(data)) {
+          setInfluencers(data);
+          return;
+        }
+      }
+      // Fallback : le backend Render prod déploie depuis main — /library absent tant que dev n'est pas mergé.
+      const [infRes, anaRes] = await Promise.all([
+        fetch(`${API_URL}/me/influencers`, { headers }),
+        fetch(`${API_URL}/me/analyses?limit=100`, { headers }),
+      ]);
+      if (!infRes.ok || !anaRes.ok) return;
+      const influencersRaw = await infRes.json();
+      const analysesRaw = await anaRes.json();
+      if (!Array.isArray(influencersRaw) || !Array.isArray(analysesRaw)) return;
+      setInfluencers(buildInfluencerLibraryFromLegacy(influencersRaw, analysesRaw));
     } catch { /* ignore */ } finally { setInfluencersLoading(false); }
   }
 

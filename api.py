@@ -94,9 +94,12 @@ def me_influencer_library(token: str = Depends(require_token)) -> list[dict[str,
 
 
 @app.get("/me/analyses")
-def me_analyses(token: str = Depends(require_token)) -> list[dict[str, Any]]:
-    """List the authenticated user's analysis history."""
-    return db.list_analyses(token)
+def me_analyses(
+    limit: int = 100,
+    token: str = Depends(require_token),
+) -> list[dict[str, Any]]:
+    """List the authenticated user's current analyses (one per influencer)."""
+    return db.list_analyses(token, limit=max(1, min(limit, 500)))
 
 
 @app.get("/me/analyses/{analysis_id}")
