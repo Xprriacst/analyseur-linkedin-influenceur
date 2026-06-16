@@ -17,8 +17,10 @@ import {
   Lock,
   LogIn,
   LogOut,
+  MessageCircle,
   PenTool,
   RefreshCw,
+  Send,
   Sparkles,
   TrendingUp,
   Zap,
@@ -61,6 +63,12 @@ type Variant = {
   strategy: string;
   predicted_lift: string;
   post: string;
+};
+type EditChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  changes?: string[];
+  variants?: string[];
 };
 type DashboardData = {
   influencer_count: number;
@@ -956,6 +964,10 @@ function Dashboard({
 function Generator() {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
+  const [chatMessages, setChatMessages] = useState<Record<number, EditChatMessage[]>>({});
+  const [chatDrafts, setChatDrafts] = useState<Record<number, string>>({});
+  const [editingVariant, setEditingVariant] = useState<Record<number, boolean>>({});
+  const [chatErrors, setChatErrors] = useState<Record<number, string>>({});
   const [topic, setTopic] = useState("");
   const [loadingIdeas, setLoadingIdeas] = useState(false);
   const [loadingPosts, setLoadingPosts] = useState(false);
@@ -993,10 +1005,69 @@ function Generator() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération de posts");
       setVariants(data.variants || []);
+      setChatMessages({});
+      setChatDrafts({});
+      setChatErrors({});
+      setEditingVariant({});
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoadingPosts(false);
+    }
+  }
+
+  function updateVariantPost(index: number, post: string) {
+    setVariants((current) => current.map((variant, i) => (i === index ? { ...variant, post } : variant)));
+  }
+
+  async function editVariant(index: number) {
+    const instruction = (chatDrafts[index] || "").trim();
+    const variant = variants[index];
+    if (!instruction || !variant) return;
+
+    const history = chatMessages[index] || [];
+    const userMessage: EditChatMessage = { role: "user", content: instruction };
+    setChatMessages((current) => ({
+      ...current,
+      [index]: [...(current[index] || []), userMessage],
+    }));
+    setChatDrafts((current) => ({ ...current, [index]: "" }));
+    setChatErrors((current) => ({ ...current, [index]: "" }));
+    setEditingVariant((current) => ({ ...current, [index]: true }));
+
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate/edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          post: variant.post,
+          instruction,
+          history: history.map(({ role, content }) => ({ role, content })),
+          topic,
+          hook_type: variant.hook_type,
+          strategy: variant.strategy,
+          predicted_lift: variant.predicted_lift,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Échec de l'édition du post");
+
+      const nextPost = data.post || variant.post;
+      updateVariantPost(index, nextPost);
+      const assistantMessage: EditChatMessage = {
+        role: "assistant",
+        content: data.assistant_message || "Modification appliquée.",
+        changes: Array.isArray(data.changes) ? data.changes : [],
+        variants: Array.isArray(data.variants) ? data.variants : [],
+      };
+      setChatMessages((current) => ({
+        ...current,
+        [index]: [...(current[index] || []), assistantMessage],
+      }));
+    } catch (err: any) {
+      setChatErrors((current) => ({ ...current, [index]: err.message }));
+    } finally {
+      setEditingVariant((current) => ({ ...current, [index]: false }));
     }
   }
 
@@ -1073,6 +1144,10 @@ function Generator() {
         <div className="variants-list">
           {variants.map((v, i) => {
             const color = hookColors[v.hook_type] || "var(--primary)";
+            const messages = chatMessages[i] || [];
+            const isEditing = !!editingVariant[i];
+            const draft = chatDrafts[i] || "";
+            const chatError = chatErrors[i];
             return (
               <div className="variant-card" key={i}>
                 <div className="variant-header">
@@ -1081,10 +1156,66 @@ function Generator() {
                   <span className="idea-lift">{v.predicted_lift}</span>
                 </div>
                 <p className="variant-strategy">{v.strategy}</p>
-                <textarea className="variant-text" readOnly value={v.post} rows={14} />
+                <textarea
+                  className="variant-text"
+                  value={v.post}
+                  rows={14}
+                  onChange={(event) => updateVariantPost(i, event.target.value)}
+                />
                 <button className="secondary-button" onClick={() => navigator.clipboard.writeText(v.post)} style={{ marginTop: 8 }}>
                   Copier le post
                 </button>
+                <div className="variant-chat">
+                  <div className="variant-chat-title">
+                    <MessageCircle size={15} />
+                    Améliorer ce post avec Claude
+                  </div>
+                  {messages.length > 0 && (
+                    <div className="variant-chat-messages">
+                      {messages.map((message, messageIndex) => (
+                        <div className={`variant-chat-message ${message.role}`} key={messageIndex}>
+                          <p>{message.content}</p>
+                          {message.changes && message.changes.length > 0 ? (
+                            <ul className="variant-chat-changes">
+                              {message.changes.map((change, changeIndex) => <li key={changeIndex}>{change}</li>)}
+                            </ul>
+                          ) : null}
+                          {message.variants && message.variants.length > 0 ? (
+                            <div className="variant-chat-alternatives">
+                              {message.variants.map((alternative, alternativeIndex) => (
+                                <button
+                                  className="secondary-button"
+                                  key={alternativeIndex}
+                                  onClick={() => updateVariantPost(i, alternative)}
+                                >
+                                  Utiliser variante {alternativeIndex + 1}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {chatError ? <div className="variant-chat-error">{chatError}</div> : null}
+                  <div className="variant-chat-form">
+                    <textarea
+                      value={draft}
+                      rows={2}
+                      placeholder='Ex: "raccourcis-le et enlève le CTA", "rends le ton plus direct", "fais 3 variantes"'
+                      onChange={(event) => setChatDrafts((current) => ({ ...current, [i]: event.target.value }))}
+                      onKeyDown={(event) => {
+                        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                          editVariant(i);
+                        }
+                      }}
+                    />
+                    <button className="primary-button" disabled={isEditing || !draft.trim()} onClick={() => editVariant(i)}>
+                      {isEditing ? <Loader2 size={14} className="spinning" /> : <Send size={14} />}
+                      Envoyer
+                    </button>
+                  </div>
+                </div>
               </div>
             );
           })}

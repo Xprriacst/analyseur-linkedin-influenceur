@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from src import db
 from src.pipeline import run_analysis
 from src.jobs import start_job_thread
-from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy
+from src.llm import generate_ideas, generate_posts, edit_generated_post, analyze_dashboard_strategy
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.stats import compute_stats
@@ -416,6 +416,21 @@ class GenerateRequest(BaseModel):
     topic: str = Field(..., min_length=3)
 
 
+class EditChatMessage(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant)$")
+    content: str = Field(..., min_length=1, max_length=2000)
+
+
+class EditPostRequest(BaseModel):
+    post: str = Field(..., min_length=20, max_length=12000)
+    instruction: str = Field(..., min_length=2, max_length=1500)
+    history: list[EditChatMessage] = Field(default_factory=list, max_length=12)
+    topic: str | None = Field(default=None, max_length=300)
+    hook_type: str | None = Field(default=None, max_length=80)
+    strategy: str | None = Field(default=None, max_length=800)
+    predicted_lift: str | None = Field(default=None, max_length=80)
+
+
 @app.post("/ideas")
 def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
     """Generate post ideas from the user's influencer insights."""
@@ -450,6 +465,33 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
     top_posts, benchmark = _build_benchmark(influencers)
     variants = generate_posts(payload.topic.strip(), top_posts, benchmark)
     return {"variants": variants}
+
+
+@app.post("/generate/edit")
+def generate_edit(payload: EditPostRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
+    """Improve a generated post through a conversational instruction."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    influencers = _get_influencers(token)
+    if not influencers:
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
+
+    top_posts, benchmark = _build_benchmark(influencers)
+    variant_context = {
+        "topic": payload.topic,
+        "hook_type": payload.hook_type,
+        "strategy": payload.strategy,
+        "predicted_lift": payload.predicted_lift,
+    }
+    return edit_generated_post(
+        current_post=payload.post.strip(),
+        instruction=payload.instruction.strip(),
+        history=[message.model_dump() for message in payload.history],
+        top_posts_examples=top_posts,
+        benchmark=benchmark,
+        variant_context={key: value for key, value in variant_context.items() if value},
+    )
 
 
 @app.post("/analyze")

@@ -347,3 +347,71 @@ Schéma JSON attendu (toutes les clés obligatoires) :
     )
     data = _call(system, user, max_tokens=6000, temperature=0.7)
     return data.get("variants", [])
+
+
+def edit_generated_post(
+    current_post: str,
+    instruction: str,
+    history: list[dict],
+    top_posts_examples: list[dict],
+    benchmark: dict,
+    variant_context: dict | None = None,
+) -> dict[str, Any]:
+    """Rewrite a generated LinkedIn post from a conversational instruction."""
+    examples_text = "\n\n".join(
+        f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')}]\n{e.get('text', '')[:500]}"
+        for e in top_posts_examples[:6]
+    )
+    safe_history = [
+        {
+            "role": msg.get("role"),
+            "content": str(msg.get("content", ""))[:1200],
+        }
+        for msg in history[-12:]
+        if msg.get("role") in {"user", "assistant"} and msg.get("content")
+    ]
+
+    system = (
+        "Tu es un coach LinkedIn senior dans la niche IA/automatisation. "
+        "Tu aides l'utilisateur à améliorer un post généré par itérations conversationnelles, "
+        "en restant fidèle à sa demande et aux patterns validés par les analyses d'influenceurs. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    user = (
+        "Contexte de performance issu des analyses d'influenceurs :\n"
+        + json.dumps(benchmark, ensure_ascii=False, indent=2)
+        + "\n\nExemples de posts qui performent :\n"
+        + examples_text
+        + "\n\nContexte de la variante actuelle :\n"
+        + json.dumps(variant_context or {}, ensure_ascii=False, indent=2)
+        + "\n\nHistorique de conversation :\n"
+        + json.dumps(safe_history, ensure_ascii=False, indent=2)
+        + "\n\nPost actuel à améliorer :\n"
+        + current_post
+        + "\n\nNouvelle demande utilisateur :\n"
+        + instruction
+        + """
+
+Règles impératives :
+- Réécris le post en français, prêt à publier sur LinkedIn.
+- Respecte exactement la demande utilisateur (ex: raccourcir, retirer le CTA, rendre plus direct, créer des variantes).
+- Appuie-toi sur les hooks, structures et signaux du benchmark sans inventer de chiffres.
+- Si l'utilisateur demande plusieurs variantes, remplis `variants` avec ces textes complets et mets dans `post` la variante recommandée.
+- Si l'utilisateur ne demande pas plusieurs variantes, `variants` doit être une liste vide.
+- Ne mets pas de balises markdown dans le texte du post.
+
+Schéma JSON attendu (toutes les clés obligatoires) :
+{
+  "assistant_message": "réponse courte en 1-2 phrases expliquant ce qui a changé",
+  "post": "nouveau texte complet du post à utiliser",
+  "changes": ["changement concret", "..."],
+  "variants": ["texte complet variante 1", "..."]
+}"""
+    )
+    data = _call(system, user, max_tokens=7000, temperature=0.55)
+    return {
+        "assistant_message": str(data.get("assistant_message") or "J'ai appliqué la modification demandée."),
+        "post": str(data.get("post") or current_post),
+        "changes": [str(change) for change in data.get("changes", []) if change],
+        "variants": [str(variant) for variant in data.get("variants", []) if variant],
+    }
