@@ -1360,13 +1360,24 @@ export default function Home() {
   const activeJob = jobs.find(jobIsActive) ?? null;
   const anyJobActive = !!activeJob;
 
+  // Rapports : rechargés à la connexion ET à chaque refresh de token.
+  // Sinon, si le token stocké est expiré au chargement, /reports renvoie 401,
+  // loadReports avale l'erreur, et le TOKEN_REFRESHED suivant est ignoré par le
+  // garde uid de onAuthStateChange → la liste reste vide jusqu'à une action.
+  useEffect(() => {
+    if (!isAuthed) { setReports([]); return; }
+    loadReports();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.access_token]);
+
   // Premier chargement des séries + polling tant qu'une série tourne (toutes pages).
+  // Keyé sur le token (pas seulement isAuthed) pour les mêmes raisons que les rapports.
   useEffect(() => {
     if (!isAuthed) { setJobs([]); return; }
     setJobsLoading(true);
     loadJobs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthed]);
+  }, [isAuthed, session?.access_token]);
 
   useEffect(() => {
     if (!isAuthed || !anyJobActive) return;
