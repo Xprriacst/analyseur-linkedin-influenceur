@@ -498,6 +498,7 @@ function LockedCard({
 function Sidebar({
   health,
   reports,
+  reportsLoading,
   view,
   isAuthed,
   jobBadge,
@@ -507,6 +508,7 @@ function Sidebar({
 }: {
   health: Health | null;
   reports: Report[];
+  reportsLoading: boolean;
   view: MainView;
   isAuthed: boolean;
   jobBadge: { completed: number; total: number } | null;
@@ -584,7 +586,15 @@ function Sidebar({
                 <span>{new Date(report.updated_at * 1000).toLocaleDateString("fr-FR")}</span>
               </div>
             </div>
-          )) : (
+          )) : reportsLoading ? (
+            <div className="report-card">
+              <div className="report-icon"><Loader2 size={13} className="spinning" /></div>
+              <div>
+                <strong>Chargement…</strong>
+                <span>Récupération de tes analyses</span>
+              </div>
+            </div>
+          ) : (
             <div className="report-card">
               <div className="report-icon"><FileText size={13} /></div>
               <div>
@@ -1343,6 +1353,7 @@ type MainView = typeof mainViews[number];
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(false);
   const [result, setResult] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -1367,11 +1378,12 @@ export default function Home() {
   }
 
   async function loadReports() {
+    setReportsLoading(true);
     try {
       const res = await fetch(`${API_URL}/reports`, { headers: await authHeaders() });
       const data = await res.json();
       if (res.ok && Array.isArray(data)) setReports(data);
-    } catch { /* ignore */ }
+    } catch { /* ignore */ } finally { setReportsLoading(false); }
   }
 
   // Les séries vivent dans Home (pas dans JobsView) : le polling continue quand
@@ -1514,6 +1526,7 @@ export default function Home() {
         <Sidebar
           health={health}
           reports={reports}
+          reportsLoading={reportsLoading}
           view={view}
           isAuthed={isAuthed}
           jobBadge={activeJob ? { completed: activeJob.completed, total: activeJob.total } : null}
