@@ -412,8 +412,62 @@ class IdeasRequest(BaseModel):
     count: int = Field(default=5, ge=1, le=10)
 
 
+class DraftIdeaCreate(BaseModel):
+    text: str = Field(..., min_length=1, max_length=2000)
+
+
+class DraftIdeaUpdate(BaseModel):
+    text: Optional[str] = Field(default=None, min_length=1, max_length=2000)
+    used: Optional[bool] = None
+
+
 class GenerateRequest(BaseModel):
     topic: str = Field(..., min_length=3)
+
+
+@app.get("/draft-ideas")
+def draft_ideas(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List the authenticated user's personal draft ideas."""
+    return db.list_draft_ideas(token)
+
+
+@app.post("/draft-ideas")
+def create_draft_idea(payload: DraftIdeaCreate, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Create a personal draft idea."""
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Le brouillon ne peut pas être vide.")
+    idea = db.create_draft_idea(token, text)
+    if not idea:
+        raise HTTPException(status_code=500, detail="Création du brouillon échouée.")
+    return idea
+
+
+@app.patch("/draft-ideas/{idea_id}")
+def update_draft_idea(
+    idea_id: str,
+    payload: DraftIdeaUpdate,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Edit a draft idea or mark it as used/active."""
+    text = payload.text.strip() if payload.text is not None else None
+    if payload.text is not None and not text:
+        raise HTTPException(status_code=400, detail="Le brouillon ne peut pas être vide.")
+    if text is None and payload.used is None:
+        raise HTTPException(status_code=400, detail="Aucune modification fournie.")
+    idea = db.update_draft_idea(token, idea_id, text=text, used=payload.used)
+    if not idea:
+        raise HTTPException(status_code=404, detail="Brouillon introuvable.")
+    return idea
+
+
+@app.delete("/draft-ideas/{idea_id}")
+def delete_draft_idea(idea_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Delete a personal draft idea."""
+    deleted = db.delete_draft_idea(token, idea_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Brouillon introuvable.")
+    return {"deleted": True}
 
 
 @app.post("/ideas")
@@ -427,14 +481,24 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
-    ideas_list = generate_ideas(top_posts, benchmark, count=payload.count)
+    active_drafts = (
+        db.list_draft_ideas(token, active_only=True)
+        if token and db.supabase_enabled()
+        else []
+    )
+    ideas_list = generate_ideas(top_posts, benchmark, count=payload.count, draft_ideas=active_drafts)
     save_error: str | None = None
     if token:
         try:
             ideas_list = db.save_ideas(token, ideas_list)
         except Exception as exc:
             save_error = str(exc)
-    return {"ideas": ideas_list, "influencer_count": len(influencers), "save_error": save_error}
+    return {
+        "ideas": ideas_list,
+        "influencer_count": len(influencers),
+        "draft_ideas_context_count": len(active_drafts),
+        "save_error": save_error,
+    }
 
 
 @app.post("/generate")

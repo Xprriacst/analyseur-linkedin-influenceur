@@ -321,6 +321,96 @@ def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
     return resp.data if resp.data else ideas
 
 
+_DRAFT_IDEA_COLS = "id,text,used_at,created_at,updated_at"
+
+
+def list_draft_ideas(access_token: str, active_only: bool = False, limit: int = 100) -> list[dict]:
+    """List the authenticated user's draft ideas."""
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    query = (
+        db.table("user_draft_ideas")
+        .select(_DRAFT_IDEA_COLS)
+        .eq("user_id", user["id"])
+    )
+    if active_only:
+        query = query.is_("used_at", "null")
+    resp = (
+        query
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def create_draft_idea(access_token: str, text: str) -> dict | None:
+    """Create a user draft idea."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_draft_ideas")
+        .insert({"user_id": user["id"], "text": text.strip()})
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_draft_idea(
+    access_token: str,
+    idea_id: str,
+    *,
+    text: str | None = None,
+    used: bool | None = None,
+) -> dict | None:
+    """Update text and/or used status for a draft idea."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    fields: dict[str, Any] = {
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
+    }
+    if text is not None:
+        fields["text"] = text.strip()
+    if used is not None:
+        fields["used_at"] = (
+            datetime.datetime.now(datetime.timezone.utc).isoformat()
+            if used
+            else None
+        )
+    if len(fields) == 1:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_draft_ideas")
+        .update(fields)
+        .eq("id", idea_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def delete_draft_idea(access_token: str, idea_id: str) -> bool:
+    """Delete a draft idea owned by the authenticated user."""
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_draft_ideas")
+        .delete()
+        .eq("id", idea_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return bool(resp.data)
+
+
 import re as _re
 
 

@@ -18,9 +18,13 @@ import {
   LogIn,
   LogOut,
   PenTool,
+  Plus,
   RefreshCw,
+  Save,
   Sparkles,
+  Trash2,
   TrendingUp,
+  X,
   Zap,
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
@@ -55,6 +59,13 @@ type Idea = {
   why_it_works: string;
   difficulty: string;
   estimated_lift: string;
+};
+type DraftIdea = {
+  id: string;
+  text: string;
+  used_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 type Variant = {
   hook_type: string;
@@ -960,6 +971,104 @@ function Generator() {
   const [loadingIdeas, setLoadingIdeas] = useState(false);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
+  const [drafts, setDrafts] = useState<DraftIdea[]>([]);
+  const [draftText, setDraftText] = useState("");
+  const [draftFilter, setDraftFilter] = useState<"active" | "used" | "all">("active");
+  const [loadingDrafts, setLoadingDrafts] = useState(true);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
+  const [editingDraftText, setEditingDraftText] = useState("");
+  const [draftContextCount, setDraftContextCount] = useState(0);
+
+  async function loadDrafts() {
+    setLoadingDrafts(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/draft-ideas`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Échec du chargement des brouillons");
+      setDrafts(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoadingDrafts(false);
+    }
+  }
+
+  useEffect(() => {
+    loadDrafts();
+  }, []);
+
+  async function addDraft() {
+    const text = draftText.trim();
+    if (!text) { setError("Ajoute d'abord une idée brouillon."); return; }
+    setSavingDraft(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/draft-ideas`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Création du brouillon échouée");
+      setDrafts((prev) => [data, ...prev]);
+      setDraftText("");
+      setDraftFilter("active");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
+  async function patchDraft(id: string, body: Partial<{ text: string; used: boolean }>) {
+    const res = await fetch(`${DIRECT_API_URL}/draft-ideas/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Mise à jour du brouillon échouée");
+    setDrafts((prev) => prev.map((draft) => draft.id === id ? data : draft));
+    return data as DraftIdea;
+  }
+
+  async function toggleDraftUsed(draft: DraftIdea) {
+    setError("");
+    try {
+      await patchDraft(draft.id, { used: !draft.used_at });
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+
+  async function saveDraftEdit(id: string) {
+    const text = editingDraftText.trim();
+    if (!text) { setError("Le brouillon ne peut pas être vide."); return; }
+    setError("");
+    try {
+      await patchDraft(id, { text });
+      setEditingDraftId(null);
+      setEditingDraftText("");
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteDraft(id: string) {
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/draft-ideas/${id}`, {
+        method: "DELETE",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Suppression du brouillon échouée");
+      setDrafts((prev) => prev.filter((draft) => draft.id !== id));
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
 
   async function fetchIdeas() {
     setError("");
@@ -973,6 +1082,7 @@ function Generator() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération d'idées");
       setIdeas(data.ideas || []);
+      setDraftContextCount(data.draft_ideas_context_count || 0);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -1002,9 +1112,96 @@ function Generator() {
 
   const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
   const hookColors: Record<string, string> = { "stat+contrarian": "#f97316", "story+result": "#10b981", question: "#3b82f6" };
+  const activeDrafts = drafts.filter((draft) => !draft.used_at);
+  const usedDrafts = drafts.filter((draft) => !!draft.used_at);
+  const visibleDrafts = draftFilter === "active" ? activeDrafts : draftFilter === "used" ? usedDrafts : drafts;
 
   return (
     <div>
+      <div className="draft-panel card">
+        <div className="section-header">
+          <div>
+            <h2 className="section-title"><Lightbulb size={20} /> Mes idées brouillon</h2>
+            <p className="section-desc">
+              {activeDrafts.length} idée{activeDrafts.length > 1 ? "s" : ""} active{activeDrafts.length > 1 ? "s" : ""} injectée{activeDrafts.length > 1 ? "s" : ""} dans la génération d'idées.
+            </p>
+          </div>
+          <div className="draft-filters" aria-label="Filtrer les brouillons">
+            {[
+              ["active", "Actives"],
+              ["used", "Utilisées"],
+              ["all", "Toutes"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                className={`draft-filter ${draftFilter === key ? "active" : ""}`}
+                onClick={() => setDraftFilter(key as typeof draftFilter)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="draft-form">
+          <textarea
+            value={draftText}
+            onChange={(e) => setDraftText(e.target.value)}
+            placeholder="Ex. Montrer comment une équipe commerciale peut transformer 20 notes vocales clients en posts LinkedIn..."
+            rows={3}
+          />
+          <button className="primary-button" onClick={addDraft} disabled={savingDraft}>
+            {savingDraft ? <Loader2 size={14} className="spinning" /> : <Plus size={14} />}
+            Ajouter
+          </button>
+        </div>
+
+        <div className="draft-list">
+          {loadingDrafts ? (
+            <div className="draft-empty"><Loader2 size={14} className="spinning" /> Chargement des brouillons…</div>
+          ) : visibleDrafts.length ? visibleDrafts.map((draft) => {
+            const editing = editingDraftId === draft.id;
+            return (
+              <div className={`draft-row ${draft.used_at ? "used" : ""}`} key={draft.id}>
+                <label className="draft-check">
+                  <input type="checkbox" checked={!!draft.used_at} onChange={() => toggleDraftUsed(draft)} />
+                  <span>Utilisée</span>
+                </label>
+                <div className="draft-body">
+                  {editing ? (
+                    <textarea
+                      value={editingDraftText}
+                      onChange={(e) => setEditingDraftText(e.target.value)}
+                      rows={3}
+                    />
+                  ) : (
+                    <>
+                      <p>{draft.text}</p>
+                      <span>{draft.used_at ? `Utilisée le ${new Date(draft.used_at).toLocaleDateString("fr-FR")}` : "Active pour les prochains prompts"}</span>
+                    </>
+                  )}
+                </div>
+                <div className="draft-actions">
+                  {editing ? (
+                    <>
+                      <button className="ghost-button" onClick={() => saveDraftEdit(draft.id)}><Save size={13} /> Sauver</button>
+                      <button className="ghost-button" onClick={() => { setEditingDraftId(null); setEditingDraftText(""); }}><X size={13} /> Annuler</button>
+                    </>
+                  ) : (
+                    <>
+                      <button className="ghost-button" onClick={() => { setEditingDraftId(draft.id); setEditingDraftText(draft.text); }}>Modifier</button>
+                      <button className="ghost-button danger" onClick={() => deleteDraft(draft.id)}><Trash2 size={13} /> Supprimer</button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          }) : (
+            <div className="draft-empty">Aucun brouillon dans ce filtre. Ajoute une idée pour la réutiliser dans l'IA.</div>
+          )}
+        </div>
+      </div>
+
       {/* Ideas section */}
       <div className="section-header">
         <div>
@@ -1018,6 +1215,12 @@ function Generator() {
       </div>
 
       {error && <div className="error">{error}</div>}
+
+      {ideas.length > 0 && draftContextCount > 0 && (
+        <div className="info-note">
+          {draftContextCount} brouillon{draftContextCount > 1 ? "s actifs" : " actif"} transmis comme contexte à l'IA.
+        </div>
+      )}
 
       {ideas.length > 0 && (
         <div className="ideas-grid">

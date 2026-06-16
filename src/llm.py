@@ -172,11 +172,27 @@ def synthesize_strategy(stats: dict, classifications: list[dict], posts: list[di
     return StrategySynthesis(**data).model_dump()
 
 
-def generate_ideas(top_posts_examples: list[dict], benchmark: dict, count: int = 5) -> list[dict]:
+def generate_ideas(
+    top_posts_examples: list[dict],
+    benchmark: dict,
+    count: int = 5,
+    draft_ideas: list[dict] | None = None,
+) -> list[dict]:
     """Generate post ideas based on analyzed influencer insights."""
     examples_text = "\n\n".join(
         f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')}]\n{e.get('text', '')[:400]}"
         for e in top_posts_examples[:8]
+    )
+    active_drafts = [
+        {"id": d.get("id"), "text": d.get("text")}
+        for d in (draft_ideas or [])
+        if (d.get("text") or "").strip()
+    ]
+    drafts_text = (
+        "\n\nIdées brouillon actives de l'utilisateur à explorer en priorité :\n"
+        + json.dumps(active_drafts, ensure_ascii=False, indent=2)
+        if active_drafts
+        else ""
     )
 
     system = (
@@ -189,12 +205,14 @@ def generate_ideas(top_posts_examples: list[dict], benchmark: dict, count: int =
         + json.dumps(benchmark, ensure_ascii=False, indent=2)
         + "\n\nExemples des posts les plus performants :\n"
         + examples_text
+        + drafts_text
         + f"""
 
 Propose exactement {count} idées de posts LinkedIn originaux et à fort potentiel viral.
 
 Pour chaque idée :
 - Identifie un angle unique basé sur les patterns qui marchent dans le corpus
+- Si une idée brouillon active est pertinente, inspire-toi-en ou reformule-la avec les patterns du benchmark
 - Propose un hook accrocheur (première ligne du post)
 - Explique pourquoi cette idée devrait performer (basé sur les données)
 - Indique le type de hook et le niveau du funnel (TOFU/MOFU/BOFU)
