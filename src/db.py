@@ -252,20 +252,21 @@ def list_analyses(access_token: str, limit: int = 20) -> list[dict]:
     return resp.data or []
 
 
-def list_reports(access_token: str, limit: int = 10) -> list[dict]:
-    """User's recent analysis reports, shaped like the disk-based /reports payload."""
+def list_reports(access_token: str, limit: int | None = 10) -> list[dict]:
+    """User's analysis reports, shaped like the disk-based /reports payload."""
     user = get_user(access_token)
     if not user:
         return []
     db = client_for_token(access_token)
-    resp = (
+    query = (
         db.table("analyses")
         .select("id,handle,created_at,report_markdown,influencers(name)")
         .eq("user_id", user["id"])
         .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
     )
+    if limit is not None:
+        query = query.limit(limit)
+    resp = query.execute()
     reports = []
     for row in resp.data or []:
         created = row.get("created_at") or ""

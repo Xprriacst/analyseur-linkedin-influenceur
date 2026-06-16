@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -10,6 +10,7 @@ import {
   Clock3,
   Download,
   FileText,
+  History,
   Lightbulb,
   Link2,
   ListChecks,
@@ -378,6 +379,172 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   );
 }
 
+type HistorySort = "date_desc" | "date_asc" | "name_asc" | "name_desc";
+
+function dateInputToTimestamp(value: string, endOfDay = false): number | null {
+  if (!value) return null;
+  const suffix = endOfDay ? "T23:59:59" : "T00:00:00";
+  const timestamp = new Date(`${value}${suffix}`).getTime() / 1000;
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function formatReportDate(timestamp: number): string {
+  if (!timestamp) return "Date inconnue";
+  return new Date(timestamp * 1000).toLocaleString("fr-FR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function HistoryView({
+  reports,
+  loading,
+  isAuthed,
+  onOpenReport,
+  onRefresh,
+  requireAuth,
+}: {
+  reports: Report[];
+  loading: boolean;
+  isAuthed: boolean;
+  onOpenReport: (report: Report) => void;
+  onRefresh: () => void;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
+  const [influencer, setInfluencer] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [sort, setSort] = useState<HistorySort>("date_desc");
+
+  const influencerOptions = useMemo(() => {
+    return Array.from(new Set(reports.map((report) => report.name).filter(Boolean)))
+      .sort((a, b) => a.localeCompare(b, "fr"));
+  }, [reports]);
+
+  const filteredReports = useMemo(() => {
+    const fromTs = dateInputToTimestamp(fromDate);
+    const toTs = dateInputToTimestamp(toDate, true);
+    return reports
+      .filter((report) => {
+        if (influencer && report.name !== influencer) return false;
+        if (fromTs !== null && report.updated_at < fromTs) return false;
+        if (toTs !== null && report.updated_at > toTs) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        if (sort === "date_asc") return a.updated_at - b.updated_at;
+        if (sort === "name_asc") return a.name.localeCompare(b.name, "fr");
+        if (sort === "name_desc") return b.name.localeCompare(a.name, "fr");
+        return b.updated_at - a.updated_at;
+      });
+  }, [fromDate, influencer, reports, sort, toDate]);
+
+  if (!isAuthed) {
+    return (
+      <LockedCard
+        title="Historique verrouillé"
+        subtitle="Crée un compte gratuit pour retrouver toutes tes analyses passées, les filtrer et rouvrir chaque rapport."
+        ghostLines={7}
+        onUnlock={() => requireAuth("Crée un compte gratuit pour conserver et consulter ton historique complet.")}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><History size={20} /> Historique des analyses</h2>
+          <p className="section-desc">Toutes les analyses sauvegardées pour ce compte, avec filtre par influenceur et par date.</p>
+        </div>
+        <button className="secondary-button" onClick={onRefresh} disabled={loading}>
+          {loading ? <Loader2 size={13} className="spinning" /> : <RefreshCw size={13} />}
+          Actualiser
+        </button>
+      </div>
+
+      <div className="history-toolbar card">
+        <label className="history-control">
+          <span>Influenceur</span>
+          <select value={influencer} onChange={(e) => setInfluencer(e.target.value)}>
+            <option value="">Tous les influenceurs</option>
+            {influencerOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+          </select>
+        </label>
+        <label className="history-control">
+          <span>Depuis</span>
+          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+        </label>
+        <label className="history-control">
+          <span>Jusqu'au</span>
+          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+        </label>
+        <label className="history-control">
+          <span>Tri</span>
+          <select value={sort} onChange={(e) => setSort(e.target.value as HistorySort)}>
+            <option value="date_desc">Date récente d'abord</option>
+            <option value="date_asc">Date ancienne d'abord</option>
+            <option value="name_asc">Influenceur A-Z</option>
+            <option value="name_desc">Influenceur Z-A</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="history-summary">
+        {filteredReports.length} analyse{filteredReports.length > 1 ? "s" : ""} affichée{filteredReports.length > 1 ? "s" : ""}
+        {reports.length !== filteredReports.length ? ` sur ${reports.length}` : ""}
+      </div>
+
+      {loading ? (
+        <p style={{ color: "var(--muted)" }}>Chargement de l'historique…</p>
+      ) : reports.length === 0 ? (
+        <div className="report-card" style={{ maxWidth: 720 }}>
+          <div className="report-icon"><FileText size={13} /></div>
+          <div><strong>Aucune analyse sauvegardée</strong><span>Lance une analyse pour alimenter ton historique.</span></div>
+        </div>
+      ) : filteredReports.length === 0 ? (
+        <div className="report-card" style={{ maxWidth: 720 }}>
+          <div className="report-icon"><FileText size={13} /></div>
+          <div><strong>Aucun résultat</strong><span>Modifie les filtres pour retrouver d'autres analyses.</span></div>
+        </div>
+      ) : (
+        <div className="card history-card">
+          <table className="dash-table history-table">
+            <thead>
+              <tr>
+                <th>Influenceur</th>
+                <th>Date</th>
+                <th>Rapport</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredReports.map((report) => (
+                <tr key={report.path}>
+                  <td>
+                    <button className="history-report-button" onClick={() => onOpenReport(report)} disabled={!report.content}>
+                      <FileText size={14} />
+                      <span>{report.name}</span>
+                    </button>
+                  </td>
+                  <td>{formatReportDate(report.updated_at)}</td>
+                  <td>
+                    <button className="secondary-button" onClick={() => onOpenReport(report)} disabled={!report.content}>
+                      Ouvrir
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Freemium gating helpers ───────────────────────────────────────────── */
 
 const ANON_USED_KEY = "lkd_anon_used";
@@ -485,11 +652,13 @@ function Sidebar({
 }) {
   const [configOpen, setConfigOpen] = useState(false);
 
-  const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
+  const navItems: { key: MainView; label: string; icon: React.ReactNode; authRequired?: boolean; lockReason?: string }[] = [
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
-    { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
-    { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
+    { key: "history", label: "Historique", icon: <History size={14} />, authRequired: true, lockReason: "Crée un compte gratuit pour consulter tout ton historique d'analyses." },
+    { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, authRequired: true, lockReason: "Crée un compte gratuit pour débloquer le générateur de posts." },
+    { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, authRequired: true, lockReason: "Crée un compte gratuit pour débloquer le dashboard global." },
   ];
+  const recentReports = reports.slice(0, 10);
 
   return (
     <aside className="sidebar">
@@ -510,14 +679,14 @@ function Sidebar({
         <p className="eyebrow">Navigation</p>
         <div className="nav-list">
           {navItems.map((item) => {
-            const locked = !!item.premium && !isAuthed;
+            const locked = !!item.authRequired && !isAuthed;
             return (
               <button
                 key={item.key}
                 className={`nav-item ${view === item.key ? "active" : ""} ${locked ? "locked" : ""}`}
                 onClick={() =>
                   locked
-                    ? requireAuth("Crée un compte gratuit pour débloquer le générateur de posts et le dashboard global.")
+                    ? requireAuth(item.lockReason)
                     : onNavigate(item.key)
                 }
               >
@@ -544,7 +713,7 @@ function Sidebar({
                 <span>Crée un compte pour le conserver</span>
               </div>
             </div>
-          ) : reports.length ? reports.map((report) => (
+          ) : recentReports.length ? recentReports.map((report) => (
             <div className="report-card" key={report.path} onClick={() => onLoadReport(report)}>
               <div className="report-icon"><FileText size={13} /></div>
               <div>
@@ -622,6 +791,7 @@ function TopHeader({
 }) {
   const viewTitles: Record<MainView, string> = {
     analyze: "Analyser des profils LinkedIn",
+    history: "Historique des analyses",
     generator: "Générateur de posts",
     dashboard: "Dashboard global",
   };
@@ -1305,7 +1475,7 @@ function GlobalDashboard() {
   );
 }
 
-const mainViews = ["analyze", "generator", "dashboard"] as const;
+const mainViews = ["analyze", "history", "generator", "dashboard"] as const;
 type MainView = typeof mainViews[number];
 
 export default function Home() {
@@ -1316,8 +1486,10 @@ export default function Home() {
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("analyze");
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
+  const [reportReturnView, setReportReturnView] = useState<MainView>("analyze");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
+  const [reportsLoading, setReportsLoading] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authReason, setAuthReason] = useState("");
@@ -1335,11 +1507,12 @@ export default function Home() {
   }
 
   async function loadReports() {
+    setReportsLoading(true);
     try {
-      const res = await fetch(`${API_URL}/reports`, { headers: await authHeaders() });
+      const res = await fetch(`${API_URL}/reports?all=true`, { headers: await authHeaders() });
       const data = await res.json();
       if (res.ok && Array.isArray(data)) setReports(data);
-    } catch { /* ignore */ }
+    } catch { /* ignore */ } finally { setReportsLoading(false); }
   }
 
   // Les séries vivent dans Home (pas dans JobsView) : le polling continue quand
@@ -1418,8 +1591,10 @@ export default function Home() {
       pendingAnonResultRef.current = null;
       setAuthOpen(false);
       setReports([]);
+      setReportsLoading(false);
       setResult(null);
       setLoadedReport(null);
+      setReportReturnView("analyze");
       setJobs([]);
       setError("");
       setView("analyze");
@@ -1431,6 +1606,14 @@ export default function Home() {
   /** Ouvre un rapport (depuis le backlog) dans la vue markdown de l'onglet Analyser. */
   function openReport(markdown: string, name: string) {
     setLoadedReport({ name, path: name, updated_at: Date.now() / 1000, content: markdown });
+    setReportReturnView("analyze");
+    setResult(null);
+    setView("analyze");
+  }
+
+  function openStoredReport(report: Report, returnView: MainView = "history") {
+    setLoadedReport(report);
+    setReportReturnView(returnView);
     setResult(null);
     setView("analyze");
   }
@@ -1475,7 +1658,7 @@ export default function Home() {
           isAuthed={isAuthed}
           jobBadge={activeJob ? { completed: activeJob.completed, total: activeJob.total } : null}
           onNavigate={(v) => { setView(v); if (v === "analyze") { setResult(null); setLoadedReport(null); setError(""); } }}
-          onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
+          onLoadReport={(r) => openStoredReport(r, "analyze")}
           requireAuth={requireAuth}
         />
         <TopHeader
@@ -1497,13 +1680,23 @@ export default function Home() {
                 : loadedReport
                   ? (
                     <>
-                      <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => setLoadedReport(null)}>
-                        ← Retour aux analyses
+                      <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => { setLoadedReport(null); setView(reportReturnView); }}>
+                        {reportReturnView === "history" ? "← Retour à l'historique" : "← Retour aux analyses"}
                       </button>
                       <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
                     </>
                   )
                   : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} requireAuth={requireAuth} />
+          )}
+          {view === "history" && (
+            <HistoryView
+              reports={reports}
+              loading={reportsLoading}
+              isAuthed={isAuthed}
+              onOpenReport={(report) => openStoredReport(report, "history")}
+              onRefresh={loadReports}
+              requireAuth={requireAuth}
+            />
           )}
           {view === "generator" && <Generator />}
           {view === "dashboard" && <GlobalDashboard />}

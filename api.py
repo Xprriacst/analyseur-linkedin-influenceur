@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -103,7 +103,11 @@ def me_analysis(analysis_id: str, token: str = Depends(require_token)) -> dict[s
 
 
 @app.get("/reports")
-def reports(token: Optional[str] = Depends(optional_token)) -> list[dict[str, Any]]:
+def reports(
+    token: Optional[str] = Depends(optional_token),
+    limit: int = Query(default=10, ge=1, le=500),
+    all_reports: bool = Query(default=False, alias="all"),
+) -> list[dict[str, Any]]:
     """Recent analysis reports, scoped to the authenticated user.
 
     Supabase-backed in production; falls back to the local reports/ folder
@@ -112,7 +116,7 @@ def reports(token: Optional[str] = Depends(optional_token)) -> list[dict[str, An
     if db.supabase_enabled():
         if not token or not db.get_user(token):
             raise HTTPException(status_code=401, detail="Authentification requise.")
-        return db.list_reports(token)
+        return db.list_reports(token, limit=None if all_reports else limit)
 
     reports_dir = Path("reports")
     if not reports_dir.exists():
@@ -125,7 +129,7 @@ def reports(token: Optional[str] = Depends(optional_token)) -> list[dict[str, An
             "updated_at": path.stat().st_mtime,
             "content": path.read_text(encoding="utf-8"),
         }
-        for path in files[:10]
+        for path in (files if all_reports else files[:limit])
     ]
 
 
