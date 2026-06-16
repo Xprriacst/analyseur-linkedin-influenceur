@@ -14,15 +14,24 @@ class FakeTable:
         self.name = name
         self.calls = calls
         self.last_operation = None
+        self.payload = None
 
     def upsert(self, row, on_conflict=None):
         self.last_operation = "upsert"
+        self.payload = row
         self.calls.append(("upsert", self.name, row, on_conflict))
         return self
 
     def insert(self, rows):
         self.last_operation = "insert"
+        self.payload = rows
         self.calls.append(("insert", self.name, rows, None))
+        return self
+
+    def update(self, row):
+        self.last_operation = "update"
+        self.payload = row
+        self.calls.append(("update", self.name, row, None))
         return self
 
     def delete(self):
@@ -31,6 +40,8 @@ class FakeTable:
         return self
 
     def select(self, columns):
+        if self.last_operation not in {"upsert", "insert", "update", "delete"}:
+            self.last_operation = "select"
         self.calls.append(("select", self.name, columns, None))
         return self
 
@@ -38,11 +49,30 @@ class FakeTable:
         self.calls.append(("eq", self.name, column, value))
         return self
 
+    def is_(self, column, value):
+        self.calls.append(("is", self.name, column, value))
+        return self
+
+    def order(self, column, desc=False):
+        self.calls.append(("order", self.name, column, desc))
+        return self
+
+    def limit(self, value):
+        self.calls.append(("limit", self.name, value, None))
+        return self
+
     def execute(self):
         if self.name == "influencers" and self.last_operation == "upsert":
             return FakeResponse([{"id": "influencer-1"}])
         if self.name == "analyses" and self.last_operation == "upsert":
             return FakeResponse([{"id": "analysis-1"}])
+        if self.name == "user_draft_ideas":
+            if self.last_operation == "insert":
+                return FakeResponse([{**self.payload, "id": "draft-1", "used_at": None}])
+            if self.last_operation == "update":
+                return FakeResponse([{"id": "draft-1", "text": self.payload.get("text", "Draft"), "used_at": self.payload.get("used_at")}])
+            if self.last_operation == "select":
+                return FakeResponse([{"id": "draft-1", "text": "Draft", "used_at": None}])
         return FakeResponse()
 
 
@@ -89,6 +119,52 @@ class SaveAnalysisTest(unittest.TestCase):
             if call[0] == "insert" and call[1] == "analyses"
         ]
         self.assertEqual(analysis_inserts, [])
+
+
+class DraftIdeasTest(unittest.TestCase):
+    def test_lists_active_drafts_with_user_filter(self):
+        client = FakeClient()
+
+        with (
+            patch.object(db, "get_user", return_value={"id": "user-1", "email": "ada@example.com"}),
+            patch.object(db, "client_for_token", return_value=client),
+        ):
+            rows = db.list_draft_ideas("token", active_only=True)
+
+        self.assertEqual(rows[0]["id"], "draft-1")
+        self.assertIn(("eq", "user_draft_ideas", "user_id", "user-1"), client.calls)
+        self.assertIn(("is", "user_draft_ideas", "used_at", "null"), client.calls)
+
+    def test_updates_draft_used_status(self):
+        client = FakeClient()
+
+        with (
+            patch.object(db, "get_user", return_value={"id": "user-1", "email": "ada@example.com"}),
+            patch.object(db, "client_for_token", return_value=client),
+        ):
+            row = db.update_draft_idea("token", "draft-1", used=True)
+
+        self.assertEqual(row["id"], "draft-1")
+        update_calls = [call for call in client.calls if call[0] == "update" and call[1] == "user_draft_ideas"]
+        self.assertEqual(len(update_calls), 1)
+        self.assertIsNotNone(update_calls[0][2]["used_at"])
+        self.assertIn(("eq", "user_draft_ideas", "id", "draft-1"), client.calls)
+        self.assertIn(("eq", "user_draft_ideas", "user_id", "user-1"), client.calls)
+
+    def test_deletes_existing_draft_with_user_filter(self):
+        client = FakeClient()
+
+        with (
+            patch.object(db, "get_user", return_value={"id": "user-1", "email": "ada@example.com"}),
+            patch.object(db, "client_for_token", return_value=client),
+        ):
+            deleted = db.delete_draft_idea("token", "draft-1")
+
+        self.assertTrue(deleted)
+        self.assertIn(("select", "user_draft_ideas", "id", None), client.calls)
+        self.assertIn(("delete", "user_draft_ideas", None, None), client.calls)
+        self.assertIn(("eq", "user_draft_ideas", "id", "draft-1"), client.calls)
+        self.assertIn(("eq", "user_draft_ideas", "user_id", "user-1"), client.calls)
 
 
 if __name__ == "__main__":

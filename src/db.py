@@ -390,6 +390,7 @@ def update_draft_idea(
         .update(fields)
         .eq("id", idea_id)
         .eq("user_id", user["id"])
+        .select(_DRAFT_IDEA_COLS)
         .execute()
     )
     return resp.data[0] if resp.data else None
@@ -401,14 +402,24 @@ def delete_draft_idea(access_token: str, idea_id: str) -> bool:
     if not user:
         return False
     db = client_for_token(access_token)
-    resp = (
+    existing = (
+        db.table("user_draft_ideas")
+        .select("id")
+        .eq("id", idea_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    if not existing.data:
+        return False
+    (
         db.table("user_draft_ideas")
         .delete()
         .eq("id", idea_id)
         .eq("user_id", user["id"])
         .execute()
     )
-    return bool(resp.data)
+    return True
 
 
 import re as _re
