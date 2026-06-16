@@ -114,7 +114,8 @@ def _post_rows(influencer_id: str, posts: list[dict]) -> list[dict]:
 def save_analysis(access_token: str, result: dict, posts_limit: int | None = None) -> dict | None:
     """Persist an analysis run for the authenticated user.
 
-    Upserts the influencer (and its posts), then inserts the analysis report.
+    Upserts the influencer (and its posts), then replaces the current analysis
+    report for that user/influencer pair.
     Returns {"influencer_id", "analysis_id"} or None on failure.
     """
     user = get_user(access_token)
@@ -141,7 +142,9 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
     if rows:
         db.table("posts").insert(rows).execute()
 
-    # insert analysis
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    # replace current analysis (unique on user_id + influencer_id)
     analysis_row = {
         "user_id": user_id,
         "influencer_id": influencer_id,
@@ -154,8 +157,14 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
         "cta_stats": _json_safe(result.get("cta_stats")),
         "usage": _json_safe(result.get("usage")),
         "posts_limit": posts_limit,
+        "updated_at": now,
     }
-    an_resp = db.table("analyses").insert(analysis_row).execute()
+    an_resp = (
+        db.table("analyses")
+        .upsert(analysis_row, on_conflict="user_id,influencer_id")
+        .select("id")
+        .execute()
+    )
     analysis_id = an_resp.data[0]["id"] if an_resp.data else None
     return {"influencer_id": influencer_id, "analysis_id": analysis_id}
 
@@ -243,9 +252,9 @@ def list_analyses(access_token: str, limit: int = 20) -> list[dict]:
     db = client_for_token(access_token)
     resp = (
         db.table("analyses")
-        .select("id,handle,created_at,posts_limit")
+        .select("id,handle,created_at,updated_at,posts_limit")
         .eq("user_id", user["id"])
-        .order("created_at", desc=True)
+        .order("updated_at", desc=True)
         .limit(limit)
         .execute()
     )
@@ -260,18 +269,18 @@ def list_reports(access_token: str, limit: int = 10) -> list[dict]:
     db = client_for_token(access_token)
     resp = (
         db.table("analyses")
-        .select("id,handle,created_at,report_markdown,influencers(name)")
+        .select("id,handle,created_at,updated_at,report_markdown,influencers(name)")
         .eq("user_id", user["id"])
-        .order("created_at", desc=True)
+        .order("updated_at", desc=True)
         .limit(limit)
         .execute()
     )
     reports = []
     for row in resp.data or []:
-        created = row.get("created_at") or ""
+        updated = row.get("updated_at") or row.get("created_at") or ""
         try:
             from datetime import datetime
-            ts = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+            ts = datetime.fromisoformat(updated.replace("Z", "+00:00")).timestamp()
         except Exception:
             ts = 0
         # Nom lisible : prénom + nom de l'influenceur, fallback handle décodé
