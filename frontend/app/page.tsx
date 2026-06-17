@@ -12,6 +12,7 @@ import {
   FileText,
   Lightbulb,
   Link2,
+  Linkedin,
   ListChecks,
   Loader2,
   Lock,
@@ -1088,7 +1089,52 @@ function Dashboard({
   );
 }
 
-function Generator() {
+type LinkedInStatus = {
+  configured: boolean;
+  connected: boolean;
+  account_id?: string | null;
+  connected_at?: string | null;
+};
+
+/** Statut de connexion LinkedIn (via Zernio) + lancement du flux OAuth. */
+function useLinkedIn(isAuthed: boolean) {
+  const [status, setStatus] = useState<LinkedInStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) { setStatus(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/linkedin/status`, { headers: await authHeaders() });
+        if (res.ok) setStatus(await res.json());
+      } catch { /* ignore */ }
+    })();
+  }, [isAuthed]);
+
+  async function connect() {
+    setError("");
+    setBusy(true);
+    try {
+      const redirect = `${window.location.origin}${window.location.pathname}?linkedin=connected`;
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ redirect_url: redirect }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion LinkedIn impossible");
+      window.location.href = data.auth_url; // Zernio gère l'OAuth puis renvoie vers l'app
+    } catch (err: any) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  return { status, busy, error, connect };
+}
+
+function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
   const [topic, setTopic] = useState("");
@@ -1096,6 +1142,35 @@ function Generator() {
   const [loadingIdeas, setLoadingIdeas] = useState(false);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
+  const linkedin = useLinkedIn(isAuthed);
+  const [publishing, setPublishing] = useState<number | null>(null);
+  const [published, setPublished] = useState<number | null>(null);
+  const [publishError, setPublishError] = useState("");
+
+  async function publishVariant(i: number, text: string) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour publier sur LinkedIn."); return; }
+    if (!linkedin.status?.connected) {
+      setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    setPublishError("");
+    setPublished(null);
+    setPublishing(i);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication impossible");
+      setPublished(i);
+    } catch (err: any) {
+      setPublishError(err.message);
+    } finally {
+      setPublishing(null);
+    }
+  }
 
   async function fetchIdeas() {
     setError("");
@@ -1259,14 +1334,29 @@ function Generator() {
                 </div>
                 <p className="variant-strategy">{v.strategy}</p>
                 <textarea className="variant-text" readOnly value={v.post} rows={14} />
-                <button className="secondary-button" onClick={() => navigator.clipboard.writeText(v.post)} style={{ marginTop: 8 }}>
-                  Copier le post
-                </button>
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                  <button className="secondary-button" onClick={() => navigator.clipboard.writeText(v.post)}>
+                    Copier le post
+                  </button>
+                  <button
+                    className="primary-button"
+                    disabled={publishing === i}
+                    title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                    onClick={() => publishVariant(i, v.post)}
+                  >
+                    {publishing === i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+                    {publishing === i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
+                  </button>
+                </div>
+                {published === i && (
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
+                )}
               </div>
             );
           })}
         </div>
       )}
+      {publishError && <div className="error" style={{ marginTop: 12 }}>{publishError}</div>}
     </div>
   );
 }
@@ -1309,6 +1399,7 @@ function ProfileView({
   const [aiWebsiteUrl, setAiWebsiteUrl] = useState("");
   const [useApifyLinkedin, setUseApifyLinkedin] = useState(false);
   const [draftInfo, setDraftInfo] = useState("");
+  const linkedin = useLinkedIn(isAuthed);
 
   useEffect(() => {
     if (!isAuthed) {
@@ -1480,6 +1571,29 @@ function ProfileView({
           </button>
         </div>
       </div>
+
+      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Linkedin size={20} color="#0a66c2" />
+          <div>
+            <strong>Publication LinkedIn</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              {linkedin.status?.connected
+                ? "Compte LinkedIn connecté — tu peux publier tes posts générés en un clic."
+                : "Connecte ton compte LinkedIn pour publier directement depuis l'app."}
+            </p>
+          </div>
+        </div>
+        {linkedin.status?.connected ? (
+          <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+        ) : (
+          <button className="primary-button" onClick={linkedin.connect} disabled={linkedin.busy}>
+            {linkedin.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+            {linkedin.busy ? "Redirection…" : "Connecter LinkedIn"}
+          </button>
+        )}
+      </section>
+      {linkedin.error ? <div className="error" style={{ marginBottom: 12 }}>{linkedin.error}</div> : null}
 
       {error ? <div className="error" style={{ marginBottom: 12 }}>{error}</div> : null}
       {draftInfo ? <div className="auth-info" style={{ marginBottom: 12 }}>{draftInfo}</div> : null}
@@ -2147,6 +2261,23 @@ export default function Home() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // Retour du flux OAuth LinkedIn (Zernio) : on relit le compte connecté côté
+  // serveur, on nettoie l'URL, puis on bascule sur l'onglet Profil.
+  useEffect(() => {
+    if (!isAuthed) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("linkedin") !== "connected") return;
+    (async () => {
+      try {
+        await fetch(`${DIRECT_API_URL}/me/linkedin/refresh`, { method: "POST", headers: await authHeaders() });
+      } catch { /* ignore */ }
+      params.delete("linkedin");
+      const qs = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+      setView("profile");
+    })();
+  }, [isAuthed]);
+
   /** Ouvre un rapport (depuis le backlog) dans la vue markdown de l'onglet Analyser. */
   function openReport(markdown: string, name: string) {
     setLoadedReport({ name, path: name, updated_at: Date.now() / 1000, content: markdown });
@@ -2258,7 +2389,7 @@ export default function Home() {
             />
           )}
           {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
-          {view === "generator" && <Generator />}
+          {view === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "dashboard" && <GlobalDashboard />}
         </main>
       </div>
