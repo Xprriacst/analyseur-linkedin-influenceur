@@ -1272,6 +1272,10 @@ function ProfileView({
       try {
         const res = await fetch(`${DIRECT_API_URL}/me/profile`, { headers: await authHeaders() });
         const data = await res.json();
+        if (res.status === 404) {
+          setProfile(EMPTY_EDITORIAL_PROFILE);
+          return;
+        }
         if (!res.ok) throw new Error(data.detail || "Impossible de charger le profil");
         setProfile({ ...EMPTY_EDITORIAL_PROFILE, ...(data || {}) });
       } catch (err: any) {
@@ -1394,17 +1398,17 @@ function ProfileView({
           <section className="card">
             <h3>Identité & activité</h3>
             <div className="profile-grid">
-              <Field name="display_name" label="Nom public" placeholder="Joëlle Dupont" />
-              <Field name="brand_name" label="Marque / société" placeholder="Joëlle NYC Real Estate" />
-              <Field name="industry" label="Secteur / niche" placeholder="Immobilier résidentiel premium" />
-              <Field name="location" label="Localisation" placeholder="New York" />
-              <Field name="market" label="Marché" placeholder="Français expatriés à NYC" />
+              <Field name="display_name" label="Nom public" placeholder="Marc Delcourt" />
+              <Field name="brand_name" label="Marque / société" placeholder="ScaleOps Studio" />
+              <Field name="industry" label="Secteur / niche" placeholder="Automatisation IA pour dirigeants de PME" />
+              <Field name="location" label="Localisation" placeholder="Paris" />
+              <Field name="market" label="Marché" placeholder="Entrepreneurs B2B en forte croissance" />
               <Field name="language" label="Langue" placeholder="français" />
             </div>
             <Field
               name="business_description"
               label="Description courte de l'activité"
-              placeholder="J'accompagne les expatriés francophones qui veulent acheter ou louer à New York."
+              placeholder="J'aide les dirigeants qui grandissent vite à structurer leur acquisition sans passer 2 heures par jour sur LinkedIn."
               multiline
             />
           </section>
@@ -1412,18 +1416,18 @@ function ProfileView({
           <section className="card">
             <h3>Positionnement éditorial</h3>
             <div className="profile-grid">
-              <Field name="tone" label="Ton souhaité" placeholder="Chaleureux, local, rassurant, premium sans être froid" />
-              <Field name="core_offer" label="Offre / expertise" placeholder="Achat d'appartements à Manhattan et Brooklyn" />
+              <Field name="tone" label="Ton souhaité" placeholder="Direct, lucide, utile, ambitieux sans être agressif" />
+              <Field name="core_offer" label="Offre / expertise" placeholder="Systèmes IA et routines LinkedIn sobres pour fondateurs occupés" />
             </div>
-            <Field name="target_audience" label="Audience cible" placeholder="Expatriés français, familles, cadres qui s'installent à NYC..." multiline />
-            <Field name="linkedin_objective" label="Objectif LinkedIn" placeholder="Créer une présence régulière, générer des conversations et des leads qualifiés." multiline />
+            <Field name="target_audience" label="Audience cible" placeholder="Fondateurs, consultants experts et dirigeants B2B déjà tractionnés, mais débordés par le contenu." multiline />
+            <Field name="linkedin_objective" label="Objectif LinkedIn" placeholder="Publier régulièrement, créer de la confiance et générer des conversations qualifiées avec moins de temps passé à écrire." multiline />
           </section>
 
           <section className="card">
             <h3>Sujets & contraintes</h3>
-            <Field name="topics_to_cover" label="Sujets à couvrir" placeholder="Vie locale, immobilier NYC, expatriation, quartiers, moments culturels français..." multiline />
-            <Field name="topics_to_avoid" label="Sujets à éviter" placeholder="Politique, promesses de rendement, ton trop commercial..." multiline />
-            <Field name="constraints" label="Contraintes de style" placeholder="Pas de CTA agressif. Angle métier discret quand le post est relationnel." multiline />
+            <Field name="topics_to_cover" label="Sujets à couvrir" placeholder="Croissance, délégation, IA concrète, routines de publication, arbitrages de fondateur, systèmes simples." multiline />
+            <Field name="topics_to_avoid" label="Sujets à éviter" placeholder="Hype IA vide, promesses de revenus, hacks LinkedIn agressifs, ton gourou." multiline />
+            <Field name="constraints" label="Contraintes de style" placeholder="Pas de threadbait. Pas de CTA commentaire forcé. Montrer qu'on peut être régulier sans devenir créateur à plein temps." multiline />
             <Field name="extra_context" label="Contexte additionnel" placeholder="Tout ce que Claude doit savoir pour mieux écrire au nom du client." multiline />
           </section>
 
