@@ -18,6 +18,8 @@ from src.pipeline import run_analysis
 
 # Sérialise le calcul lui-même (usage global dans src.usage, rate limit Apify).
 _compute_lock = threading.Lock()
+_threads_lock = threading.Lock()
+_threads: dict[str, threading.Thread] = {}
 
 
 def _counts(items: list[dict]) -> tuple[int, int]:
@@ -42,10 +44,11 @@ def process_job(access_token: str, job_id: str) -> None:
     with_llm = job.get("run_llm", True)
 
     done, failed = _counts(items)
-    db.update_job(access_token, job_id, status="running", completed=done, failed=failed)
+    if db.get_job_status(access_token, job_id) != "cancelled":
+        db.update_job(access_token, job_id, status="running", completed=done, failed=failed)
 
     for item in items:
-        if item.get("status") == "done":
+        if item.get("status") in ("done", "cancelled"):
             continue
 
         # Vérification d'annulation avant chaque profil (ne peut pas interrompre
@@ -61,6 +64,10 @@ def process_job(access_token: str, job_id: str) -> None:
                 result = run_analysis(
                     item["url"], limit=limit, no_cache=no_cache, with_llm=with_llm
                 )
+            if db.get_job_status(access_token, job_id) == "cancelled":
+                db.update_job_item(access_token, item["id"], status="cancelled")
+                item["status"] = "cancelled"
+                continue
             saved = db.save_analysis(access_token, result, posts_limit=limit) or {}
             profile = result.get("profile", {}) or {}
             db.update_job_item(
@@ -76,22 +83,60 @@ def process_job(access_token: str, job_id: str) -> None:
             )
             item["status"] = "done"
         except Exception as exc:  # noqa: BLE001 — on isole l'échec d'un profil
-            db.update_job_item(
-                access_token, item["id"], status="error", error=str(exc)[:500]
-            )
-            item["status"] = "error"
+            if db.get_job_status(access_token, job_id) == "cancelled":
+                db.update_job_item(access_token, item["id"], status="cancelled")
+                item["status"] = "cancelled"
+            else:
+                db.update_job_item(
+                    access_token, item["id"], status="error", error=str(exc)[:500]
+                )
+                item["status"] = "error"
 
         done, failed = _counts(items)
-        db.update_job(access_token, job_id, status="running", completed=done, failed=failed)
+        if db.get_job_status(access_token, job_id) != "cancelled":
+            db.update_job(access_token, job_id, status="running", completed=done, failed=failed)
 
     done, failed = _counts(items)
+    current_status = db.get_job_status(access_token, job_id)
+    if current_status == "cancelled":
+        db.update_job(access_token, job_id, status="cancelled", completed=done, failed=failed)
+        return
     final = "error" if failed and not done else "done"
     db.update_job(access_token, job_id, status=final, completed=done, failed=failed)
 
 
-def start_job_thread(access_token: str, job_id: str) -> None:
+def is_job_thread_active(job_id: str) -> bool:
+    """Return whether this process already owns a live worker for the job."""
+    with _threads_lock:
+        thread = _threads.get(job_id)
+        if not thread:
+            return False
+        if thread.is_alive():
+            return True
+        _threads.pop(job_id, None)
+        return False
+
+
+def _run_job_thread(access_token: str, job_id: str) -> None:
+    try:
+        process_job(access_token, job_id)
+    finally:
+        with _threads_lock:
+            if _threads.get(job_id) is threading.current_thread():
+                _threads.pop(job_id, None)
+
+
+def start_job_thread(access_token: str, job_id: str) -> bool:
     """Lance le traitement d'une série dans un thread de fond (non bloquant)."""
-    thread = threading.Thread(
-        target=process_job, args=(access_token, job_id), daemon=True
-    )
+    with _threads_lock:
+        existing = _threads.get(job_id)
+        if existing and existing.is_alive():
+            return False
+        if existing:
+            _threads.pop(job_id, None)
+        thread = threading.Thread(
+            target=_run_job_thread, args=(access_token, job_id), daemon=True
+        )
+        _threads[job_id] = thread
     thread.start()
+    return True

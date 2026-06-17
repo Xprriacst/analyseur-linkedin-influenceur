@@ -218,7 +218,7 @@ function hookLabel(key: string) {
 
 /* ── Backlog serveur (job queue) ───────────────────────────────────────── */
 
-type JobStatus = "queued" | "running" | "done" | "error" | "cancelled";
+type JobStatus = "queued" | "running" | "stalled" | "done" | "error" | "cancelled";
 type ItemStatus = "pending" | "running" | "done" | "error" | "cancelled";
 
 type JobItem = {
@@ -275,12 +275,23 @@ function jobIsActive(j: Job): boolean {
   return j.status === "queued" || j.status === "running";
 }
 
-function jobIsCancelled(j: Job): boolean {
-  return j.status === "cancelled";
+function jobCanCancel(j: Job): boolean {
+  return j.status === "queued" || j.status === "running" || j.status === "stalled";
 }
 
-function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean }) {
+function jobCanResume(j: Job): boolean {
+  return j.status === "stalled";
+}
+
+function ItemRow({ item, jobStalled, onOpen, opening }: {
+  item: JobItem;
+  jobStalled: boolean;
+  onOpen: (i: JobItem) => void;
+  opening: boolean;
+}) {
   const clickable = item.status === "done" && !!item.analysis_id;
+  const visuallyRunning = item.status === "running" && !jobStalled;
+  const statusLabel = item.status === "running" && jobStalled ? "Interrompu" : ITEM_STATUS_LABELS[item.status];
   return (
     <div
       className={`backlog-row ${item.status} ${clickable ? "clickable" : ""}`}
@@ -289,7 +300,7 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
     >
       <span className="backlog-rank">{item.position + 1}</span>
       <span className="backlog-status-ico">
-        {opening || item.status === "running" ? <Loader2 size={16} className="spinning" />
+        {opening || visuallyRunning ? <Loader2 size={16} className="spinning" />
           : item.status === "done" ? <CheckCircle2 size={16} color="#10b981" />
           : item.status === "error" ? <span style={{ color: "#ef4444", fontWeight: 700 }}>✕</span>
           : item.status === "cancelled" ? <span style={{ color: "var(--muted)", fontWeight: 700 }}>–</span>
@@ -306,18 +317,19 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
           {item.follower_count != null ? <span className="badge">👍 {fmt(item.follower_count)}</span> : null}
         </div>
       ) : null}
-      <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : item.status === "cancelled" ? "no" : ""}`}>
-        {ITEM_STATUS_LABELS[item.status]}
+      <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : item.status === "cancelled" ? "no" : item.status === "running" && jobStalled ? "no" : ""}`}>
+        {statusLabel}
       </span>
     </div>
   );
 }
 
-function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth }: {
+function JobsView({ jobs, loading, isAuthed, onCreated, onUpdated, onOpenReport, requireAuth }: {
   jobs: Job[];
   loading: boolean;
   isAuthed: boolean;
   onCreated: (job: Job) => void;
+  onUpdated: (job: Job) => void;
   onOpenReport: (markdown: string, name: string) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 }) {
@@ -329,6 +341,7 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   const [error, setError] = useState("");
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [resumingId, setResumingId] = useState<string | null>(null);
 
   const urlList = parseUrls(urls);
 
@@ -360,14 +373,35 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   async function cancelJob(jobId: string) {
     setCancellingId(jobId);
     try {
-      await fetch(`${DIRECT_API_URL}/jobs/${jobId}/cancel`, {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${jobId}/cancel`, {
         method: "POST",
         headers: await authHeaders(),
       });
-    } catch {
-      /* le polling remettra le statut à jour */
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Annulation impossible");
+      onUpdated(data as Job);
+    } catch (err: any) {
+      setError(err.message || "Annulation impossible");
     } finally {
       setCancellingId(null);
+    }
+  }
+
+  async function resumeJob(jobId: string) {
+    setResumingId(jobId);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${jobId}/resume`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Relance impossible");
+      onUpdated(data as Job);
+    } catch (err: any) {
+      setError(err.message || "Relance impossible");
+    } finally {
+      setResumingId(null);
     }
   }
 
@@ -456,31 +490,45 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
         <div className="jobs-list">
           {jobs.map((job) => {
             const active = jobIsActive(job);
+            const stalled = job.status === "stalled";
             const date = new Date(job.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
             return (
               <div className="job-block" key={job.id}>
                 <div className="job-head">
                   <div className="job-head-main">
-                    {active ? <Loader2 size={15} className="spinning" /> : job.status === "cancelled" ? <span style={{ color: "var(--muted)" }}>–</span> : job.failed && !job.completed ? <span style={{ color: "#ef4444" }}>✕</span> : <CheckCircle2 size={15} color="#10b981" />}
+                    {active ? <Loader2 size={15} className="spinning" /> : job.status === "cancelled" ? <span style={{ color: "var(--muted)" }}>–</span> : stalled ? <Clock3 size={15} color="#f59e0b" /> : job.failed && !job.completed ? <span style={{ color: "#ef4444" }}>✕</span> : <CheckCircle2 size={15} color="#10b981" />}
                     <strong>Série du {date}</strong>
                     <span className="badge">{job.completed}/{job.total} terminé{job.completed > 1 ? "s" : ""}</span>
                     {job.failed > 0 ? <span className="status-pill no">{job.failed} échec{job.failed > 1 ? "s" : ""}</span> : null}
                     {job.status === "cancelled" ? <span className="status-pill">Annulée</span> : null}
+                    {stalled ? <span className="status-pill no">Interrompue</span> : null}
                   </div>
-                  {active ? (
-                    <button
-                      className="ghost-button"
-                      style={{ fontSize: 12, padding: "2px 10px", color: "var(--muted)" }}
-                      disabled={cancellingId === job.id}
-                      onClick={() => cancelJob(job.id)}
-                    >
-                      {cancellingId === job.id ? <Loader2 size={12} className="spinning" /> : "Annuler"}
-                    </button>
-                  ) : null}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    {jobCanResume(job) ? (
+                      <button
+                        className="ghost-button"
+                        style={{ fontSize: 12, padding: "2px 10px", color: "var(--primary)" }}
+                        disabled={resumingId === job.id || cancellingId === job.id}
+                        onClick={() => resumeJob(job.id)}
+                      >
+                        {resumingId === job.id ? <Loader2 size={12} className="spinning" /> : <><RefreshCw size={12} /> Reprendre</>}
+                      </button>
+                    ) : null}
+                    {jobCanCancel(job) ? (
+                      <button
+                        className="ghost-button"
+                        style={{ fontSize: 12, padding: "2px 10px", color: "var(--muted)" }}
+                        disabled={cancellingId === job.id || resumingId === job.id}
+                        onClick={() => cancelJob(job.id)}
+                      >
+                        {cancellingId === job.id ? <Loader2 size={12} className="spinning" /> : "Annuler"}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="backlog-list">
                   {job.items.map((item) => (
-                    <ItemRow key={item.id} item={item} onOpen={openItem} opening={openingId === item.id} />
+                    <ItemRow key={item.id} item={item} jobStalled={stalled} onOpen={openItem} opening={openingId === item.id} />
                   ))}
                 </div>
               </div>
@@ -2048,6 +2096,18 @@ export default function Home() {
     loadInfluencerLibrary();
   }
 
+  function onJobUpdated(job: Job) {
+    setJobs((prev) => {
+      const exists = prev.some((current) => current.id === job.id);
+      if (!exists) return [job, ...prev];
+      return prev.map((current) => current.id === job.id ? job : current);
+    });
+    if (!jobIsActive(job)) {
+      loadReports();
+      loadInfluencerLibrary();
+    }
+  }
+
   const activeJob = jobs.find(jobIsActive) ?? null;
   const anyJobActive = !!activeJob;
 
@@ -2246,7 +2306,7 @@ export default function Home() {
                       <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
                     </>
                   )
-                  : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} requireAuth={requireAuth} />
+                  : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onUpdated={onJobUpdated} onOpenReport={openReport} requireAuth={requireAuth} />
           )}
           {view === "influencers" && (
             <InfluencersView

@@ -10,7 +10,7 @@
 create table if not exists public.analysis_jobs (
   id          uuid primary key default gen_random_uuid(),
   user_id     uuid not null references auth.users(id) on delete cascade,
-  status      text not null default 'queued',   -- queued | running | done | error
+  status      text not null default 'queued',   -- queued | running | stalled | done | error | cancelled
   total       int  not null default 0,
   completed   int  not null default 0,
   failed      int  not null default 0,
@@ -29,7 +29,7 @@ create table if not exists public.analysis_job_items (
   url            text not null,
   handle         text,
   name           text,
-  status         text not null default 'pending', -- pending | running | done | error
+  status         text not null default 'pending', -- pending | running | done | error | cancelled
   error          text,
   analysis_id    uuid references public.analyses(id) on delete set null,
   influencer_id  uuid references public.influencers(id) on delete set null,

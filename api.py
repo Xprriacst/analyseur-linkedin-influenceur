@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -11,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from src import db
 from src.pipeline import run_analysis
-from src.jobs import start_job_thread
+from src.jobs import is_job_thread_active, start_job_thread
 from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
@@ -21,6 +22,8 @@ from src.stats import compute_stats
 load_dotenv()
 
 app = FastAPI(title="LinkedIn Strategy Decoder API")
+
+STALE_JOB_MINUTES = int(os.environ.get("JOB_STALE_MINUTES", "30"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -711,6 +714,56 @@ class JobRequest(BaseModel):
     run_llm: bool = True
 
 
+def _parse_datetime(value: Any) -> datetime.datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime.datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _job_last_update(job: dict[str, Any]) -> datetime.datetime | None:
+    timestamps = [_parse_datetime(job.get("updated_at"))]
+    timestamps.extend(
+        _parse_datetime(item.get("updated_at"))
+        for item in job.get("items", [])
+        if item.get("updated_at")
+    )
+    parsed = [ts for ts in timestamps if ts is not None]
+    return max(parsed) if parsed else None
+
+
+def _job_is_stale(job: dict[str, Any]) -> bool:
+    if job.get("status") not in ("queued", "running"):
+        return False
+    last_update = _job_last_update(job)
+    if not last_update:
+        return False
+    age = datetime.datetime.now(datetime.timezone.utc) - last_update
+    return age >= datetime.timedelta(minutes=STALE_JOB_MINUTES)
+
+
+def _mark_stale_jobs(token: str, jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stale_ids = [job["id"] for job in jobs if _job_is_stale(job)]
+    for job_id in stale_ids:
+        db.update_job(token, job_id, status="stalled")
+    return db.list_jobs(token) if stale_ids else jobs
+
+
+def _mark_stale_job(token: str, job: dict[str, Any]) -> dict[str, Any]:
+    if not _job_is_stale(job):
+        return job
+    db.update_job(token, job["id"], status="stalled")
+    return db.get_job(token, job["id"]) or job
+
+
 def _clean_urls(raw: list[str]) -> list[str]:
     """Filtre les URLs LinkedIn valides et déduplique (insensible à la casse/slash)."""
     import re
@@ -757,7 +810,7 @@ def create_job(payload: JobRequest, token: str = Depends(require_token)) -> dict
 @app.get("/jobs")
 def list_jobs(token: str = Depends(require_token)) -> list[dict[str, Any]]:
     """Liste les séries de l'utilisateur (la plus récente en premier), avec items."""
-    return db.list_jobs(token)
+    return _mark_stale_jobs(token, db.list_jobs(token))
 
 
 @app.get("/jobs/{job_id}")
@@ -766,7 +819,7 @@ def get_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
     job = db.get_job(token, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Série introuvable.")
-    return job
+    return _mark_stale_job(token, job)
 
 
 @app.post("/jobs/{job_id}/resume")
@@ -775,9 +828,25 @@ def resume_job(job_id: str, token: str = Depends(require_token)) -> dict[str, An
     job = db.get_job(token, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Série introuvable.")
-    pending = [it for it in job.get("items", []) if it.get("status") != "done"]
+    job = _mark_stale_job(token, job)
+    if job.get("status") in ("done", "cancelled"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"La série ne peut pas être reprise (statut : {job.get('status')}).",
+        )
+    if is_job_thread_active(job_id):
+        raise HTTPException(status_code=409, detail="Cette série est déjà en cours.")
+    pending = [
+        it for it in job.get("items", [])
+        if it.get("status") not in ("done", "cancelled")
+    ]
     if pending:
-        start_job_thread(token, job_id)
+        prepared = db.prepare_job_for_resume(token, job_id)
+        if not prepared:
+            raise HTTPException(status_code=500, detail="Relance de la série impossible.")
+        if not start_job_thread(token, job_id):
+            raise HTTPException(status_code=409, detail="Cette série est déjà en cours.")
+        return prepared
     return job
 
 
@@ -792,13 +861,18 @@ def cancel_job(job_id: str, token: str = Depends(require_token)) -> dict[str, An
     job = db.get_job(token, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Série introuvable.")
-    if job.get("status") not in ("queued", "running"):
+    job = _mark_stale_job(token, job)
+    if job.get("status") == "cancelled":
+        return job
+    if job.get("status") not in ("queued", "running", "stalled"):
         raise HTTPException(
             status_code=400,
             detail=f"La série est déjà terminée (statut : {job.get('status')}).",
         )
-    db.update_job(token, job_id, status="cancelled")
-    return db.get_job(token, job_id)
+    cancelled = db.cancel_job(token, job_id)
+    if not cancelled:
+        raise HTTPException(status_code=500, detail="Annulation de la série impossible.")
+    return cancelled
 
 
 @app.post("/analyses/persist")

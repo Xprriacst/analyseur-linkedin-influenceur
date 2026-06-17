@@ -532,6 +532,16 @@ _JOB_ITEM_COLS = (
 )
 
 
+_NON_TERMINAL_ITEM_STATUSES = ("pending", "running")
+_RESUMABLE_ITEM_STATUSES = ("running", "error")
+
+
+def _job_counts(items: list[dict]) -> tuple[int, int]:
+    done = sum(1 for it in items if it.get("status") == "done")
+    failed = sum(1 for it in items if it.get("status") in ("error", "cancelled"))
+    return done, failed
+
+
 def create_job(
     access_token: str,
     urls: list[str],
@@ -660,6 +670,52 @@ def update_job_item(access_token: str, item_id: str, **fields: Any) -> None:
     db = client_for_token(access_token)
     fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     db.table("analysis_job_items").update(fields).eq("id", item_id).execute()
+
+
+def cancel_job(access_token: str, job_id: str) -> dict | None:
+    """Cancel a job and atomically mark every unfinished item as cancelled."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    (
+        db.table("analysis_job_items")
+        .update({"status": "cancelled", "updated_at": now})
+        .eq("job_id", job_id)
+        .eq("user_id", user["id"])
+        .in_("status", list(_NON_TERMINAL_ITEM_STATUSES))
+        .execute()
+    )
+    job = get_job(access_token, job_id)
+    if not job:
+        return None
+    done, failed = _job_counts(job.get("items", []))
+    update_job(access_token, job_id, status="cancelled", completed=done, failed=failed)
+    return get_job(access_token, job_id)
+
+
+def prepare_job_for_resume(access_token: str, job_id: str) -> dict | None:
+    """Reset interrupted item states before restarting a job thread."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    (
+        db.table("analysis_job_items")
+        .update({"status": "pending", "error": None, "updated_at": now})
+        .eq("job_id", job_id)
+        .eq("user_id", user["id"])
+        .in_("status", list(_RESUMABLE_ITEM_STATUSES))
+        .execute()
+    )
+    job = get_job(access_token, job_id)
+    if not job:
+        return None
+    done, failed = _job_counts(job.get("items", []))
+    update_job(access_token, job_id, status="queued", completed=done, failed=failed)
+    return get_job(access_token, job_id)
 
 
 def get_analysis(access_token: str, analysis_id: str) -> dict | None:
