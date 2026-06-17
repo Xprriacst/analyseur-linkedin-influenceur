@@ -36,6 +36,16 @@ class StrategySynthesis(BaseModel):
     actions_to_replicate: list[str]
 
 
+class ImagePromptResponse(BaseModel):
+    visual_concept: str
+    composition: str
+    style: str
+    colors: list[str]
+    text_overlay: str
+    negative_prompt: str
+    image_prompt: str
+
+
 def _client() -> Anthropic:
     return Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
@@ -347,3 +357,48 @@ Schéma JSON attendu (toutes les clés obligatoires) :
     )
     data = _call(system, user, max_tokens=6000, temperature=0.7)
     return data.get("variants", [])
+
+
+def generate_image_prompt(
+    source_text: str,
+    angle: str | None = None,
+    tone: str | None = None,
+) -> dict[str, Any]:
+    """Generate a ready-to-use image prompt for a LinkedIn post or idea."""
+    trimmed_text = source_text.strip()[:5000]
+    angle = (angle or "").strip()
+    tone = (tone or "professionnel, clair, premium").strip()
+
+    system = (
+        "Tu es directeur artistique pour des posts LinkedIn B2B. "
+        "Transforme un post ou une idée en brief visuel simple, exploitable par un générateur d'image. "
+        "Le visuel doit renforcer l'angle du contenu sans promettre de données non présentes. "
+        "Évite les logos de marques, les personnes réelles identifiables, les captures d'écran LinkedIn, "
+        "et tout texte trop long dans l'image. Réponds UNIQUEMENT avec un objet JSON valide."
+    )
+    user = (
+        "Source à illustrer :\n"
+        + trimmed_text
+        + "\n\nAngle stratégique : "
+        + (angle or "À déduire du contenu.")
+        + "\nTon souhaité : "
+        + tone
+        + """
+
+Construis un prompt image pour un visuel LinkedIn simple (illustration, schéma conceptuel ou scène abstraite).
+Le résultat doit laisser l'utilisateur décider ensuite s'il génère/publie l'image.
+
+Schéma JSON attendu (toutes les clés obligatoires) :
+{
+  "visual_concept": "idée visuelle en une phrase",
+  "composition": "description de la mise en page",
+  "style": "style graphique recommandé",
+  "colors": ["couleur 1", "couleur 2", "couleur 3"],
+  "text_overlay": "texte très court à afficher dans l'image, ou 'Aucun'",
+  "negative_prompt": "éléments à éviter",
+  "image_prompt": "prompt complet prêt à copier dans un générateur d'image"
+}"""
+    )
+
+    data = _call(system, user, max_tokens=1600, temperature=0.6)
+    return ImagePromptResponse(**data).model_dump()

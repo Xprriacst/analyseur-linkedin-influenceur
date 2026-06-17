@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from src import db
 from src.pipeline import run_analysis
 from src.jobs import start_job_thread
-from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy
+from src.llm import generate_ideas, generate_image_prompt, generate_posts, analyze_dashboard_strategy
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.stats import compute_stats
@@ -416,6 +416,12 @@ class GenerateRequest(BaseModel):
     topic: str = Field(..., min_length=3)
 
 
+class ImagePromptRequest(BaseModel):
+    source_text: str = Field(..., min_length=20, max_length=10000)
+    angle: str | None = Field(default=None, max_length=1200)
+    tone: str | None = Field(default="professionnel, clair, premium", max_length=400)
+
+
 @app.post("/ideas")
 def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
     """Generate post ideas from the user's influencer insights."""
@@ -450,6 +456,25 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
     top_posts, benchmark = _build_benchmark(influencers)
     variants = generate_posts(payload.topic.strip(), top_posts, benchmark)
     return {"variants": variants}
+
+
+@app.post("/image-prompt")
+def image_prompt(payload: ImagePromptRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
+    """Generate a ready-to-use image prompt for a post or idea."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+    if db.supabase_enabled() and (not token or not db.get_user(token)):
+        raise HTTPException(status_code=401, detail="Authentification requise.")
+
+    try:
+        prompt = generate_image_prompt(
+            payload.source_text,
+            angle=payload.angle,
+            tone=payload.tone,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"image_prompt": prompt}
 
 
 @app.post("/analyze")

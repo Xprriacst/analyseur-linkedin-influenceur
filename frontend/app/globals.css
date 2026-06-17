@@ -912,6 +912,8 @@ a { color: inherit; text-decoration: none; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
   margin-top: auto;
   padding-top: 8px;
   border-top: 1px solid var(--border);
@@ -992,6 +994,69 @@ a { color: inherit; text-decoration: none; }
   color: var(--ink);
   font-size: 13px;
   line-height: 1.6;
+  resize: vertical;
+}
+
+.variant-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.image-prompt-panel {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid rgba(70, 72, 212, 0.14);
+  border-radius: 10px;
+  background: rgba(70, 72, 212, 0.04);
+  display: grid;
+  gap: 6px;
+}
+
+.image-prompt-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.image-prompt-panel strong {
+  color: var(--ink);
+}
+
+.image-prompt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.image-prompt-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--primary);
+  font-size: 12px;
+}
+
+.image-prompt-panel summary {
+  cursor: pointer;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.image-prompt-text {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
   resize: vertical;
 }
 

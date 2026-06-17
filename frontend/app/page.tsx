@@ -7,6 +7,7 @@ import {
   Activity,
   BarChart3,
   CheckCircle2,
+  ImageIcon,
   Clock3,
   Download,
   FileText,
@@ -61,6 +62,15 @@ type Variant = {
   strategy: string;
   predicted_lift: string;
   post: string;
+};
+type ImagePrompt = {
+  visual_concept: string;
+  composition: string;
+  style: string;
+  colors: string[];
+  text_overlay: string;
+  negative_prompt: string;
+  image_prompt: string;
 };
 type DashboardData = {
   influencer_count: number;
@@ -132,6 +142,28 @@ const HOOK_LABELS: Record<string, string> = {
 
 function hookLabel(key: string) {
   return HOOK_LABELS[key] || key;
+}
+
+function ImagePromptPanel({ prompt }: { prompt: ImagePrompt }) {
+  return (
+    <div className="image-prompt-panel">
+      <div className="image-prompt-head">
+        <strong><ImageIcon size={14} /> Brief image</strong>
+        <button className="ghost-button" onClick={() => navigator.clipboard.writeText(prompt.image_prompt)}>
+          Copier le prompt
+        </button>
+      </div>
+      <p><strong>Concept :</strong> {prompt.visual_concept}</p>
+      <p><strong>Composition :</strong> {prompt.composition}</p>
+      <p><strong>Style :</strong> {prompt.style}</p>
+      <p><strong>Couleurs :</strong> {prompt.colors.join(", ")}</p>
+      <p><strong>Texte dans l'image :</strong> {prompt.text_overlay}</p>
+      <details>
+        <summary>Prompt complet prêt à utiliser</summary>
+        <textarea className="image-prompt-text" readOnly rows={6} value={prompt.image_prompt} />
+      </details>
+    </div>
+  );
 }
 
 /* ── Backlog serveur (job queue) ───────────────────────────────────────── */
@@ -956,9 +988,11 @@ function Dashboard({
 function Generator() {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
+  const [imagePrompts, setImagePrompts] = useState<Record<string, ImagePrompt>>({});
   const [topic, setTopic] = useState("");
   const [loadingIdeas, setLoadingIdeas] = useState(false);
   const [loadingPosts, setLoadingPosts] = useState(false);
+  const [loadingImageKey, setLoadingImageKey] = useState<string | null>(null);
   const [error, setError] = useState("");
 
   async function fetchIdeas() {
@@ -1000,6 +1034,29 @@ function Generator() {
     }
   }
 
+  async function generateImagePrompt(key: string, sourceText: string, angle: string) {
+    setError("");
+    setLoadingImageKey(key);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/image-prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          source_text: sourceText,
+          angle,
+          tone: "LinkedIn B2B, visuel clair, moderne et premium",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Échec de la génération du prompt image");
+      setImagePrompts((prev) => ({ ...prev, [key]: data.image_prompt }));
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoadingImageKey(null);
+    }
+  }
+
   const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
   const hookColors: Record<string, string> = { "stat+contrarian": "#f97316", "story+result": "#10b981", question: "#3b82f6" };
 
@@ -1037,6 +1094,19 @@ function Generator() {
               <div className="idea-footer">
                 <span className={`idea-difficulty ${idea.difficulty}`}>{idea.difficulty}</span>
                 <button
+                  className="secondary-button"
+                  style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                  disabled={loadingImageKey === `idea-${i}`}
+                  onClick={() => generateImagePrompt(
+                    `idea-${i}`,
+                    `Titre: ${idea.title}\nHook: ${idea.hook}\nAngle: ${idea.angle}\nPourquoi ca marche: ${idea.why_it_works}`,
+                    `${idea.angle}\nFunnel: ${idea.funnel}\nHook: ${idea.hook_type}`,
+                  )}
+                >
+                  {loadingImageKey === `idea-${i}` ? <Loader2 size={12} className="spinning" /> : <ImageIcon size={12} />}
+                  Générer une image
+                </button>
+                <button
                   className="primary-button"
                   style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
                   onClick={() => { setTopic(idea.title); generateFromTopic(idea.title); }}
@@ -1044,6 +1114,7 @@ function Generator() {
                   <Sparkles size={12} /> Générer ce post
                 </button>
               </div>
+              {imagePrompts[`idea-${i}`] ? <ImagePromptPanel prompt={imagePrompts[`idea-${i}`]} /> : null}
             </div>
           ))}
         </div>
@@ -1082,9 +1153,20 @@ function Generator() {
                 </div>
                 <p className="variant-strategy">{v.strategy}</p>
                 <textarea className="variant-text" readOnly value={v.post} rows={14} />
-                <button className="secondary-button" onClick={() => navigator.clipboard.writeText(v.post)} style={{ marginTop: 8 }}>
-                  Copier le post
-                </button>
+                <div className="variant-actions">
+                  <button className="secondary-button" onClick={() => navigator.clipboard.writeText(v.post)}>
+                    Copier le post
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={loadingImageKey === `variant-${i}`}
+                    onClick={() => generateImagePrompt(`variant-${i}`, v.post, v.strategy)}
+                  >
+                    {loadingImageKey === `variant-${i}` ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
+                    Générer une image
+                  </button>
+                </div>
+                {imagePrompts[`variant-${i}`] ? <ImagePromptPanel prompt={imagePrompts[`variant-${i}`]} /> : null}
               </div>
             );
           })}
