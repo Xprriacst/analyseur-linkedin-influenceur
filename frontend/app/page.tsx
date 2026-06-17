@@ -136,8 +136,8 @@ function hookLabel(key: string) {
 
 /* ── Backlog serveur (job queue) ───────────────────────────────────────── */
 
-type JobStatus = "queued" | "running" | "done" | "error";
-type ItemStatus = "pending" | "running" | "done" | "error";
+type JobStatus = "queued" | "running" | "retrying" | "completed" | "failed" | "cancelled" | "done" | "error";
+type ItemStatus = "queued" | "pending" | "running" | "retrying" | "completed" | "failed" | "cancelled" | "done" | "error";
 
 type JobItem = {
   id: string;
@@ -147,6 +147,12 @@ type JobItem = {
   name: string | null;
   status: ItemStatus;
   error: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  current_step: string | null;
+  last_heartbeat_at: string | null;
+  cancel_requested_at: string | null;
+  cancelled_at: string | null;
   analysis_id: string | null;
   follower_count: number | null;
   posts_count: number | null;
@@ -161,16 +167,27 @@ type Job = {
   limit_posts: number | null;
   run_llm: boolean;
   use_cache: boolean;
+  current_step: string | null;
+  last_heartbeat_at: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  cancel_requested_at: string | null;
+  cancelled_at: string | null;
   created_at: string;
   updated_at: string;
   items: JobItem[];
 };
 
 const ITEM_STATUS_LABELS: Record<ItemStatus, string> = {
+  queued: "En attente",
   pending: "En attente",
   running: "Analyse en cours…",
+  retrying: "Nouvelle tentative",
+  completed: "Terminé",
   done: "Terminé",
+  failed: "Échec",
   error: "Échec",
+  cancelled: "Annulé",
 };
 
 /** Découpe un bloc de texte en URLs LinkedIn distinctes (une par ligne, dédupliquées). */
@@ -188,12 +205,57 @@ function parseUrls(raw: string): string[] {
   return out;
 }
 
-function jobIsActive(j: Job): boolean {
-  return j.status === "queued" || j.status === "running";
+function itemIsCompleted(item: JobItem): boolean {
+  return item.status === "completed" || item.status === "done";
 }
 
-function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean }) {
-  const clickable = item.status === "done" && !!item.analysis_id;
+function itemIsFailed(item: JobItem): boolean {
+  return item.status === "failed" || item.status === "error";
+}
+
+function itemIsActive(item: JobItem): boolean {
+  return item.status === "queued" || item.status === "pending" || item.status === "running" || item.status === "retrying";
+}
+
+function jobIsActive(j: Job): boolean {
+  return j.status === "queued" || j.status === "running" || j.status === "retrying";
+}
+
+function jobNeedsResume(j: Job): boolean {
+  return (j.status === "failed" || j.status === "error" || j.status === "cancelled") && j.items.some((item) => !itemIsCompleted(item));
+}
+
+function statusPillClass(status: JobStatus | ItemStatus) {
+  if (status === "completed" || status === "done") return "ok";
+  if (status === "failed" || status === "error" || status === "cancelled") return "no";
+  if (status === "retrying") return "warn";
+  return "";
+}
+
+function shortDateTime(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function ItemRow({
+  item,
+  onOpen,
+  opening,
+  busy,
+  onCancel,
+  onResume,
+}: {
+  item: JobItem;
+  onOpen: (i: JobItem) => void;
+  opening: boolean;
+  busy: boolean;
+  onCancel: (i: JobItem) => void;
+  onResume: (i: JobItem) => void;
+}) {
+  const clickable = itemIsCompleted(item) && !!item.analysis_id;
+  const errorMessage = item.error_message || item.error;
   return (
     <div
       className={`backlog-row ${item.status} ${clickable ? "clickable" : ""}`}
@@ -202,34 +264,48 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
     >
       <span className="backlog-rank">{item.position + 1}</span>
       <span className="backlog-status-ico">
-        {opening || item.status === "running" ? <Loader2 size={16} className="spinning" />
-          : item.status === "done" ? <CheckCircle2 size={16} color="#10b981" />
-          : item.status === "error" ? <span style={{ color: "#ef4444", fontWeight: 700 }}>✕</span>
+        {opening || item.status === "running" || item.status === "retrying" ? <Loader2 size={16} className="spinning" />
+          : itemIsCompleted(item) ? <CheckCircle2 size={16} color="#10b981" />
+          : itemIsFailed(item) || item.status === "cancelled" ? <span style={{ color: "#ef4444", fontWeight: 700 }}>✕</span>
           : <Clock3 size={16} color="var(--muted)" />}
       </span>
       <div className="backlog-main">
         <strong>{item.name || item.handle || item.url}</strong>
         <span className="backlog-url">{item.url}</span>
-        {item.status === "error" && item.error ? <span className="backlog-error">{item.error}</span> : null}
+        {item.current_step ? <span className="backlog-step">Dernière étape : {item.current_step}</span> : null}
+        {item.last_heartbeat_at ? <span className="backlog-heartbeat">Dernier signal : {shortDateTime(item.last_heartbeat_at)}</span> : null}
+        {(itemIsFailed(item) || item.status === "cancelled") && errorMessage ? <span className="backlog-error">{errorMessage}</span> : null}
       </div>
-      {item.status === "done" ? (
+      {itemIsCompleted(item) ? (
         <div className="backlog-meta">
           {item.posts_count != null ? <span className="badge">{fmt(item.posts_count)} posts</span> : null}
           {item.follower_count != null ? <span className="badge">👍 {fmt(item.follower_count)}</span> : null}
         </div>
       ) : null}
-      <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : ""}`}>
+      <div className="backlog-actions">
+        {itemIsActive(item) ? (
+          <button className="ghost-button danger" disabled={busy} onClick={(e) => { e.stopPropagation(); onCancel(item); }}>
+            Annuler
+          </button>
+        ) : itemIsFailed(item) || item.status === "cancelled" ? (
+          <button className="secondary-button compact" disabled={busy} onClick={(e) => { e.stopPropagation(); onResume(item); }}>
+            <RefreshCw size={12} /> Relancer
+          </button>
+        ) : null}
+      </div>
+      <span className={`status-pill ${statusPillClass(item.status)}`}>
         {ITEM_STATUS_LABELS[item.status]}
       </span>
     </div>
   );
 }
 
-function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth }: {
+function JobsView({ jobs, loading, isAuthed, onCreated, onUpdated, onOpenReport, requireAuth }: {
   jobs: Job[];
   loading: boolean;
   isAuthed: boolean;
   onCreated: (job: Job) => void;
+  onUpdated: (job: Job) => void;
   onOpenReport: (markdown: string, name: string) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 }) {
@@ -240,6 +316,7 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [openingId, setOpeningId] = useState<string | null>(null);
+  const [actionId, setActionId] = useState<string | null>(null);
 
   const urlList = parseUrls(urls);
 
@@ -283,6 +360,40 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
       setError(err.message || "Impossible d'ouvrir le rapport");
     } finally {
       setOpeningId(null);
+    }
+  }
+
+  async function jobAction(job: Job, action: "cancel" | "resume") {
+    setActionId(`${job.id}:${action}`); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${job.id}/${action === "cancel" ? "cancel" : "resume"}`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Action impossible sur cette série");
+      onUpdated(data as Job);
+    } catch (err: any) {
+      setError(err.message || "Action impossible sur cette série");
+    } finally {
+      setActionId(null);
+    }
+  }
+
+  async function itemAction(job: Job, item: JobItem, action: "cancel" | "resume") {
+    setActionId(`${item.id}:${action}`); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${job.id}/items/${item.id}/${action}`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Action impossible sur ce profil");
+      onUpdated(data as Job);
+    } catch (err: any) {
+      setError(err.message || "Action impossible sur ce profil");
+    } finally {
+      setActionId(null);
     }
   }
 
@@ -358,15 +469,36 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
               <div className="job-block" key={job.id}>
                 <div className="job-head">
                   <div className="job-head-main">
-                    {active ? <Loader2 size={15} className="spinning" /> : job.failed && !job.completed ? <span style={{ color: "#ef4444" }}>✕</span> : <CheckCircle2 size={15} color="#10b981" />}
+                    {active ? <Loader2 size={15} className="spinning" /> : job.failed && !job.completed ? <span style={{ color: "#ef4444" }}>✕</span> : job.status === "cancelled" ? <span style={{ color: "#ef4444" }}>✕</span> : <CheckCircle2 size={15} color="#10b981" />}
                     <strong>Série du {date}</strong>
                     <span className="badge">{job.completed}/{job.total} terminé{job.completed > 1 ? "s" : ""}</span>
                     {job.failed > 0 ? <span className="status-pill no">{job.failed} échec{job.failed > 1 ? "s" : ""}</span> : null}
+                    {job.current_step ? <span className={`status-pill ${statusPillClass(job.status)}`}>{job.current_step}</span> : null}
+                  </div>
+                  <div className="job-actions">
+                    {active ? (
+                      <button className="ghost-button danger" disabled={!!actionId} onClick={() => jobAction(job, "cancel")}>
+                        Annuler la série
+                      </button>
+                    ) : jobNeedsResume(job) ? (
+                      <button className="secondary-button compact" disabled={!!actionId} onClick={() => jobAction(job, "resume")}>
+                        <RefreshCw size={12} /> Reprendre
+                      </button>
+                    ) : null}
                   </div>
                 </div>
+                {job.error_message ? <div className="job-message">{job.error_message}</div> : null}
                 <div className="backlog-list">
                   {job.items.map((item) => (
-                    <ItemRow key={item.id} item={item} onOpen={openItem} opening={openingId === item.id} />
+                    <ItemRow
+                      key={item.id}
+                      item={item}
+                      onOpen={openItem}
+                      opening={openingId === item.id}
+                      busy={!!actionId}
+                      onCancel={(target) => itemAction(job, target, "cancel")}
+                      onResume={(target) => itemAction(job, target, "resume")}
+                    />
                   ))}
                 </div>
               </div>
@@ -1357,6 +1489,11 @@ export default function Home() {
     loadReports();
   }
 
+  function onJobUpdated(job: Job) {
+    setJobs((prev) => prev.map((existing) => existing.id === job.id ? job : existing));
+    loadReports();
+  }
+
   const activeJob = jobs.find(jobIsActive) ?? null;
   const anyJobActive = !!activeJob;
 
@@ -1503,7 +1640,7 @@ export default function Home() {
                       <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
                     </>
                   )
-                  : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} requireAuth={requireAuth} />
+                  : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onUpdated={onJobUpdated} onOpenReport={openReport} requireAuth={requireAuth} />
           )}
           {view === "generator" && <Generator />}
           {view === "dashboard" && <GlobalDashboard />}

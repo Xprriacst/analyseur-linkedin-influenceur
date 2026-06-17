@@ -335,9 +335,14 @@ def _handle_from_url(url: str) -> str | None:
         return m.group(1)
 
 
+def utc_now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
 _JOB_ITEM_COLS = (
-    "id,position,url,handle,name,status,error,analysis_id,"
-    "influencer_id,follower_count,posts_count,updated_at"
+    "id,position,url,handle,name,status,error,error_code,error_message,"
+    "current_step,last_heartbeat_at,cancel_requested_at,cancelled_at,"
+    "analysis_id,influencer_id,follower_count,posts_count,created_at,updated_at"
 )
 
 
@@ -353,6 +358,7 @@ def create_job(
     if not user:
         return None
     db = client_for_token(access_token)
+    now = utc_now_iso()
     job_resp = (
         db.table("analysis_jobs")
         .insert({
@@ -362,6 +368,8 @@ def create_job(
             "limit_posts": limit_posts,
             "run_llm": run_llm,
             "use_cache": use_cache,
+            "current_step": "En attente",
+            "last_heartbeat_at": now,
         })
         .execute()
     )
@@ -375,7 +383,9 @@ def create_job(
             "position": i,
             "url": url,
             "handle": _handle_from_url(url),
-            "status": "pending",
+            "status": "queued",
+            "current_step": "En attente",
+            "last_heartbeat_at": now,
         }
         for i, url in enumerate(urls)
     ]
@@ -444,13 +454,13 @@ def list_jobs(access_token: str, limit: int = 20) -> list[dict]:
 
 def update_job(access_token: str, job_id: str, **fields: Any) -> None:
     db = client_for_token(access_token)
-    fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    fields["updated_at"] = utc_now_iso()
     db.table("analysis_jobs").update(fields).eq("id", job_id).execute()
 
 
 def update_job_item(access_token: str, item_id: str, **fields: Any) -> None:
     db = client_for_token(access_token)
-    fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    fields["updated_at"] = utc_now_iso()
     db.table("analysis_job_items").update(fields).eq("id", item_id).execute()
 
 

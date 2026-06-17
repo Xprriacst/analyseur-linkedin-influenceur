@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from src import db
 from src.pipeline import run_analysis
-from src.jobs import start_job_thread
+from src.jobs import cancel_item, cancel_job, mark_stale_jobs, resume_job as resume_job_worker, start_job_thread
 from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
@@ -545,12 +545,14 @@ def create_job(payload: JobRequest, token: str = Depends(require_token)) -> dict
 @app.get("/jobs")
 def list_jobs(token: str = Depends(require_token)) -> list[dict[str, Any]]:
     """Liste les séries de l'utilisateur (la plus récente en premier), avec items."""
+    mark_stale_jobs(token)
     return db.list_jobs(token)
 
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
     """État d'une série + statut de chaque profil (pour le polling frontend)."""
+    mark_stale_jobs(token)
     job = db.get_job(token, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Série introuvable.")
@@ -560,12 +562,36 @@ def get_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
 @app.post("/jobs/{job_id}/resume")
 def resume_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
     """Relance le traitement des profils non terminés (après un redémarrage serveur)."""
-    job = db.get_job(token, job_id)
+    job = resume_job_worker(token, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Série introuvable.")
-    pending = [it for it in job.get("items", []) if it.get("status") != "done"]
-    if pending:
-        start_job_thread(token, job_id)
+    return job
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job_endpoint(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Annule une série. L'appel externe déjà en vol ne peut pas toujours être interrompu."""
+    job = cancel_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Série introuvable.")
+    return job
+
+
+@app.post("/jobs/{job_id}/items/{item_id}/cancel")
+def cancel_job_item_endpoint(job_id: str, item_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Annule un item de série si son traitement n'est pas déjà terminé."""
+    job = cancel_item(token, job_id, item_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Profil introuvable dans cette série.")
+    return job
+
+
+@app.post("/jobs/{job_id}/items/{item_id}/resume")
+def resume_job_item_endpoint(job_id: str, item_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Relance un profil échoué/annulé."""
+    job = resume_job_worker(token, job_id, item_id=item_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Profil introuvable dans cette série.")
     return job
 
 
