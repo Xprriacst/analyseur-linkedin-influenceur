@@ -78,7 +78,7 @@ def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> li
             "limit": limit,
         }
 
-    run = _client().actor(actor).call(run_input=run_input)
+    run = _client().actor(actor).call(run_input=run_input, timeout_secs=300)
     items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
     # Certains actors renvoient un item d'erreur ({"message": ..., "profile_input": ...})
     # au lieu d'un dataset vide : on ne garde que les vrais posts.
@@ -109,7 +109,7 @@ def _profile_run_input(actor: str, url: str) -> dict[str, Any]:
 
 def _run_profile_actor(actor: str, url: str) -> list[dict]:
     try:
-        run = _client().actor(actor).call(run_input=_profile_run_input(actor, url))
+        run = _client().actor(actor).call(run_input=_profile_run_input(actor, url), timeout_secs=120)
         items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
     except Exception as exc:
         # Visible dans les logs Render — ex. actor qui exige une approbation de

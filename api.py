@@ -12,9 +12,10 @@ from pydantic import BaseModel, Field
 from src import db
 from src.pipeline import run_analysis
 from src.jobs import start_job_thread
-from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy
+from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
+from src.scraper import fetch_posts, fetch_profile
 from src.stats import compute_stats
 
 load_dotenv()
@@ -70,6 +71,33 @@ class AnalyzeRequest(BaseModel):
     run_llm: bool = True
 
 
+class EditorialProfileRequest(BaseModel):
+    display_name: str | None = None
+    brand_name: str | None = None
+    industry: str | None = None
+    business_description: str | None = None
+    location: str | None = None
+    target_audience: str | None = None
+    core_offer: str | None = None
+    tone: str | None = None
+    linkedin_objective: str | None = None
+    topics_to_cover: str | None = None
+    topics_to_avoid: str | None = None
+    constraints: str | None = None
+    website_url: str | None = None
+    linkedin_url: str | None = None
+    language: str | None = "francais"
+    market: str | None = None
+    extra_context: str | None = None
+
+
+class EditorialProfileDraftRequest(BaseModel):
+    activity_description: str | None = Field(default=None, max_length=5000)
+    linkedin_url: str | None = Field(default=None, max_length=500)
+    website_url: str | None = Field(default=None, max_length=500)
+    use_apify_linkedin: bool = False
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
@@ -87,10 +115,180 @@ def me_influencers(token: str = Depends(require_token)) -> list[dict[str, Any]]:
     return db.list_influencers(token)
 
 
+@app.get("/me/influencers/library")
+def me_influencer_library(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """All analyzed influencers with current analysis metadata (no markdown)."""
+    return db.list_influencer_library(token)
+
+
 @app.get("/me/analyses")
-def me_analyses(token: str = Depends(require_token)) -> list[dict[str, Any]]:
-    """List the authenticated user's analysis history."""
-    return db.list_analyses(token)
+def me_analyses(
+    limit: int = 100,
+    token: str = Depends(require_token),
+) -> list[dict[str, Any]]:
+    """List the authenticated user's current analyses (one per influencer)."""
+    return db.list_analyses(token, limit=max(1, min(limit, 500)))
+
+
+@app.get("/me/profile")
+def me_profile(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Editorial/business profile used as AI context for generation."""
+    return db.get_editorial_profile(token) or {}
+
+
+@app.put("/me/profile")
+def update_me_profile(
+    payload: EditorialProfileRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Create or update the user's editorial/business profile."""
+    profile = db.upsert_editorial_profile(token, payload.model_dump())
+    if not profile:
+        raise HTTPException(status_code=500, detail="Sauvegarde du profil impossible.")
+    return profile
+
+
+def _clean_html_text(html: str) -> str:
+    """Extract a compact text summary from public HTML without adding dependencies."""
+    import html as html_lib
+    import re
+
+    text = re.sub(r"(?is)<(script|style|noscript).*?</\1>", " ", html)
+    title = ""
+    title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", text)
+    if title_match:
+        title = html_lib.unescape(re.sub(r"\s+", " ", title_match.group(1))).strip()
+
+    meta = ""
+    meta_match = re.search(
+        r'(?is)<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)["\']',
+        text,
+    )
+    if meta_match:
+        meta = html_lib.unescape(meta_match.group(1)).strip()
+
+    headings = [
+        html_lib.unescape(re.sub(r"<[^>]+>", " ", m)).strip()
+        for m in re.findall(r"(?is)<h[1-3][^>]*>(.*?)</h[1-3]>", text)[:8]
+    ]
+    body = html_lib.unescape(re.sub(r"<[^>]+>", " ", text))
+    body = re.sub(r"\s+", " ", body).strip()
+    parts = [p for p in [title, meta, " | ".join(h for h in headings if h), body[:2500]] if p]
+    return "\n".join(parts)[:3500]
+
+
+def _fetch_website_summary(url: str | None) -> dict[str, Any] | None:
+    if not url:
+        return None
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    try:
+        import ipaddress
+        import socket
+        from urllib.parse import urlparse
+        from urllib.request import Request, urlopen
+
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return {"url": url, "error": "URL invalide"}
+        if hostname in {"localhost"} or hostname.endswith(".local"):
+            return {"url": url, "error": "Hôte local refusé"}
+        for addr in socket.getaddrinfo(hostname, None):
+            ip = ipaddress.ip_address(addr[4][0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return {"url": url, "error": "Adresse privée refusée"}
+
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(req, timeout=8) as resp:
+            content_type = resp.headers.get("content-type", "")
+            if "text/html" not in content_type:
+                return {"url": url, "error": f"Contenu non HTML ({content_type})"}
+            raw = resp.read(250_000)
+        html = raw.decode("utf-8", errors="ignore")
+        summary = _clean_html_text(html)
+        return {"url": url, "summary": summary} if summary else {"url": url, "error": "Aucun contenu texte lisible"}
+    except Exception as exc:
+        return {"url": url, "error": str(exc)}
+
+
+def _fetch_linkedin_apify_seed(linkedin_url: str, limit: int = 10) -> dict[str, Any] | None:
+    """Fetch LinkedIn profile + recent posts with Apify for profile drafting only."""
+    raw_profile = fetch_profile(linkedin_url, use_cache=True)
+    raw_posts = fetch_posts(linkedin_url, limit=limit, use_cache=True)
+    profile = normalize_profile(raw_profile)
+    posts = normalize_posts(raw_posts)
+    return {
+        "profile": profile,
+        "top_posts": [
+            {
+                "text": (post.get("text") or "")[:900],
+                "format": post.get("format"),
+                "engagement": post.get("engagement", 0),
+                "likes": post.get("likes", 0),
+                "comments": post.get("comments", 0),
+                "reposts": post.get("reposts", 0),
+            }
+            for post in sorted(posts, key=lambda p: p.get("engagement", 0), reverse=True)[:6]
+            if post.get("text")
+        ],
+    } if profile or posts else None
+
+
+@app.post("/me/profile/draft")
+def draft_me_profile(
+    payload: EditorialProfileDraftRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Draft an editorial profile from a description, analyzed LinkedIn profile, or website."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    activity = (payload.activity_description or "").strip()
+    linkedin_url = (payload.linkedin_url or "").strip()
+    website_url = (payload.website_url or "").strip()
+    if not activity and not linkedin_url and not website_url:
+        raise HTTPException(status_code=400, detail="Ajoute une description, une URL LinkedIn ou un site web.")
+    if payload.use_apify_linkedin and not linkedin_url:
+        raise HTTPException(status_code=400, detail="Ajoute une URL LinkedIn pour utiliser Apify.")
+    if payload.use_apify_linkedin and not os.environ.get("APIFY_TOKEN"):
+        raise HTTPException(status_code=400, detail="APIFY_TOKEN manquant dans .env")
+
+    linkedin_seed = db.get_linkedin_profile_seed(token, linkedin_url) if linkedin_url else None
+    linkedin_apify_seed = None
+    if payload.use_apify_linkedin and linkedin_url:
+        try:
+            linkedin_apify_seed = _fetch_linkedin_apify_seed(linkedin_url)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Lecture LinkedIn via Apify impossible : {exc}") from exc
+    website_seed = _fetch_website_summary(website_url) if website_url else None
+    existing_profile = db.get_editorial_profile(token) or {}
+    seed = {
+        "activity_description": activity,
+        "linkedin_url": linkedin_url,
+        "website_url": website_url,
+        "linkedin_analyzed_profile": linkedin_seed,
+        "linkedin_apify_profile": linkedin_apify_seed,
+        "website_public_summary": website_seed,
+    }
+    try:
+        profile = draft_editorial_profile(seed, existing_profile=existing_profile)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Pré-remplissage IA impossible : {exc}") from exc
+
+    if linkedin_url and not profile.get("linkedin_url"):
+        profile["linkedin_url"] = linkedin_url
+    if website_url and not profile.get("website_url"):
+        profile["website_url"] = website_url
+    return {
+        "profile": profile,
+        "sources": {
+            "description": bool(activity),
+            "linkedin_analyzed": bool(linkedin_seed),
+            "linkedin_apify": bool(linkedin_apify_seed),
+            "website_summary": bool(website_seed and website_seed.get("summary")),
+        },
+    }
 
 
 @app.get("/me/analyses/{analysis_id}")
@@ -103,16 +301,20 @@ def me_analysis(analysis_id: str, token: str = Depends(require_token)) -> dict[s
 
 
 @app.get("/reports")
-def reports(token: Optional[str] = Depends(optional_token)) -> list[dict[str, Any]]:
+def reports(
+    limit: int = 3,
+    token: Optional[str] = Depends(optional_token),
+) -> list[dict[str, Any]]:
     """Recent analysis reports, scoped to the authenticated user.
 
     Supabase-backed in production; falls back to the local reports/ folder
     only when Supabase is not configured (single-user dev mode).
     """
+    safe_limit = max(1, min(limit, 100))
     if db.supabase_enabled():
         if not token or not db.get_user(token):
             raise HTTPException(status_code=401, detail="Authentification requise.")
-        return db.list_reports(token)
+        return db.list_reports(token, limit=safe_limit)
 
     reports_dir = Path("reports")
     if not reports_dir.exists():
@@ -125,7 +327,7 @@ def reports(token: Optional[str] = Depends(optional_token)) -> list[dict[str, An
             "updated_at": path.stat().st_mtime,
             "content": path.read_text(encoding="utf-8"),
         }
-        for path in files[:10]
+        for path in files[:safe_limit]
     ]
 
 
@@ -414,6 +616,7 @@ class IdeasRequest(BaseModel):
 
 class GenerateRequest(BaseModel):
     topic: str = Field(..., min_length=3)
+    editorial_role: Optional[str] = Field(default=None)
 
 
 @app.post("/ideas")
@@ -427,7 +630,8 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
-    ideas_list = generate_ideas(top_posts, benchmark, count=payload.count)
+    user_context = db.get_user_ai_context(token)
+    ideas_list = generate_ideas(top_posts, benchmark, count=payload.count, user_context=user_context)
     save_error: str | None = None
     if token:
         try:
@@ -448,7 +652,15 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
-    variants = generate_posts(payload.topic.strip(), top_posts, benchmark)
+    user_context = db.get_user_ai_context(token)
+    role = (payload.editorial_role or "").strip() or None
+    variants = generate_posts(
+        payload.topic.strip(),
+        top_posts,
+        benchmark,
+        user_context=user_context,
+        editorial_role=role,
+    )
     return {"variants": variants}
 
 
@@ -567,6 +779,26 @@ def resume_job(job_id: str, token: str = Depends(require_token)) -> dict[str, An
     if pending:
         start_job_thread(token, job_id)
     return job
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Annule une série en cours.
+
+    Pose le statut `cancelled` en base — le thread de traitement s'en aperçoit
+    avant chaque nouveau profil et stoppe proprement. Le profil en cours de
+    scraping (appel Apify bloquant) se terminera néanmoins avant l'arrêt.
+    """
+    job = db.get_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Série introuvable.")
+    if job.get("status") not in ("queued", "running"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"La série est déjà terminée (statut : {job.get('status')}).",
+        )
+    db.update_job(token, job_id, status="cancelled")
+    return db.get_job(token, job_id)
 
 
 @app.post("/analyses/persist")

@@ -21,6 +21,8 @@ import {
   RefreshCw,
   Sparkles,
   TrendingUp,
+  UserRound,
+  Users,
   Zap,
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
@@ -34,6 +36,16 @@ const DIRECT_API_URL =
 
 type Health = { ok: boolean; apify: boolean; anthropic: boolean; model: string };
 type Report = { name: string; path: string; updated_at: number; content: string };
+type InfluencerLibraryEntry = {
+  influencer_id: string;
+  analysis_id: string;
+  handle: string;
+  name: string;
+  headline: string;
+  follower_count: number;
+  profile_url: string;
+  analyzed_at: number;
+};
 type Analysis = {
   handle: string;
   profile: Record<string, any>;
@@ -57,10 +69,31 @@ type Idea = {
   estimated_lift: string;
 };
 type Variant = {
+  editorial_role?: string;
   hook_type: string;
   strategy: string;
   predicted_lift: string;
   post: string;
+};
+type EditorialProfile = {
+  id?: string;
+  display_name?: string | null;
+  brand_name?: string | null;
+  industry?: string | null;
+  business_description?: string | null;
+  location?: string | null;
+  target_audience?: string | null;
+  core_offer?: string | null;
+  tone?: string | null;
+  linkedin_objective?: string | null;
+  topics_to_cover?: string | null;
+  topics_to_avoid?: string | null;
+  constraints?: string | null;
+  website_url?: string | null;
+  linkedin_url?: string | null;
+  language?: string | null;
+  market?: string | null;
+  extra_context?: string | null;
 };
 type DashboardData = {
   influencer_count: number;
@@ -103,6 +136,9 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
+const mainViews = ["analyze", "profile", "influencers", "generator", "dashboard"] as const;
+type MainView = typeof mainViews[number];
+
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
 const steps = [
   "Scraping du profil",
@@ -117,6 +153,52 @@ function fmt(value: any) {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "number") return value.toLocaleString("fr-FR");
   return String(value);
+}
+
+function decodeHandle(handle: string) {
+  try {
+    return decodeURIComponent(handle);
+  } catch {
+    return handle;
+  }
+}
+
+function buildInfluencerLibraryFromLegacy(
+  influencersRaw: Record<string, unknown>[],
+  analysesRaw: Record<string, unknown>[],
+): InfluencerLibraryEntry[] {
+  const analysisByHandle = new Map<string, { id: string; created_at: string }>();
+  for (const row of analysesRaw) {
+    const handle = String(row.handle || "");
+    if (!handle || !row.id) continue;
+    const entry = { id: String(row.id), created_at: String(row.created_at || "") };
+    analysisByHandle.set(handle, entry);
+    analysisByHandle.set(decodeHandle(handle), entry);
+  }
+
+  const entries: InfluencerLibraryEntry[] = [];
+  for (const inf of influencersRaw) {
+    const rawHandle = String(inf.handle || "");
+    const handle = decodeHandle(rawHandle);
+    const analysis = analysisByHandle.get(handle) || analysisByHandle.get(rawHandle);
+    if (!analysis) continue;
+    let analyzedAt = 0;
+    if (analysis.created_at) {
+      const ts = Date.parse(analysis.created_at);
+      if (!Number.isNaN(ts)) analyzedAt = ts / 1000;
+    }
+    entries.push({
+      influencer_id: String(inf.id),
+      analysis_id: analysis.id,
+      handle,
+      name: (String(inf.name || "")).trim() || handle,
+      headline: (String(inf.headline || "")).trim(),
+      follower_count: Number(inf.follower_count) || 0,
+      profile_url: String(inf.profile_url || `https://www.linkedin.com/in/${rawHandle}/`),
+      analyzed_at: analyzedAt,
+    });
+  }
+  return entries.sort((a, b) => (b.analyzed_at || 0) - (a.analyzed_at || 0));
 }
 
 const HOOK_LABELS: Record<string, string> = {
@@ -136,8 +218,8 @@ function hookLabel(key: string) {
 
 /* ── Backlog serveur (job queue) ───────────────────────────────────────── */
 
-type JobStatus = "queued" | "running" | "done" | "error";
-type ItemStatus = "pending" | "running" | "done" | "error";
+type JobStatus = "queued" | "running" | "done" | "error" | "cancelled";
+type ItemStatus = "pending" | "running" | "done" | "error" | "cancelled";
 
 type JobItem = {
   id: string;
@@ -171,6 +253,7 @@ const ITEM_STATUS_LABELS: Record<ItemStatus, string> = {
   running: "Analyse en cours…",
   done: "Terminé",
   error: "Échec",
+  cancelled: "Annulé",
 };
 
 /** Découpe un bloc de texte en URLs LinkedIn distinctes (une par ligne, dédupliquées). */
@@ -192,6 +275,10 @@ function jobIsActive(j: Job): boolean {
   return j.status === "queued" || j.status === "running";
 }
 
+function jobIsCancelled(j: Job): boolean {
+  return j.status === "cancelled";
+}
+
 function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean }) {
   const clickable = item.status === "done" && !!item.analysis_id;
   return (
@@ -205,6 +292,7 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
         {opening || item.status === "running" ? <Loader2 size={16} className="spinning" />
           : item.status === "done" ? <CheckCircle2 size={16} color="#10b981" />
           : item.status === "error" ? <span style={{ color: "#ef4444", fontWeight: 700 }}>✕</span>
+          : item.status === "cancelled" ? <span style={{ color: "var(--muted)", fontWeight: 700 }}>–</span>
           : <Clock3 size={16} color="var(--muted)" />}
       </span>
       <div className="backlog-main">
@@ -218,7 +306,7 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
           {item.follower_count != null ? <span className="badge">👍 {fmt(item.follower_count)}</span> : null}
         </div>
       ) : null}
-      <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : ""}`}>
+      <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : item.status === "cancelled" ? "no" : ""}`}>
         {ITEM_STATUS_LABELS[item.status]}
       </span>
     </div>
@@ -240,6 +328,7 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [openingId, setOpeningId] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const urlList = parseUrls(urls);
 
@@ -265,6 +354,20 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
       setError(err.message || "Échec de la création de la série");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function cancelJob(jobId: string) {
+    setCancellingId(jobId);
+    try {
+      await fetch(`${DIRECT_API_URL}/jobs/${jobId}/cancel`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+    } catch {
+      /* le polling remettra le statut à jour */
+    } finally {
+      setCancellingId(null);
     }
   }
 
@@ -358,11 +461,22 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
               <div className="job-block" key={job.id}>
                 <div className="job-head">
                   <div className="job-head-main">
-                    {active ? <Loader2 size={15} className="spinning" /> : job.failed && !job.completed ? <span style={{ color: "#ef4444" }}>✕</span> : <CheckCircle2 size={15} color="#10b981" />}
+                    {active ? <Loader2 size={15} className="spinning" /> : job.status === "cancelled" ? <span style={{ color: "var(--muted)" }}>–</span> : job.failed && !job.completed ? <span style={{ color: "#ef4444" }}>✕</span> : <CheckCircle2 size={15} color="#10b981" />}
                     <strong>Série du {date}</strong>
                     <span className="badge">{job.completed}/{job.total} terminé{job.completed > 1 ? "s" : ""}</span>
                     {job.failed > 0 ? <span className="status-pill no">{job.failed} échec{job.failed > 1 ? "s" : ""}</span> : null}
+                    {job.status === "cancelled" ? <span className="status-pill">Annulée</span> : null}
                   </div>
+                  {active ? (
+                    <button
+                      className="ghost-button"
+                      style={{ fontSize: 12, padding: "2px 10px", color: "var(--muted)" }}
+                      disabled={cancellingId === job.id}
+                      onClick={() => cancelJob(job.id)}
+                    >
+                      {cancellingId === job.id ? <Loader2 size={12} className="spinning" /> : "Annuler"}
+                    </button>
+                  ) : null}
                 </div>
                 <div className="backlog-list">
                   {job.items.map((item) => (
@@ -466,6 +580,7 @@ function LockedCard({
 function Sidebar({
   health,
   reports,
+  reportsLoading,
   view,
   isAuthed,
   jobBadge,
@@ -475,6 +590,7 @@ function Sidebar({
 }: {
   health: Health | null;
   reports: Report[];
+  reportsLoading: boolean;
   view: MainView;
   isAuthed: boolean;
   jobBadge: { completed: number; total: number } | null;
@@ -485,8 +601,10 @@ function Sidebar({
 }) {
   const [configOpen, setConfigOpen] = useState(false);
 
-  const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
+  const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean; auth?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
+    { key: "profile", label: "Mon profil", icon: <UserRound size={14} />, auth: true },
+    { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} />, auth: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
   ];
@@ -510,16 +628,22 @@ function Sidebar({
         <p className="eyebrow">Navigation</p>
         <div className="nav-list">
           {navItems.map((item) => {
-            const locked = !!item.premium && !isAuthed;
+            const locked = (!!item.premium || !!item.auth) && !isAuthed;
             return (
               <button
                 key={item.key}
                 className={`nav-item ${view === item.key ? "active" : ""} ${locked ? "locked" : ""}`}
-                onClick={() =>
-                  locked
-                    ? requireAuth("Crée un compte gratuit pour débloquer le générateur de posts et le dashboard global.")
-                    : onNavigate(item.key)
-                }
+                onClick={() => {
+                  if (locked) {
+                    requireAuth(
+                      item.auth
+                        ? "Crée un compte gratuit pour retrouver tes données et ton contexte éditorial."
+                        : "Crée un compte gratuit pour débloquer le générateur de posts et le dashboard global."
+                    );
+                    return;
+                  }
+                  onNavigate(item.key);
+                }}
               >
                 {item.icon}
                 <span>{item.label}</span>
@@ -535,13 +659,14 @@ function Sidebar({
 
       <section className="sidebar-section">
         <p className="eyebrow">Analyses récentes</p>
+        <p style={{ margin: "0 0 8px", fontSize: 11, opacity: 0.45 }}>3 derniers profils analysés</p>
         <div className="report-list">
           {!isAuthed ? (
-            <div className="report-card" onClick={() => requireAuth("Crée un compte gratuit pour conserver ton historique d'analyses.")} style={{ cursor: "pointer" }}>
+            <div className="report-card" onClick={() => requireAuth("Crée un compte gratuit pour conserver tes analyses.")} style={{ cursor: "pointer" }}>
               <div className="report-icon"><Lock size={13} /></div>
               <div>
-                <strong>Historique verrouillé</strong>
-                <span>Crée un compte pour le conserver</span>
+                <strong>Analyses verrouillées</strong>
+                <span>Crée un compte pour les conserver</span>
               </div>
             </div>
           ) : reports.length ? reports.map((report) => (
@@ -552,7 +677,15 @@ function Sidebar({
                 <span>{new Date(report.updated_at * 1000).toLocaleDateString("fr-FR")}</span>
               </div>
             </div>
-          )) : (
+          )) : reportsLoading ? (
+            <div className="report-card">
+              <div className="report-icon"><Loader2 size={13} className="spinning" /></div>
+              <div>
+                <strong>Chargement…</strong>
+                <span>Récupération de tes analyses</span>
+              </div>
+            </div>
+          ) : (
             <div className="report-card">
               <div className="report-icon"><FileText size={13} /></div>
               <div>
@@ -622,6 +755,8 @@ function TopHeader({
 }) {
   const viewTitles: Record<MainView, string> = {
     analyze: "Analyser des profils LinkedIn",
+    profile: "Mon profil éditorial",
+    influencers: "Mes influenceurs",
     generator: "Générateur de posts",
     dashboard: "Dashboard global",
   };
@@ -957,6 +1092,7 @@ function Generator() {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
   const [topic, setTopic] = useState("");
+  const [role, setRole] = useState("auto");
   const [loadingIdeas, setLoadingIdeas] = useState(false);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
@@ -985,10 +1121,12 @@ function Generator() {
     if (!t.trim()) { setError("Entre un sujet pour le post."); return; }
     setLoadingPosts(true);
     try {
+      const body: { topic: string; editorial_role?: string } = { topic: t.trim() };
+      if (role !== "auto") body.editorial_role = role;
       const res = await fetch(`${DIRECT_API_URL}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ topic: t.trim() }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération de posts");
@@ -1002,6 +1140,26 @@ function Generator() {
 
   const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
   const hookColors: Record<string, string> = { "stat+contrarian": "#f97316", "story+result": "#10b981", question: "#3b82f6" };
+  const roleOptions: { value: string; label: string }[] = [
+    { value: "auto", label: "Mix automatique" },
+    { value: "performance", label: "Performance" },
+    { value: "methodologie", label: "Méthodologie" },
+    { value: "autorite", label: "Autorité" },
+    { value: "story", label: "Story" },
+    { value: "quotidien", label: "Quotidien" },
+    { value: "opinion", label: "Opinion" },
+    { value: "relationnel", label: "Relationnel" },
+  ];
+  const roleColors: Record<string, string> = {
+    performance: "#f97316",
+    methodologie: "#0ea5e9",
+    autorite: "#8b5cf6",
+    story: "#10b981",
+    quotidien: "#14b8a6",
+    opinion: "#ef4444",
+    relationnel: "#ec4899",
+  };
+  const roleLabel = (r?: string) => roleOptions.find((o) => o.value === r)?.label || r;
 
   return (
     <div>
@@ -1066,17 +1224,36 @@ function Generator() {
               Générer
             </button>
           </div>
+          <div className="role-picker">
+            <label className="role-picker-label">Rôle éditorial</label>
+            <select className="role-select" value={role} onChange={(e) => setRole(e.target.value)}>
+              {roleOptions.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <span className="role-picker-hint">
+              {role === "auto"
+                ? "Mix automatique : performance + méthodologie/autorité + relationnel/quotidien."
+                : "Les 3 variants utiliseront ce rôle."}
+            </span>
+          </div>
         </div>
       </div>
 
       {variants.length > 0 && (
         <div className="variants-list">
           {variants.map((v, i) => {
-            const color = hookColors[v.hook_type] || "var(--primary)";
+            const roleColor = (v.editorial_role && roleColors[v.editorial_role]) || "var(--primary)";
+            const color = hookColors[v.hook_type] || roleColor;
             return (
               <div className="variant-card" key={i}>
                 <div className="variant-header">
-                  <span className="variant-number" style={{ background: color }}>{i + 1}</span>
+                  <span className="variant-number" style={{ background: roleColor }}>{i + 1}</span>
+                  {v.editorial_role && (
+                    <span className="badge role-badge" style={{ borderColor: roleColor, color: roleColor }}>
+                      {roleLabel(v.editorial_role)}
+                    </span>
+                  )}
                   <span className="badge" style={{ borderColor: color, color }}>{v.hook_type}</span>
                   <span className="idea-lift">{v.predicted_lift}</span>
                 </div>
@@ -1088,6 +1265,325 @@ function Generator() {
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const EMPTY_EDITORIAL_PROFILE: EditorialProfile = {
+  display_name: "",
+  brand_name: "",
+  industry: "",
+  business_description: "",
+  location: "",
+  target_audience: "",
+  core_offer: "",
+  tone: "",
+  linkedin_objective: "",
+  topics_to_cover: "",
+  topics_to_avoid: "",
+  constraints: "",
+  website_url: "",
+  linkedin_url: "",
+  language: "français",
+  market: "",
+  extra_context: "",
+};
+
+function ProfileView({
+  isAuthed,
+  requireAuth,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
+  const [profile, setProfile] = useState<EditorialProfile>(EMPTY_EDITORIAL_PROFILE);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [drafting, setDrafting] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+  const [aiDescription, setAiDescription] = useState("");
+  const [aiLinkedinUrl, setAiLinkedinUrl] = useState("");
+  const [aiWebsiteUrl, setAiWebsiteUrl] = useState("");
+  const [useApifyLinkedin, setUseApifyLinkedin] = useState(false);
+  const [draftInfo, setDraftInfo] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) {
+      setProfile(EMPTY_EDITORIAL_PROFILE);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/profile`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (res.status === 404) {
+          setProfile(EMPTY_EDITORIAL_PROFILE);
+          return;
+        }
+        if (!res.ok) throw new Error(data.detail || "Impossible de charger le profil");
+        setProfile({ ...EMPTY_EDITORIAL_PROFILE, ...(data || {}) });
+      } catch (err: any) {
+        setError(err.message || "Impossible de charger le profil");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [isAuthed]);
+
+  function updateField(key: keyof EditorialProfile, value: string) {
+    setSaved(false);
+    setProfile((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function saveProfile() {
+    if (!isAuthed) {
+      requireAuth("Crée un compte gratuit pour enregistrer ton contexte éditorial.");
+      return;
+    }
+    setSaving(true);
+    setSaved(false);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify(profile),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Sauvegarde impossible");
+      setProfile({ ...EMPTY_EDITORIAL_PROFILE, ...(data || {}) });
+      setSaved(true);
+    } catch (err: any) {
+      setError(err.message || "Sauvegarde impossible");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function draftProfile() {
+    if (!isAuthed) {
+      requireAuth("Crée un compte gratuit pour pré-remplir ton contexte éditorial avec l'IA.");
+      return;
+    }
+    if (!aiDescription.trim() && !aiLinkedinUrl.trim() && !aiWebsiteUrl.trim()) {
+      setError("Ajoute une description, une URL LinkedIn ou un site web pour pré-remplir le profil.");
+      return;
+    }
+    setDrafting(true);
+    setSaved(false);
+    setDraftInfo("");
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/profile/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          activity_description: aiDescription.trim(),
+          linkedin_url: aiLinkedinUrl.trim(),
+          website_url: aiWebsiteUrl.trim(),
+          use_apify_linkedin: useApifyLinkedin,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Pré-remplissage impossible");
+      setProfile((prev) => ({ ...prev, ...(data.profile || {}) }));
+      const sources = data.sources || {};
+      const sourceLabels = [
+        sources.description ? "description" : "",
+        sources.linkedin_analyzed ? "profil LinkedIn analysé" : "",
+        sources.linkedin_apify ? "LinkedIn via Apify" : "",
+        sources.website_summary ? "site web" : "",
+      ].filter(Boolean);
+      setDraftInfo(
+        sourceLabels.length
+          ? `Brouillon généré depuis : ${sourceLabels.join(", ")}. Relis puis sauvegarde.`
+          : "Brouillon généré. Relis puis sauvegarde."
+      );
+    } catch (err: any) {
+      setError(err.message || "Pré-remplissage impossible");
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  function Field({
+    name,
+    label,
+    placeholder,
+    multiline,
+  }: {
+    name: keyof EditorialProfile;
+    label: string;
+    placeholder?: string;
+    multiline?: boolean;
+  }) {
+    const value = String(profile[name] || "");
+    return (
+      <label className="profile-field">
+        <span>{label}</span>
+        {multiline ? (
+          <textarea
+            value={value}
+            onChange={(e) => updateField(name, e.target.value)}
+            placeholder={placeholder}
+            rows={4}
+          />
+        ) : (
+          <input
+            value={value}
+            onChange={(e) => updateField(name, e.target.value)}
+            placeholder={placeholder}
+          />
+        )}
+      </label>
+    );
+  }
+
+  const filledCount = Object.entries(profile)
+    .filter(([key, value]) => key !== "id" && typeof value === "string" && value.trim().length > 0)
+    .length;
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Lock size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Contexte éditorial</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Connecte-toi pour renseigner le profil client que Claude utilisera dans les idées et les posts.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour enregistrer ton contexte éditorial.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><UserRound size={20} /> Contexte éditorial</h2>
+          <p className="section-desc">
+            Décris le client qui publie. Ce contexte est injecté dans les prompts `/ideas` et `/generate`.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span className={`status-pill ${filledCount >= 6 ? "ok" : ""}`}>{filledCount} champs remplis</span>
+          <button className="primary-button" onClick={saveProfile} disabled={saving || loading}>
+            {saving ? <Loader2 size={14} className="spinning" /> : <CheckCircle2 size={14} />}
+            {saving ? "Sauvegarde…" : "Sauvegarder"}
+          </button>
+        </div>
+      </div>
+
+      {error ? <div className="error" style={{ marginBottom: 12 }}>{error}</div> : null}
+      {draftInfo ? <div className="auth-info" style={{ marginBottom: 12 }}>{draftInfo}</div> : null}
+      {saved ? <div className="auth-info" style={{ marginBottom: 12 }}>Profil éditorial sauvegardé. Les prochaines générations utiliseront ce contexte.</div> : null}
+      {loading ? (
+        <div className="card" style={{ padding: 32, textAlign: "center" }}>
+          <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
+          <p style={{ color: "var(--muted)" }}>Chargement du profil…</p>
+        </div>
+      ) : (
+        <div className="profile-form">
+          <section className="card profile-ai-card">
+            <div className="section-header" style={{ marginBottom: 10 }}>
+              <div>
+                <h3 style={{ margin: "0 0 4px" }}>Pré-remplir avec l'IA</h3>
+                <p className="section-desc">
+                  Donne une description, une URL LinkedIn ou un site web. L'option Apify lit le LinkedIn en live si le profil n'a pas encore été analysé.
+                </p>
+              </div>
+              <button className="primary-button" onClick={draftProfile} disabled={drafting}>
+                {drafting ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
+                {drafting ? "Pré-remplissage…" : "Pré-remplir"}
+              </button>
+            </div>
+            <label className="profile-field">
+              <span>Description libre</span>
+              <textarea
+                value={aiDescription}
+                onChange={(e) => setAiDescription(e.target.value)}
+                placeholder="Ex. Fondateur d'une agence IA en forte croissance, j'aide les dirigeants B2B à publier sur LinkedIn sans y passer 2h/jour."
+                rows={4}
+              />
+            </label>
+            <div className="profile-grid">
+              <label className="profile-field">
+                <span>URL LinkedIn</span>
+                <input
+                  value={aiLinkedinUrl}
+                  onChange={(e) => setAiLinkedinUrl(e.target.value)}
+                  placeholder="https://www.linkedin.com/in/..."
+                />
+                <div className="inline-check">
+                  <input
+                    type="checkbox"
+                    checked={useApifyLinkedin}
+                    onChange={(e) => setUseApifyLinkedin(e.target.checked)}
+                  />
+                  <span>Lire ce profil avec Apify (plus précis, plus lent, consomme du crédit)</span>
+                </div>
+              </label>
+              <label className="profile-field">
+                <span>Site web</span>
+                <input
+                  value={aiWebsiteUrl}
+                  onChange={(e) => setAiWebsiteUrl(e.target.value)}
+                  placeholder="https://..."
+                />
+              </label>
+            </div>
+          </section>
+
+          <section className="card">
+            <h3>Identité & activité</h3>
+            <div className="profile-grid">
+              <Field name="display_name" label="Nom public" placeholder="Marc Delcourt" />
+              <Field name="brand_name" label="Marque / société" placeholder="ScaleOps Studio" />
+              <Field name="industry" label="Secteur / niche" placeholder="Automatisation IA pour dirigeants de PME" />
+              <Field name="location" label="Localisation" placeholder="Paris" />
+              <Field name="market" label="Marché" placeholder="Entrepreneurs B2B en forte croissance" />
+              <Field name="language" label="Langue" placeholder="français" />
+            </div>
+            <Field
+              name="business_description"
+              label="Description courte de l'activité"
+              placeholder="J'aide les dirigeants qui grandissent vite à structurer leur acquisition sans passer 2 heures par jour sur LinkedIn."
+              multiline
+            />
+          </section>
+
+          <section className="card">
+            <h3>Positionnement éditorial</h3>
+            <div className="profile-grid">
+              <Field name="tone" label="Ton souhaité" placeholder="Direct, lucide, utile, ambitieux sans être agressif" />
+              <Field name="core_offer" label="Offre / expertise" placeholder="Systèmes IA et routines LinkedIn sobres pour fondateurs occupés" />
+            </div>
+            <Field name="target_audience" label="Audience cible" placeholder="Fondateurs, consultants experts et dirigeants B2B déjà tractionnés, mais débordés par le contenu." multiline />
+            <Field name="linkedin_objective" label="Objectif LinkedIn" placeholder="Publier régulièrement, créer de la confiance et générer des conversations qualifiées avec moins de temps passé à écrire." multiline />
+          </section>
+
+          <section className="card">
+            <h3>Sujets & contraintes</h3>
+            <Field name="topics_to_cover" label="Sujets à couvrir" placeholder="Croissance, délégation, IA concrète, routines de publication, arbitrages de fondateur, systèmes simples." multiline />
+            <Field name="topics_to_avoid" label="Sujets à éviter" placeholder="Hype IA vide, promesses de revenus, hacks LinkedIn agressifs, ton gourou." multiline />
+            <Field name="constraints" label="Contraintes de style" placeholder="Pas de threadbait. Pas de CTA commentaire forcé. Montrer qu'on peut être régulier sans devenir créateur à plein temps." multiline />
+            <Field name="extra_context" label="Contexte additionnel" placeholder="Tout ce que Claude doit savoir pour mieux écrire au nom du client." multiline />
+          </section>
+
+          <section className="card">
+            <h3>Liens</h3>
+            <div className="profile-grid">
+              <Field name="website_url" label="Site web" placeholder="https://..." />
+              <Field name="linkedin_url" label="Profil LinkedIn" placeholder="https://www.linkedin.com/in/..." />
+            </div>
+          </section>
         </div>
       )}
     </div>
@@ -1305,12 +1801,186 @@ function GlobalDashboard() {
   );
 }
 
-const mainViews = ["analyze", "generator", "dashboard"] as const;
-type MainView = typeof mainViews[number];
+function InfluencersView({
+  entries,
+  loading,
+  isAuthed,
+  requireAuth,
+  onOpenReport,
+}: {
+  entries: InfluencerLibraryEntry[];
+  loading: boolean;
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onOpenReport: (entry: InfluencerLibraryEntry) => Promise<void>;
+}) {
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<"date" | "name">("date");
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Lock size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Mes influenceurs</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Connecte-toi pour retrouver tous tes profils analysés et leurs rapports.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour voir tes influenceurs analysés.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  const q = query.trim().toLowerCase();
+  const filtered = entries
+    .filter((e) => {
+      if (!q) return true;
+      return (
+        e.name.toLowerCase().includes(q)
+        || e.handle.toLowerCase().includes(q)
+        || e.headline.toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => {
+      if (sort === "name") return a.name.localeCompare(b.name, "fr");
+      return (b.analyzed_at || 0) - (a.analyzed_at || 0);
+    });
+
+  async function open(entry: InfluencerLibraryEntry) {
+    setError("");
+    setOpeningId(entry.analysis_id);
+    try {
+      await onOpenReport(entry);
+    } catch (err: any) {
+      setError(err.message || "Impossible d'ouvrir le rapport");
+    } finally {
+      setOpeningId(null);
+    }
+  }
+
+  return (
+    <div>
+      <div className="section-header" style={{ marginBottom: 16 }}>
+        <div>
+          <h2 className="section-title"><Users size={20} /> Mes influenceurs</h2>
+          <p className="section-desc">
+            Tous tes profils analysés — une ligne par influenceur, avec la dernière analyse à date.
+          </p>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          type="search"
+          className="url-input"
+          style={{ flex: "1 1 220px", minHeight: 40, padding: "8px 12px" }}
+          placeholder="Rechercher par nom, handle ou headline…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <label className="control" style={{ margin: 0 }}>
+          <span>Trier par</span>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as "date" | "name")}
+            style={{ marginLeft: 8, padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)" }}
+          >
+            <option value="date">Date d'analyse</option>
+            <option value="name">Nom</option>
+          </select>
+        </label>
+        <span style={{ fontSize: 13, color: "var(--muted)" }}>
+          {filtered.length} profil{filtered.length > 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {loading ? (
+        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+          <Loader2 size={24} className="spinning" style={{ opacity: 0.5 }} />
+          <p style={{ marginTop: 12, color: "var(--muted)" }}>Chargement de tes influenceurs…</p>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+          <FileText size={24} style={{ opacity: 0.35, marginBottom: 8 }} />
+          <p style={{ margin: 0, color: "var(--muted)" }}>
+            {entries.length === 0
+              ? "Aucun profil analysé pour l'instant. Lance une série dans l'onglet Analyser."
+              : "Aucun profil ne correspond à ta recherche."}
+          </p>
+        </div>
+      ) : (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table className="dash-table">
+              <thead>
+                <tr>
+                  <th>Influenceur</th>
+                  <th>Handle</th>
+                  <th>Abonnés</th>
+                  <th>Dernière analyse</th>
+                  <th>Profil</th>
+                  <th>Rapport</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((entry) => (
+                  <tr key={entry.influencer_id}>
+                    <td>
+                      <strong>{entry.name}</strong>
+                      {entry.headline ? (
+                        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2, maxWidth: 280 }}>
+                          {entry.headline.slice(0, 80)}{entry.headline.length > 80 ? "…" : ""}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td style={{ color: "var(--muted)", fontSize: 12 }}>{entry.handle}</td>
+                    <td>{entry.follower_count ? fmt(entry.follower_count) : "—"}</td>
+                    <td>
+                      {entry.analyzed_at
+                        ? new Date(entry.analyzed_at * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" })
+                        : "—"}
+                    </td>
+                    <td>
+                      <a href={entry.profile_url} target="_blank" rel="noopener noreferrer" className="secondary-button" style={{ padding: "4px 10px", fontSize: 12 }}>
+                        LinkedIn
+                      </a>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        style={{ padding: "4px 12px", fontSize: 12 }}
+                        disabled={openingId === entry.analysis_id}
+                        onClick={() => open(entry)}
+                      >
+                        {openingId === entry.analysis_id
+                          ? <Loader2 size={12} className="spinning" />
+                          : <FileText size={12} />}
+                        Voir
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [influencers, setInfluencers] = useState<InfluencerLibraryEntry[]>([]);
+  const [influencersLoading, setInfluencersLoading] = useState(false);
   const [result, setResult] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -1323,6 +1993,7 @@ export default function Home() {
   const [authReason, setAuthReason] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const userIdRef = useRef<string | null>(null);
+  const prevJobActiveRef = useRef(false);
   // Analyse anonyme affichée mais pas encore sauvegardée : sauvée dès l'inscription.
   const pendingAnonResultRef = useRef<Analysis | null>(null);
 
@@ -1335,11 +2006,30 @@ export default function Home() {
   }
 
   async function loadReports() {
+    setReportsLoading(true);
     try {
-      const res = await fetch(`${API_URL}/reports`, { headers: await authHeaders() });
+      const res = await fetch(`${API_URL}/reports?limit=3`, { headers: await authHeaders() });
       const data = await res.json();
-      if (res.ok && Array.isArray(data)) setReports(data);
-    } catch { /* ignore */ }
+      if (res.ok && Array.isArray(data)) setReports(data.slice(0, 3));
+    } catch { /* ignore */ } finally { setReportsLoading(false); }
+  }
+
+  async function loadInfluencerLibrary() {
+    setInfluencersLoading(true);
+    try {
+      const headers = await authHeaders();
+      // Backend Render déploie depuis main : /me/influencers/library pas encore dispo.
+      // Deux appels existants suffisent ; réactiver /library après merge dev→main.
+      const [infRes, anaRes] = await Promise.all([
+        fetch(`${API_URL}/me/influencers`, { headers }),
+        fetch(`${API_URL}/me/analyses?limit=100`, { headers }),
+      ]);
+      if (!infRes.ok || !anaRes.ok) return;
+      const influencersRaw = await infRes.json();
+      const analysesRaw = await anaRes.json();
+      if (!Array.isArray(influencersRaw) || !Array.isArray(analysesRaw)) return;
+      setInfluencers(buildInfluencerLibraryFromLegacy(influencersRaw, analysesRaw));
+    } catch { /* ignore */ } finally { setInfluencersLoading(false); }
   }
 
   // Les séries vivent dans Home (pas dans JobsView) : le polling continue quand
@@ -1355,18 +2045,36 @@ export default function Home() {
   function onJobCreated(job: Job) {
     setJobs((prev) => [job, ...prev]);
     loadReports();
+    loadInfluencerLibrary();
   }
 
   const activeJob = jobs.find(jobIsActive) ?? null;
   const anyJobActive = !!activeJob;
 
+  // Rapports : rechargés à la connexion ET à chaque refresh de token.
+  // Sinon, si le token stocké est expiré au chargement, /reports renvoie 401,
+  // loadReports avale l'erreur, et le TOKEN_REFRESHED suivant est ignoré par le
+  // garde uid de onAuthStateChange → la liste reste vide jusqu'à une action.
+  useEffect(() => {
+    if (!isAuthed) { setReports([]); return; }
+    loadReports();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.access_token]);
+
+  useEffect(() => {
+    if (!isAuthed) { setInfluencers([]); return; }
+    loadInfluencerLibrary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.access_token]);
+
   // Premier chargement des séries + polling tant qu'une série tourne (toutes pages).
+  // Keyé sur le token (pas seulement isAuthed) pour les mêmes raisons que les rapports.
   useEffect(() => {
     if (!isAuthed) { setJobs([]); return; }
     setJobsLoading(true);
     loadJobs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthed]);
+  }, [isAuthed, session?.access_token]);
 
   useEffect(() => {
     if (!isAuthed || !anyJobActive) return;
@@ -1374,6 +2082,15 @@ export default function Home() {
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, anyJobActive]);
+
+  useEffect(() => {
+    if (prevJobActiveRef.current && !anyJobActive && isAuthed) {
+      loadReports();
+      loadInfluencerLibrary();
+    }
+    prevJobActiveRef.current = anyJobActive;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anyJobActive, isAuthed]);
 
   async function persistAnonResult(anon: Analysis) {
     try {
@@ -1384,6 +2101,7 @@ export default function Home() {
       });
     } catch { /* best-effort : on ne bloque pas l'UX sur une erreur de save */ }
     loadReports();
+    loadInfluencerLibrary();
   }
 
   useEffect(() => {
@@ -1418,12 +2136,13 @@ export default function Home() {
       pendingAnonResultRef.current = null;
       setAuthOpen(false);
       setReports([]);
+      setInfluencers([]);
       setResult(null);
       setLoadedReport(null);
       setJobs([]);
       setError("");
       setView("analyze");
-      if (uid) setTimeout(() => { loadReports(); loadJobs(); }, 0);
+      if (uid) setTimeout(() => { loadReports(); loadJobs(); loadInfluencerLibrary(); }, 0);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -1431,6 +2150,22 @@ export default function Home() {
   /** Ouvre un rapport (depuis le backlog) dans la vue markdown de l'onglet Analyser. */
   function openReport(markdown: string, name: string) {
     setLoadedReport({ name, path: name, updated_at: Date.now() / 1000, content: markdown });
+    setResult(null);
+    setView("analyze");
+  }
+
+  async function openLibraryReport(entry: InfluencerLibraryEntry) {
+    const res = await fetch(`${DIRECT_API_URL}/me/analyses/${entry.analysis_id}`, { headers: await authHeaders() });
+    const data = await res.json();
+    if (!res.ok || !data?.report_markdown) {
+      throw new Error(data?.detail || "Rapport introuvable.");
+    }
+    setLoadedReport({
+      name: entry.name,
+      path: entry.analysis_id,
+      updated_at: entry.analyzed_at || Date.now() / 1000,
+      content: data.report_markdown,
+    });
     setResult(null);
     setView("analyze");
   }
@@ -1471,10 +2206,18 @@ export default function Home() {
         <Sidebar
           health={health}
           reports={reports}
+          reportsLoading={reportsLoading}
           view={view}
           isAuthed={isAuthed}
           jobBadge={activeJob ? { completed: activeJob.completed, total: activeJob.total } : null}
-          onNavigate={(v) => { setView(v); if (v === "analyze") { setResult(null); setLoadedReport(null); setError(""); } }}
+          onNavigate={(v) => {
+            setView(v);
+            if (v === "analyze" || v === "profile" || v === "influencers") {
+              setResult(null);
+              setLoadedReport(null);
+              setError("");
+            }
+          }}
           onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
           requireAuth={requireAuth}
         />
@@ -1505,6 +2248,16 @@ export default function Home() {
                   )
                   : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} requireAuth={requireAuth} />
           )}
+          {view === "influencers" && (
+            <InfluencersView
+              entries={influencers}
+              loading={influencersLoading}
+              isAuthed={isAuthed}
+              requireAuth={requireAuth}
+              onOpenReport={openLibraryReport}
+            />
+          )}
+          {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "generator" && <Generator />}
           {view === "dashboard" && <GlobalDashboard />}
         </main>

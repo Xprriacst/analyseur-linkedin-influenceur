@@ -261,7 +261,53 @@ def list_analyses(access_token: str, limit: int = 20) -> list[dict]:
     return resp.data or []
 
 
-def list_reports(access_token: str, limit: int = 10) -> list[dict]:
+def list_influencer_library(access_token: str) -> list[dict]:
+    """One row per analyzed influencer — current analysis metadata only (no markdown)."""
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("influencers")
+        .select("id,handle,name,headline,follower_count,profile_url,updated_at,analyses(id,updated_at,created_at)")
+        .eq("user_id", user["id"])
+        .order("updated_at", desc=True)
+        .execute()
+    )
+    rows: list[dict] = []
+    for inf in resp.data or []:
+        analyses = inf.get("analyses") or []
+        if isinstance(analyses, dict):
+            analyses = [analyses]
+        if not analyses:
+            continue
+        analysis = max(
+            analyses,
+            key=lambda a: (a.get("updated_at") or a.get("created_at") or ""),
+        )
+        analyzed_at = analysis.get("updated_at") or analysis.get("created_at") or ""
+        try:
+            ts = datetime.datetime.fromisoformat(analyzed_at.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            ts = 0
+        handle = unquote(inf["handle"])
+        name = (inf.get("name") or "").strip() or handle
+        profile_url = inf.get("profile_url") or f"https://www.linkedin.com/in/{inf['handle']}/"
+        rows.append({
+            "influencer_id": inf["id"],
+            "analysis_id": analysis["id"],
+            "handle": handle,
+            "name": name,
+            "headline": (inf.get("headline") or "").strip(),
+            "follower_count": int(inf.get("follower_count") or 0),
+            "profile_url": profile_url,
+            "analyzed_at": ts,
+        })
+    rows.sort(key=lambda r: r.get("analyzed_at") or 0, reverse=True)
+    return rows
+
+
+def list_reports(access_token: str, limit: int = 3) -> list[dict]:
     """User's recent analysis reports, shaped like the disk-based /reports payload."""
     user = get_user(access_token)
     if not user:
@@ -293,6 +339,96 @@ def list_reports(access_token: str, limit: int = 10) -> list[dict]:
             "content": row.get("report_markdown") or "",
         })
     return reports
+
+
+_EDITORIAL_PROFILE_FIELDS = (
+    "display_name",
+    "brand_name",
+    "industry",
+    "business_description",
+    "location",
+    "target_audience",
+    "core_offer",
+    "tone",
+    "linkedin_objective",
+    "topics_to_cover",
+    "topics_to_avoid",
+    "constraints",
+    "website_url",
+    "linkedin_url",
+    "language",
+    "market",
+    "extra_context",
+)
+
+
+def _clean_editorial_profile(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep only known profile fields and normalize empty strings to null."""
+    cleaned: dict[str, Any] = {}
+    for key in _EDITORIAL_PROFILE_FIELDS:
+        value = payload.get(key)
+        if isinstance(value, str):
+            value = value.strip()
+            cleaned[key] = value or None
+        elif value is not None:
+            cleaned[key] = value
+    return cleaned
+
+
+def get_editorial_profile(access_token: str) -> dict | None:
+    """Return the authenticated user's editorial profile, if it exists."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_editorial_profiles")
+        .select("*")
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def upsert_editorial_profile(access_token: str, payload: dict[str, Any]) -> dict | None:
+    """Create or update the user's editorial profile."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        **_clean_editorial_profile(payload),
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    resp = (
+        db.table("user_editorial_profiles")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_user_ai_context(access_token: str | None) -> dict[str, Any] | None:
+    """Compact profile context consumed by LLM prompts.
+
+    Returns None when Supabase is disabled, the session is missing/invalid, or no
+    profile has been filled yet. This keeps generation usable with benchmark data.
+    """
+    if not access_token or not supabase_enabled():
+        return None
+    profile = get_editorial_profile(access_token)
+    if not profile:
+        return None
+    context = {
+        key: profile.get(key)
+        for key in _EDITORIAL_PROFILE_FIELDS
+        if profile.get(key) not in (None, "")
+    }
+    if not context:
+        return None
+    return context
 
 
 def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
@@ -333,6 +469,61 @@ def _handle_from_url(url: str) -> str | None:
         return unquote(m.group(1))
     except Exception:
         return m.group(1)
+
+
+def get_linkedin_profile_seed(access_token: str, linkedin_url: str | None) -> dict[str, Any] | None:
+    """Return analyzed LinkedIn context for a URL if it exists in the user's corpus."""
+    handle = _handle_from_url(linkedin_url or "")
+    if not handle:
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    inf_resp = (
+        db.table("influencers")
+        .select("id,handle,name,headline,summary,location,follower_count,profile_url,raw_profile")
+        .eq("user_id", user["id"])
+        .eq("handle", handle)
+        .limit(1)
+        .execute()
+    )
+    if not inf_resp.data:
+        return None
+    influencer = inf_resp.data[0]
+    posts_resp = (
+        db.table("posts")
+        .select("text,format,likes,comments,reposts,engagement")
+        .eq("influencer_id", influencer["id"])
+        .order("engagement", desc=True)
+        .limit(6)
+        .execute()
+    )
+    posts = [
+        {
+            "text": (row.get("text") or "")[:900],
+            "format": row.get("format"),
+            "engagement": row.get("engagement", 0),
+            "likes": row.get("likes", 0),
+            "comments": row.get("comments", 0),
+            "reposts": row.get("reposts", 0),
+        }
+        for row in posts_resp.data or []
+        if row.get("text")
+    ]
+    return {
+        "handle": influencer.get("handle"),
+        "profile": {
+            "name": influencer.get("name"),
+            "headline": influencer.get("headline"),
+            "summary": influencer.get("summary"),
+            "location": influencer.get("location"),
+            "follower_count": influencer.get("follower_count"),
+            "profile_url": influencer.get("profile_url"),
+            "raw_profile": influencer.get("raw_profile"),
+        },
+        "top_posts": posts,
+    }
 
 
 _JOB_ITEM_COLS = (
@@ -440,6 +631,23 @@ def list_jobs(access_token: str, limit: int = 20) -> list[dict]:
     for j in jobs:
         j["items"] = by_job.get(j["id"], [])
     return jobs
+
+
+def get_job_status(access_token: str, job_id: str) -> str | None:
+    """Retourne uniquement le statut du job (lecture légère, sans items)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("analysis_jobs")
+        .select("status")
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0]["status"] if r.data else None
 
 
 def update_job(access_token: str, job_id: str, **fields: Any) -> None:

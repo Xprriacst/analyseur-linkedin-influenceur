@@ -939,6 +939,113 @@ a { color: inherit; text-decoration: none; }
   max-width: 720px;
 }
 
+.role-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.role-picker-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.role-select {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card, #fff);
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.role-select:focus { border-color: var(--primary); outline: none; }
+
+.role-picker-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.role-badge {
+  font-weight: 600;
+}
+
+/* ── Editorial profile ── */
+.profile-form {
+  display: grid;
+  gap: 14px;
+  max-width: 980px;
+}
+
+.profile-ai-card {
+  background: linear-gradient(180deg, rgba(70, 72, 212, 0.04), var(--surface));
+  border-color: rgba(70, 72, 212, 0.16);
+}
+
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.profile-field {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+}
+
+.profile-field span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.profile-field input,
+.profile-field textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-low);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  outline: 0;
+}
+
+.profile-field input {
+  min-height: 40px;
+  padding: 0 12px;
+}
+
+.profile-field textarea {
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.profile-field input:focus,
+.profile-field textarea:focus {
+  border-color: var(--primary);
+}
+
+.inline-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.inline-check input {
+  width: auto;
+  min-height: 0;
+  padding: 0;
+}
+
 /* ── Variants list ── */
 .variants-list {
   display: grid;
@@ -1262,5 +1369,5 @@ a { color: inherit; text-decoration: none; }
   .sidebar { display: none; }
   .top-header { left: 0; }
   .main { margin-left: 0; padding: 16px; padding-top: calc(var(--header-h) + 16px); }
-  .controls, .feature-grid, .kpi-grid, .usage-grid, .pattern-grid { grid-template-columns: 1fr; }
+  .controls, .feature-grid, .kpi-grid, .usage-grid, .pattern-grid, .profile-grid { grid-template-columns: 1fr; }
 }
