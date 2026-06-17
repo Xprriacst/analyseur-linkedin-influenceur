@@ -250,6 +250,7 @@ Règles :
 - Le profil doit aider à écrire des posts LinkedIn crédibles pour cette personne.
 - Si une description libre est fournie, elle est la source la plus fiable.
 - Si des posts LinkedIn analysés sont fournis, utilise-les pour déduire le ton, l'audience et les sujets récurrents.
+- Si un profil LinkedIn lu via Apify est fourni, utilise-le comme contexte métier et éditorial récent.
 - Si un résumé de site web est fourni, utilise-le pour clarifier l'offre et le positionnement.
 - Ne sauvegarde rien, produis seulement un brouillon.
 - Écris en français.

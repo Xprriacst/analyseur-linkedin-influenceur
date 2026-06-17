@@ -1307,6 +1307,7 @@ function ProfileView({
   const [aiDescription, setAiDescription] = useState("");
   const [aiLinkedinUrl, setAiLinkedinUrl] = useState("");
   const [aiWebsiteUrl, setAiWebsiteUrl] = useState("");
+  const [useApifyLinkedin, setUseApifyLinkedin] = useState(false);
   const [draftInfo, setDraftInfo] = useState("");
 
   useEffect(() => {
@@ -1385,6 +1386,7 @@ function ProfileView({
           activity_description: aiDescription.trim(),
           linkedin_url: aiLinkedinUrl.trim(),
           website_url: aiWebsiteUrl.trim(),
+          use_apify_linkedin: useApifyLinkedin,
         }),
       });
       const data = await res.json();
@@ -1394,6 +1396,7 @@ function ProfileView({
       const sourceLabels = [
         sources.description ? "description" : "",
         sources.linkedin_analyzed ? "profil LinkedIn analysé" : "",
+        sources.linkedin_apify ? "LinkedIn via Apify" : "",
         sources.website_summary ? "site web" : "",
       ].filter(Boolean);
       setDraftInfo(
@@ -1493,7 +1496,7 @@ function ProfileView({
               <div>
                 <h3 style={{ margin: "0 0 4px" }}>Pré-remplir avec l'IA</h3>
                 <p className="section-desc">
-                  Donne une description, une URL LinkedIn déjà analysée ou un site web. Claude propose un brouillon, tu gardes la main avant sauvegarde.
+                  Donne une description, une URL LinkedIn ou un site web. L'option Apify lit le LinkedIn en live si le profil n'a pas encore été analysé.
                 </p>
               </div>
               <button className="primary-button" onClick={draftProfile} disabled={drafting}>
@@ -1518,6 +1521,14 @@ function ProfileView({
                   onChange={(e) => setAiLinkedinUrl(e.target.value)}
                   placeholder="https://www.linkedin.com/in/..."
                 />
+                <div className="inline-check">
+                  <input
+                    type="checkbox"
+                    checked={useApifyLinkedin}
+                    onChange={(e) => setUseApifyLinkedin(e.target.checked)}
+                  />
+                  <span>Lire ce profil avec Apify (plus précis, plus lent, consomme du crédit)</span>
+                </div>
               </label>
               <label className="profile-field">
                 <span>Site web</span>

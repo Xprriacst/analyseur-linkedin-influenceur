@@ -15,6 +15,7 @@ from src.jobs import start_job_thread
 from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
+from src.scraper import fetch_posts, fetch_profile
 from src.stats import compute_stats
 
 load_dotenv()
@@ -94,6 +95,7 @@ class EditorialProfileDraftRequest(BaseModel):
     activity_description: str | None = Field(default=None, max_length=5000)
     linkedin_url: str | None = Field(default=None, max_length=500)
     website_url: str | None = Field(default=None, max_length=500)
+    use_apify_linkedin: bool = False
 
 
 @app.get("/health")
@@ -210,6 +212,29 @@ def _fetch_website_summary(url: str | None) -> dict[str, Any] | None:
         return {"url": url, "error": str(exc)}
 
 
+def _fetch_linkedin_apify_seed(linkedin_url: str, limit: int = 10) -> dict[str, Any] | None:
+    """Fetch LinkedIn profile + recent posts with Apify for profile drafting only."""
+    raw_profile = fetch_profile(linkedin_url, use_cache=True)
+    raw_posts = fetch_posts(linkedin_url, limit=limit, use_cache=True)
+    profile = normalize_profile(raw_profile)
+    posts = normalize_posts(raw_posts)
+    return {
+        "profile": profile,
+        "top_posts": [
+            {
+                "text": (post.get("text") or "")[:900],
+                "format": post.get("format"),
+                "engagement": post.get("engagement", 0),
+                "likes": post.get("likes", 0),
+                "comments": post.get("comments", 0),
+                "reposts": post.get("reposts", 0),
+            }
+            for post in sorted(posts, key=lambda p: p.get("engagement", 0), reverse=True)[:6]
+            if post.get("text")
+        ],
+    } if profile or posts else None
+
+
 @app.post("/me/profile/draft")
 def draft_me_profile(
     payload: EditorialProfileDraftRequest,
@@ -224,8 +249,18 @@ def draft_me_profile(
     website_url = (payload.website_url or "").strip()
     if not activity and not linkedin_url and not website_url:
         raise HTTPException(status_code=400, detail="Ajoute une description, une URL LinkedIn ou un site web.")
+    if payload.use_apify_linkedin and not linkedin_url:
+        raise HTTPException(status_code=400, detail="Ajoute une URL LinkedIn pour utiliser Apify.")
+    if payload.use_apify_linkedin and not os.environ.get("APIFY_TOKEN"):
+        raise HTTPException(status_code=400, detail="APIFY_TOKEN manquant dans .env")
 
     linkedin_seed = db.get_linkedin_profile_seed(token, linkedin_url) if linkedin_url else None
+    linkedin_apify_seed = None
+    if payload.use_apify_linkedin and linkedin_url:
+        try:
+            linkedin_apify_seed = _fetch_linkedin_apify_seed(linkedin_url)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Lecture LinkedIn via Apify impossible : {exc}") from exc
     website_seed = _fetch_website_summary(website_url) if website_url else None
     existing_profile = db.get_editorial_profile(token) or {}
     seed = {
@@ -233,6 +268,7 @@ def draft_me_profile(
         "linkedin_url": linkedin_url,
         "website_url": website_url,
         "linkedin_analyzed_profile": linkedin_seed,
+        "linkedin_apify_profile": linkedin_apify_seed,
         "website_public_summary": website_seed,
     }
     try:
@@ -249,6 +285,7 @@ def draft_me_profile(
         "sources": {
             "description": bool(activity),
             "linkedin_analyzed": bool(linkedin_seed),
+            "linkedin_apify": bool(linkedin_apify_seed),
             "website_summary": bool(website_seed and website_seed.get("summary")),
         },
     }
