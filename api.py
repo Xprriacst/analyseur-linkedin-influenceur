@@ -192,6 +192,70 @@ def _get_influencers(token: Optional[str]) -> list[dict]:
     return _load_cached_influencers()
 
 
+def _post_identity(post: dict) -> str:
+    """Stable-ish identity for de-duplicating examples in LLM prompts."""
+    return post.get("url") or (post.get("text") or "")[:120]
+
+
+def _brief_example(post: dict, source_type: str) -> dict[str, Any]:
+    return {
+        "influencer": post.get("influencer", "?"),
+        "engagement": post.get("engagement", 0),
+        "likes": post.get("likes", 0),
+        "comments": post.get("comments", 0),
+        "hook_type": post.get("hook_type", "other"),
+        "length_bucket": post.get("length_bucket"),
+        "has_cta": post.get("has_cta", False),
+        "source_type": source_type,
+        "text": (post.get("text") or "")[:900],
+    }
+
+
+def _select_representative_examples(all_posts: list[dict], top_posts: list[dict], limit: int = 10) -> list[dict[str, Any]]:
+    """Select non-top examples that carry strategic roles beyond raw performance."""
+    if not all_posts:
+        return []
+
+    top_keys = {_post_identity(post) for post in top_posts}
+    pool = [post for post in all_posts if _post_identity(post) not in top_keys]
+    if not pool:
+        pool = all_posts
+
+    sorted_pool = sorted(pool, key=lambda post: post.get("engagement", 0), reverse=True)
+    mid_start = max(0, len(sorted_pool) // 3)
+    mid_end = max(mid_start + 1, (len(sorted_pool) * 2) // 3)
+
+    buckets: list[tuple[str, list[dict]]] = [
+        ("representative", [post for post in pool if post.get("hook_type") in {"story", "result"}]),
+        ("strategic_gap", [post for post in pool if post.get("hook_type") in {"list", "question"} or post.get("length_bucket") == "long"]),
+        ("everyday_context", [post for post in pool if not post.get("has_cta") and post.get("length_bucket") in {"court", "moyen"}]),
+        ("representative", sorted_pool[mid_start:mid_end]),
+    ]
+
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source_type, candidates in buckets:
+        for post in sorted(candidates, key=lambda item: item.get("engagement", 0), reverse=True):
+            key = _post_identity(post)
+            if not key or key in seen:
+                continue
+            selected.append(_brief_example(post, source_type))
+            seen.add(key)
+            if len(selected) >= limit:
+                return selected
+            break
+
+    for post in sorted_pool:
+        key = _post_identity(post)
+        if not key or key in seen:
+            continue
+        selected.append(_brief_example(post, "representative"))
+        seen.add(key)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 def _build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
     """Build top posts list and benchmark summary."""
     from collections import Counter
@@ -206,6 +270,7 @@ def _build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
             hook_totals[hook] += count
 
     top_posts = sorted(all_posts, key=lambda x: x.get("engagement", 0), reverse=True)[:6]
+    representative_examples = _select_representative_examples(all_posts, top_posts)
     benchmarks = []
     for inf in influencers:
         s = inf["stats"].get("engagement", {})
@@ -219,12 +284,14 @@ def _build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
         "benchmarks": benchmarks,
         "top_hook_types": dict(hook_totals.most_common(6)),
         "proven_insights": [
-            "Hook stat+contrarian : combo sous-exploité, +40-80% vs post standard",
-            "Triple CTA (comment+repost+save) : multiplicateur x2-3 prouvé sur le corpus",
+            "Hook stat+contrarian : combo utile pour les variants performance quand le sujet s'y prête",
+            "CTA commentaire/repost/save : levier de performance à réserver aux posts explicitement orientés engagement",
             "Format image/carousel : 2x plus d'engagement que texte seul",
-            "Longueur optimale : 1 400-1 800 caractères",
-            "Hook question : quasi absent du corpus = alpha, +150% engagement potentiel",
+            "Les posts longs structurés servent bien les méthodes et frameworks",
+            "Les posts courts ou sans CTA peuvent être stratégiques pour la proximité, l'autorité ou le quotidien",
+            "Hook question : utile pour ouvrir une conversation quand le rôle est opinion ou relationnel",
         ],
+        "representative_examples": representative_examples,
     }
     return top_posts, benchmark
 
@@ -414,6 +481,8 @@ class IdeasRequest(BaseModel):
 
 class GenerateRequest(BaseModel):
     topic: str = Field(..., min_length=3)
+    editorial_role: Optional[str] = Field(default=None)
+    post_type: Optional[str] = Field(default=None)
 
 
 @app.post("/ideas")
@@ -448,7 +517,12 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
-    variants = generate_posts(payload.topic.strip(), top_posts, benchmark)
+    variants = generate_posts(
+        payload.topic.strip(),
+        top_posts,
+        benchmark,
+        editorial_role=payload.editorial_role or payload.post_type or "auto",
+    )
     return {"variants": variants}
 
 

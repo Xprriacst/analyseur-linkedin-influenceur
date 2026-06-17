@@ -50,6 +50,8 @@ type Idea = {
   title: string;
   hook: string;
   hook_type: string;
+  editorial_role?: EditorialRole;
+  source_type?: string;
   funnel: string;
   angle: string;
   why_it_works: string;
@@ -57,11 +59,21 @@ type Idea = {
   estimated_lift: string;
 };
 type Variant = {
+  editorial_role?: EditorialRole;
   hook_type: string;
   strategy: string;
   predicted_lift: string;
   post: string;
 };
+type EditorialRole =
+  | "auto"
+  | "performance"
+  | "methodologie"
+  | "autorite"
+  | "story"
+  | "quotidien"
+  | "opinion"
+  | "relationnel";
 type DashboardData = {
   influencer_count: number;
   influencers: {
@@ -132,6 +144,32 @@ const HOOK_LABELS: Record<string, string> = {
 
 function hookLabel(key: string) {
   return HOOK_LABELS[key] || key;
+}
+
+const EDITORIAL_ROLE_LABELS: Record<EditorialRole, string> = {
+  auto: "Mix automatique",
+  performance: "Performance",
+  methodologie: "Méthode",
+  autorite: "Autorité",
+  story: "Histoire",
+  quotidien: "Quotidien",
+  opinion: "Opinion",
+  relationnel: "Relationnel",
+};
+
+const EDITORIAL_ROLE_OPTIONS: EditorialRole[] = [
+  "auto",
+  "performance",
+  "methodologie",
+  "autorite",
+  "story",
+  "quotidien",
+  "opinion",
+  "relationnel",
+];
+
+function editorialRoleLabel(role?: string) {
+  return EDITORIAL_ROLE_LABELS[(role as EditorialRole) || "auto"] || role || "Mix";
 }
 
 /* ── Backlog serveur (job queue) ───────────────────────────────────────── */
@@ -957,6 +995,7 @@ function Generator() {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
   const [topic, setTopic] = useState("");
+  const [editorialRole, setEditorialRole] = useState<EditorialRole>("auto");
   const [loadingIdeas, setLoadingIdeas] = useState(false);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
@@ -980,7 +1019,7 @@ function Generator() {
     }
   }
 
-  async function generateFromTopic(t: string) {
+  async function generateFromTopic(t: string, role: EditorialRole = editorialRole) {
     setError("");
     if (!t.trim()) { setError("Entre un sujet pour le post."); return; }
     setLoadingPosts(true);
@@ -988,7 +1027,7 @@ function Generator() {
       const res = await fetch(`${DIRECT_API_URL}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ topic: t.trim() }),
+        body: JSON.stringify({ topic: t.trim(), editorial_role: role }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération de posts");
@@ -1002,6 +1041,15 @@ function Generator() {
 
   const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
   const hookColors: Record<string, string> = { "stat+contrarian": "#f97316", "story+result": "#10b981", question: "#3b82f6" };
+  const roleColors: Record<string, string> = {
+    performance: "#f97316",
+    methodologie: "#3b82f6",
+    autorite: "#7c3aed",
+    story: "#10b981",
+    quotidien: "#14b8a6",
+    opinion: "#ef4444",
+    relationnel: "#ec4899",
+  };
 
   return (
     <div>
@@ -1009,7 +1057,7 @@ function Generator() {
       <div className="section-header">
         <div>
           <h2 className="section-title"><Lightbulb size={20} /> Idées de posts</h2>
-          <p className="section-desc">Claude analyse les patterns des influenceurs et propose des idées à fort potentiel.</p>
+          <p className="section-desc">Claude analyse les patterns des influenceurs et propose un mix performance, méthode, autorité et proximité.</p>
         </div>
         <button className="secondary-button" onClick={fetchIdeas} disabled={loadingIdeas}>
           {loadingIdeas ? <Loader2 size={14} className="spinning" /> : <Lightbulb size={14} />}
@@ -1028,18 +1076,28 @@ function Generator() {
                   {idea.funnel}
                 </span>
                 <span className="badge">{idea.hook_type}</span>
+                {idea.editorial_role && (
+                  <span className="role-badge" style={{ borderColor: roleColors[idea.editorial_role] || "var(--border)", color: roleColors[idea.editorial_role] || "var(--muted)" }}>
+                    {editorialRoleLabel(idea.editorial_role)}
+                  </span>
+                )}
                 <span className="idea-lift">{idea.estimated_lift}</span>
               </div>
               <h3 className="idea-title">{idea.title}</h3>
               <p className="idea-hook">"{idea.hook}"</p>
               <p className="idea-angle">{idea.angle}</p>
-              <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>
+              <p className="idea-why"><strong>Rôle stratégique :</strong> {idea.why_it_works}</p>
               <div className="idea-footer">
                 <span className={`idea-difficulty ${idea.difficulty}`}>{idea.difficulty}</span>
                 <button
                   className="primary-button"
                   style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                  onClick={() => { setTopic(idea.title); generateFromTopic(idea.title); }}
+                  onClick={() => {
+                    const role = idea.editorial_role || "auto";
+                    setTopic(idea.title);
+                    setEditorialRole(role);
+                    generateFromTopic(idea.title, role);
+                  }}
                 >
                   <Sparkles size={12} /> Générer ce post
                 </button>
@@ -1058,9 +1116,19 @@ function Generator() {
             <input
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              placeholder="Sujet du post : ex. les 5 erreurs avec Claude AI…"
+              placeholder="Sujet du post : ex. une visite client, une méthode, une opinion…"
               onKeyDown={(e) => e.key === "Enter" && generateFromTopic(topic)}
             />
+            <select
+              className="role-select"
+              value={editorialRole}
+              onChange={(e) => setEditorialRole(e.target.value as EditorialRole)}
+              aria-label="Rôle éditorial"
+            >
+              {EDITORIAL_ROLE_OPTIONS.map((role) => (
+                <option key={role} value={role}>{editorialRoleLabel(role)}</option>
+              ))}
+            </select>
             <button className="primary-button" disabled={loadingPosts} onClick={() => generateFromTopic(topic)}>
               {loadingPosts ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
               Générer
@@ -1072,11 +1140,14 @@ function Generator() {
       {variants.length > 0 && (
         <div className="variants-list">
           {variants.map((v, i) => {
-            const color = hookColors[v.hook_type] || "var(--primary)";
+            const color = roleColors[v.editorial_role || ""] || hookColors[v.hook_type] || "var(--primary)";
             return (
               <div className="variant-card" key={i}>
                 <div className="variant-header">
                   <span className="variant-number" style={{ background: color }}>{i + 1}</span>
+                  {v.editorial_role && (
+                    <span className="role-badge" style={{ borderColor: color, color }}>{editorialRoleLabel(v.editorial_role)}</span>
+                  )}
                   <span className="badge" style={{ borderColor: color, color }}>{v.hook_type}</span>
                   <span className="idea-lift">{v.predicted_lift}</span>
                 </div>

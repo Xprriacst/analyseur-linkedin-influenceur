@@ -76,6 +76,108 @@ def _call(system: str, user: str, max_tokens: int = 4096, temperature: float = 0
     return _extract_json(text)
 
 
+EDITORIAL_ROLES: dict[str, dict[str, str]] = {
+    "performance": {
+        "label": "Performance",
+        "objective": "maximiser les signaux d'engagement avec un hook fort, une tension claire et un CTA net",
+        "structure": "structure optimisée issue des meilleurs posts du benchmark, rythme nerveux, contraste fort",
+    },
+    "methodologie": {
+        "label": "Méthodologie",
+        "objective": "transmettre une méthode, un framework ou un apprentissage utile, même si le potentiel viral est plus faible",
+        "structure": "progression pédagogique, étapes concrètes, exemples et limites plutôt qu'un hook sensationnaliste",
+    },
+    "autorite": {
+        "label": "Autorité",
+        "objective": "installer la crédibilité par une preuve, une expérience, un résultat ou un jugement professionnel",
+        "structure": "preuve contextualisée, observation de terrain, nuance, pas de survente ni de promesse excessive",
+    },
+    "story": {
+        "label": "Histoire",
+        "objective": "raconter une histoire personnelle ou professionnelle qui rend le point de vue mémorable",
+        "structure": "scène initiale, tension, bascule, enseignement léger ou implication concrète",
+    },
+    "quotidien": {
+        "label": "Quotidien",
+        "objective": "créer de la proximité avec une scène de vie, une visite, une coulisse ou une observation locale",
+        "structure": "ton simple, détail concret, peu de packaging, pas forcément de grande leçon finale",
+    },
+    "opinion": {
+        "label": "Opinion",
+        "objective": "exprimer une prise de position simple et assumée qui ouvre la discussion",
+        "structure": "thèse claire, 2-4 arguments, nuance, question finale possible",
+    },
+    "relationnel": {
+        "label": "Relationnel",
+        "objective": "entretenir la conversation et la proximité avec une question ouverte ou un partage humain",
+        "structure": "format court à moyen, invitation sincère à répondre, pas de mécanique de commentaire forcée",
+    },
+}
+
+_EDITORIAL_ROLE_ALIASES = {
+    "auto": "auto",
+    "mix": "auto",
+    "automatique": "auto",
+    "performance": "performance",
+    "methodologie": "methodologie",
+    "méthodologie": "methodologie",
+    "methode": "methodologie",
+    "méthode": "methodologie",
+    "expertise": "methodologie",
+    "autorite": "autorite",
+    "autorité": "autorite",
+    "authority": "autorite",
+    "story": "story",
+    "histoire": "story",
+    "storytelling": "story",
+    "quotidien": "quotidien",
+    "daily": "quotidien",
+    "coulisses": "quotidien",
+    "opinion": "opinion",
+    "relationnel": "relationnel",
+    "conversation": "relationnel",
+    "proximite": "relationnel",
+    "proximité": "relationnel",
+}
+
+DEFAULT_EDITORIAL_MIX = ["performance", "methodologie", "quotidien"]
+DEFAULT_IDEA_MIX = ["performance", "methodologie", "autorite", "story", "quotidien", "opinion", "relationnel"]
+
+
+def normalize_editorial_role(role: str | None) -> str:
+    """Return a supported editorial role key, or auto for the default mix."""
+    key = (role or "auto").strip().lower().replace("-", "_")
+    return _EDITORIAL_ROLE_ALIASES.get(key, "auto")
+
+
+def editorial_role_sequence(role: str | None, count: int = 3) -> list[str]:
+    """Resolve a requested role into the role sequence expected from the LLM."""
+    normalized = normalize_editorial_role(role)
+    if normalized != "auto":
+        return [normalized for _ in range(count)]
+    return [DEFAULT_EDITORIAL_MIX[i % len(DEFAULT_EDITORIAL_MIX)] for i in range(count)]
+
+
+def _role_brief(role: str) -> dict[str, str]:
+    spec = EDITORIAL_ROLES[role]
+    return {
+        "role": role,
+        "label": spec["label"],
+        "objectif": spec["objective"],
+        "structure": spec["structure"],
+    }
+
+
+def _decorate_ideas_with_roles(ideas: list[dict]) -> list[dict]:
+    for i, idea in enumerate(ideas):
+        role = normalize_editorial_role(idea.get("editorial_role"))
+        if role == "auto":
+            role = DEFAULT_IDEA_MIX[i % len(DEFAULT_IDEA_MIX)]
+        idea["editorial_role"] = role
+        idea.setdefault("source_type", "benchmark_mix")
+    return ideas
+
+
 def classify_posts(posts: list[dict]) -> list[dict]:
     """Tag each post with TOFU/MOFU/BOFU + topic + hook type."""
     items = [
@@ -174,30 +276,43 @@ def synthesize_strategy(stats: dict, classifications: list[dict], posts: list[di
 
 def generate_ideas(top_posts_examples: list[dict], benchmark: dict, count: int = 5) -> list[dict]:
     """Generate post ideas based on analyzed influencer insights."""
-    examples_text = "\n\n".join(
+    top_examples_text = "\n\n".join(
         f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')}]\n{e.get('text', '')[:400]}"
         for e in top_posts_examples[:8]
     )
+    representative_examples = benchmark.get("representative_examples", [])
+    representative_text = "\n\n".join(
+        f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')} | source: {e.get('source_type', 'representative')}]\n{e.get('text', '')[:400]}"
+        for e in representative_examples[:8]
+    )
 
     system = (
-        "Tu es un stratège contenu LinkedIn spécialisé IA/automatisation. "
-        "Tu proposes des idées de posts viraux en t'appuyant sur des données réelles. "
+        "Tu es un stratège contenu LinkedIn. "
+        "Tu proposes un mix éditorial réaliste en t'appuyant sur des données réelles : "
+        "certains posts cherchent la performance, d'autres l'expertise, l'autorité, "
+        "la proximité ou la conversation. "
         "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
     user = (
-        "Benchmarks issus de l'analyse d'influenceurs LinkedIn IA/automation :\n"
+        "Benchmarks issus de l'analyse des influenceurs LinkedIn de l'utilisateur :\n"
         + json.dumps(benchmark, ensure_ascii=False, indent=2)
         + "\n\nExemples des posts les plus performants :\n"
-        + examples_text
+        + top_examples_text
+        + "\n\nExemples moyens ou représentatifs à ne pas ignorer :\n"
+        + representative_text
         + f"""
 
-Propose exactement {count} idées de posts LinkedIn originaux et à fort potentiel viral.
+Propose exactement {count} idées de posts LinkedIn originales avec un mix de rôles éditoriaux.
+N'optimise pas tout pour le même signal : couvre autant que possible ces rôles selon le nombre demandé :
+{json.dumps([_role_brief(role) for role in DEFAULT_IDEA_MIX], ensure_ascii=False, indent=2)}
 
 Pour chaque idée :
-- Identifie un angle unique basé sur les patterns qui marchent dans le corpus
+- Identifie un angle unique basé sur les patterns qui marchent OU sur des posts représentatifs utiles
 - Propose un hook accrocheur (première ligne du post)
-- Explique pourquoi cette idée devrait performer (basé sur les données)
+- Explique pourquoi cette idée est utile stratégiquement (performance, autorité, proximité, expertise...)
 - Indique le type de hook et le niveau du funnel (TOFU/MOFU/BOFU)
+- Renseigne `editorial_role` avec l'un des rôles supportés
+- Renseigne `source_type` : top_performer | representative | strategic_gap | everyday_context
 
 Schéma JSON attendu :
 {{
@@ -206,17 +321,19 @@ Schéma JSON attendu :
       "title": "titre court de l'idée (5-10 mots)",
       "hook": "première ligne du post proposée",
       "hook_type": "stat+contrarian | story+result | question | list | bold_claim",
+      "editorial_role": "performance | methodologie | autorite | story | quotidien | opinion | relationnel",
+      "source_type": "top_performer | representative | strategic_gap | everyday_context",
       "funnel": "TOFU | MOFU | BOFU",
       "angle": "description de l'angle en 1-2 phrases",
       "why_it_works": "explication basée sur les données du corpus",
       "difficulty": "facile | moyen | avancé",
-      "estimated_lift": "+X% vs post standard"
+      "estimated_lift": "+X% vs post standard OU impact stratégique non chiffré"
     }}
   ]
 }}"""
     )
     data = _call(system, user, max_tokens=4096, temperature=0.8)
-    return data.get("ideas", [])
+    return _decorate_ideas_with_roles(data.get("ideas", []))
 
 
 def analyze_dashboard_strategy(influencers_data: list[dict], growth_data: list[dict] | None = None) -> str:
@@ -301,49 +418,81 @@ Produis une analyse stratégique COMPLÈTE et ACTIONNABLE en suivant ce plan :
     return "".join(block.text for block in resp.content if hasattr(block, "text"))
 
 
-def generate_posts(topic: str, top_posts_examples: list[dict], benchmark: dict) -> list[dict]:
-    """Generate 3 optimized LinkedIn post variants for a given topic."""
-    examples_text = "\n\n".join(
+def generate_posts(
+    topic: str,
+    top_posts_examples: list[dict],
+    benchmark: dict,
+    editorial_role: str | None = "auto",
+) -> list[dict]:
+    """Generate 3 LinkedIn post variants with explicit editorial roles."""
+    requested_role = normalize_editorial_role(editorial_role)
+    roles = editorial_role_sequence(requested_role, count=3)
+    top_examples_text = "\n\n".join(
         f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')}]\n{e.get('text', '')[:600]}"
         for e in top_posts_examples[:6]
     )
+    representative_examples = benchmark.get("representative_examples", [])
+    representative_text = "\n\n".join(
+        f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')} | source: {e.get('source_type', 'representative')}]\n{e.get('text', '')[:600]}"
+        for e in representative_examples[:8]
+    )
 
     system = (
-        "Tu es un expert en croissance LinkedIn dans la niche IA/automatisation. "
-        "Tu génères des posts viraux en t'appuyant sur des données réelles d'engagement. "
+        "Tu es un stratège LinkedIn senior. "
+        "Tu sais générer des posts qui n'ont pas tous le même rôle : performance, méthode, "
+        "autorité, histoire, quotidien, opinion ou relationnel. "
         "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
     user = (
         f'Sujet du post à créer : "{topic}"\n\n'
-        "Benchmarks issus de l'analyse de 8 influenceurs LinkedIn IA/automation :\n"
+        "Benchmarks issus de l'analyse des influenceurs LinkedIn de l'utilisateur :\n"
         + json.dumps(benchmark, ensure_ascii=False, indent=2)
         + "\n\nExemples des posts les plus performants :\n"
-        + examples_text
-        + """
+        + top_examples_text
+        + "\n\nExemples moyens ou représentatifs à utiliser surtout pour les rôles non-performance :\n"
+        + representative_text
+        + f"""
 
-Génère exactement 3 variants de posts LinkedIn optimisés pour l'engagement.
+Rôle demandé par l'utilisateur : {requested_role}
+Plan éditorial imposé pour les 3 variants :
+{json.dumps([_role_brief(role) for role in roles], ensure_ascii=False, indent=2)}
+
+Génère exactement 3 variants de posts LinkedIn.
 
 Règles impératives :
-- Variant 1 hook_type="stat+contrarian" : commence par un chiffre frappant PUIS un angle contrarian. Combo le plus sous-exploité du corpus, +40-80% engagement.
-- Variant 2 hook_type="story+result" : commence par une micro-histoire personnelle avec résultat chiffré. Playbook des top performers (Zeyneb/Pierre).
-- Variant 3 hook_type="question" : commence par une question directe qui interpelle. Quasi absent du corpus = alpha non capturé, +150% engagement potentiel.
-- Longueur cible : 1 400-1 800 caractères par post
-- Structure obligatoire : hook (3 lignes) → corps (4-6 § courts) → framework numéroté (3-7 items avec ↳) → triple CTA
-- Triple CTA OBLIGATOIRE en fin de post sur 3 lignes séparées : "💬 [CTA commentaire] / ♻️ [CTA repost] / 🔖 [CTA enregistrer]"
-- Langue : français
-- Ne PAS mettre de balises markdown dans le texte du post
+- Chaque variant doit renseigner `editorial_role` et respecter le rôle prévu dans le plan ci-dessus.
+- Les 3 variants doivent avoir des structures différentes : pas le même hook, pas le même déroulé, pas le même CTA.
+- Si le rôle est `performance`, tu peux t'inspirer des top posts, renforcer hook/tension/CTA et viser l'engagement.
+- Si le rôle est `methodologie`, privilégie clarté, étapes utiles, exemple concret et pédagogie.
+- Si le rôle est `autorite`, installe la crédibilité par une preuve, une expérience ou une observation professionnelle sans sur-vendre.
+- Si le rôle est `story`, raconte une vraie scène avec tension et bascule plutôt qu'un framework générique.
+- Si le rôle est `quotidien`, écris un post simple, humain, contextuel, avec détail de terrain ; aucune grande leçon finale obligatoire.
+- Si le rôle est `opinion`, assume une prise de position claire et nuancée.
+- Si le rôle est `relationnel`, favorise la conversation et la proximité ; évite les mécaniques artificielles.
+- Ne force PAS une structure hook → framework → triple CTA pour tous les posts.
+- Un CTA est optionnel pour les rôles quotidien, story, opinion et relationnel ; s'il existe, il doit être naturel.
+- Langue : français.
+- Ne PAS mettre de balises markdown dans le texte du post.
 
 Schéma JSON attendu (toutes les clés obligatoires) :
 {
   "variants": [
     {
+      "editorial_role": "performance | methodologie | autorite | story | quotidien | opinion | relationnel",
       "hook_type": str,
-      "strategy": "1-2 phrases expliquant pourquoi ce variant devrait performer",
-      "predicted_lift": "ex: +40-80% vs post standard",
+      "strategy": "1-2 phrases expliquant le rôle stratégique de ce variant",
+      "predicted_lift": "ex: +40-80% vs post standard OU 'proximité / autorité, performance non prioritaire'",
       "post": "texte complet du post prêt à publier"
     }
   ]
 }"""
     )
     data = _call(system, user, max_tokens=6000, temperature=0.7)
-    return data.get("variants", [])
+    variants = data.get("variants", [])
+    for i, variant in enumerate(variants):
+        role = normalize_editorial_role(variant.get("editorial_role"))
+        if role == "auto":
+            role = roles[i % len(roles)]
+        variant["editorial_role"] = role
+        variant.setdefault("predicted_lift", "Rôle stratégique, performance non prioritaire")
+    return variants

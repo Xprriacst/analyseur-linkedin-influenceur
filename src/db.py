@@ -318,7 +318,12 @@ def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
         for idea in ideas
     ]
     resp = db.table("generated_ideas").insert(rows).execute()
-    return resp.data if resp.data else ideas
+    if not resp.data:
+        return ideas
+    return [
+        {**idea, **(resp.data[i] if i < len(resp.data) else {})}
+        for i, idea in enumerate(ideas)
+    ]
 
 
 import re as _re
