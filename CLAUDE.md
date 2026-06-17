@@ -26,6 +26,17 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 
 ## Changelog
 
+### 2026-06-17 (publication LinkedIn via Zernio — MVP publier-maintenant)
+- **Objectif** : publier un post généré directement sur LinkedIn depuis l'app. Choix de **Zernio** (API REST `https://zernio.com/api/v1`, Bearer `sk_…`, serveur MCP dispo) plutôt que l'API officielle LinkedIn (partner review trop lourd).
+- **Modèle** : 1 clé API serveur unique (`ZERNIO_API_KEY`) ; **1 « profile » Zernio par utilisateur** (= par client, archi actuelle 1 login = 1 profil éditorial) ; 1 compte LinkedIn connecté via OAuth dont on mémorise l'`accountId`.
+- **Flux** : (1) `POST /v1/profiles {name}` → `profile._id` (créé à la 1ʳᵉ connexion), (2) `GET /v1/connect/linkedin?profileId=…&redirect_url=…` → `authUrl` (Zernio gère l'OAuth, redirige ensuite vers l'app avec `?linkedin=connected`), (3) au retour `GET /v1/accounts?profileId=…` → `_id` du compte LinkedIn stocké, (4) `POST /v1/posts {content, platforms:[{platform:"linkedin", accountId}], publishNow:true}`.
+- **Backend** : nouveau `src/zernio.py` (client stdlib urllib, pas de dépendance HTTP ajoutée) + endpoints `GET /me/linkedin/status`, `POST /me/linkedin/connect`, `POST /me/linkedin/refresh`, `POST /me/linkedin/publish` dans `api.py`. Helpers `set_zernio_profile_id`/`set_zernio_account` dans `db.py`.
+- **DB** : migration `supabase/migrations/0004_zernio.sql` → colonnes `zernio_profile_id`/`zernio_account_id`/`zernio_connected_at` sur `user_editorial_profiles`. **À exécuter manuellement dans le SQL editor Supabase.**
+- **Front** (`page.tsx`) : hook `useLinkedIn`, encart « Publication LinkedIn » (connecter/connecté) dans l'onglet Profil, bouton **« Publier sur LinkedIn »** sur chaque variant généré, gestion du retour OAuth (`?linkedin=connected`) dans `Home` → `refresh` + bascule sur l'onglet Profil.
+- **Limites V1** : publier-maintenant uniquement (pas de planification, pas de média/image), 1 seul compte LinkedIn par utilisateur.
+- ⚠️ **Déploiement** : backend Render depuis `main` → nécessite merge `dev→main` + ajouter `ZERNIO_API_KEY` dans les env vars Render. Exécuter la migration 0004 avant.
+- **Suite prévue** : agent chatbot (V1 simple : `/chat` SSE + contexte client + historique persistant) ; à terme l'agent publiera via le MCP Zernio.
+
 ### 2026-06-13 (job queue serveur : backlog multi-profils persistant + onglet dédié)
 - **Nouvel onglet « Backlog »** (`view === "backlog"` → `JobsView` dans `page.tsx`, premium/auth requise) : on colle plusieurs profils (un par ligne), ça crée une **série** traitée côté serveur, profil par profil, avec statut live par ligne (polling `/jobs` toutes les 3 s tant qu'une série tourne). L'état vit en base → survit au refresh, à la fermeture d'onglet et à la reconnexion.
 - **Backend** : `src/jobs.py` traite chaque série dans un **thread de fond** (verrou global `_compute_lock` pour sérialiser `run_analysis` — usage global + rate limit Apify). Endpoints `POST /jobs`, `GET /jobs`, `GET /jobs/{id}`, `POST /jobs/{id}/resume` (relance les items non terminés après un redémarrage). Helpers `create_job`/`get_job`/`list_jobs`/`update_job`/`update_job_item` dans `db.py`. Chaque item terminé appelle `save_analysis` → le rapport apparaît aussi dans « Analyses récentes ».

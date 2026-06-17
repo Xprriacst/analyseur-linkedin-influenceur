@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from src import db
+from src import db, zernio
 from src.pipeline import run_analysis
 from src.jobs import start_job_thread
 from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile
@@ -298,6 +298,99 @@ def me_analysis(analysis_id: str, token: str = Depends(require_token)) -> dict[s
     if not analysis:
         raise HTTPException(status_code=404, detail="Analyse introuvable.")
     return analysis
+
+
+# --- LinkedIn publishing via Zernio -----------------------------------------
+
+class LinkedInConnectRequest(BaseModel):
+    redirect_url: Optional[str] = Field(default=None, max_length=1000)
+
+
+class LinkedInPublishRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=8000)
+
+
+def _linkedin_status(token: str) -> dict[str, Any]:
+    profile = db.get_editorial_profile(token) or {}
+    return {
+        "configured": zernio.enabled(),
+        "connected": bool(profile.get("zernio_account_id")),
+        "account_id": profile.get("zernio_account_id"),
+        "profile_id": profile.get("zernio_profile_id"),
+        "connected_at": profile.get("zernio_connected_at"),
+    }
+
+
+def _ensure_zernio_profile(token: str) -> str:
+    """Return this user's Zernio profile id, creating it on first use."""
+    profile = db.get_editorial_profile(token) or {}
+    profile_id = profile.get("zernio_profile_id")
+    if profile_id:
+        return profile_id
+    user = db.get_user(token) or {}
+    name = profile.get("display_name") or profile.get("brand_name") or user.get("email") or "Client"
+    profile_id = zernio.create_profile(name, profile.get("business_description"))
+    db.set_zernio_profile_id(token, profile_id)
+    return profile_id
+
+
+@app.get("/me/linkedin/status")
+def me_linkedin_status(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Whether the user has a LinkedIn account connected through Zernio."""
+    return _linkedin_status(token)
+
+
+@app.post("/me/linkedin/connect")
+def me_linkedin_connect(
+    payload: LinkedInConnectRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Return a LinkedIn OAuth URL the user opens to authorize publishing."""
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    try:
+        profile_id = _ensure_zernio_profile(token)
+        auth_url = zernio.get_connect_url(profile_id, redirect_url=payload.redirect_url)
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"auth_url": auth_url}
+
+
+@app.post("/me/linkedin/refresh")
+def me_linkedin_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Re-read the connected account from Zernio (call after OAuth return)."""
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    profile_id = profile.get("zernio_profile_id")
+    if not profile_id:
+        return _linkedin_status(token)
+    try:
+        account_id = zernio.find_linkedin_account_id(profile_id)
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.set_zernio_account(token, account_id)
+    return _linkedin_status(token)
+
+
+@app.post("/me/linkedin/publish")
+def me_linkedin_publish(
+    payload: LinkedInPublishRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Publish a post immediately on the user's connected LinkedIn account."""
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    account_id = profile.get("zernio_account_id")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
+    try:
+        result = zernio.create_post(payload.content.strip(), account_id, publish_now=True)
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    post = result.get("post") or result
+    return {"ok": True, "post_id": post.get("_id"), "post": post}
 
 
 @app.get("/reports")
