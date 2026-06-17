@@ -18,8 +18,11 @@ import {
   Lock,
   LogIn,
   LogOut,
+  MessageSquare,
   PenTool,
+  PlusCircle,
   RefreshCw,
+  Send,
   Sparkles,
   TrendingUp,
   UserRound,
@@ -75,6 +78,18 @@ type Variant = {
   strategy: string;
   predicted_lift: string;
   post: string;
+};
+type ChatConversation = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+type ChatMessage = {
+  id?: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at?: string;
 };
 type EditorialProfile = {
   id?: string;
@@ -137,7 +152,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "influencers", "generator", "dashboard"] as const;
+const mainViews = ["analyze", "profile", "influencers", "assistant", "generator", "dashboard"] as const;
 type MainView = typeof mainViews[number];
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
@@ -606,6 +621,7 @@ function Sidebar({
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
     { key: "profile", label: "Mon profil", icon: <UserRound size={14} />, auth: true },
     { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} />, auth: true },
+    { key: "assistant", label: "Assistant", icon: <MessageSquare size={14} />, premium: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
   ];
@@ -1357,6 +1373,255 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
         </div>
       )}
       {publishError && <div className="error" style={{ marginTop: 12 }}>{publishError}</div>}
+    </div>
+  );
+}
+
+function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
+  const [conversations, setConversations] = useState<ChatConversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [error, setError] = useState("");
+  const endRef = useRef<HTMLDivElement | null>(null);
+
+  const quickActions = [
+    "Donne-moi 5 idées de posts adaptées à mon profil.",
+    "Propose un angle performance sur : ",
+    "Transforme ce brouillon en post LinkedIn percutant : ",
+    "Améliore le hook et la structure de ce post : ",
+  ];
+
+  async function loadMessages(conversationId: string) {
+    setLoadingHistory(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/chat/conversations/${conversationId}/messages`, {
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Conversation introuvable");
+      setActiveConversationId(conversationId);
+      setMessages(data.messages || []);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  async function loadConversations(selectFirst = true) {
+    if (!isAuthed) return;
+    setLoadingHistory(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/chat/conversations`, {
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Chargement des conversations impossible");
+      const list = Array.isArray(data) ? data : [];
+      setConversations(list);
+      if (selectFirst && list.length && !activeConversationId) {
+        await loadMessages(list[0].id);
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!isAuthed) {
+      setConversations([]);
+      setActiveConversationId(null);
+      setMessages([]);
+      return;
+    }
+    loadConversations(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, streaming]);
+
+  function newConversation() {
+    setActiveConversationId(null);
+    setMessages([]);
+    setError("");
+    setInput("");
+  }
+
+  function appendAssistant(delta: string) {
+    setMessages((prev) => {
+      const next = [...prev];
+      const last = next[next.length - 1];
+      if (!last || last.role !== "assistant") {
+        next.push({ role: "assistant", content: delta });
+      } else {
+        next[next.length - 1] = { ...last, content: last.content + delta };
+      }
+      return next;
+    });
+  }
+
+  function handleSseEvent(raw: string) {
+    const lines = raw.split("\n");
+    let event = "message";
+    const dataLines: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+    }
+    if (!dataLines.length) return;
+    const data = JSON.parse(dataLines.join("\n"));
+    if (event === "meta" && data.conversation_id) {
+      setActiveConversationId(data.conversation_id);
+    } else if (event === "delta") {
+      appendAssistant(data.text || "");
+    } else if (event === "error") {
+      setError(data.detail || "Réponse interrompue.");
+    }
+  }
+
+  async function sendMessage(text?: string) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour utiliser l'assistant."); return; }
+    const content = (text ?? input).trim();
+    if (!content || streaming) return;
+
+    setError("");
+    setInput("");
+    setMessages((prev) => [...prev, { role: "user", content }, { role: "assistant", content: "" }]);
+    setStreaming(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ conversation_id: activeConversationId, message: content }),
+      });
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Assistant indisponible.");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() || "";
+        for (const chunk of chunks) {
+          if (chunk.trim()) handleSseEvent(chunk);
+        }
+      }
+      if (buffer.trim()) handleSseEvent(buffer);
+      await loadConversations(false);
+    } catch (err: any) {
+      setError(err.message || "Assistant indisponible.");
+    } finally {
+      setStreaming(false);
+    }
+  }
+
+  if (!isAuthed) {
+    return (
+      <LockedCard
+        title="Assistant conversationnel"
+        subtitle="Connecte-toi pour garder l'historique et utiliser ton contexte éditorial."
+        onUnlock={() => requireAuth("Crée un compte gratuit pour discuter avec l'assistant.")}
+      />
+    );
+  }
+
+  return (
+    <div className="assistant-layout">
+      <aside className="assistant-sidebar card">
+        <div className="assistant-sidebar-header">
+          <p className="eyebrow">Conversations</p>
+          <button className="ghost-button" onClick={newConversation} title="Nouvelle conversation">
+            <PlusCircle size={14} /> Nouveau
+          </button>
+        </div>
+        <div className="assistant-conversation-list">
+          {conversations.length ? conversations.map((conv) => (
+            <button
+              key={conv.id}
+              className={`assistant-conversation ${activeConversationId === conv.id ? "active" : ""}`}
+              onClick={() => loadMessages(conv.id)}
+            >
+              <strong>{conv.title}</strong>
+              <span>{new Date(conv.updated_at).toLocaleDateString("fr-FR")}</span>
+            </button>
+          )) : (
+            <p className="assistant-empty">Aucune conversation enregistrée.</p>
+          )}
+        </div>
+      </aside>
+
+      <section className="assistant-panel card">
+        <div className="section-header">
+          <div>
+            <h2 className="section-title"><MessageSquare size={20} /> Assistant LinkedIn</h2>
+            <p className="section-desc">Itère sur tes idées et brouillons avec mémoire, contexte client et benchmark influenceurs.</p>
+          </div>
+          {loadingHistory ? <Loader2 size={16} className="spinning" /> : null}
+        </div>
+
+        <div className="assistant-quick-actions">
+          {quickActions.map((action) => (
+            <button key={action} className="secondary-button" onClick={() => setInput(action)}>
+              {action}
+            </button>
+          ))}
+        </div>
+
+        {error && <div className="error">{error}</div>}
+
+        <div className="assistant-messages">
+          {!messages.length ? (
+            <div className="assistant-welcome">
+              <Sparkles size={22} />
+              <h3>Demande une idée, un angle ou une réécriture.</h3>
+              <p>Exemple : "Écris un post opinion sur les erreurs d'automatisation LinkedIn pour des dirigeants B2B."</p>
+            </div>
+          ) : messages.map((message, i) => (
+            <div key={`${message.id || i}-${message.role}`} className={`assistant-message ${message.role}`}>
+              <div className="assistant-message-role">
+                {message.role === "user" ? "Toi" : "Assistant"}
+              </div>
+              <div className="assistant-message-content">
+                {message.role === "assistant"
+                  ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || (streaming ? "..." : "")}</ReactMarkdown>
+                  : <p>{message.content}</p>}
+              </div>
+            </div>
+          ))}
+          <div ref={endRef} />
+        </div>
+
+        <div className="assistant-composer">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Écris ta demande : idée, brouillon à améliorer, angle, ton..."
+            rows={3}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") sendMessage();
+            }}
+          />
+          <button className="primary-button" disabled={streaming || !input.trim()} onClick={() => sendMessage()}>
+            {streaming ? <Loader2 size={14} className="spinning" /> : <Send size={14} />}
+            {streaming ? "Réponse..." : "Envoyer"}
+          </button>
+        </div>
+        <p className="role-picker-hint" style={{ marginTop: 8 }}>Astuce : Cmd/Ctrl + Entrée pour envoyer.</p>
+      </section>
     </div>
   );
 }
@@ -2389,6 +2654,7 @@ export default function Home() {
             />
           )}
           {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
+          {view === "assistant" && <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "dashboard" && <GlobalDashboard />}
         </main>
