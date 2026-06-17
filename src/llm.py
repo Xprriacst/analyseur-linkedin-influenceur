@@ -172,20 +172,60 @@ def synthesize_strategy(stats: dict, classifications: list[dict], posts: list[di
     return StrategySynthesis(**data).model_dump()
 
 
-def generate_ideas(top_posts_examples: list[dict], benchmark: dict, count: int = 5) -> list[dict]:
+def _format_user_context(user_context: dict[str, Any] | None) -> str:
+    """Render the user's business/editorial profile for LLM prompts."""
+    if not user_context:
+        return "Aucun contexte client renseigné. Utilise le benchmark influenceurs comme source principale."
+    labels = {
+        "display_name": "Nom",
+        "brand_name": "Marque",
+        "industry": "Secteur",
+        "business_description": "Activité",
+        "location": "Localisation",
+        "target_audience": "Audience cible",
+        "core_offer": "Offre / expertise",
+        "tone": "Ton souhaité",
+        "linkedin_objective": "Objectif LinkedIn",
+        "topics_to_cover": "Sujets à couvrir",
+        "topics_to_avoid": "Sujets à éviter",
+        "constraints": "Contraintes",
+        "website_url": "Site web",
+        "linkedin_url": "Profil LinkedIn",
+        "language": "Langue",
+        "market": "Marché",
+        "extra_context": "Contexte additionnel",
+    }
+    lines = []
+    for key, label in labels.items():
+        value = user_context.get(key)
+        if value:
+            lines.append(f"- {label}: {value}")
+    return "\n".join(lines) if lines else "Aucun contexte client exploitable."
+
+
+def generate_ideas(
+    top_posts_examples: list[dict],
+    benchmark: dict,
+    count: int = 5,
+    user_context: dict[str, Any] | None = None,
+) -> list[dict]:
     """Generate post ideas based on analyzed influencer insights."""
     examples_text = "\n\n".join(
         f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')}]\n{e.get('text', '')[:400]}"
         for e in top_posts_examples[:8]
     )
+    context_text = _format_user_context(user_context)
 
     system = (
-        "Tu es un stratège contenu LinkedIn spécialisé IA/automatisation. "
-        "Tu proposes des idées de posts viraux en t'appuyant sur des données réelles. "
+        "Tu es un stratège contenu LinkedIn. "
+        "Tu proposes des idées de posts adaptées au client final en t'appuyant sur son contexte "
+        "éditorial et sur des données réelles d'influenceurs analysés. "
         "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
     user = (
-        "Benchmarks issus de l'analyse d'influenceurs LinkedIn IA/automation :\n"
+        "Contexte client à respecter en priorité :\n"
+        + context_text
+        + "\n\nBenchmarks issus de l'analyse d'influenceurs LinkedIn :\n"
         + json.dumps(benchmark, ensure_ascii=False, indent=2)
         + "\n\nExemples des posts les plus performants :\n"
         + examples_text
@@ -194,6 +234,7 @@ def generate_ideas(top_posts_examples: list[dict], benchmark: dict, count: int =
 Propose exactement {count} idées de posts LinkedIn originaux et à fort potentiel viral.
 
 Pour chaque idée :
+- Adapte l'angle au métier, au marché, à l'audience et à l'objectif LinkedIn du client quand le contexte est disponible
 - Identifie un angle unique basé sur les patterns qui marchent dans le corpus
 - Propose un hook accrocheur (première ligne du post)
 - Explique pourquoi cette idée devrait performer (basé sur les données)
@@ -301,21 +342,30 @@ Produis une analyse stratégique COMPLÈTE et ACTIONNABLE en suivant ce plan :
     return "".join(block.text for block in resp.content if hasattr(block, "text"))
 
 
-def generate_posts(topic: str, top_posts_examples: list[dict], benchmark: dict) -> list[dict]:
+def generate_posts(
+    topic: str,
+    top_posts_examples: list[dict],
+    benchmark: dict,
+    user_context: dict[str, Any] | None = None,
+) -> list[dict]:
     """Generate 3 optimized LinkedIn post variants for a given topic."""
     examples_text = "\n\n".join(
         f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')}]\n{e.get('text', '')[:600]}"
         for e in top_posts_examples[:6]
     )
+    context_text = _format_user_context(user_context)
 
     system = (
-        "Tu es un expert en croissance LinkedIn dans la niche IA/automatisation. "
-        "Tu génères des posts viraux en t'appuyant sur des données réelles d'engagement. "
+        "Tu es un expert en stratégie LinkedIn. "
+        "Tu génères des posts prêts à publier en respectant d'abord le contexte du client, "
+        "puis en t'appuyant sur les patterns d'engagement observés chez les influenceurs analysés. "
         "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
     user = (
         f'Sujet du post à créer : "{topic}"\n\n'
-        "Benchmarks issus de l'analyse de 8 influenceurs LinkedIn IA/automation :\n"
+        "Contexte client à respecter en priorité :\n"
+        + context_text
+        + "\n\nBenchmarks issus de l'analyse d'influenceurs LinkedIn :\n"
         + json.dumps(benchmark, ensure_ascii=False, indent=2)
         + "\n\nExemples des posts les plus performants :\n"
         + examples_text
@@ -324,6 +374,8 @@ def generate_posts(topic: str, top_posts_examples: list[dict], benchmark: dict) 
 Génère exactement 3 variants de posts LinkedIn optimisés pour l'engagement.
 
 Règles impératives :
+- Le post doit être crédible pour le client : métier, localisation, audience, offre, ton et contraintes priment sur les patterns viraux
+- Si le sujet est une actualité ou une scène locale, relie-la naturellement au contexte client sans forcer la vente
 - Variant 1 hook_type="stat+contrarian" : commence par un chiffre frappant PUIS un angle contrarian. Combo le plus sous-exploité du corpus, +40-80% engagement.
 - Variant 2 hook_type="story+result" : commence par une micro-histoire personnelle avec résultat chiffré. Playbook des top performers (Zeyneb/Pierre).
 - Variant 3 hook_type="question" : commence par une question directe qui interpelle. Quasi absent du corpus = alpha non capturé, +150% engagement potentiel.

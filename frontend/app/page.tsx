@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Sparkles,
   TrendingUp,
+  UserRound,
   Users,
   Zap,
 } from "lucide-react";
@@ -73,6 +74,26 @@ type Variant = {
   predicted_lift: string;
   post: string;
 };
+type EditorialProfile = {
+  id?: string;
+  display_name?: string | null;
+  brand_name?: string | null;
+  industry?: string | null;
+  business_description?: string | null;
+  location?: string | null;
+  target_audience?: string | null;
+  core_offer?: string | null;
+  tone?: string | null;
+  linkedin_objective?: string | null;
+  topics_to_cover?: string | null;
+  topics_to_avoid?: string | null;
+  constraints?: string | null;
+  website_url?: string | null;
+  linkedin_url?: string | null;
+  language?: string | null;
+  market?: string | null;
+  extra_context?: string | null;
+};
 type DashboardData = {
   influencer_count: number;
   influencers: {
@@ -114,7 +135,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "influencers", "generator", "dashboard"] as const;
+const mainViews = ["analyze", "profile", "influencers", "generator", "dashboard"] as const;
 type MainView = typeof mainViews[number];
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
@@ -581,6 +602,7 @@ function Sidebar({
 
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean; auth?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
+    { key: "profile", label: "Mon profil", icon: <UserRound size={14} />, auth: true },
     { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} />, auth: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
@@ -614,7 +636,7 @@ function Sidebar({
                   if (locked) {
                     requireAuth(
                       item.auth
-                        ? "Crée un compte gratuit pour voir tes influenceurs analysés."
+                        ? "Crée un compte gratuit pour retrouver tes données et ton contexte éditorial."
                         : "Crée un compte gratuit pour débloquer le générateur de posts et le dashboard global."
                     );
                     return;
@@ -732,6 +754,7 @@ function TopHeader({
 }) {
   const viewTitles: Record<MainView, string> = {
     analyze: "Analyser des profils LinkedIn",
+    profile: "Mon profil éditorial",
     influencers: "Mes influenceurs",
     generator: "Générateur de posts",
     dashboard: "Dashboard global",
@@ -1199,6 +1222,218 @@ function Generator() {
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const EMPTY_EDITORIAL_PROFILE: EditorialProfile = {
+  display_name: "",
+  brand_name: "",
+  industry: "",
+  business_description: "",
+  location: "",
+  target_audience: "",
+  core_offer: "",
+  tone: "",
+  linkedin_objective: "",
+  topics_to_cover: "",
+  topics_to_avoid: "",
+  constraints: "",
+  website_url: "",
+  linkedin_url: "",
+  language: "français",
+  market: "",
+  extra_context: "",
+};
+
+function ProfileView({
+  isAuthed,
+  requireAuth,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
+  const [profile, setProfile] = useState<EditorialProfile>(EMPTY_EDITORIAL_PROFILE);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) {
+      setProfile(EMPTY_EDITORIAL_PROFILE);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/profile`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Impossible de charger le profil");
+        setProfile({ ...EMPTY_EDITORIAL_PROFILE, ...(data || {}) });
+      } catch (err: any) {
+        setError(err.message || "Impossible de charger le profil");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [isAuthed]);
+
+  function updateField(key: keyof EditorialProfile, value: string) {
+    setSaved(false);
+    setProfile((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function saveProfile() {
+    if (!isAuthed) {
+      requireAuth("Crée un compte gratuit pour enregistrer ton contexte éditorial.");
+      return;
+    }
+    setSaving(true);
+    setSaved(false);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify(profile),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Sauvegarde impossible");
+      setProfile({ ...EMPTY_EDITORIAL_PROFILE, ...(data || {}) });
+      setSaved(true);
+    } catch (err: any) {
+      setError(err.message || "Sauvegarde impossible");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function Field({
+    name,
+    label,
+    placeholder,
+    multiline,
+  }: {
+    name: keyof EditorialProfile;
+    label: string;
+    placeholder?: string;
+    multiline?: boolean;
+  }) {
+    const value = String(profile[name] || "");
+    return (
+      <label className="profile-field">
+        <span>{label}</span>
+        {multiline ? (
+          <textarea
+            value={value}
+            onChange={(e) => updateField(name, e.target.value)}
+            placeholder={placeholder}
+            rows={4}
+          />
+        ) : (
+          <input
+            value={value}
+            onChange={(e) => updateField(name, e.target.value)}
+            placeholder={placeholder}
+          />
+        )}
+      </label>
+    );
+  }
+
+  const filledCount = Object.entries(profile)
+    .filter(([key, value]) => key !== "id" && typeof value === "string" && value.trim().length > 0)
+    .length;
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Lock size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Contexte éditorial</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Connecte-toi pour renseigner le profil client que Claude utilisera dans les idées et les posts.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour enregistrer ton contexte éditorial.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><UserRound size={20} /> Contexte éditorial</h2>
+          <p className="section-desc">
+            Décris le client qui publie. Ce contexte est injecté dans les prompts `/ideas` et `/generate`.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span className={`status-pill ${filledCount >= 6 ? "ok" : ""}`}>{filledCount} champs remplis</span>
+          <button className="primary-button" onClick={saveProfile} disabled={saving || loading}>
+            {saving ? <Loader2 size={14} className="spinning" /> : <CheckCircle2 size={14} />}
+            {saving ? "Sauvegarde…" : "Sauvegarder"}
+          </button>
+        </div>
+      </div>
+
+      {error ? <div className="error" style={{ marginBottom: 12 }}>{error}</div> : null}
+      {saved ? <div className="auth-info" style={{ marginBottom: 12 }}>Profil éditorial sauvegardé. Les prochaines générations utiliseront ce contexte.</div> : null}
+      {loading ? (
+        <div className="card" style={{ padding: 32, textAlign: "center" }}>
+          <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
+          <p style={{ color: "var(--muted)" }}>Chargement du profil…</p>
+        </div>
+      ) : (
+        <div className="profile-form">
+          <section className="card">
+            <h3>Identité & activité</h3>
+            <div className="profile-grid">
+              <Field name="display_name" label="Nom public" placeholder="Joëlle Dupont" />
+              <Field name="brand_name" label="Marque / société" placeholder="Joëlle NYC Real Estate" />
+              <Field name="industry" label="Secteur / niche" placeholder="Immobilier résidentiel premium" />
+              <Field name="location" label="Localisation" placeholder="New York" />
+              <Field name="market" label="Marché" placeholder="Français expatriés à NYC" />
+              <Field name="language" label="Langue" placeholder="français" />
+            </div>
+            <Field
+              name="business_description"
+              label="Description courte de l'activité"
+              placeholder="J'accompagne les expatriés francophones qui veulent acheter ou louer à New York."
+              multiline
+            />
+          </section>
+
+          <section className="card">
+            <h3>Positionnement éditorial</h3>
+            <div className="profile-grid">
+              <Field name="tone" label="Ton souhaité" placeholder="Chaleureux, local, rassurant, premium sans être froid" />
+              <Field name="core_offer" label="Offre / expertise" placeholder="Achat d'appartements à Manhattan et Brooklyn" />
+            </div>
+            <Field name="target_audience" label="Audience cible" placeholder="Expatriés français, familles, cadres qui s'installent à NYC..." multiline />
+            <Field name="linkedin_objective" label="Objectif LinkedIn" placeholder="Créer une présence régulière, générer des conversations et des leads qualifiés." multiline />
+          </section>
+
+          <section className="card">
+            <h3>Sujets & contraintes</h3>
+            <Field name="topics_to_cover" label="Sujets à couvrir" placeholder="Vie locale, immobilier NYC, expatriation, quartiers, moments culturels français..." multiline />
+            <Field name="topics_to_avoid" label="Sujets à éviter" placeholder="Politique, promesses de rendement, ton trop commercial..." multiline />
+            <Field name="constraints" label="Contraintes de style" placeholder="Pas de CTA agressif. Angle métier discret quand le post est relationnel." multiline />
+            <Field name="extra_context" label="Contexte additionnel" placeholder="Tout ce que Claude doit savoir pour mieux écrire au nom du client." multiline />
+          </section>
+
+          <section className="card">
+            <h3>Liens</h3>
+            <div className="profile-grid">
+              <Field name="website_url" label="Site web" placeholder="https://..." />
+              <Field name="linkedin_url" label="Profil LinkedIn" placeholder="https://www.linkedin.com/in/..." />
+            </div>
+          </section>
         </div>
       )}
     </div>
@@ -1827,7 +2062,7 @@ export default function Home() {
           jobBadge={activeJob ? { completed: activeJob.completed, total: activeJob.total } : null}
           onNavigate={(v) => {
             setView(v);
-            if (v === "analyze" || v === "influencers") {
+            if (v === "analyze" || v === "profile" || v === "influencers") {
               setResult(null);
               setLoadedReport(null);
               setError("");
@@ -1872,6 +2107,7 @@ export default function Home() {
               onOpenReport={openLibraryReport}
             />
           )}
+          {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "generator" && <Generator />}
           {view === "dashboard" && <GlobalDashboard />}
         </main>

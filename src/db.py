@@ -332,6 +332,96 @@ def list_reports(access_token: str, limit: int = 3) -> list[dict]:
     return reports
 
 
+_EDITORIAL_PROFILE_FIELDS = (
+    "display_name",
+    "brand_name",
+    "industry",
+    "business_description",
+    "location",
+    "target_audience",
+    "core_offer",
+    "tone",
+    "linkedin_objective",
+    "topics_to_cover",
+    "topics_to_avoid",
+    "constraints",
+    "website_url",
+    "linkedin_url",
+    "language",
+    "market",
+    "extra_context",
+)
+
+
+def _clean_editorial_profile(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep only known profile fields and normalize empty strings to null."""
+    cleaned: dict[str, Any] = {}
+    for key in _EDITORIAL_PROFILE_FIELDS:
+        value = payload.get(key)
+        if isinstance(value, str):
+            value = value.strip()
+            cleaned[key] = value or None
+        elif value is not None:
+            cleaned[key] = value
+    return cleaned
+
+
+def get_editorial_profile(access_token: str) -> dict | None:
+    """Return the authenticated user's editorial profile, if it exists."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_editorial_profiles")
+        .select("*")
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def upsert_editorial_profile(access_token: str, payload: dict[str, Any]) -> dict | None:
+    """Create or update the user's editorial profile."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        **_clean_editorial_profile(payload),
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    resp = (
+        db.table("user_editorial_profiles")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_user_ai_context(access_token: str | None) -> dict[str, Any] | None:
+    """Compact profile context consumed by LLM prompts.
+
+    Returns None when Supabase is disabled, the session is missing/invalid, or no
+    profile has been filled yet. This keeps generation usable with benchmark data.
+    """
+    if not access_token or not supabase_enabled():
+        return None
+    profile = get_editorial_profile(access_token)
+    if not profile:
+        return None
+    context = {
+        key: profile.get(key)
+        for key in _EDITORIAL_PROFILE_FIELDS
+        if profile.get(key) not in (None, "")
+    }
+    if not context:
+        return None
+    return context
+
+
 def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
     """Persist generated ideas for the authenticated user. Returns saved rows (with ids)."""
     if not ideas or not supabase_enabled():

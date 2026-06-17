@@ -70,6 +70,26 @@ class AnalyzeRequest(BaseModel):
     run_llm: bool = True
 
 
+class EditorialProfileRequest(BaseModel):
+    display_name: str | None = None
+    brand_name: str | None = None
+    industry: str | None = None
+    business_description: str | None = None
+    location: str | None = None
+    target_audience: str | None = None
+    core_offer: str | None = None
+    tone: str | None = None
+    linkedin_objective: str | None = None
+    topics_to_cover: str | None = None
+    topics_to_avoid: str | None = None
+    constraints: str | None = None
+    website_url: str | None = None
+    linkedin_url: str | None = None
+    language: str | None = "francais"
+    market: str | None = None
+    extra_context: str | None = None
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
@@ -100,6 +120,24 @@ def me_analyses(
 ) -> list[dict[str, Any]]:
     """List the authenticated user's current analyses (one per influencer)."""
     return db.list_analyses(token, limit=max(1, min(limit, 500)))
+
+
+@app.get("/me/profile")
+def me_profile(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Editorial/business profile used as AI context for generation."""
+    return db.get_editorial_profile(token) or {}
+
+
+@app.put("/me/profile")
+def update_me_profile(
+    payload: EditorialProfileRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Create or update the user's editorial/business profile."""
+    profile = db.upsert_editorial_profile(token, payload.model_dump())
+    if not profile:
+        raise HTTPException(status_code=500, detail="Sauvegarde du profil impossible.")
+    return profile
 
 
 @app.get("/me/analyses/{analysis_id}")
@@ -440,7 +478,8 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
-    ideas_list = generate_ideas(top_posts, benchmark, count=payload.count)
+    user_context = db.get_user_ai_context(token)
+    ideas_list = generate_ideas(top_posts, benchmark, count=payload.count, user_context=user_context)
     save_error: str | None = None
     if token:
         try:
@@ -461,7 +500,8 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
-    variants = generate_posts(payload.topic.strip(), top_posts, benchmark)
+    user_context = db.get_user_ai_context(token)
+    variants = generate_posts(payload.topic.strip(), top_posts, benchmark, user_context=user_context)
     return {"variants": variants}
 
 
