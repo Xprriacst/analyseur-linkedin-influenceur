@@ -774,6 +774,7 @@ function TopHeader({
     analyze: "Analyser des profils LinkedIn",
     profile: "Mon profil éditorial",
     influencers: "Mes influenceurs",
+    assistant: "Assistant LinkedIn",
     generator: "Générateur de posts",
     dashboard: "Dashboard global",
   };
