@@ -1301,8 +1301,13 @@ function ProfileView({
   const [profile, setProfile] = useState<EditorialProfile>(EMPTY_EDITORIAL_PROFILE);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [drafting, setDrafting] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [aiDescription, setAiDescription] = useState("");
+  const [aiLinkedinUrl, setAiLinkedinUrl] = useState("");
+  const [aiWebsiteUrl, setAiWebsiteUrl] = useState("");
+  const [draftInfo, setDraftInfo] = useState("");
 
   useEffect(() => {
     if (!isAuthed) {
@@ -1356,6 +1361,50 @@ function ProfileView({
       setError(err.message || "Sauvegarde impossible");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function draftProfile() {
+    if (!isAuthed) {
+      requireAuth("Crée un compte gratuit pour pré-remplir ton contexte éditorial avec l'IA.");
+      return;
+    }
+    if (!aiDescription.trim() && !aiLinkedinUrl.trim() && !aiWebsiteUrl.trim()) {
+      setError("Ajoute une description, une URL LinkedIn ou un site web pour pré-remplir le profil.");
+      return;
+    }
+    setDrafting(true);
+    setSaved(false);
+    setDraftInfo("");
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/profile/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          activity_description: aiDescription.trim(),
+          linkedin_url: aiLinkedinUrl.trim(),
+          website_url: aiWebsiteUrl.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Pré-remplissage impossible");
+      setProfile((prev) => ({ ...prev, ...(data.profile || {}) }));
+      const sources = data.sources || {};
+      const sourceLabels = [
+        sources.description ? "description" : "",
+        sources.linkedin_analyzed ? "profil LinkedIn analysé" : "",
+        sources.website_summary ? "site web" : "",
+      ].filter(Boolean);
+      setDraftInfo(
+        sourceLabels.length
+          ? `Brouillon généré depuis : ${sourceLabels.join(", ")}. Relis puis sauvegarde.`
+          : "Brouillon généré. Relis puis sauvegarde."
+      );
+    } catch (err: any) {
+      setError(err.message || "Pré-remplissage impossible");
+    } finally {
+      setDrafting(false);
     }
   }
 
@@ -1430,6 +1479,7 @@ function ProfileView({
       </div>
 
       {error ? <div className="error" style={{ marginBottom: 12 }}>{error}</div> : null}
+      {draftInfo ? <div className="auth-info" style={{ marginBottom: 12 }}>{draftInfo}</div> : null}
       {saved ? <div className="auth-info" style={{ marginBottom: 12 }}>Profil éditorial sauvegardé. Les prochaines générations utiliseront ce contexte.</div> : null}
       {loading ? (
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
@@ -1438,6 +1488,48 @@ function ProfileView({
         </div>
       ) : (
         <div className="profile-form">
+          <section className="card profile-ai-card">
+            <div className="section-header" style={{ marginBottom: 10 }}>
+              <div>
+                <h3 style={{ margin: "0 0 4px" }}>Pré-remplir avec l'IA</h3>
+                <p className="section-desc">
+                  Donne une description, une URL LinkedIn déjà analysée ou un site web. Claude propose un brouillon, tu gardes la main avant sauvegarde.
+                </p>
+              </div>
+              <button className="primary-button" onClick={draftProfile} disabled={drafting}>
+                {drafting ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
+                {drafting ? "Pré-remplissage…" : "Pré-remplir"}
+              </button>
+            </div>
+            <label className="profile-field">
+              <span>Description libre</span>
+              <textarea
+                value={aiDescription}
+                onChange={(e) => setAiDescription(e.target.value)}
+                placeholder="Ex. Fondateur d'une agence IA en forte croissance, j'aide les dirigeants B2B à publier sur LinkedIn sans y passer 2h/jour."
+                rows={4}
+              />
+            </label>
+            <div className="profile-grid">
+              <label className="profile-field">
+                <span>URL LinkedIn</span>
+                <input
+                  value={aiLinkedinUrl}
+                  onChange={(e) => setAiLinkedinUrl(e.target.value)}
+                  placeholder="https://www.linkedin.com/in/..."
+                />
+              </label>
+              <label className="profile-field">
+                <span>Site web</span>
+                <input
+                  value={aiWebsiteUrl}
+                  onChange={(e) => setAiWebsiteUrl(e.target.value)}
+                  placeholder="https://..."
+                />
+              </label>
+            </div>
+          </section>
+
           <section className="card">
             <h3>Identité & activité</h3>
             <div className="profile-grid">

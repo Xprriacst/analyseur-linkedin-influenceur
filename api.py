@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from src import db
 from src.pipeline import run_analysis
 from src.jobs import start_job_thread
-from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy
+from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.stats import compute_stats
@@ -90,6 +90,12 @@ class EditorialProfileRequest(BaseModel):
     extra_context: str | None = None
 
 
+class EditorialProfileDraftRequest(BaseModel):
+    activity_description: str | None = Field(default=None, max_length=5000)
+    linkedin_url: str | None = Field(default=None, max_length=500)
+    website_url: str | None = Field(default=None, max_length=500)
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
@@ -138,6 +144,114 @@ def update_me_profile(
     if not profile:
         raise HTTPException(status_code=500, detail="Sauvegarde du profil impossible.")
     return profile
+
+
+def _clean_html_text(html: str) -> str:
+    """Extract a compact text summary from public HTML without adding dependencies."""
+    import html as html_lib
+    import re
+
+    text = re.sub(r"(?is)<(script|style|noscript).*?</\1>", " ", html)
+    title = ""
+    title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", text)
+    if title_match:
+        title = html_lib.unescape(re.sub(r"\s+", " ", title_match.group(1))).strip()
+
+    meta = ""
+    meta_match = re.search(
+        r'(?is)<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)["\']',
+        text,
+    )
+    if meta_match:
+        meta = html_lib.unescape(meta_match.group(1)).strip()
+
+    headings = [
+        html_lib.unescape(re.sub(r"<[^>]+>", " ", m)).strip()
+        for m in re.findall(r"(?is)<h[1-3][^>]*>(.*?)</h[1-3]>", text)[:8]
+    ]
+    body = html_lib.unescape(re.sub(r"<[^>]+>", " ", text))
+    body = re.sub(r"\s+", " ", body).strip()
+    parts = [p for p in [title, meta, " | ".join(h for h in headings if h), body[:2500]] if p]
+    return "\n".join(parts)[:3500]
+
+
+def _fetch_website_summary(url: str | None) -> dict[str, Any] | None:
+    if not url:
+        return None
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    try:
+        import ipaddress
+        import socket
+        from urllib.parse import urlparse
+        from urllib.request import Request, urlopen
+
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return {"url": url, "error": "URL invalide"}
+        if hostname in {"localhost"} or hostname.endswith(".local"):
+            return {"url": url, "error": "Hôte local refusé"}
+        for addr in socket.getaddrinfo(hostname, None):
+            ip = ipaddress.ip_address(addr[4][0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return {"url": url, "error": "Adresse privée refusée"}
+
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(req, timeout=8) as resp:
+            content_type = resp.headers.get("content-type", "")
+            if "text/html" not in content_type:
+                return {"url": url, "error": f"Contenu non HTML ({content_type})"}
+            raw = resp.read(250_000)
+        html = raw.decode("utf-8", errors="ignore")
+        summary = _clean_html_text(html)
+        return {"url": url, "summary": summary} if summary else {"url": url, "error": "Aucun contenu texte lisible"}
+    except Exception as exc:
+        return {"url": url, "error": str(exc)}
+
+
+@app.post("/me/profile/draft")
+def draft_me_profile(
+    payload: EditorialProfileDraftRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Draft an editorial profile from a description, analyzed LinkedIn profile, or website."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    activity = (payload.activity_description or "").strip()
+    linkedin_url = (payload.linkedin_url or "").strip()
+    website_url = (payload.website_url or "").strip()
+    if not activity and not linkedin_url and not website_url:
+        raise HTTPException(status_code=400, detail="Ajoute une description, une URL LinkedIn ou un site web.")
+
+    linkedin_seed = db.get_linkedin_profile_seed(token, linkedin_url) if linkedin_url else None
+    website_seed = _fetch_website_summary(website_url) if website_url else None
+    existing_profile = db.get_editorial_profile(token) or {}
+    seed = {
+        "activity_description": activity,
+        "linkedin_url": linkedin_url,
+        "website_url": website_url,
+        "linkedin_analyzed_profile": linkedin_seed,
+        "website_public_summary": website_seed,
+    }
+    try:
+        profile = draft_editorial_profile(seed, existing_profile=existing_profile)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Pré-remplissage IA impossible : {exc}") from exc
+
+    if linkedin_url and not profile.get("linkedin_url"):
+        profile["linkedin_url"] = linkedin_url
+    if website_url and not profile.get("website_url"):
+        profile["website_url"] = website_url
+    return {
+        "profile": profile,
+        "sources": {
+            "description": bool(activity),
+            "linkedin_analyzed": bool(linkedin_seed),
+            "website_summary": bool(website_seed and website_seed.get("summary")),
+        },
+    }
 
 
 @app.get("/me/analyses/{analysis_id}")

@@ -981,6 +981,11 @@ a { color: inherit; text-decoration: none; }
   max-width: 980px;
 }
 
+.profile-ai-card {
+  background: linear-gradient(180deg, rgba(70, 72, 212, 0.04), var(--surface));
+  border-color: rgba(70, 72, 212, 0.16);
+}
+
 .profile-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

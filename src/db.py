@@ -462,6 +462,61 @@ def _handle_from_url(url: str) -> str | None:
         return m.group(1)
 
 
+def get_linkedin_profile_seed(access_token: str, linkedin_url: str | None) -> dict[str, Any] | None:
+    """Return analyzed LinkedIn context for a URL if it exists in the user's corpus."""
+    handle = _handle_from_url(linkedin_url or "")
+    if not handle:
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    inf_resp = (
+        db.table("influencers")
+        .select("id,handle,name,headline,summary,location,follower_count,profile_url,raw_profile")
+        .eq("user_id", user["id"])
+        .eq("handle", handle)
+        .limit(1)
+        .execute()
+    )
+    if not inf_resp.data:
+        return None
+    influencer = inf_resp.data[0]
+    posts_resp = (
+        db.table("posts")
+        .select("text,format,likes,comments,reposts,engagement")
+        .eq("influencer_id", influencer["id"])
+        .order("engagement", desc=True)
+        .limit(6)
+        .execute()
+    )
+    posts = [
+        {
+            "text": (row.get("text") or "")[:900],
+            "format": row.get("format"),
+            "engagement": row.get("engagement", 0),
+            "likes": row.get("likes", 0),
+            "comments": row.get("comments", 0),
+            "reposts": row.get("reposts", 0),
+        }
+        for row in posts_resp.data or []
+        if row.get("text")
+    ]
+    return {
+        "handle": influencer.get("handle"),
+        "profile": {
+            "name": influencer.get("name"),
+            "headline": influencer.get("headline"),
+            "summary": influencer.get("summary"),
+            "location": influencer.get("location"),
+            "follower_count": influencer.get("follower_count"),
+            "profile_url": influencer.get("profile_url"),
+            "raw_profile": influencer.get("raw_profile"),
+        },
+        "top_posts": posts,
+    }
+
+
 _JOB_ITEM_COLS = (
     "id,position,url,handle,name,status,error,analysis_id,"
     "influencer_id,follower_count,posts_count,updated_at"

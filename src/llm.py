@@ -204,6 +204,87 @@ def _format_user_context(user_context: dict[str, Any] | None) -> str:
     return "\n".join(lines) if lines else "Aucun contexte client exploitable."
 
 
+EDITORIAL_PROFILE_KEYS = [
+    "display_name",
+    "brand_name",
+    "industry",
+    "business_description",
+    "location",
+    "target_audience",
+    "core_offer",
+    "tone",
+    "linkedin_objective",
+    "topics_to_cover",
+    "topics_to_avoid",
+    "constraints",
+    "website_url",
+    "linkedin_url",
+    "language",
+    "market",
+    "extra_context",
+]
+
+
+def draft_editorial_profile(
+    seed: dict[str, Any],
+    existing_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Draft an editorial profile from free text and optional external signals."""
+    system = (
+        "Tu es un stratège LinkedIn B2B. Tu transformes des informations brutes "
+        "sur une personne ou une entreprise en profil éditorial exploitable par une IA de rédaction. "
+        "Tu dois être concret, prudent et ne pas inventer de faits précis non fournis. "
+        "Quand l'information manque, propose une formulation utile mais générique, ou laisse vide si nécessaire. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    payload = {
+        "sources": seed,
+        "profil_existant_a_preserver_si_pertinent": existing_profile or {},
+    }
+    user = (
+        "Crée un brouillon de profil éditorial à partir de ces sources.\n\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+        + """
+
+Règles :
+- Le profil doit aider à écrire des posts LinkedIn crédibles pour cette personne.
+- Si une description libre est fournie, elle est la source la plus fiable.
+- Si des posts LinkedIn analysés sont fournis, utilise-les pour déduire le ton, l'audience et les sujets récurrents.
+- Si un résumé de site web est fourni, utilise-le pour clarifier l'offre et le positionnement.
+- Ne sauvegarde rien, produis seulement un brouillon.
+- Écris en français.
+
+Schéma JSON attendu, toutes les clés présentes avec string (vide si inconnu) :
+{
+  "profile": {
+    "display_name": "",
+    "brand_name": "",
+    "industry": "",
+    "business_description": "",
+    "location": "",
+    "target_audience": "",
+    "core_offer": "",
+    "tone": "",
+    "linkedin_objective": "",
+    "topics_to_cover": "",
+    "topics_to_avoid": "",
+    "constraints": "",
+    "website_url": "",
+    "linkedin_url": "",
+    "language": "français",
+    "market": "",
+    "extra_context": ""
+  }
+}"""
+    )
+    data = _call(system, user, max_tokens=3000, temperature=0.3)
+    profile = data.get("profile", data)
+    return {
+        key: str(profile.get(key) or "").strip()
+        for key in EDITORIAL_PROFILE_KEYS
+    }
+
+
 def generate_ideas(
     top_posts_examples: list[dict],
     benchmark: dict,
