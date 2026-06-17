@@ -69,6 +69,7 @@ type Idea = {
   estimated_lift: string;
 };
 type Variant = {
+  editorial_role?: string;
   hook_type: string;
   strategy: string;
   predicted_lift: string;
@@ -1091,6 +1092,7 @@ function Generator() {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
   const [topic, setTopic] = useState("");
+  const [role, setRole] = useState("auto");
   const [loadingIdeas, setLoadingIdeas] = useState(false);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
@@ -1119,10 +1121,12 @@ function Generator() {
     if (!t.trim()) { setError("Entre un sujet pour le post."); return; }
     setLoadingPosts(true);
     try {
+      const body: { topic: string; editorial_role?: string } = { topic: t.trim() };
+      if (role !== "auto") body.editorial_role = role;
       const res = await fetch(`${DIRECT_API_URL}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ topic: t.trim() }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération de posts");
@@ -1136,6 +1140,26 @@ function Generator() {
 
   const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
   const hookColors: Record<string, string> = { "stat+contrarian": "#f97316", "story+result": "#10b981", question: "#3b82f6" };
+  const roleOptions: { value: string; label: string }[] = [
+    { value: "auto", label: "Mix automatique" },
+    { value: "performance", label: "Performance" },
+    { value: "methodologie", label: "Méthodologie" },
+    { value: "autorite", label: "Autorité" },
+    { value: "story", label: "Story" },
+    { value: "quotidien", label: "Quotidien" },
+    { value: "opinion", label: "Opinion" },
+    { value: "relationnel", label: "Relationnel" },
+  ];
+  const roleColors: Record<string, string> = {
+    performance: "#f97316",
+    methodologie: "#0ea5e9",
+    autorite: "#8b5cf6",
+    story: "#10b981",
+    quotidien: "#14b8a6",
+    opinion: "#ef4444",
+    relationnel: "#ec4899",
+  };
+  const roleLabel = (r?: string) => roleOptions.find((o) => o.value === r)?.label || r;
 
   return (
     <div>
@@ -1200,17 +1224,36 @@ function Generator() {
               Générer
             </button>
           </div>
+          <div className="role-picker">
+            <label className="role-picker-label">Rôle éditorial</label>
+            <select className="role-select" value={role} onChange={(e) => setRole(e.target.value)}>
+              {roleOptions.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <span className="role-picker-hint">
+              {role === "auto"
+                ? "Mix automatique : performance + méthodologie/autorité + relationnel/quotidien."
+                : "Les 3 variants utiliseront ce rôle."}
+            </span>
+          </div>
         </div>
       </div>
 
       {variants.length > 0 && (
         <div className="variants-list">
           {variants.map((v, i) => {
-            const color = hookColors[v.hook_type] || "var(--primary)";
+            const roleColor = (v.editorial_role && roleColors[v.editorial_role]) || "var(--primary)";
+            const color = hookColors[v.hook_type] || roleColor;
             return (
               <div className="variant-card" key={i}>
                 <div className="variant-header">
-                  <span className="variant-number" style={{ background: color }}>{i + 1}</span>
+                  <span className="variant-number" style={{ background: roleColor }}>{i + 1}</span>
+                  {v.editorial_role && (
+                    <span className="badge role-badge" style={{ borderColor: roleColor, color: roleColor }}>
+                      {roleLabel(v.editorial_role)}
+                    </span>
+                  )}
                   <span className="badge" style={{ borderColor: color, color }}>{v.hook_type}</span>
                   <span className="idea-lift">{v.predicted_lift}</span>
                 </div>

@@ -465,6 +465,7 @@ class IdeasRequest(BaseModel):
 
 class GenerateRequest(BaseModel):
     topic: str = Field(..., min_length=3)
+    editorial_role: Optional[str] = Field(default=None)
 
 
 @app.post("/ideas")
@@ -501,7 +502,14 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
 
     top_posts, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
-    variants = generate_posts(payload.topic.strip(), top_posts, benchmark, user_context=user_context)
+    role = (payload.editorial_role or "").strip() or None
+    variants = generate_posts(
+        payload.topic.strip(),
+        top_posts,
+        benchmark,
+        user_context=user_context,
+        editorial_role=role,
+    )
     return {"variants": variants}
 
 
