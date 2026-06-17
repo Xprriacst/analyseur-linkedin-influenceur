@@ -1144,31 +1144,56 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
   const [error, setError] = useState("");
   const linkedin = useLinkedIn(isAuthed);
   const [publishing, setPublishing] = useState<number | null>(null);
+  const [drafting, setDrafting] = useState<number | null>(null);
   const [published, setPublished] = useState<number | null>(null);
+  const [drafted, setDrafted] = useState<number | null>(null);
   const [publishError, setPublishError] = useState("");
+  const [confirmIndex, setConfirmIndex] = useState<number | null>(null);
 
-  async function publishVariant(i: number, text: string) {
-    if (!isAuthed) { requireAuth("Connecte-toi pour publier sur LinkedIn."); return; }
+  function ensureLinkedInReady(action: "publish" | "draft") {
+    if (!isAuthed) {
+      requireAuth(action === "draft" ? "Connecte-toi pour enregistrer un brouillon LinkedIn." : "Connecte-toi pour publier sur LinkedIn.");
+      return false;
+    }
     if (!linkedin.status?.connected) {
       setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
-      return;
+      return false;
     }
+    return true;
+  }
+
+  function requestPublish(i: number) {
+    if (!ensureLinkedInReady("publish")) return;
+    setPublishError("");
+    setConfirmIndex(i);
+  }
+
+  async function publishVariant(i: number, text: string, { draft = false }: { draft?: boolean } = {}) {
+    if (!ensureLinkedInReady(draft ? "draft" : "publish")) return;
     setPublishError("");
     setPublished(null);
-    setPublishing(i);
+    setDrafted(null);
+    if (draft) setDrafting(i);
+    else setPublishing(i);
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text }),
+        body: JSON.stringify({ content: text, draft }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Publication impossible");
-      setPublished(i);
+      if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon impossible" : "Publication impossible"));
+      if (draft) {
+        setDrafted(i);
+      } else {
+        setPublished(i);
+        setConfirmIndex(null);
+      }
     } catch (err: any) {
       setPublishError(err.message);
     } finally {
-      setPublishing(null);
+      if (draft) setDrafting(null);
+      else setPublishing(null);
     }
   }
 
@@ -1206,6 +1231,10 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération de posts");
       setVariants(data.variants || []);
+      setPublished(null);
+      setDrafted(null);
+      setConfirmIndex(null);
+      setPublishError("");
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -1235,6 +1264,7 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
     relationnel: "#ec4899",
   };
   const roleLabel = (r?: string) => roleOptions.find((o) => o.value === r)?.label || r;
+  const confirmVariant = confirmIndex === null ? null : variants[confirmIndex] || null;
 
   return (
     <div>
@@ -1320,6 +1350,7 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
           {variants.map((v, i) => {
             const roleColor = (v.editorial_role && roleColors[v.editorial_role]) || "var(--primary)";
             const color = hookColors[v.hook_type] || roleColor;
+            const linkedinBusy = publishing !== null || drafting !== null;
             return (
               <div className="variant-card" key={i}>
                 <div className="variant-header">
@@ -1339,10 +1370,19 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
                     Copier le post
                   </button>
                   <button
+                    className="secondary-button"
+                    disabled={linkedinBusy}
+                    title={linkedin.status?.connected ? "Enregistrer en brouillon dans Zernio" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                    onClick={() => publishVariant(i, v.post, { draft: true })}
+                  >
+                    {drafting === i ? <Loader2 size={14} className="spinning" /> : <FileText size={14} />}
+                    {drafting === i ? "Enregistrement…" : drafted === i ? "Brouillon enregistré ✓" : "Enregistrer en brouillon"}
+                  </button>
+                  <button
                     className="primary-button"
-                    disabled={publishing === i}
+                    disabled={linkedinBusy}
                     title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => publishVariant(i, v.post)}
+                    onClick={() => requestPublish(i)}
                   >
                     {publishing === i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
                     {publishing === i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
@@ -1351,12 +1391,60 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
                 {published === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
                 )}
+                {drafted === i && (
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré dans Zernio ✓</p>
+                )}
               </div>
             );
           })}
         </div>
       )}
       {publishError && <div className="error" style={{ marginTop: 12 }}>{publishError}</div>}
+      {confirmVariant && confirmIndex !== null && (
+        <div className="auth-modal-backdrop" onClick={() => publishing === null && setConfirmIndex(null)}>
+          <div
+            className="auth-modal publish-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="publish-confirm-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="auth-modal-close"
+              onClick={() => setConfirmIndex(null)}
+              disabled={publishing !== null}
+              aria-label="Fermer"
+            >
+              ×
+            </button>
+            <h1 className="auth-title" id="publish-confirm-title">Publier ce post sur LinkedIn maintenant ?</h1>
+            <p className="auth-sub">Cette action publiera immédiatement le texte ci-dessous sur le compte LinkedIn connecté.</p>
+            <div className="publish-preview">
+              <pre>{confirmVariant.post}</pre>
+            </div>
+            <div className="publish-confirm-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setConfirmIndex(null)}
+                disabled={publishing !== null}
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => publishVariant(confirmIndex, confirmVariant.post)}
+                disabled={publishing !== null}
+              >
+                {publishing === confirmIndex ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+                {publishing === confirmIndex ? "Publication…" : "Confirmer"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

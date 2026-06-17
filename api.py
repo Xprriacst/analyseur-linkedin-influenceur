@@ -308,6 +308,7 @@ class LinkedInConnectRequest(BaseModel):
 
 class LinkedInPublishRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=8000)
+    draft: bool = False
 
 
 def _linkedin_status(token: str) -> dict[str, Any]:
@@ -378,7 +379,7 @@ def me_linkedin_publish(
     payload: LinkedInPublishRequest,
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
-    """Publish a post immediately on the user's connected LinkedIn account."""
+    """Publish immediately or save a draft on the user's connected LinkedIn account."""
     if not zernio.enabled():
         raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
     profile = db.get_editorial_profile(token) or {}
@@ -386,11 +387,11 @@ def me_linkedin_publish(
     if not account_id:
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
     try:
-        result = zernio.create_post(payload.content.strip(), account_id, publish_now=True)
+        result = zernio.create_post(payload.content.strip(), account_id, is_draft=payload.draft)
     except zernio.ZernioError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     post = result.get("post") or result
-    return {"ok": True, "post_id": post.get("_id"), "post": post}
+    return {"ok": True, "draft": payload.draft, "post_id": post.get("_id"), "post": post}
 
 
 @app.get("/reports")
