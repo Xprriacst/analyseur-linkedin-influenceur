@@ -103,6 +103,35 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
+const mainViews = ["analyze", "generator", "dashboard"] as const;
+type MainView = typeof mainViews[number];
+
+type ProgressStatus = "ready" | "in_progress" | "todo" | "blocked" | "unavailable";
+type ProgressSection = {
+  key: "corpus" | "ideas" | "posts" | "publication" | "credits";
+  title: string;
+  status: ProgressStatus;
+  summary: string;
+  metrics: Record<string, any>;
+  recent?: { id: string; handle: string; name: string; updated_at: string }[];
+};
+type DashboardProgress = {
+  summary: {
+    completion_pct: number;
+    ready_sections: number;
+    active_sections: number;
+    available_sections: number;
+    total_sections: number;
+  };
+  next_action: {
+    key: string;
+    label: string;
+    description: string;
+    view: MainView;
+  };
+  sections: ProgressSection[];
+};
+
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
 const steps = [
   "Scraping du profil",
@@ -1094,8 +1123,130 @@ function Generator() {
   );
 }
 
-function GlobalDashboard() {
+const PROGRESS_STATUS_LABELS: Record<ProgressStatus, string> = {
+  ready: "En place",
+  in_progress: "En cours",
+  todo: "À faire",
+  blocked: "Bloqué",
+  unavailable: "À venir",
+};
+
+function progressIcon(key: ProgressSection["key"]) {
+  if (key === "corpus") return <ListChecks size={16} />;
+  if (key === "ideas") return <Lightbulb size={16} />;
+  if (key === "posts") return <PenTool size={16} />;
+  if (key === "publication") return <Link2 size={16} />;
+  return <Zap size={16} />;
+}
+
+function ProgressMetric({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="progress-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ProgressSectionCard({ section }: { section: ProgressSection }) {
+  const m = section.metrics || {};
+  return (
+    <div className={`progress-card ${section.status}`}>
+      <div className="progress-card-head">
+        <div className="progress-card-title">
+          {progressIcon(section.key)}
+          <strong>{section.title}</strong>
+        </div>
+        <span className={`progress-status ${section.status}`}>{PROGRESS_STATUS_LABELS[section.status]}</span>
+      </div>
+      <p>{section.summary}</p>
+      <div className="progress-metrics">
+        {section.key === "corpus" && (
+          <>
+            <ProgressMetric label="Influenceurs" value={fmt(m.influencers)} />
+            <ProgressMetric label="Analyses" value={fmt(m.analyses)} />
+            <ProgressMetric label="Jobs actifs" value={fmt(m.jobs_active)} />
+          </>
+        )}
+        {section.key === "ideas" && (
+          <>
+            <ProgressMetric label="Générées" value={fmt(m.generated)} />
+            <ProgressMetric label="Brouillons" value={m.drafts_available ? fmt(m.drafts) : "—"} />
+          </>
+        )}
+        {section.key === "posts" && (
+          <>
+            <ProgressMetric label="Générés" value={fmt(m.generated)} />
+            <ProgressMetric label="Prêts" value={fmt(m.by_status?.ready ?? m.by_status?.generated ?? 0)} />
+          </>
+        )}
+        {section.key === "publication" && (
+          <>
+            <ProgressMetric label="Connexions" value={fmt(m.connections)} />
+            <ProgressMetric label="Actives" value={fmt(m.connected)} />
+          </>
+        )}
+        {section.key === "credits" && (
+          <>
+            <ProgressMetric label="Coût estimé" value={`$${fmt(m.estimated_cost_usd)}`} />
+            <ProgressMetric label="Tokens IA" value={fmt(m.anthropic_tokens)} />
+          </>
+        )}
+      </div>
+      {section.recent?.length ? (
+        <div className="progress-recent">
+          {section.recent.map((row) => (
+            <span key={row.id}>{row.name || row.handle}</span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProgressOverview({ progress, onNavigate }: {
+  progress: DashboardProgress | null;
+  onNavigate: (view: MainView) => void;
+}) {
+  if (!progress) return null;
+  return (
+    <div className="progress-overview">
+      <div className="progress-hero-card">
+        <div>
+          <p className="eyebrow">Progression globale</p>
+          <h2>Ton système LinkedIn est prêt à {progress.summary.completion_pct}%</h2>
+          <p>{progress.summary.ready_sections}/{progress.summary.available_sections} blocs disponibles sont en place.</p>
+        </div>
+        <div
+          className="progress-ring"
+          style={{ "--progress": `${progress.summary.completion_pct}%` } as React.CSSProperties}
+          aria-label={`${progress.summary.completion_pct}%`}
+        >
+          <span>{progress.summary.completion_pct}%</span>
+        </div>
+      </div>
+      <div className="progress-next card">
+        <div>
+          <span className="badge">Prochaine action</span>
+          <h3>{progress.next_action.label}</h3>
+          <p>{progress.next_action.description}</p>
+        </div>
+        <button className="primary-button" onClick={() => onNavigate(progress.next_action.view)}>
+          Y aller
+        </button>
+      </div>
+      <div className="progress-grid">
+        {progress.sections.map((section) => (
+          <ProgressSectionCard section={section} key={section.key} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GlobalDashboard({ onNavigate }: { onNavigate: (view: MainView) => void }) {
   const [data, setData] = useState<DashboardData | null>(null);
+  const [progress, setProgress] = useState<DashboardProgress | null>(null);
   const [growth, setGrowth] = useState<GrowthRow[]>([]);
   const [aiAnalysis, setAiAnalysis] = useState<string>("");
   const [loadingAi, setLoadingAi] = useState(false);
@@ -1109,6 +1260,10 @@ function GlobalDashboard() {
         .then((r) => r.json())
         .then((d) => { setData(d); setLoading(false); })
         .catch(() => setLoading(false));
+      fetch(`${API_URL}/dashboard/progress`, { headers })
+        .then((r) => r.ok ? r.json() : null)
+        .then((d) => d && setProgress(d))
+        .catch(() => null);
       fetch(`${API_URL}/dashboard/growth`, { headers })
         .then((r) => r.json())
         .then((d) => Array.isArray(d) && setGrowth(d))
@@ -1134,11 +1289,14 @@ function GlobalDashboard() {
   if (loading) return <div className="hero"><div className="hero-content"><p>Chargement du dashboard en cours…</p></div></div>;
   if (!data || data.influencer_count === 0) {
     return (
-      <div className="hero">
-        <div className="hero-content">
-          <p className="eyebrow">Dashboard global</p>
-          <h1>Aucun influenceur <span className="gradient-text">analysé</span></h1>
-          <p>Lance d'abord des analyses dans l'onglet Analyser pour voir les stats cumulées ici.</p>
+      <div>
+        <ProgressOverview progress={progress} onNavigate={onNavigate} />
+        <div className="hero">
+          <div className="hero-content">
+            <p className="eyebrow">Dashboard global</p>
+            <h1>Aucun influenceur <span className="gradient-text">analysé</span></h1>
+            <p>Lance d'abord des analyses dans l'onglet Analyser pour voir les stats cumulées ici.</p>
+          </div>
         </div>
       </div>
     );
@@ -1155,6 +1313,8 @@ function GlobalDashboard() {
 
   return (
     <div>
+      <ProgressOverview progress={progress} onNavigate={onNavigate} />
+
       <div className="section-header" style={{ marginBottom: 16 }}>
         <div>
           <h2 className="section-title"><TrendingUp size={20} /> Dashboard global</h2>
@@ -1304,9 +1464,6 @@ function GlobalDashboard() {
     </div>
   );
 }
-
-const mainViews = ["analyze", "generator", "dashboard"] as const;
-type MainView = typeof mainViews[number];
 
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -1506,7 +1663,7 @@ export default function Home() {
                   : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} requireAuth={requireAuth} />
           )}
           {view === "generator" && <Generator />}
-          {view === "dashboard" && <GlobalDashboard />}
+          {view === "dashboard" && <GlobalDashboard onNavigate={setView} />}
         </main>
       </div>
       <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} reason={authReason} defaultMode={authMode} />

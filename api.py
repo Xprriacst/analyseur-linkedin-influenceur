@@ -308,6 +308,15 @@ def dashboard(token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
     }
 
 
+@app.get("/dashboard/progress")
+def dashboard_progress(token: str = Depends(require_token)) -> dict[str, Any]:
+    """User-scoped product progress across analysis, generation and publishing."""
+    progress = db.get_dashboard_progress(token)
+    if not progress:
+        raise HTTPException(status_code=401, detail="Authentification requise.")
+    return progress
+
+
 def _compute_growth(influencers: list[dict]) -> list[dict[str, Any]]:
     """Growth comparison: engagement before vs after the 25th post for each influencer."""
     result = []

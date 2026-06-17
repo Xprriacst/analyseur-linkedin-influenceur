@@ -295,6 +295,373 @@ def list_reports(access_token: str, limit: int = 10) -> list[dict]:
     return reports
 
 
+def _optional_user_rows(
+    db: "Client",
+    user_id: str,
+    table: str,
+    columns: str,
+    limit: int = 1000,
+) -> dict[str, Any]:
+    """Read an optional per-user table without making progress depend on it.
+
+    Some roadmap bricks (library, publication, credits) may not be migrated yet
+    in every environment. Missing tables should appear as unavailable sections,
+    not as a failing global dashboard.
+    """
+    try:
+        resp = (
+            db.table(table)
+            .select(columns)
+            .eq("user_id", user_id)
+            .limit(limit)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 - optional table / column drift
+        return {"available": False, "rows": [], "error": str(exc)[:240]}
+    return {"available": True, "rows": resp.data or [], "error": None}
+
+
+def _usage_totals(analyses: list[dict]) -> dict[str, Any]:
+    totals = {
+        "estimated_cost_usd": 0.0,
+        "apify_items": 0,
+        "apify_runs": 0,
+        "anthropic_calls": 0,
+        "anthropic_tokens": 0,
+    }
+    for row in analyses:
+        usage = row.get("usage") or {}
+        apify = usage.get("apify") or {}
+        anthropic = usage.get("anthropic") or {}
+        totals["estimated_cost_usd"] += float(apify.get("estimated_cost_usd", 0) or 0)
+        totals["estimated_cost_usd"] += float(anthropic.get("estimated_cost_usd", 0) or 0)
+        totals["apify_items"] += int(apify.get("items", 0) or 0)
+        totals["apify_runs"] += int(apify.get("runs", 0) or 0)
+        totals["anthropic_calls"] += int(anthropic.get("calls", 0) or 0)
+        totals["anthropic_tokens"] += int(anthropic.get("input_tokens", 0) or 0)
+        totals["anthropic_tokens"] += int(anthropic.get("output_tokens", 0) or 0)
+    totals["estimated_cost_usd"] = round(totals["estimated_cost_usd"], 4)
+    return totals
+
+
+def _count_by_status(rows: list[dict], fallback: str = "saved") -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        status = (
+            row.get("status")
+            or row.get("state")
+            or row.get("publication_status")
+            or ("archived" if row.get("archived") else fallback)
+        )
+        counts[str(status)] = counts.get(str(status), 0) + 1
+    return counts
+
+
+def _progress_status(
+    *,
+    available: bool = True,
+    blocked: bool = False,
+    active: bool = False,
+    complete: bool = False,
+) -> str:
+    if not available:
+        return "unavailable"
+    if blocked:
+        return "blocked"
+    if active:
+        return "in_progress"
+    if complete:
+        return "ready"
+    return "todo"
+
+
+def _next_action(
+    *,
+    influencers_count: int,
+    active_jobs: int,
+    failed_job_items: int,
+    ideas_available: bool,
+    ideas_count: int,
+    posts_available: bool,
+    posts_count: int,
+) -> dict[str, Any]:
+    if active_jobs:
+        return {
+            "key": "follow_running_job",
+            "label": "Suivre la série d'analyses en cours",
+            "description": "Un backlog tourne côté serveur : surveille les profils terminés puis ouvre les rapports prêts.",
+            "view": "analyze",
+        }
+    if failed_job_items:
+        return {
+            "key": "review_failed_jobs",
+            "label": "Traiter les profils en échec",
+            "description": "Corrige les URLs ou relance la série pour compléter ton corpus.",
+            "view": "analyze",
+        }
+    if influencers_count == 0:
+        return {
+            "key": "start_corpus",
+            "label": "Analyser un premier profil LinkedIn",
+            "description": "Ajoute 1 à 3 influenceurs pour créer la base de génération.",
+            "view": "analyze",
+        }
+    if ideas_available and ideas_count == 0:
+        return {
+            "key": "generate_ideas",
+            "label": "Générer tes premières idées",
+            "description": "Transforme le corpus analysé en angles de posts réutilisables.",
+            "view": "generator",
+        }
+    if posts_available and ideas_count > 0 and posts_count == 0:
+        return {
+            "key": "generate_posts",
+            "label": "Transformer une idée en post",
+            "description": "Génère des variantes à partir d'une idée ou d'un sujet prioritaire.",
+            "view": "generator",
+        }
+    return {
+        "key": "keep_building",
+        "label": "Continuer à enrichir ton système",
+        "description": "Ajoute des profils, génère de nouvelles idées ou prépare le prochain post.",
+        "view": "analyze" if influencers_count < 3 else "generator",
+    }
+
+
+def get_dashboard_progress(access_token: str) -> dict | None:
+    """Aggregate the authenticated user's product progress across modules."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    user_id = user["id"]
+
+    inf_resp = (
+        db.table("influencers")
+        .select("id,handle,name,updated_at")
+        .eq("user_id", user_id)
+        .order("updated_at", desc=True)
+        .execute()
+    )
+    influencers = inf_resp.data or []
+
+    an_resp = (
+        db.table("analyses")
+        .select("id,handle,updated_at,usage,influencers(name)")
+        .eq("user_id", user_id)
+        .order("updated_at", desc=True)
+        .limit(50)
+        .execute()
+    )
+    analyses = an_resp.data or []
+
+    try:
+        jobs = list_jobs(access_token)
+    except Exception:  # noqa: BLE001 - migration can be absent in older envs
+        jobs = []
+
+    ideas = _optional_user_rows(
+        db,
+        user_id,
+        "generated_ideas",
+        "*",
+    )
+    drafts = _optional_user_rows(
+        db,
+        user_id,
+        "user_draft_ideas",
+        "*",
+    )
+    posts = _optional_user_rows(
+        db,
+        user_id,
+        "generated_posts",
+        "*",
+    )
+    publications = _optional_user_rows(
+        db,
+        user_id,
+        "linkedin_connections",
+        "*",
+        limit=10,
+    )
+    credits = _optional_user_rows(
+        db,
+        user_id,
+        "user_credits",
+        "*",
+        limit=10,
+    )
+
+    active_jobs = [
+        job for job in jobs
+        if job.get("status") in {"queued", "running"}
+    ]
+    job_items = [
+        item
+        for job in jobs
+        for item in job.get("items", [])
+    ]
+    failed_job_items = sum(1 for item in job_items if item.get("status") == "error")
+    completed_job_items = sum(1 for item in job_items if item.get("status") == "done")
+
+    idea_rows = ideas["rows"]
+    draft_rows = drafts["rows"]
+    post_rows = posts["rows"]
+    publication_rows = publications["rows"]
+    connected_publications = [
+        row for row in publication_rows
+        if str(row.get("status", "")).lower() in {"connected", "active", "ok"}
+    ]
+    credit_rows = credits["rows"]
+    credit_balance = None
+    if credit_rows:
+        first_credit = credit_rows[0]
+        credit_balance = (
+            first_credit.get("balance")
+            if first_credit.get("balance") is not None
+            else first_credit.get("total")
+        )
+
+    ideas_available = bool(ideas["available"])
+    posts_available = bool(posts["available"])
+    usage_totals = _usage_totals(analyses)
+    progress_sections = [
+        {
+            "key": "corpus",
+            "title": "Corpus",
+            "status": _progress_status(
+                active=bool(active_jobs),
+                complete=bool(influencers),
+            ),
+            "summary": (
+                f"{len(influencers)} influenceur(s), {len(analyses)} analyse(s)"
+                if influencers
+                else "Aucun influenceur analysé"
+            ),
+            "metrics": {
+                "influencers": len(influencers),
+                "analyses": len(analyses),
+                "jobs_total": len(jobs),
+                "jobs_active": len(active_jobs),
+                "job_items_done": completed_job_items,
+                "job_items_failed": failed_job_items,
+            },
+            "recent": [
+                {
+                    "id": row.get("id"),
+                    "handle": row.get("handle"),
+                    "name": ((row.get("influencers") or {}).get("name") or row.get("handle")),
+                    "updated_at": row.get("updated_at"),
+                }
+                for row in analyses[:3]
+            ],
+        },
+        {
+            "key": "ideas",
+            "title": "Idées",
+            "status": _progress_status(
+                available=ideas_available,
+                blocked=not influencers,
+                complete=bool(idea_rows or draft_rows),
+            ),
+            "summary": (
+                "Bibliothèque d'idées non disponible"
+                if not ideas_available
+                else f"{len(idea_rows)} idée(s) générée(s), {len(draft_rows)} brouillon(s)"
+            ),
+            "metrics": {
+                "generated": len(idea_rows),
+                "drafts": len(draft_rows),
+                "drafts_available": drafts["available"],
+                "by_status": _count_by_status(idea_rows),
+            },
+        },
+        {
+            "key": "posts",
+            "title": "Posts",
+            "status": _progress_status(
+                available=posts_available,
+                blocked=ideas_available and not idea_rows and not draft_rows,
+                complete=bool(post_rows),
+            ),
+            "summary": (
+                "Bibliothèque de posts non disponible"
+                if not posts_available
+                else f"{len(post_rows)} post(s) généré(s)"
+            ),
+            "metrics": {
+                "generated": len(post_rows),
+                "by_status": _count_by_status(post_rows, fallback="generated"),
+            },
+        },
+        {
+            "key": "publication",
+            "title": "Publication",
+            "status": _progress_status(
+                available=publications["available"],
+                complete=bool(connected_publications),
+            ),
+            "summary": (
+                "Connexion LinkedIn / Unipile non disponible"
+                if not publications["available"]
+                else (
+                    "Compte LinkedIn connecté"
+                    if connected_publications
+                    else "Aucun compte LinkedIn connecté"
+                )
+            ),
+            "metrics": {
+                "connections": len(publication_rows),
+                "connected": len(connected_publications),
+            },
+        },
+        {
+            "key": "credits",
+            "title": "Crédits / usage",
+            "status": _progress_status(
+                available=True,
+                complete=bool(analyses),
+            ),
+            "summary": (
+                f"Coût estimé historique : ${usage_totals['estimated_cost_usd']}"
+                if analyses
+                else "Aucun usage enregistré"
+            ),
+            "metrics": {
+                **usage_totals,
+                "credits_available": credits["available"],
+                "credit_balance": credit_balance,
+            },
+        },
+    ]
+
+    ready = sum(1 for section in progress_sections if section["status"] == "ready")
+    in_progress = sum(1 for section in progress_sections if section["status"] == "in_progress")
+    actionable = [s for s in progress_sections if s["status"] != "unavailable"]
+    completion_pct = round((ready / max(1, len(actionable))) * 100)
+
+    return {
+        "summary": {
+            "completion_pct": completion_pct,
+            "ready_sections": ready,
+            "active_sections": in_progress,
+            "available_sections": len(actionable),
+            "total_sections": len(progress_sections),
+        },
+        "next_action": _next_action(
+            influencers_count=len(influencers),
+            active_jobs=len(active_jobs),
+            failed_job_items=failed_job_items,
+            ideas_available=ideas_available,
+            ideas_count=len(idea_rows) + len(draft_rows),
+            posts_available=posts_available,
+            posts_count=len(post_rows),
+        ),
+        "sections": progress_sections,
+    }
+
+
 def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
     """Persist generated ideas for the authenticated user. Returns saved rows (with ids)."""
     if not ideas or not supabase_enabled():
