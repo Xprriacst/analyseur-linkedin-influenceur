@@ -1118,6 +1118,7 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
   const [variants, setVariants] = useState<Variant[]>([]);
   const [topic, setTopic] = useState("");
   const [role, setRole] = useState("auto");
+  const [webSearch, setWebSearch] = useState(false);
   const [loadingIdeas, setLoadingIdeas] = useState(false);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
@@ -1192,7 +1193,7 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
       const res = await fetch(`${DIRECT_API_URL}/ideas`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ count: 5 }),
+        body: JSON.stringify({ count: 5, web_search: webSearch }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération d'idées");
@@ -1209,8 +1210,9 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
     if (!t.trim()) { setError("Entre un sujet pour le post."); return; }
     setLoadingPosts(true);
     try {
-      const body: { topic: string; editorial_role?: string } = { topic: t.trim() };
+      const body: { topic: string; editorial_role?: string; web_search?: boolean } = { topic: t.trim() };
       if (role !== "auto") body.editorial_role = role;
+      if (webSearch) body.web_search = true;
       const res = await fetch(`${DIRECT_API_URL}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
@@ -1257,10 +1259,21 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
           <h2 className="section-title"><Lightbulb size={20} /> Idées de posts</h2>
           <p className="section-desc">Claude analyse les patterns des influenceurs et propose des idées à fort potentiel.</p>
         </div>
-        <button className="secondary-button" onClick={fetchIdeas} disabled={loadingIdeas}>
-          {loadingIdeas ? <Loader2 size={14} className="spinning" /> : <Lightbulb size={14} />}
-          {loadingIdeas ? "Génération…" : "Générer des idées"}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={webSearch}
+              onChange={(e) => setWebSearch(e.target.checked)}
+              style={{ accentColor: "var(--accent)", width: 14, height: 14 }}
+            />
+            Recherche web
+          </label>
+          <button className="secondary-button" onClick={fetchIdeas} disabled={loadingIdeas}>
+            {loadingIdeas ? <Loader2 size={14} className="spinning" /> : <Lightbulb size={14} />}
+            {loadingIdeas ? "Génération…" : "Générer des idées"}
+          </button>
+        </div>
       </div>
 
       {error && <div className="error">{error}</div>}
@@ -1324,6 +1337,15 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
                 ? "Mix automatique : performance + méthodologie/autorité + relationnel/quotidien."
                 : "Les 3 variants utiliseront ce rôle."}
             </span>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", cursor: "pointer", marginTop: 6 }}>
+              <input
+                type="checkbox"
+                checked={webSearch}
+                onChange={(e) => setWebSearch(e.target.checked)}
+                style={{ accentColor: "var(--accent)", width: 14, height: 14 }}
+              />
+              Recherche web en temps réel
+            </label>
           </div>
         </div>
       </div>

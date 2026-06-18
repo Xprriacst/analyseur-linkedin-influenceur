@@ -63,11 +63,13 @@ def _web_search_enabled() -> bool:
     return os.environ.get("ENABLE_WEB_SEARCH", "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _web_search_tools() -> list[dict] | None:
+def _web_search_tools(enabled: bool | None = None) -> list[dict] | None:
     """Outil serveur de recherche web pour la génération, plafonné pour maîtriser le coût.
 
-    Renvoie None si la fonctionnalité est désactivée (cas par défaut)."""
-    if not _web_search_enabled():
+    Si `enabled` est fourni, il prime sur la variable d'env ENABLE_WEB_SEARCH.
+    Renvoie None si désactivé."""
+    active = enabled if enabled is not None else _web_search_enabled()
+    if not active:
         return None
     try:
         max_uses = int(os.environ.get("WEB_SEARCH_MAX_USES", "3"))
@@ -367,6 +369,7 @@ def generate_ideas(
     benchmark: dict,
     count: int = 5,
     user_context: dict[str, Any] | None = None,
+    web_search: bool = False,
 ) -> list[dict]:
     """Generate post ideas based on analyzed influencer insights."""
     examples_text = "\n\n".join(
@@ -416,7 +419,7 @@ Schéma JSON attendu :
   ]
 }}"""
     )
-    data = _call(system, user, max_tokens=4096, temperature=0.8, tools=_web_search_tools())
+    data = _call(system, user, max_tokens=4096, temperature=0.8, tools=_web_search_tools(web_search or None))
     return data.get("ideas", [])
 
 
@@ -599,6 +602,7 @@ def generate_posts(
     benchmark: dict,
     user_context: dict[str, Any] | None = None,
     editorial_role: str | None = None,
+    web_search: bool = False,
 ) -> list[dict]:
     """Generate 3 LinkedIn post variants covering a mix of editorial roles.
 
@@ -663,7 +667,7 @@ Schéma JSON attendu (toutes les clés obligatoires) :
   ]
 }"""
     )
-    data = _call(system, user, max_tokens=6000, temperature=0.7, tools=_web_search_tools())
+    data = _call(system, user, max_tokens=6000, temperature=0.7, tools=_web_search_tools(web_search or None))
     variants = data.get("variants", [])
 
     # Backfill : si le LLM omet editorial_role (compat), on le déduit de l'ordre demandé.
