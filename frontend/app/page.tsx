@@ -10,6 +10,7 @@ import {
   Clock3,
   Download,
   FileText,
+  Image as ImageIcon,
   Lightbulb,
   Link2,
   Linkedin,
@@ -1145,30 +1146,64 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
   const linkedin = useLinkedIn(isAuthed);
   const [publishing, setPublishing] = useState<number | null>(null);
   const [published, setPublished] = useState<number | null>(null);
+  const [drafted, setDrafted] = useState<number | null>(null);
+  const [confirmIndex, setConfirmIndex] = useState<number | null>(null);
   const [publishError, setPublishError] = useState("");
+  const [variantImages, setVariantImages] = useState<Record<number, string>>({});
+  const [generatingImage, setGeneratingImage] = useState<number | null>(null);
+  const [imageError, setImageError] = useState("");
 
-  async function publishVariant(i: number, text: string) {
+  function publishVariant(i: number, text: string, draft: boolean = false) {
     if (!isAuthed) { requireAuth("Connecte-toi pour publier sur LinkedIn."); return; }
     if (!linkedin.status?.connected) {
       setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
       return;
     }
+    if (!draft) {
+      setConfirmIndex(i);
+      return;
+    }
+    void doPublish(i, text, true);
+  }
+
+  async function doPublish(i: number, text: string, draft: boolean = false) {
     setPublishError("");
     setPublished(null);
+    setDrafted(null);
     setPublishing(i);
+    setConfirmIndex(null);
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text }),
+        body: JSON.stringify({ content: text, draft }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Publication impossible");
-      setPublished(i);
+      if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon impossible" : "Publication impossible"));
+      if (draft) setDrafted(i); else setPublished(i);
     } catch (err: any) {
       setPublishError(err.message);
     } finally {
       setPublishing(null);
+    }
+  }
+
+  async function generateImage(i: number, postText: string) {
+    setImageError("");
+    setGeneratingImage(i);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post_text: postText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Échec de la génération d'image");
+      setVariantImages((prev) => ({ ...prev, [i]: data.image_data }));
+    } catch (err: any) {
+      setImageError(err.message);
+    } finally {
+      setGeneratingImage(null);
     }
   }
 
@@ -1347,9 +1382,42 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
                     {publishing === i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
                     {publishing === i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
                   </button>
+                  <button
+                    className="secondary-button"
+                    disabled={publishing === i}
+                    title={linkedin.status?.connected ? "Enregistrer comme brouillon dans LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                    onClick={() => publishVariant(i, v.post, true)}
+                  >
+                    {publishing === i && drafted !== i ? <Loader2 size={14} className="spinning" /> : <FileText size={14} />}
+                    {drafted === i ? "Brouillon ✓" : "Enregistrer en brouillon"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={generatingImage === i}
+                    onClick={() => generateImage(i, v.post)}
+                  >
+                    {generatingImage === i ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
+                    {generatingImage === i ? "Génération…" : variantImages[i] ? "Régénérer l'image" : "Générer une image"}
+                  </button>
                 </div>
                 {published === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
+                )}
+                {drafted === i && (
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré dans LinkedIn ✓</p>
+                )}
+                {variantImages[i] && (
+                  <div style={{ marginTop: 12 }}>
+                    <img src={variantImages[i]} alt="Image générée" style={{ width: "100%", maxWidth: 400, borderRadius: 8, display: "block" }} />
+                    <a
+                      href={variantImages[i]}
+                      download={`post-image-${i + 1}.png`}
+                      className="secondary-button"
+                      style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, textDecoration: "none" }}
+                    >
+                      <Download size={14} /> Télécharger
+                    </a>
+                  </div>
                 )}
               </div>
             );
@@ -1357,6 +1425,43 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
         </div>
       )}
       {publishError && <div className="error" style={{ marginTop: 12 }}>{publishError}</div>}
+      {imageError && <div className="error" style={{ marginTop: 12 }}>{imageError}</div>}
+
+      {confirmIndex !== null && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Publier ce post sur LinkedIn ?</h3>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+              Le post sera publié <strong>immédiatement</strong> sur ton compte LinkedIn.
+            </p>
+            <textarea
+              readOnly
+              value={variants[confirmIndex]?.post ?? ""}
+              rows={8}
+              className="variant-text"
+              style={{ width: "100%", boxSizing: "border-box", marginBottom: 16 }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="secondary-button" onClick={() => setConfirmIndex(null)}>
+                Annuler
+              </button>
+              <button
+                className="primary-button"
+                disabled={publishing !== null}
+                onClick={() => doPublish(confirmIndex, variants[confirmIndex]?.post ?? "")}
+              >
+                {publishing !== null
+                  ? <><Loader2 size={14} className="spinning" /> Publication…</>
+                  : <><Linkedin size={14} /> Confirmer la publication</>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

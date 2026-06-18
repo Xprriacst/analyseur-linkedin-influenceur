@@ -26,6 +26,13 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 
 ## Changelog
 
+### 2026-06-18 (ALE-80 : sécuriser la publication LinkedIn — modal de confirmation + brouillon)
+- **Modal de confirmation** : clic sur « Publier sur LinkedIn » ouvre désormais une modal avec aperçu du texte et boutons Annuler / Confirmer. La publication réelle n'est déclenchée qu'au Confirmer.
+- **Brouillon Zernio** : nouveau bouton « Enregistrer en brouillon » sur chaque variant → appelle `/me/linkedin/publish` avec `draft:true` → Zernio reçoit `isDraft:true` (pas de `publishNow`). Message de succès distinct : « Brouillon enregistré ✓ ».
+- **Backend** : `create_post` dans `src/zernio.py` accepte `is_draft=False` ; si vrai → `{isDraft:true}`, sinon → `{publishNow:true}`. `LinkedInPublishRequest` dans `api.py` ajoute `draft: bool = False` ; l'endpoint le relaie et retourne `"draft"` dans la réponse.
+- **Front** (`page.tsx`) : nouveaux états `confirmIndex` (variant en attente) et `drafted` (variant sauvé en brouillon). `publishVariant(i, text, draft)` sépare ouverture de modal (publish) vs appel direct (brouillon). `doPublish(i, text, draft)` effectue l'appel API réel.
+- Pas de nouvelle migration DB. `ZERNIO_API_KEY` déjà sur Render.
+
 ### 2026-06-17 (publication LinkedIn via Zernio — MVP publier-maintenant)
 - **Objectif** : publier un post généré directement sur LinkedIn depuis l'app. Choix de **Zernio** (API REST `https://zernio.com/api/v1`, Bearer `sk_…`, serveur MCP dispo) plutôt que l'API officielle LinkedIn (partner review trop lourd).
 - **Modèle** : 1 clé API serveur unique (`ZERNIO_API_KEY`) ; **1 « profile » Zernio par utilisateur** (= par client, archi actuelle 1 login = 1 profil éditorial) ; 1 compte LinkedIn connecté via OAuth dont on mémorise l'`accountId`.

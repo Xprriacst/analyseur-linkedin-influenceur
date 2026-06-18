@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from src import db, zernio
 from src.pipeline import run_analysis
 from src.jobs import start_job_thread
+from src.image_gen import generate_post_image
 from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
@@ -308,6 +309,7 @@ class LinkedInConnectRequest(BaseModel):
 
 class LinkedInPublishRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=8000)
+    draft: bool = False
 
 
 def _linkedin_status(token: str) -> dict[str, Any]:
@@ -386,11 +388,13 @@ def me_linkedin_publish(
     if not account_id:
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
     try:
-        result = zernio.create_post(payload.content.strip(), account_id, publish_now=True)
+        result = zernio.create_post(
+            payload.content.strip(), account_id, publish_now=True, is_draft=payload.draft
+        )
     except zernio.ZernioError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     post = result.get("post") or result
-    return {"ok": True, "post_id": post.get("_id"), "post": post}
+    return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft}
 
 
 @app.get("/reports")
@@ -712,6 +716,10 @@ class GenerateRequest(BaseModel):
     editorial_role: Optional[str] = Field(default=None)
 
 
+class GenerateImageRequest(BaseModel):
+    post_text: str = Field(..., min_length=10)
+
+
 @app.post("/ideas")
 def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
     """Generate post ideas from the user's influencer insights."""
@@ -755,6 +763,17 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
         editorial_role=role,
     )
     return {"variants": variants}
+
+
+@app.post("/generate-image")
+def generate_image(payload: GenerateImageRequest) -> dict[str, Any]:
+    """Generate an image to accompany a LinkedIn post (GPT Image 2)."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(status_code=400, detail="OPENAI_API_KEY manquant dans .env")
+    try:
+        return generate_post_image(payload.post_text)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/analyze")
