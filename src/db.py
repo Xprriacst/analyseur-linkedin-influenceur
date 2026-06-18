@@ -716,3 +716,107 @@ def get_analysis(access_token: str, analysis_id: str) -> dict | None:
         .execute()
     )
     return resp.data[0] if resp.data else None
+
+
+# ── Assistant conversationnel (ALE-79) ──
+
+def _chat_title_from_message(message: str) -> str:
+    title = " ".join((message or "").strip().split())
+    if not title:
+        return "Nouvelle conversation"
+    return title[:80]
+
+
+def create_chat_conversation(access_token: str, first_message: str | None = None) -> dict | None:
+    """Create a chat conversation owned by the authenticated user."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db = client_for_token(access_token)
+    resp = (
+        db.table("chat_conversations")
+        .insert({
+            "user_id": user["id"],
+            "title": _chat_title_from_message(first_message or ""),
+            "updated_at": now,
+        })
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_chat_conversation(access_token: str, conversation_id: str) -> dict | None:
+    """Return a conversation only if it belongs to the authenticated user."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("chat_conversations")
+        .select("*")
+        .eq("id", conversation_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def list_chat_conversations(access_token: str, limit: int = 20) -> list[dict]:
+    """List the user's recent chat conversations."""
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("chat_conversations")
+        .select("id,title,created_at,updated_at")
+        .eq("user_id", user["id"])
+        .order("updated_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_chat_messages(access_token: str, conversation_id: str, limit: int = 50) -> list[dict]:
+    """Return messages for a user-owned conversation in chronological order."""
+    if not get_chat_conversation(access_token, conversation_id):
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("chat_messages")
+        .select("id,role,content,created_at")
+        .eq("conversation_id", conversation_id)
+        .order("created_at")
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def append_chat_message(access_token: str, conversation_id: str, role: str, content: str) -> dict | None:
+    """Append a user/assistant message and bump conversation freshness."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    if role not in {"user", "assistant"}:
+        raise ValueError("role must be user or assistant")
+    if not get_chat_conversation(access_token, conversation_id):
+        return None
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db = client_for_token(access_token)
+    resp = (
+        db.table("chat_messages")
+        .insert({
+            "conversation_id": conversation_id,
+            "user_id": user["id"],
+            "role": role,
+            "content": content,
+            "created_at": now,
+        })
+        .execute()
+    )
+    db.table("chat_conversations").update({"updated_at": now}).eq("id", conversation_id).execute()
+    return resp.data[0] if resp.data else None

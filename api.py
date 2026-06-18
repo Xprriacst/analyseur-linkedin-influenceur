@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import db, zernio
 from src.pipeline import run_analysis
 from src.jobs import start_job_thread
-from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile
+from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_posts, fetch_profile
@@ -719,6 +721,11 @@ class GenerateImageRequest(BaseModel):
     post_text: str = Field(..., min_length=10)
 
 
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=12000)
+    conversation_id: Optional[str] = None
+
+
 @app.post("/ideas")
 def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
     """Generate post ideas from the user's influencer insights."""
@@ -777,6 +784,85 @@ def generate_image(payload: GenerateImageRequest) -> dict[str, Any]:
         return generate_post_image(payload.post_text)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _sse(event: str, data: dict[str, Any]) -> str:
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+@app.get("/chat/conversations")
+def chat_conversations(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List recent chat conversations for the authenticated user."""
+    return db.list_chat_conversations(token)
+
+
+@app.get("/chat/conversations/{conversation_id}/messages")
+def chat_messages(conversation_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Return a persisted chat history."""
+    conversation = db.get_chat_conversation(token, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation introuvable.")
+    return {
+        "conversation": conversation,
+        "messages": db.get_chat_messages(token, conversation_id, limit=80),
+    }
+
+
+@app.post("/chat")
+def chat(payload: ChatRequest, token: str = Depends(require_token)) -> StreamingResponse:
+    """Conversationnel V1: contexte client + benchmark + historique, streamé en SSE."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message vide.")
+
+    influencers = _get_influencers(token)
+    if not influencers:
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
+
+    conversation = None
+    if payload.conversation_id:
+        conversation = db.get_chat_conversation(token, payload.conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation introuvable.")
+    else:
+        conversation = db.create_chat_conversation(token, first_message=message)
+        if not conversation:
+            raise HTTPException(status_code=500, detail="Création de la conversation impossible.")
+
+    conversation_id = conversation["id"]
+    user_message = db.append_chat_message(token, conversation_id, "user", message)
+    if not user_message:
+        raise HTTPException(status_code=500, detail="Sauvegarde du message impossible.")
+
+    history = db.get_chat_messages(token, conversation_id, limit=80)
+    top_posts, benchmark = _build_benchmark(influencers)
+    user_context = db.get_user_ai_context(token)
+
+    def stream_response():
+        assistant_text = ""
+        yield _sse("meta", {"conversation_id": conversation_id})
+        try:
+            for delta in chat_stream(history, top_posts, benchmark, user_context=user_context):
+                assistant_text += delta
+                yield _sse("delta", {"text": delta})
+            if assistant_text.strip():
+                db.append_chat_message(token, conversation_id, "assistant", assistant_text)
+            yield _sse("done", {"ok": True})
+        except Exception as exc:
+            yield _sse("error", {"detail": str(exc)})
+
+    return StreamingResponse(
+        stream_response(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/analyze")
