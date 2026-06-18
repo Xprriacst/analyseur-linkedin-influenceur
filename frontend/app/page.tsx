@@ -1461,7 +1461,6 @@ function ProfileView({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const [aiInput, setAiInput] = useState("");
-  const [useApifyLinkedin, setUseApifyLinkedin] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [draftInfo, setDraftInfo] = useState("");
   const linkedin = useLinkedIn(isAuthed);
@@ -1546,7 +1545,7 @@ function ProfileView({
           activity_description: isLinkedin || isWebsite ? "" : trimmed,
           linkedin_url: isLinkedin ? trimmed : "",
           website_url: isWebsite ? trimmed : "",
-          use_apify_linkedin: isLinkedin && useApifyLinkedin,
+          use_apify_linkedin: isLinkedin, // toujours lire le LinkedIn via Apify
         }),
       });
       const data = await res.json();
@@ -1705,16 +1704,6 @@ function ProfileView({
                 {drafting ? "Pré-remplissage…" : "Pré-remplir"}
               </button>
             </div>
-            {aiInputKind === "linkedin" ? (
-              <div className="inline-check" style={{ marginTop: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={useApifyLinkedin}
-                  onChange={(e) => setUseApifyLinkedin(e.target.checked)}
-                />
-                <span>Lire ce profil avec Apify (plus précis, plus lent, consomme du crédit)</span>
-              </div>
-            ) : null}
           </section>
 
           <details className="profile-drawer" open={detailsOpen} onToggle={(e) => setDetailsOpen((e.target as HTMLDetailsElement).open)}>
