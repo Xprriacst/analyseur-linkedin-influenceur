@@ -710,11 +710,13 @@ def dashboard_ai_analysis(token: Optional[str] = Depends(optional_token)) -> dic
 
 class IdeasRequest(BaseModel):
     count: int = Field(default=5, ge=1, le=10)
+    web_search: bool = Field(default=False)
 
 
 class GenerateRequest(BaseModel):
     topic: str = Field(..., min_length=3)
     editorial_role: Optional[str] = Field(default=None)
+    web_search: bool = Field(default=False)
 
 
 class GenerateImageRequest(BaseModel):
@@ -738,7 +740,7 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
 
     top_posts, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
-    ideas_list = generate_ideas(top_posts, benchmark, count=payload.count, user_context=user_context)
+    ideas_list = generate_ideas(top_posts, benchmark, count=payload.count, user_context=user_context, web_search=payload.web_search)
     save_error: str | None = None
     if token:
         try:
@@ -767,6 +769,7 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
         benchmark,
         user_context=user_context,
         editorial_role=role,
+        web_search=payload.web_search,
     )
     return {"variants": variants}
 
