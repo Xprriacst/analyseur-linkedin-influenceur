@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+from datetime import date
 from typing import Any
 
 from anthropic import Anthropic
@@ -43,6 +44,30 @@ def _client() -> Anthropic:
 
 def _model() -> str:
     return os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7")
+
+
+_MOIS_FR = [
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+]
+
+
+def _today_fr() -> str:
+    """Date du jour en français, ex. « 18 juin 2026 »."""
+    t = date.today()
+    return f"{t.day} {_MOIS_FR[t.month - 1]} {t.year}"
+
+
+def _date_directive() -> str:
+    """Consigne de fraîcheur temporelle injectée dans les prompts de génération."""
+    return (
+        f"Nous sommes aujourd'hui le {_today_fr()}. "
+        "Raisonne toujours à partir de cette date : saisons, actualités, tendances, "
+        "chiffres et exemples doivent être cohérents avec l'année et le mois en cours. "
+        "N'évoque jamais une année écoulée comme si elle était présente et n'utilise pas "
+        "d'informations périmées ; si une donnée peut avoir changé depuis ta base de "
+        "connaissances, reste général plutôt que d'inventer un fait daté."
+    )
 
 
 def _extract_json(text: str) -> dict:
@@ -303,7 +328,8 @@ def generate_ideas(
         "Tu es un stratège contenu LinkedIn. "
         "Tu proposes des idées de posts adaptées au client final en t'appuyant sur son contexte "
         "éditorial et sur des données réelles d'influenceurs analysés. "
-        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+        + _date_directive()
+        + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
     user = (
         "Contexte client à respecter en priorité :\n"
@@ -351,7 +377,8 @@ def analyze_dashboard_strategy(influencers_data: list[dict], growth_data: list[d
         "des recommandations stratégiques concrètes et actionnables. "
         "Tu dois aller au-delà des chiffres : identifier les stratégies gagnantes, "
         "les corrélations entre formats/hooks/engagement, et recommander des actions précises. "
-        "Réponds en markdown structuré (titres ##, listes, gras). Ne mets PAS de balises ```markdown."
+        + _date_directive()
+        + " Réponds en markdown structuré (titres ##, listes, gras). Ne mets PAS de balises ```markdown."
     )
 
     user = (
@@ -546,7 +573,8 @@ def generate_posts(
         "puis en t'appuyant sur les patterns observés chez les influenceurs analysés. "
         "Tu produis des STRUCTURES VARIÉES : tous les posts ne sont pas des posts viraux optimisés engagement. "
         "Chaque rôle éditorial a sa propre intention et sa propre forme — respecte-les strictement. "
-        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+        + _date_directive()
+        + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
     user = (
         f'Sujet du post à créer : "{topic}"\n\n'
