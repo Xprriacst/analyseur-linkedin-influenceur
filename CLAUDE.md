@@ -26,6 +26,15 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 
 ## Changelog
 
+### 2026-06-18 (ALE-79 : assistant conversationnel V1 — chat avec mémoire + contexte)
+- **Objectif** : remplacer les générations one-shot stateless (`/ideas`, `/generate`) par un **chat itératif** type Claude, avec mémoire, contexte client et benchmark influenceurs. **V1 sans outils** (le tool-use — image, publication, relance d'analyse depuis la conversation — est l'évolution prévue, pas encore implémentée).
+- **DB** : migration `supabase/migrations/0005_chat.sql` → tables `chat_conversations` + `chat_messages` (RLS `auth.uid() = user_id`, message insert vérifie aussi la propriété de la conversation). **À exécuter manuellement dans le SQL editor Supabase.**
+- **Backend** : `POST /chat` en **streaming SSE** (`event: meta|delta|done|error`) ; `GET /chat/conversations` + `GET /chat/conversations/{id}/messages`. Helpers `create/get/list_chat_conversations`, `get/append_chat_message` dans `db.py`. `chat_stream()` + `_chat_system_prompt()` dans `llm.py` (réutilise `_build_benchmark` + `get_user_ai_context`, garde les 24 derniers messages, tracke l'usage Anthropic).
+- **Front** (`page.tsx` + `globals.css`) : onglet **« Assistant »** (premium/auth), liste de conversations à gauche, fil de messages markdown streamé (lecture du `ReadableStream` SSE), quick-actions, Cmd/Ctrl+Entrée pour envoyer.
+- **Origine** : code repris de la PR #16 (branche `cursor/ALE-79-…`) mais **réappliqué proprement sur `dev`** (la PR ne mergeait pas : conflits `page.tsx` + un changement `analyses` déjà livré par ailleurs). Code chat uniquement.
+- ⚠️ **Déploiement** : mergé `dev → main` (Render + Netlify prod). Exécuter la migration 0005 avant usage, sinon `/chat` renvoie une erreur (tables absentes). `ANTHROPIC_API_KEY` déjà sur Render.
+- **Suite** : passage en tool-use (commencer par l'outil `generate_image` qui appelle `src/image_gen.py` ; ALE-68 image gen déjà codée, en phase de test).
+
 ### 2026-06-18 (ALE-80 : sécuriser la publication LinkedIn — modal de confirmation + brouillon)
 - **Modal de confirmation** : clic sur « Publier sur LinkedIn » ouvre désormais une modal avec aperçu du texte et boutons Annuler / Confirmer. La publication réelle n'est déclenchée qu'au Confirmer.
 - **Brouillon Zernio** : nouveau bouton « Enregistrer en brouillon » sur chaque variant → appelle `/me/linkedin/publish` avec `draft:true` → Zernio reçoit `isDraft:true` (pas de `publishNow`). Message de succès distinct : « Brouillon enregistré ✓ ».
