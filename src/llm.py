@@ -58,9 +58,27 @@ def _today_fr() -> str:
     return f"{t.day} {_MOIS_FR[t.month - 1]} {t.year}"
 
 
+def _web_search_enabled() -> bool:
+    """Recherche web activée via la variable d'env ENABLE_WEB_SEARCH (coût Apify-like)."""
+    return os.environ.get("ENABLE_WEB_SEARCH", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _web_search_tools() -> list[dict] | None:
+    """Outil serveur de recherche web pour la génération, plafonné pour maîtriser le coût.
+
+    Renvoie None si la fonctionnalité est désactivée (cas par défaut)."""
+    if not _web_search_enabled():
+        return None
+    try:
+        max_uses = int(os.environ.get("WEB_SEARCH_MAX_USES", "3"))
+    except ValueError:
+        max_uses = 3
+    return [{"type": "web_search_20260209", "name": "web_search", "max_uses": max(1, max_uses)}]
+
+
 def _date_directive() -> str:
     """Consigne de fraîcheur temporelle injectée dans les prompts de génération."""
-    return (
+    base = (
         f"Nous sommes aujourd'hui le {_today_fr()}. "
         "Raisonne toujours à partir de cette date : saisons, actualités, tendances, "
         "chiffres et exemples doivent être cohérents avec l'année et le mois en cours. "
@@ -68,6 +86,13 @@ def _date_directive() -> str:
         "d'informations périmées ; si une donnée peut avoir changé depuis ta base de "
         "connaissances, reste général plutôt que d'inventer un fait daté."
     )
+    if _web_search_enabled():
+        base += (
+            " Tu disposes d'un outil de recherche web : utilise-le pour vérifier une "
+            "actualité, une tendance ou un chiffre récent avant de l'affirmer, plutôt "
+            "que de te fier uniquement à ta mémoire."
+        )
+    return base
 
 
 def _extract_json(text: str) -> dict:
@@ -83,14 +108,7 @@ def _extract_json(text: str) -> dict:
     return json.loads(text)
 
 
-def _call(system: str, user: str, max_tokens: int = 4096, temperature: float = 0.2) -> dict:
-    resp = _client().messages.create(
-        model=_model(),
-        max_tokens=max_tokens,
-        temperature=temperature,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
+def _track(resp) -> None:
     usage = getattr(resp, "usage", None)
     if usage:
         track_anthropic(
@@ -98,7 +116,40 @@ def _call(system: str, user: str, max_tokens: int = 4096, temperature: float = 0
             int(getattr(usage, "input_tokens", 0) or 0),
             int(getattr(usage, "output_tokens", 0) or 0),
         )
-    text = "".join(block.text for block in resp.content if hasattr(block, "text"))
+
+
+def _call(
+    system: str,
+    user: str,
+    max_tokens: int = 4096,
+    temperature: float = 0.2,
+    tools: list[dict] | None = None,
+) -> dict:
+    client = _client()
+    messages: list[dict] = [{"role": "user", "content": user}]
+    kwargs: dict[str, Any] = dict(
+        model=_model(),
+        max_tokens=max_tokens,
+        temperature=temperature,
+        system=system,
+    )
+    if tools:
+        kwargs["tools"] = tools
+
+    resp = client.messages.create(messages=messages, **kwargs)
+    _track(resp)
+    # Les outils serveur (recherche web) mettent le run en pause quand ils
+    # atteignent la limite d'itérations : on relance jusqu'à la réponse finale.
+    guard = 0
+    while getattr(resp, "stop_reason", None) == "pause_turn" and guard < 5:
+        guard += 1
+        messages.append({"role": "assistant", "content": resp.content})
+        resp = client.messages.create(messages=messages, **kwargs)
+        _track(resp)
+
+    text = "".join(
+        block.text for block in resp.content if getattr(block, "type", None) == "text"
+    )
     return _extract_json(text)
 
 
@@ -365,7 +416,7 @@ Schéma JSON attendu :
   ]
 }}"""
     )
-    data = _call(system, user, max_tokens=4096, temperature=0.8)
+    data = _call(system, user, max_tokens=4096, temperature=0.8, tools=_web_search_tools())
     return data.get("ideas", [])
 
 
@@ -435,21 +486,24 @@ Produis une analyse stratégique COMPLÈTE et ACTIONNABLE en suivant ce plan :
 
 """
 
-    resp = _client().messages.create(
-        model=_model(),
-        max_tokens=8192,
-        temperature=0.5,
-        system=system,
-        messages=[{"role": "user", "content": user}],
+    client = _client()
+    messages: list[dict] = [{"role": "user", "content": user}]
+    kwargs: dict[str, Any] = dict(model=_model(), max_tokens=8192, temperature=0.5, system=system)
+    tools = _web_search_tools()
+    if tools:
+        kwargs["tools"] = tools
+
+    resp = client.messages.create(messages=messages, **kwargs)
+    _track(resp)
+    guard = 0
+    while getattr(resp, "stop_reason", None) == "pause_turn" and guard < 5:
+        guard += 1
+        messages.append({"role": "assistant", "content": resp.content})
+        resp = client.messages.create(messages=messages, **kwargs)
+        _track(resp)
+    return "".join(
+        block.text for block in resp.content if getattr(block, "type", None) == "text"
     )
-    usage = getattr(resp, "usage", None)
-    if usage:
-        track_anthropic(
-            _model(),
-            int(getattr(usage, "input_tokens", 0) or 0),
-            int(getattr(usage, "output_tokens", 0) or 0),
-        )
-    return "".join(block.text for block in resp.content if hasattr(block, "text"))
 
 
 # Rôles éditoriaux disponibles pour la génération de posts (ALE-70).
@@ -609,7 +663,7 @@ Schéma JSON attendu (toutes les clés obligatoires) :
   ]
 }"""
     )
-    data = _call(system, user, max_tokens=6000, temperature=0.7)
+    data = _call(system, user, max_tokens=6000, temperature=0.7, tools=_web_search_tools())
     variants = data.get("variants", [])
 
     # Backfill : si le LLM omet editorial_role (compat), on le déduit de l'ordre demandé.
