@@ -96,11 +96,20 @@ def find_linkedin_account_id(profile_id: str) -> str | None:
     return None
 
 
-def create_post(content: str, account_id: str, *, publish_now: bool = True) -> dict[str, Any]:
-    """Publish (or schedule) a post on the given LinkedIn account."""
-    body = {
+def create_post(
+    content: str,
+    account_id: str,
+    *,
+    publish_now: bool = True,
+    is_draft: bool = False,
+) -> dict[str, Any]:
+    """Publish or save as draft a post on the given LinkedIn account."""
+    body: dict[str, Any] = {
         "content": content,
         "platforms": [{"platform": PLATFORM, "accountId": account_id}],
-        "publishNow": publish_now,
     }
+    if is_draft:
+        body["isDraft"] = True
+    else:
+        body["publishNow"] = publish_now
     return _request("POST", "/posts", body=body)
