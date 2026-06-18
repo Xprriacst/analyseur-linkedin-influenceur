@@ -21,6 +21,7 @@ import {
   LogOut,
   PenTool,
   RefreshCw,
+  Settings2,
   Sparkles,
   TrendingUp,
   UserRound,
@@ -656,46 +657,6 @@ function Sidebar({
               </button>
             );
           })}
-        </div>
-      </section>
-
-      <section className="sidebar-section">
-        <p className="eyebrow">Analyses récentes</p>
-        <p style={{ margin: "0 0 8px", fontSize: 11, opacity: 0.45 }}>3 derniers profils analysés</p>
-        <div className="report-list">
-          {!isAuthed ? (
-            <div className="report-card" onClick={() => requireAuth("Crée un compte gratuit pour conserver tes analyses.")} style={{ cursor: "pointer" }}>
-              <div className="report-icon"><Lock size={13} /></div>
-              <div>
-                <strong>Analyses verrouillées</strong>
-                <span>Crée un compte pour les conserver</span>
-              </div>
-            </div>
-          ) : reports.length ? reports.map((report) => (
-            <div className="report-card" key={report.path} onClick={() => onLoadReport(report)}>
-              <div className="report-icon"><FileText size={13} /></div>
-              <div>
-                <strong>{report.name}</strong>
-                <span>{new Date(report.updated_at * 1000).toLocaleDateString("fr-FR")}</span>
-              </div>
-            </div>
-          )) : reportsLoading ? (
-            <div className="report-card">
-              <div className="report-icon"><Loader2 size={13} className="spinning" /></div>
-              <div>
-                <strong>Chargement…</strong>
-                <span>Récupération de tes analyses</span>
-              </div>
-            </div>
-          ) : (
-            <div className="report-card">
-              <div className="report-icon"><FileText size={13} /></div>
-              <div>
-                <strong>Aucun rapport</strong>
-                <span>Lance ta première analyse</span>
-              </div>
-            </div>
-          )}
         </div>
       </section>
 
@@ -1499,10 +1460,9 @@ function ProfileView({
   const [drafting, setDrafting] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
-  const [aiDescription, setAiDescription] = useState("");
-  const [aiLinkedinUrl, setAiLinkedinUrl] = useState("");
-  const [aiWebsiteUrl, setAiWebsiteUrl] = useState("");
+  const [aiInput, setAiInput] = useState("");
   const [useApifyLinkedin, setUseApifyLinkedin] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [draftInfo, setDraftInfo] = useState("");
   const linkedin = useLinkedIn(isAuthed);
 
@@ -1566,10 +1526,14 @@ function ProfileView({
       requireAuth("Crée un compte gratuit pour pré-remplir ton contexte éditorial avec l'IA.");
       return;
     }
-    if (!aiDescription.trim() && !aiLinkedinUrl.trim() && !aiWebsiteUrl.trim()) {
-      setError("Ajoute une description, une URL LinkedIn ou un site web pour pré-remplir le profil.");
+    const trimmed = aiInput.trim();
+    if (!trimmed) {
+      setError("Colle une description, une URL LinkedIn ou un site web pour pré-remplir le profil.");
       return;
     }
+    // Une seule barre : on devine ce qui a été collé et on le route vers le bon champ.
+    const isLinkedin = aiInputKind === "linkedin";
+    const isWebsite = aiInputKind === "website";
     setDrafting(true);
     setSaved(false);
     setDraftInfo("");
@@ -1579,15 +1543,16 @@ function ProfileView({
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
-          activity_description: aiDescription.trim(),
-          linkedin_url: aiLinkedinUrl.trim(),
-          website_url: aiWebsiteUrl.trim(),
-          use_apify_linkedin: useApifyLinkedin,
+          activity_description: isLinkedin || isWebsite ? "" : trimmed,
+          linkedin_url: isLinkedin ? trimmed : "",
+          website_url: isWebsite ? trimmed : "",
+          use_apify_linkedin: isLinkedin && useApifyLinkedin,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Pré-remplissage impossible");
       setProfile((prev) => ({ ...prev, ...(data.profile || {}) }));
+      setDetailsOpen(true); // ouvre le tiroir pour relire les champs pré-remplis
       const sources = data.sources || {};
       const sourceLabels = [
         sources.description ? "description" : "",
@@ -1644,6 +1609,15 @@ function ProfileView({
     .filter(([key, value]) => key !== "id" && typeof value === "string" && value.trim().length > 0)
     .length;
 
+  // Devine la nature du texte collé dans la barre unique de pré-remplissage.
+  const aiInputKind: "linkedin" | "website" | "description" = (() => {
+    const v = aiInput.trim();
+    if (!v || /\s/.test(v)) return "description"; // contient un espace → c'est une phrase
+    if (/linkedin\.com\/in\//i.test(v)) return "linkedin";
+    if (/^https?:\/\//i.test(v) || /^www\./i.test(v) || /^[\w-]+(\.[\w-]+)+(\/|$)/i.test(v)) return "website";
+    return "description";
+  })();
+
   if (!isAuthed) {
     return (
       <div className="card" style={{ textAlign: "center", padding: 40 }}>
@@ -1681,11 +1655,11 @@ function ProfileView({
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <Linkedin size={20} color="#0a66c2" />
           <div>
-            <strong>Publication LinkedIn</strong>
+            <strong>Publier sur LinkedIn</strong>
             <p className="section-desc" style={{ margin: 0 }}>
               {linkedin.status?.connected
-                ? "Compte LinkedIn connecté — tu peux publier tes posts générés en un clic."
-                : "Connecte ton compte LinkedIn pour publier directement depuis l'app."}
+                ? "Compte LinkedIn connecté — tes posts générés peuvent être publiés directement sur LinkedIn en un clic."
+                : "Connecte ton compte LinkedIn pour publier tes posts générés directement sur LinkedIn, sans copier-coller."}
             </p>
           </div>
         </div>
@@ -1715,51 +1689,40 @@ function ProfileView({
               <div>
                 <h3 style={{ margin: "0 0 4px" }}>Pré-remplir avec l'IA</h3>
                 <p className="section-desc">
-                  Donne une description, une URL LinkedIn ou un site web. L'option Apify lit le LinkedIn en live si le profil n'a pas encore été analysé.
+                  Colle une description, une URL LinkedIn ou un site web — l'IA devine et remplit le profil.
                 </p>
               </div>
+            </div>
+            <div className="profile-ai-bar">
+              <input
+                value={aiInput}
+                onChange={(e) => setAiInput(e.target.value)}
+                placeholder="Description, URL LinkedIn ou site web…"
+                onKeyDown={(e) => { if (e.key === "Enter" && !drafting) draftProfile(); }}
+              />
               <button className="primary-button" onClick={draftProfile} disabled={drafting}>
                 {drafting ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
                 {drafting ? "Pré-remplissage…" : "Pré-remplir"}
               </button>
             </div>
-            <label className="profile-field">
-              <span>Description libre</span>
-              <textarea
-                value={aiDescription}
-                onChange={(e) => setAiDescription(e.target.value)}
-                placeholder="Ex. Fondateur d'une agence IA en forte croissance, j'aide les dirigeants B2B à publier sur LinkedIn sans y passer 2h/jour."
-                rows={4}
-              />
-            </label>
-            <div className="profile-grid">
-              <label className="profile-field">
-                <span>URL LinkedIn</span>
+            {aiInputKind === "linkedin" ? (
+              <div className="inline-check" style={{ marginTop: 8 }}>
                 <input
-                  value={aiLinkedinUrl}
-                  onChange={(e) => setAiLinkedinUrl(e.target.value)}
-                  placeholder="https://www.linkedin.com/in/..."
+                  type="checkbox"
+                  checked={useApifyLinkedin}
+                  onChange={(e) => setUseApifyLinkedin(e.target.checked)}
                 />
-                <div className="inline-check">
-                  <input
-                    type="checkbox"
-                    checked={useApifyLinkedin}
-                    onChange={(e) => setUseApifyLinkedin(e.target.checked)}
-                  />
-                  <span>Lire ce profil avec Apify (plus précis, plus lent, consomme du crédit)</span>
-                </div>
-              </label>
-              <label className="profile-field">
-                <span>Site web</span>
-                <input
-                  value={aiWebsiteUrl}
-                  onChange={(e) => setAiWebsiteUrl(e.target.value)}
-                  placeholder="https://..."
-                />
-              </label>
-            </div>
+                <span>Lire ce profil avec Apify (plus précis, plus lent, consomme du crédit)</span>
+              </div>
+            ) : null}
           </section>
 
+          <details className="profile-drawer" open={detailsOpen} onToggle={(e) => setDetailsOpen((e.target as HTMLDetailsElement).open)}>
+            <summary>
+              <span><Settings2 size={15} /> Détails du profil éditorial</span>
+              <span className="profile-drawer-meta">{filledCount} champs remplis</span>
+            </summary>
+            <div className="profile-drawer-body">
           <section className="card">
             <h3>Identité & activité</h3>
             <div className="profile-grid">
@@ -1803,6 +1766,8 @@ function ProfileView({
               <Field name="linkedin_url" label="Profil LinkedIn" placeholder="https://www.linkedin.com/in/..." />
             </div>
           </section>
+            </div>
+          </details>
         </div>
       )}
     </div>

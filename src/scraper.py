@@ -42,6 +42,24 @@ def _client() -> ApifyClient:
     return ApifyClient(os.environ["APIFY_TOKEN"])
 
 
+def _call_actor(actor: str, run_input: dict[str, Any], timeout_secs: int) -> Any:
+    """Lance un actor en attendant la fin du run.
+
+    `timeout_secs` n'est pas accepté par toutes les versions d'apify-client
+    déployées (un environnement Render avec un client mis en cache plus ancien
+    le refuse → "ActorClient.call() got an unexpected keyword argument
+    'timeout_secs'"). On retombe alors sur un appel sans le paramètre plutôt
+    que de faire planter toute l'analyse.
+    """
+    client = _client().actor(actor)
+    try:
+        return client.call(run_input=run_input, timeout_secs=timeout_secs)
+    except TypeError as exc:
+        if "timeout_secs" not in str(exc):
+            raise
+        return client.call(run_input=run_input)
+
+
 def _default_dataset_id(run: Any) -> str:
     if isinstance(run, dict):
         return run["defaultDatasetId"]
@@ -78,7 +96,7 @@ def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> li
             "limit": limit,
         }
 
-    run = _client().actor(actor).call(run_input=run_input, timeout_secs=300)
+    run = _call_actor(actor, run_input, timeout_secs=300)
     items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
     # Certains actors renvoient un item d'erreur ({"message": ..., "profile_input": ...})
     # au lieu d'un dataset vide : on ne garde que les vrais posts.
@@ -109,7 +127,7 @@ def _profile_run_input(actor: str, url: str) -> dict[str, Any]:
 
 def _run_profile_actor(actor: str, url: str) -> list[dict]:
     try:
-        run = _client().actor(actor).call(run_input=_profile_run_input(actor, url), timeout_secs=120)
+        run = _call_actor(actor, _profile_run_input(actor, url), timeout_secs=120)
         items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
     except Exception as exc:
         # Visible dans les logs Render — ex. actor qui exige une approbation de
