@@ -682,3 +682,76 @@ Schéma JSON attendu (toutes les clés obligatoires) :
         if not v.get("strategy"):
             v["strategy"] = ""
     return variants
+
+
+# ── Assistant conversationnel (ALE-79) ──
+
+def _chat_system_prompt(
+    top_posts_examples: list[dict],
+    benchmark: dict,
+    user_context: dict[str, Any] | None = None,
+) -> str:
+    examples = [
+        {
+            "influencer": e.get("influencer"),
+            "engagement": e.get("engagement", 0),
+            "hook_type": e.get("hook_type", "other"),
+            "format": e.get("format"),
+            "text": (e.get("text") or "")[:900],
+        }
+        for e in top_posts_examples[:8]
+    ]
+    return (
+        "Tu es l'assistant conversationnel de Strategy Decoder pour la génération "
+        "et l'amélioration de posts LinkedIn B2B.\n\n"
+        "Mission : aider l'utilisateur à itérer comme avec un copilote éditorial : "
+        "trouver des idées, challenger les angles, rédiger, réécrire, améliorer les hooks, "
+        "adapter le ton et transformer des brouillons en posts prêts à publier.\n\n"
+        "Contraintes V1 : tu n'as aucun outil externe. Tu ne peux pas lancer une analyse, "
+        "publier sur LinkedIn, ni lire de données en dehors du contexte fourni ci-dessous. "
+        "Si l'utilisateur demande une action externe, explique brièvement la limite et propose "
+        "le meilleur livrable textuel possible.\n\n"
+        "Priorité de contexte :\n"
+        "1. Respecte d'abord le profil éditorial du client.\n"
+        "2. Utilise ensuite les benchmarks et exemples de posts performants comme inspiration, "
+        "sans copier les textes.\n"
+        "3. Garde les réponses concrètes, en français, avec du markdown lisible quand utile.\n\n"
+        "Profil éditorial client :\n"
+        f"{_format_user_context(user_context)}\n\n"
+        "Benchmarks influenceurs disponibles :\n"
+        f"{json.dumps(benchmark, ensure_ascii=False, indent=2)}\n\n"
+        "Exemples de posts performants :\n"
+        f"{json.dumps(examples, ensure_ascii=False, indent=2)}"
+    )
+
+
+def chat_stream(
+    messages: list[dict[str, str]],
+    top_posts_examples: list[dict],
+    benchmark: dict,
+    user_context: dict[str, Any] | None = None,
+):
+    """Stream a conversational assistant response as text deltas."""
+    anthropic_messages = [
+        {"role": m["role"], "content": m["content"]}
+        for m in messages[-24:]
+        if m.get("role") in {"user", "assistant"} and (m.get("content") or "").strip()
+    ]
+    system = _chat_system_prompt(top_posts_examples, benchmark, user_context=user_context)
+    with _client().messages.stream(
+        model=_model(),
+        max_tokens=6000,
+        temperature=0.7,
+        system=system,
+        messages=anthropic_messages,
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
+        final_message = stream.get_final_message()
+    usage = getattr(final_message, "usage", None)
+    if usage:
+        track_anthropic(
+            _model(),
+            int(getattr(usage, "input_tokens", 0) or 0),
+            int(getattr(usage, "output_tokens", 0) or 0),
+        )
