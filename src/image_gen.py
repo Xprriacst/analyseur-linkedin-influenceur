@@ -38,13 +38,14 @@ def generate_post_image(post_text: str) -> dict:
     prompt = _build_image_prompt(post_text)
 
     client = OpenAI(api_key=api_key)
+    # Les modèles gpt-image-* renvoient toujours du b64_json (pas de response_format)
+    # et n'acceptent pas quality="standard" (valeurs : low/medium/high/auto).
     response = client.images.generate(
         model="gpt-image-2",
         prompt=prompt,
         size="1024x1024",
-        quality="standard",
+        quality="high",
         n=1,
-        response_format="b64_json",
     )
     b64 = response.data[0].b64_json
     return {
