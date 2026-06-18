@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 from src import db, zernio
 from src.pipeline import run_analysis
 from src.jobs import start_job_thread
-from src.image_gen import generate_post_image
 from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
@@ -771,6 +770,10 @@ def generate_image(payload: GenerateImageRequest) -> dict[str, Any]:
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(status_code=400, detail="OPENAI_API_KEY manquant dans .env")
     try:
+        # Import paresseux : la génération d'image dépend d'`openai`. Un import
+        # au niveau module ferait planter tout le démarrage de l'API si la
+        # dépendance (ou le module) manque — on l'isole donc à cet endpoint.
+        from src.image_gen import generate_post_image
         return generate_post_image(payload.post_text)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
