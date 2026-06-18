@@ -19,8 +19,10 @@ import {
   Lock,
   LogIn,
   LogOut,
+  MessageSquare,
   PenTool,
   RefreshCw,
+  Send,
   Sparkles,
   TrendingUp,
   UserRound,
@@ -138,7 +140,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "influencers", "generator", "dashboard"] as const;
+const mainViews = ["analyze", "profile", "influencers", "generator", "dashboard", "chat"] as const;
 type MainView = typeof mainViews[number];
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
@@ -609,6 +611,7 @@ function Sidebar({
     { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} />, auth: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
+    { key: "chat", label: "Assistant IA", icon: <MessageSquare size={14} />, auth: true },
   ];
 
   return (
@@ -2194,6 +2197,223 @@ function InfluencersView({
   );
 }
 
+/* ── Assistant IA (chat) ───────────────────────────────────────────────── */
+
+type ChatMsg = { role: "user" | "assistant"; content: string };
+
+function ChatView({
+  isAuthed,
+  requireAuth,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [input, setInput] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [streamingText, setStreamingText] = useState("");
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, streamingText]);
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <MessageSquare size={36} style={{ opacity: 0.35, marginBottom: 16 }} />
+        <p style={{ marginBottom: 20, opacity: 0.7 }}>
+          Connecte-toi pour accéder à l'assistant IA éditorial.
+        </p>
+        <button
+          className="primary-button"
+          onClick={() =>
+            requireAuth(
+              "Crée un compte pour accéder à l'assistant IA.",
+              "signup"
+            )
+          }
+        >
+          Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  async function sendMessage() {
+    if (!input.trim() || streaming) return;
+    const userText = input.trim();
+    setInput("");
+    setMessages((prev) => [...prev, { role: "user", content: userText }]);
+    setStreaming(true);
+    setStreamingText("");
+
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(await authHeaders()),
+        },
+        body: JSON.stringify({
+          message: userText,
+          conversation_id: conversationId,
+        }),
+      });
+
+      if (!res.ok || !res.body) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: "Erreur : impossible de contacter l'assistant." },
+        ]);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let assembled = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const raw = decoder.decode(value, { stream: true });
+        for (const line of raw.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6).trim();
+          if (payload === "[DONE]") break;
+          try {
+            const parsed = JSON.parse(payload);
+            if (parsed.conversation_id && !conversationId) {
+              setConversationId(parsed.conversation_id);
+            }
+            if (parsed.text) {
+              assembled += parsed.text;
+              setStreamingText(assembled);
+            }
+          } catch {}
+        }
+      }
+
+      if (assembled) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: assembled },
+        ]);
+      }
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "Erreur de connexion à l'assistant." },
+      ]);
+    } finally {
+      setStreaming(false);
+      setStreamingText("");
+    }
+  }
+
+  const bubble = (role: "user" | "assistant") => ({
+    alignSelf: role === "user" ? ("flex-end" as const) : ("flex-start" as const),
+    maxWidth: "80%",
+    background: role === "user" ? "#2563eb" : "var(--surface-2,#f1f5f9)",
+    color: role === "user" ? "#fff" : "inherit",
+    borderRadius: 12,
+    padding: "10px 14px",
+    fontSize: 14,
+    lineHeight: 1.65,
+    whiteSpace: "pre-wrap" as const,
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)", gap: 0 }}>
+      <div
+        className="card"
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          padding: 20,
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}
+      >
+        {messages.length === 0 && !streaming && (
+          <div style={{ textAlign: "center", padding: 48, opacity: 0.45 }}>
+            <MessageSquare size={36} style={{ marginBottom: 12 }} />
+            <p style={{ margin: 0, fontSize: 14 }}>
+              Pose une question sur ta stratégie LinkedIn,<br />
+              demande une idée de post, ou colle un texte à améliorer.
+            </p>
+          </div>
+        )}
+        {messages.map((msg, i) => (
+          <div key={i} style={bubble(msg.role)}>
+            {msg.content}
+          </div>
+        ))}
+        {streaming && streamingText && (
+          <div style={bubble("assistant")}>
+            {streamingText}
+            <span
+              style={{
+                display: "inline-block",
+                width: 2,
+                height: "1em",
+                background: "currentColor",
+                marginLeft: 2,
+                verticalAlign: "text-bottom",
+                opacity: 0.7,
+              }}
+              className="spinning"
+            />
+          </div>
+        )}
+        {streaming && !streamingText && (
+          <div style={{ alignSelf: "flex-start", opacity: 0.5, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+            <Loader2 size={14} className="spinning" /> L'assistant rédige…
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      <div style={{ display: "flex", gap: 8, paddingTop: 12 }}>
+        <textarea
+          style={{
+            flex: 1,
+            resize: "none",
+            borderRadius: 8,
+            border: "1px solid var(--border,#e2e8f0)",
+            padding: "10px 12px",
+            fontSize: 14,
+            fontFamily: "inherit",
+            minHeight: 52,
+            outline: "none",
+          }}
+          rows={2}
+          placeholder="Écris un message… (Entrée pour envoyer, Maj+Entrée pour sauter une ligne)"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          disabled={streaming}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              sendMessage();
+            }
+          }}
+        />
+        <button
+          className="primary-button"
+          style={{ alignSelf: "flex-end", padding: "12px 16px" }}
+          onClick={sendMessage}
+          disabled={!input.trim() || streaming}
+        >
+          {streaming ? <Loader2 size={16} className="spinning" /> : <Send size={16} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
@@ -2496,6 +2716,7 @@ export default function Home() {
           {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "dashboard" && <GlobalDashboard />}
+          {view === "chat" && <ChatView isAuthed={isAuthed} requireAuth={requireAuth} />}
         </main>
       </div>
       <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} reason={authReason} defaultMode={authMode} />

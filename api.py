@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -7,9 +8,10 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from src import db, zernio
+from src import chat as chat_module, db, zernio
 from src.pipeline import run_analysis
 from src.jobs import start_job_thread
 from src.image_gen import generate_post_image
@@ -934,4 +936,75 @@ def persist_analysis(
         raise HTTPException(status_code=500, detail=f"Sauvegarde échouée : {exc}") from exc
     if not saved:
         raise HTTPException(status_code=500, detail="Sauvegarde échouée (session invalide ou RLS).")
+
+
+# ── Chat ────────────────────────────────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+    conversation_id: str | None = None
+
+
+@app.post("/me/chat")
+def chat_stream(request: ChatRequest, token: str = Depends(require_token)):
+    """Stream an assistant response via SSE. Persists history in Supabase."""
+    if not db.supabase_enabled():
+        raise HTTPException(status_code=503, detail="Chat non disponible sans Supabase.")
+
+    if request.conversation_id:
+        history = db.get_conversation_messages(token, request.conversation_id)
+        conv_id = request.conversation_id
+    else:
+        conv = db.create_conversation(token, title=request.message[:80])
+        if not conv:
+            raise HTTPException(status_code=500, detail="Impossible de créer la conversation.")
+        conv_id = conv["id"]
+        history = []
+
+    db.add_message(token, conv_id, "user", request.message)
+
+    llm_messages = history + [{"role": "user", "content": request.message}]
+    profile = db.get_editorial_profile(token)
+    corpus = db.get_user_corpus(token)
+
+    collected: list[str] = []
+
+    def generate():
+        yield f"data: {json.dumps({'conversation_id': conv_id})}\n\n"
+        for chunk in chat_module.stream_chat(llm_messages, profile, corpus):
+            if chunk == "data: [DONE]\n\n":
+                full_text = "".join(collected)
+                if full_text:
+                    db.add_message(token, conv_id, "assistant", full_text)
+                yield chunk
+            else:
+                try:
+                    data = json.loads(chunk[6:])
+                    text = data.get("text", "")
+                    if text:
+                        collected.append(text)
+                except Exception:
+                    pass
+                yield chunk
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/me/chat/conversations")
+def list_chat_conversations(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List the user's recent chat conversations."""
+    if not db.supabase_enabled():
+        return []
+    return db.list_conversations(token)
+
+
+@app.get("/me/chat/conversations/{conversation_id}/messages")
+def get_chat_messages(
+    conversation_id: str,
+    token: str = Depends(require_token),
+) -> list[dict[str, Any]]:
+    """Get all messages for a conversation."""
+    if not db.supabase_enabled():
+        return []
+    return db.get_conversation_messages(token, conversation_id)
     return {"saved": saved}

@@ -471,6 +471,72 @@ def get_user_ai_context(access_token: str | None) -> dict[str, Any] | None:
     return context
 
 
+# ── Chat conversations ──────────────────────────────────────────────────────
+
+def create_conversation(access_token: str, title: str | None = None) -> dict | None:
+    """Create a new chat conversation for the user."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "title": (title or "Nouvelle conversation")[:120],
+    }
+    resp = db.table("chat_conversations").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def add_message(access_token: str, conversation_id: str, role: str, content: str) -> dict | None:
+    """Append a message to a conversation."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "conversation_id": conversation_id,
+        "user_id": user["id"],
+        "role": role,
+        "content": content,
+    }
+    resp = db.table("chat_messages").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def get_conversation_messages(access_token: str, conversation_id: str) -> list[dict]:
+    """Return all messages in a conversation, ordered oldest first."""
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("chat_messages")
+        .select("id,role,content,created_at")
+        .eq("conversation_id", conversation_id)
+        .eq("user_id", user["id"])
+        .order("created_at")
+        .execute()
+    )
+    return resp.data or []
+
+
+def list_conversations(access_token: str, limit: int = 20) -> list[dict]:
+    """List the user's recent chat conversations, newest first."""
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("chat_conversations")
+        .select("id,title,created_at,updated_at")
+        .eq("user_id", user["id"])
+        .order("updated_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
 def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
     """Persist generated ideas for the authenticated user. Returns saved rows (with ids)."""
     if not ideas or not supabase_enabled():

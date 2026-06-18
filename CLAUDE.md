@@ -26,6 +26,14 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 
 ## Changelog
 
+### 2026-06-18 (ALE-79 : agent chatbot V1 — assistant éditorial LinkedIn)
+- **Endpoint SSE** : `POST /me/chat` → stream de réponse Claude (text/event-stream). Premier event = `{conversation_id}`, suivi de `{text: "..."}` chunks, terminé par `[DONE]`. Authentification requise (Supabase).
+- **Historique Supabase** : migration `supabase/migrations/0005_chat_conversations.sql` → tables `chat_conversations` + `chat_messages` (RLS par `user_id`). **À exécuter manuellement dans le SQL editor Supabase.** Trigger auto-update `updated_at` sur la conversation à chaque message.
+- **Backend** : `src/chat.py` — prompt système injection contexte client (`get_editorial_profile`) + résumé corpus influenceurs (`get_user_corpus`), streaming via `anthropic.messages.stream`. `src/db.py` — `create_conversation`, `add_message`, `get_conversation_messages`, `list_conversations`. `api.py` — `POST /me/chat`, `GET /me/chat/conversations`, `GET /me/chat/conversations/{id}/messages`.
+- **Frontend** (`page.tsx`) : nouvel onglet **« Assistant IA »** dans la sidebar (auth requise). Composant `ChatView` — bulles user/assistant, streaming progressif via `fetch` + `ReadableStream` (auth headers supportés vs EventSource natif), `Entrée` pour envoyer, `Maj+Entrée` pour saut de ligne. Conversation persistée entre navigations (état React local).
+- **Limites V1** : 1 seule conversation active par session (pas de liste de conversations côté UI), pas d'outils (pas de publication, pas d'analyse à la volée). V2 prévu : sélecteur de conversations + outils Zernio.
+- ⚠️ **Déploiement** : (1) exécuter la migration 0005 dans Supabase SQL editor, (2) merger cette branche dans `main` pour déploiement Render.
+
 ### 2026-06-18 (ALE-80 : sécuriser la publication LinkedIn — modal de confirmation + brouillon)
 - **Modal de confirmation** : clic sur « Publier sur LinkedIn » ouvre désormais une modal avec aperçu du texte et boutons Annuler / Confirmer. La publication réelle n'est déclenchée qu'au Confirmer.
 - **Brouillon Zernio** : nouveau bouton « Enregistrer en brouillon » sur chaque variant → appelle `/me/linkedin/publish` avec `draft:true` → Zernio reçoit `isDraft:true` (pas de `publishNow`). Message de succès distinct : « Brouillon enregistré ✓ ».
