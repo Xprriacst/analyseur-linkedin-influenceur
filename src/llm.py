@@ -46,6 +46,16 @@ def _model() -> str:
     return os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7")
 
 
+# Les modèles récents (Opus 4.7/4.8, Fable 5, Mythos 5) ont supprimé les
+# paramètres d'échantillonnage : envoyer `temperature` (ou top_p/top_k) renvoie
+# une erreur 400. On ne le transmet donc qu'aux modèles plus anciens.
+_NO_SAMPLING_TAGS = ("opus-4-7", "opus-4-8", "fable", "mythos")
+
+
+def _accepts_temperature(model: str) -> bool:
+    return not any(tag in model for tag in _NO_SAMPLING_TAGS)
+
+
 _MOIS_FR = [
     "janvier", "février", "mars", "avril", "mai", "juin",
     "juillet", "août", "septembre", "octobre", "novembre", "décembre",
@@ -132,9 +142,10 @@ def _call(
     kwargs: dict[str, Any] = dict(
         model=_model(),
         max_tokens=max_tokens,
-        temperature=temperature,
         system=system,
     )
+    if _accepts_temperature(kwargs["model"]):
+        kwargs["temperature"] = temperature
     if tools:
         kwargs["tools"] = tools
 
@@ -504,7 +515,9 @@ Produis une analyse stratégique COMPLÈTE et ACTIONNABLE en suivant ce plan :
 
     client = _client()
     messages: list[dict] = [{"role": "user", "content": user}]
-    kwargs: dict[str, Any] = dict(model=_model(), max_tokens=8192, temperature=0.5, system=system)
+    kwargs: dict[str, Any] = dict(model=_model(), max_tokens=8192, system=system)
+    if _accepts_temperature(kwargs["model"]):
+        kwargs["temperature"] = 0.5
     tools = _web_search_tools()
     if tools:
         kwargs["tools"] = tools
@@ -755,13 +768,15 @@ def chat_stream(
         if m.get("role") in {"user", "assistant"} and (m.get("content") or "").strip()
     ]
     system = _chat_system_prompt(top_posts_examples, benchmark, user_context=user_context)
-    with _client().messages.stream(
+    stream_kwargs: dict[str, Any] = dict(
         model=_model(),
         max_tokens=6000,
-        temperature=0.7,
         system=system,
         messages=anthropic_messages,
-    ) as stream:
+    )
+    if _accepts_temperature(stream_kwargs["model"]):
+        stream_kwargs["temperature"] = 0.7
+    with _client().messages.stream(**stream_kwargs) as stream:
         for text in stream.text_stream:
             yield text
         final_message = stream.get_final_message()
