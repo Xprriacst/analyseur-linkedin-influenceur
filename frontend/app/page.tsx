@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -2183,6 +2183,12 @@ function ProfileView({
   const [draftInfo, setDraftInfo] = useState("");
   const linkedin = useLinkedIn(isAuthed);
 
+  // `Field` lit toujours la dernière valeur du profil via cette ref, ce qui
+  // permet de garder une identité de composant stable (useCallback ci-dessous)
+  // sans capturer un `profile` périmé.
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+
   useEffect(() => {
     if (!isAuthed) {
       setProfile(EMPTY_EDITORIAL_PROFILE);
@@ -2300,7 +2306,10 @@ function ProfileView({
     }
   }
 
-  function Field({
+  // Défini une seule fois (deps []) → React conserve le même <input> entre les
+  // rendus au lieu de le démonter/remonter à chaque frappe (sinon l'input perd
+  // le focus et on ne peut taper qu'une lettre à la fois).
+  const Field = useCallback(function Field({
     name,
     label,
     placeholder,
@@ -2311,7 +2320,7 @@ function ProfileView({
     placeholder?: string;
     multiline?: boolean;
   }) {
-    const value = String(profile[name] || "");
+    const value = String(profileRef.current[name] || "");
     return (
       <label className="profile-field">
         <span>{label}</span>
@@ -2331,7 +2340,7 @@ function ProfileView({
         )}
       </label>
     );
-  }
+  }, []);
 
   const filledCount = Object.entries(profile)
     .filter(([key, value]) => key !== "id" && typeof value === "string" && value.trim().length > 0)
