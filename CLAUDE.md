@@ -26,6 +26,14 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 
 ## Changelog
 
+### 2026-06-19 (tests E2E de non-régression — Playwright)
+- **Suite Playwright** dans `e2e/` (projet npm dédié, séparé du front) qui tourne contre le **site dev déployé** avec un compte Supabase de test. **Lecture seule** : aucun test ne déclenche de génération (zéro coût Anthropic/Apify) ni de publication.
+- **Specs** : `smoke.spec.ts` (landing + ouverture du modal de connexion, sans auth), `authenticated.spec.ts` (onglets Mon profil, Mes contenus, Générateur, Assistant — rendu + absence d'erreur de chargement). `auth.setup.ts` logge une fois et persiste la session via `storageState`. Helpers `login()`/`gotoTab()`.
+- **Compte de test** : `qa.playwright@lkd-outreach.app` / `Lkd!Test2026` (créé directement dans `auth.users`+`auth.identities` via MCP Supabase, email confirmé). ⚠️ Piège GoTrue : les colonnes token (`confirmation_token`, `recovery_token`, `email_change*`, `phone_change*`, `reauthentication_token`) doivent être `''` et non `NULL`, sinon login = `Database error querying schema`. `auth.identities.email` est une colonne générée (ne pas l'insérer).
+- ⚠️ **Playwright 1.61.0 cassé** avec Node 22 (`context.conditions?.includes is not a function` à l'import d'un module TS local) → **pinné `1.49.1`**.
+- **Lancer** : `cd e2e && npm install && npx playwright install chromium && npx playwright test`. Cible surchargeable par `E2E_BASE_URL` (prod : `https://lkd-outreach.netlify.app`).
+- Pas d'impact build : `e2e/` est hors du base directory Netlify (`frontend/`) et de Render.
+
 ### 2026-06-19 (persistance : profil auto-sauvé + posts générés en base)
 - **Profil éditorial auto-sauvé** : le bouton **« Pré-remplir »** (`draftProfile` dans `page.tsx`) enchaîne désormais un `PUT /me/profile` juste après la génération → le profil généré est **persisté immédiatement** en base, plus besoin de cliquer « Sauvegarder ». Cause du bug initial : `/me/profile/draft` ne fait que renvoyer le brouillon (remplit le formulaire), seul `PUT /me/profile` écrit en base.
 - **Posts générés persistés** : nouvelle table `generated_posts` (migration `0006_generated_posts.sql`, RLS `auth.uid() = user_id`) + `save_generated_posts(token, topic, variants)` dans `db.py`. `/generate` auto-sauve les variants par utilisateur et renvoie `save_error`. Colonnes : `topic, editorial_role, hook_type, strategy, predicted_lift, post`.
