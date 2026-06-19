@@ -526,6 +526,76 @@ def save_generated_posts(
     return resp.data if resp.data else variants
 
 
+def list_generated_ideas(access_token: str, limit: int = 100) -> list[dict]:
+    """List the user's saved post ideas, newest first."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_ideas")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def list_generated_posts(access_token: str, limit: int = 100) -> list[dict]:
+    """List the user's saved generated posts, newest first."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def delete_generated_idea(access_token: str, idea_id: str) -> bool:
+    """Delete one of the user's saved ideas. Returns True if a row was removed."""
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_ideas")
+        .delete()
+        .eq("user_id", user["id"])
+        .eq("id", idea_id)
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def delete_generated_post(access_token: str, post_id: str) -> bool:
+    """Delete one of the user's saved posts. Returns True if a row was removed."""
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .delete()
+        .eq("user_id", user["id"])
+        .eq("id", post_id)
+        .execute()
+    )
+    return bool(resp.data)
+
+
 import re as _re
 
 
