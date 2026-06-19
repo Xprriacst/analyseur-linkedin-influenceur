@@ -57,6 +57,25 @@ def client_for_token(access_token: str) -> "Client":
     return client
 
 
+def _service_key() -> str | None:
+    return os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+
+def admin_enabled() -> bool:
+    """True when a service-role key is configured (cron context only)."""
+    return bool(create_client and _url() and _service_key())
+
+
+def admin_client() -> "Client":
+    """Service-role client that BYPASSES RLS.
+
+    Reserved for server-side jobs without a user session (e.g. the daily-idea
+    cron). Must never be reachable from an HTTP endpoint — it would expose every
+    user's data. Endpoints keep using `client_for_token`.
+    """
+    return create_client(_url(), _service_key())  # type: ignore[arg-type]
+
+
 def get_user(access_token: str) -> dict | None:
     """Validate a JWT and return the matching user, or None if invalid."""
     if not supabase_enabled():
@@ -169,13 +188,16 @@ def get_user_corpus(access_token: str) -> list[dict]:
     user = get_user(access_token)
     if not user:
         return []
-    db = client_for_token(access_token)
+    return _corpus_from_client(client_for_token(access_token), user["id"])
 
+
+def _corpus_from_client(db: "Client", user_id: str) -> list[dict]:
+    """Shared corpus loader, usable with a user JWT client or the admin client."""
     # Filtre user_id explicite en plus de RLS (défense en profondeur).
     inf_resp = (
         db.table("influencers")
         .select("*")
-        .eq("user_id", user["id"])
+        .eq("user_id", user_id)
         .order("updated_at", desc=True)
         .execute()
     )
@@ -909,4 +931,207 @@ def append_chat_message(access_token: str, conversation_id: str, role: str, cont
         .execute()
     )
     db.table("chat_conversations").update({"updated_at": now}).eq("id", conversation_id).execute()
+    return resp.data[0] if resp.data else None
+
+
+# --------------------------------------------------------------------------- #
+# Idée du jour — réservoir (idea_seeds) + idées générées (daily_ideas)
+# --------------------------------------------------------------------------- #
+
+def list_idea_seeds(access_token: str, limit: int = 200) -> list[dict]:
+    """List the user's idea seeds, oldest first (FIFO consumption order)."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("idea_seeds")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=False)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def add_idea_seed(access_token: str, text: str) -> dict | None:
+    """Add a seed idea to the user's reservoir."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("idea_seeds")
+        .insert({"user_id": user["id"], "text": text})
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def delete_idea_seed(access_token: str, seed_id: str) -> bool:
+    """Delete one of the user's seeds. RLS guarantees ownership."""
+    if not supabase_enabled():
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    db.table("idea_seeds").delete().eq("id", seed_id).eq("user_id", user["id"]).execute()
+    return True
+
+
+def list_daily_ideas(access_token: str, limit: int = 30) -> list[dict]:
+    """List the user's generated daily ideas, newest first."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("daily_ideas")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("idea_date", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_daily_ideas_enabled(access_token: str) -> bool:
+    """Whether the user opted in to the daily idea cron."""
+    profile = get_editorial_profile(access_token)
+    return bool(profile and profile.get("daily_ideas_enabled"))
+
+
+def set_daily_ideas_enabled(access_token: str, enabled: bool) -> dict | None:
+    """Toggle the user's daily-idea opt-in (creating the profile row if needed)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "daily_ideas_enabled": bool(enabled),
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    resp = (
+        db.table("user_editorial_profiles")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+# --- Cron helpers (service-role, bypass RLS) — jamais exposés via HTTP -------- #
+
+def list_daily_idea_users() -> list[str]:
+    """User ids that opted in to the daily idea cron (service-role)."""
+    if not admin_enabled():
+        return []
+    db = admin_client()
+    resp = (
+        db.table("user_editorial_profiles")
+        .select("user_id")
+        .eq("daily_ideas_enabled", True)
+        .execute()
+    )
+    return [r["user_id"] for r in (resp.data or []) if r.get("user_id")]
+
+
+def get_corpus_for_user(user_id: str) -> list[dict]:
+    """Admin-side corpus loader for the cron (no user JWT available)."""
+    if not admin_enabled():
+        return []
+    return _corpus_from_client(admin_client(), user_id)
+
+
+def get_ai_context_for_user(user_id: str) -> dict[str, Any] | None:
+    """Compact editorial context for a user, loaded with the service-role client."""
+    if not admin_enabled():
+        return None
+    db = admin_client()
+    resp = (
+        db.table("user_editorial_profiles")
+        .select("*")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    profile = resp.data[0] if resp.data else None
+    if not profile:
+        return None
+    context = {
+        key: profile.get(key)
+        for key in _EDITORIAL_PROFILE_FIELDS
+        if profile.get(key) not in (None, "")
+    }
+    return context or None
+
+
+def pop_unused_seed(user_id: str) -> dict | None:
+    """Return the oldest unused seed for a user (service-role). Does not mark it."""
+    if not admin_enabled():
+        return None
+    db = admin_client()
+    resp = (
+        db.table("idea_seeds")
+        .select("*")
+        .eq("user_id", user_id)
+        .is_("used_at", "null")
+        .order("created_at", desc=False)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def mark_seed_used(seed_id: str) -> None:
+    """Mark a seed as consumed (service-role)."""
+    if not admin_enabled():
+        return
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    admin_client().table("idea_seeds").update({"used_at": now}).eq("id", seed_id).execute()
+
+
+def daily_idea_exists(user_id: str, idea_date: str) -> bool:
+    """Whether a daily idea already exists for this user/date (idempotent cron)."""
+    if not admin_enabled():
+        return False
+    db = admin_client()
+    resp = (
+        db.table("daily_ideas")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("idea_date", idea_date)
+        .limit(1)
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def insert_daily_idea(
+    user_id: str, idea_markdown: str, idea_date: str, seed_id: str | None = None
+) -> dict | None:
+    """Persist a generated daily idea (service-role). Ignores conflicts on (user, date)."""
+    if not admin_enabled():
+        return None
+    db = admin_client()
+    row = {
+        "user_id": user_id,
+        "idea_markdown": idea_markdown,
+        "idea_date": idea_date,
+        "seed_id": seed_id,
+    }
+    resp = (
+        db.table("daily_ideas")
+        .upsert(row, on_conflict="user_id,idea_date", ignore_duplicates=True)
+        .execute()
+    )
     return resp.data[0] if resp.data else None

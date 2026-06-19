@@ -5,7 +5,7 @@ test.describe("Landing publique", () => {
   test("la page se charge avec le titre et la navigation", async ({ page }) => {
     await page.goto("/");
     await expect(page).toHaveTitle(/Strategy Decoder/i);
-    for (const label of ["Analyser", "Mon profil", "Générateur de posts", "Mes contenus", "Dashboard"]) {
+    for (const label of ["Analyser", "Mon profil", "Idée du jour", "Générateur de posts", "Mes contenus", "Dashboard"]) {
       await expect(page.locator(".nav-item", { hasText: label })).toBeVisible();
     }
   });

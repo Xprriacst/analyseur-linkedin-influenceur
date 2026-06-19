@@ -41,3 +41,14 @@ test("onglet Assistant : interface chat rendue", async ({ page }) => {
   // L'onglet doit devenir actif sans rediriger vers l'auth (donc session OK).
   await expect(page.locator(".nav-item.active", { hasText: "Assistant" })).toBeVisible();
 });
+
+test("onglet Idée du jour : idée + réservoir + opt-in sans erreur", async ({ page }) => {
+  await gotoTab(page, "Idée du jour");
+  await expect(page.getByRole("heading", { name: /^Idée du jour$/i })).toBeVisible();
+  // Le réservoir et son switch d'opt-in sont rendus.
+  await expect(page.getByRole("heading", { name: /Mon réservoir d'idées/i })).toBeVisible();
+  await expect(page.getByText(/Recevoir une idée chaque matin/i)).toBeVisible();
+  await expect(page.getByPlaceholder(/Mon retour sur/i)).toBeVisible();
+  // Aucun bandeau d'erreur de chargement (daily-ideas + idea-seeds).
+  await expect(page.locator(".error")).toHaveCount(0);
+});

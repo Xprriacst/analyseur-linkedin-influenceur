@@ -35,6 +35,17 @@ Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netli
 
 ## Changelog
 
+### 2026-06-19 (idée du jour : cron quotidien + réservoir client)
+- **Objectif** : une **idée de post générée chaque matin** par utilisateur opt-in, piochée en priorité dans un **réservoir d'idées** que le client remplit lui-même dans l'app (choix in-app + Supabase plutôt que Google Doc : pas de dépendance externe, structuré, RLS automatique).
+- **DB** : migration `supabase/migrations/0007_daily_ideas.sql` → tables `idea_seeds` (réservoir, RLS user, `used_at`) + `daily_ideas` (1 idée/jour, `unique(user_id, idea_date)`, **lecture seule côté client** — seul le cron écrit) + colonne `daily_ideas_enabled` (opt-in) sur `user_editorial_profiles`. **À exécuter manuellement dans le SQL editor Supabase.**
+- **Service-role (nouveau dans l'archi)** : jusqu'ici tout passait par le JWT user (RLS). Le cron n'a pas de session → ajout d'un **client service-role** dans `db.py` (`admin_client()`/`admin_enabled()`, lit `SUPABASE_SERVICE_ROLE_KEY`). ⚠️ **Réservé au cron, jamais exposé via HTTP** (il bypass la RLS). Helpers cron : `list_daily_idea_users`, `get_corpus_for_user`, `get_ai_context_for_user`, `pop_unused_seed`, `mark_seed_used`, `daily_idea_exists`, `insert_daily_idea`.
+- **Cron** : `src/daily_ideas.py` (entrypoint `python -m src.daily_ideas`) — pour chaque user opt-in : reconstruit le benchmark, pioche 1 seed non utilisée (sinon génération pure), `generate_ideas(count=1, seed_topic=…)`, écrit `daily_ideas` + marque la seed. **Idempotent** (skip si l'idée du jour existe déjà), isolé par user (un échec ne bloque pas les autres). Coût = 1 appel Anthropic/user/jour, **pas d'Apify**.
+- **Refactor** : `_enrich_influencers` + `_build_benchmark` extraits d'`api.py` vers `src/benchmark.py` (partagés api ↔ cron, comportement inchangé — `api.py` garde des alias).
+- **Backend** : `seed_topic` optionnel ajouté à `generate_ideas` (`llm.py`, rétro-compatible). Endpoints `GET/POST /me/idea-seeds`, `DELETE /me/idea-seeds/{id}`, `GET /me/daily-ideas` (idées + état opt-in), `POST /me/daily-ideas/enabled` (tous `require_token`, RLS).
+- **Front** (`page.tsx` + `globals.css`) : onglet **« Idée du jour »** (premium/auth) → idée du jour en markdown + historique repliable, **réservoir d'idées** (ajout/suppression) et switch « Recevoir une idée chaque matin ». Composant `DailyIdeasView`.
+- **E2E** : test `authenticated.spec.ts` (onglet idée + réservoir + opt-in sans erreur) + « Idée du jour » ajouté au smoke nav.
+- ⚠️ **Déploiement** : (1) exécuter la migration 0007, (2) créer un **Cron Job Render** `python -m src.daily_ideas` (schedule conseillé `0 5 * * *` ≈ 6-7h Paris) avec env `ANTHROPIC_API_KEY` + `SUPABASE_URL` + **`SUPABASE_SERVICE_ROLE_KEY`** (nouveau secret), (3) merge `dev → main`. Le service web n'a pas besoin du service-role.
+
 ### 2026-06-19 (tests E2E de non-régression — Playwright)
 - **Suite Playwright** dans `e2e/` (projet npm dédié, séparé du front) qui tourne contre le **site dev déployé** avec un compte Supabase de test. **Lecture seule** : aucun test ne déclenche de génération (zéro coût Anthropic/Apify) ni de publication.
 - **Specs** : `smoke.spec.ts` (landing + ouverture du modal de connexion, sans auth), `authenticated.spec.ts` (onglets Mon profil, Mes contenus, Générateur, Assistant — rendu + absence d'erreur de chargement). `auth.setup.ts` logge une fois et persiste la session via `storageState`. Helpers `login()`/`gotoTab()`.
