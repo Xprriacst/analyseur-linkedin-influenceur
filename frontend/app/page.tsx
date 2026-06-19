@@ -633,7 +633,6 @@ function Sidebar({
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 
 }) {
-  const [configOpen, setConfigOpen] = useState(false);
 
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean; auth?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
@@ -714,36 +713,21 @@ function Sidebar({
             );
           })()}
         </div>
-        <div className="config-card">
-          <button
-            className="config-toggle"
-            onClick={() => setConfigOpen(o => !o)}
-            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", background: "none", border: "none", cursor: "pointer", padding: 0 }}
-          >
-            <p className="eyebrow" style={{ margin: 0 }}>Config</p>
-            <span style={{ fontSize: 10, opacity: 0.5, transform: configOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▼</span>
-          </button>
-          {!configOpen && (
-            <p style={{ margin: "6px 0 0", fontSize: 11, opacity: 0.45, fontStyle: "italic" }}>
-              Lance la première analyse pour connecter le système
-            </p>
-          )}
-          {configOpen && (
-            <>
-              <div className="config-row">
-                <span>Apify</span>
-                <b className={`status-pill ${health?.apify ? "ok" : "no"}`}>{health?.apify ? "OK" : "Manquant"}</b>
-              </div>
-              <div className="config-row">
-                <span>Anthropic</span>
-                <b className={`status-pill ${health?.anthropic ? "ok" : "no"}`}>{health?.anthropic ? "OK" : "Manquant"}</b>
-              </div>
-              <div className="config-row">
-                <span>Modèle</span>
-                <b className="status-pill" style={{ maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis" }}>{health?.model || "—"}</b>
-              </div>
-            </>
-          )}
+        <div
+          title={`Apify : ${health?.apify ? "OK" : "manquant"} · Anthropic : ${health?.anthropic ? "OK" : "manquant"} · Modèle : ${health?.model || "—"}`}
+          style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 10.5, color: "var(--muted)" }}
+        >
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: health?.apify ? "#10b981" : "#ef4444" }} />
+            Apify
+          </span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: health?.anthropic ? "#10b981" : "#ef4444" }} />
+            Anthropic
+          </span>
+          <span style={{ opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
+            {health?.model || "—"}
+          </span>
         </div>
       </section>
     </aside>
