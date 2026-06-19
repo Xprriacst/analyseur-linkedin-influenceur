@@ -6,6 +6,22 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
+test("onglet Analyser : sous-onglets Analyser / Mes influenceurs / Dashboard", async ({ page }) => {
+  await gotoTab(page, "Analyser");
+  // Les trois sous-onglets fusionnés sont rendus.
+  await expect(page.locator(".tab", { hasText: "Analyser" })).toBeVisible();
+  await expect(page.locator(".tab", { hasText: "Mes influenceurs" })).toBeVisible();
+  await expect(page.locator(".tab", { hasText: "Dashboard" })).toBeVisible();
+  // Sous-onglet par défaut : la zone de soumission de série.
+  await expect(page.getByRole("heading", { name: /Analyser des profils/i })).toBeVisible();
+  // Bascule vers « Mes influenceurs ».
+  await page.locator(".tab", { hasText: "Mes influenceurs" }).click();
+  await expect(page.getByRole("heading", { name: /^Mes influenceurs$/i })).toBeVisible();
+  // Bascule vers « Dashboard » sans erreur de chargement.
+  await page.locator(".tab", { hasText: "Dashboard" }).click();
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
 test("onglet Mon profil : contexte éditorial + pré-remplissage IA + sauvegarde", async ({ page }) => {
   await gotoTab(page, "Mon profil");
   await expect(page.getByRole("heading", { name: /Contexte éditorial/i })).toBeVisible();
