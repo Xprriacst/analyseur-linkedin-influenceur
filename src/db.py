@@ -497,6 +497,35 @@ def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
     return resp.data if resp.data else ideas
 
 
+def save_generated_posts(
+    access_token: str, topic: str, variants: list[dict]
+) -> list[dict]:
+    """Persist generated post variants for the authenticated user. Returns saved rows (with ids)."""
+    if not variants or not supabase_enabled():
+        return variants
+    user = get_user(access_token)
+    if not user:
+        return variants
+    db = client_for_token(access_token)
+    rows = [
+        {
+            "user_id": user["id"],
+            "topic": topic or None,
+            "editorial_role": variant.get("editorial_role"),
+            "hook_type": variant.get("hook_type"),
+            "strategy": variant.get("strategy"),
+            "predicted_lift": variant.get("predicted_lift"),
+            "post": variant.get("post") or "",
+        }
+        for variant in variants
+        if variant.get("post")
+    ]
+    if not rows:
+        return variants
+    resp = db.table("generated_posts").insert(rows).execute()
+    return resp.data if resp.data else variants
+
+
 import re as _re
 
 

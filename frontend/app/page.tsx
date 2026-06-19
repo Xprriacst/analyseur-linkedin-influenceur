@@ -1838,7 +1838,8 @@ function ProfileView({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Pré-remplissage impossible");
-      setProfile((prev) => ({ ...prev, ...(data.profile || {}) }));
+      const merged = { ...profile, ...(data.profile || {}) };
+      setProfile(merged);
       setDetailsOpen(true); // ouvre le tiroir pour relire les champs pré-remplis
       const sources = data.sources || {};
       const sourceLabels = [
@@ -1847,10 +1848,20 @@ function ProfileView({
         sources.linkedin_apify ? "LinkedIn via Apify" : "",
         sources.website_summary ? "site web" : "",
       ].filter(Boolean);
+      // Auto-sauvegarde : on persiste tout de suite le profil généré en base.
+      const saveRes = await fetch(`${DIRECT_API_URL}/me/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify(merged),
+      });
+      const saveData = await saveRes.json();
+      if (!saveRes.ok) throw new Error(saveData.detail || "Sauvegarde du profil généré impossible");
+      setProfile({ ...EMPTY_EDITORIAL_PROFILE, ...(saveData || {}) });
+      setSaved(true);
       setDraftInfo(
         sourceLabels.length
-          ? `Brouillon généré depuis : ${sourceLabels.join(", ")}. Relis puis sauvegarde.`
-          : "Brouillon généré. Relis puis sauvegarde."
+          ? `Profil généré depuis : ${sourceLabels.join(", ")} et enregistré. Relis et ajuste si besoin.`
+          : "Profil généré et enregistré. Relis et ajuste si besoin."
       );
     } catch (err: any) {
       setError(err.message || "Pré-remplissage impossible");

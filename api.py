@@ -763,15 +763,22 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
     top_posts, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
     role = (payload.editorial_role or "").strip() or None
+    topic = payload.topic.strip()
     variants = generate_posts(
-        payload.topic.strip(),
+        topic,
         top_posts,
         benchmark,
         user_context=user_context,
         editorial_role=role,
         web_search=payload.web_search,
     )
-    return {"variants": variants}
+    save_error: str | None = None
+    if token:
+        try:
+            variants = db.save_generated_posts(token, topic, variants)
+        except Exception as exc:
+            save_error = str(exc)
+    return {"variants": variants, "save_error": save_error}
 
 
 @app.post("/generate-image")
