@@ -24,6 +24,15 @@ Copier `frontend/.env.local.example` → `frontend/.env.local` et pointer `BACKE
 ### Règle changement de domaine (reminder)
 Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.py`, (2) Supabase Auth Site URL + Redirect URLs, (3) variables d'env Netlify. Ne pas marquer terminé sans avoir vérifié les 3.
 
+## Tests E2E (non-régression)
+Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netlify/Render). Tourne contre le **site dev déployé**, en **lecture seule** (aucune génération → zéro coût Anthropic/Apify).
+- **Lancer** : `cd e2e && npm install && npx playwright install chromium && npx playwright test`. Détails dans `e2e/README.md`.
+- **Cible** surchargeable : `E2E_BASE_URL=https://lkd-outreach.netlify.app` pour viser la prod (défaut = dev).
+- **Compte de test** : `qa.playwright@lkd-outreach.app` / `Lkd!Test2026` (dans Supabase `auth.users`+`auth.identities`, email confirmé).
+- **Après toute feature UI** : ajouter/ajuster un spec dans `e2e/tests/` et relancer la suite avant de merger.
+- **Pièges** : Playwright **pinné `1.49.1`** (1.61 cassé avec Node 22). Création SQL d'un user GoTrue → colonnes token à `''` (pas `NULL`), `auth.identities.email` est générée.
+- **Génération réelle** (post/idée/analyse) : non couverte (coûteuse) — testée manuellement par Alex.
+
 ## Changelog
 
 ### 2026-06-19 (tests E2E de non-régression — Playwright)
