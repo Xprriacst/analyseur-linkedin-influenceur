@@ -32,7 +32,12 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 - **Idées** : déjà auto-sauvées dans `generated_ideas` (via `save_ideas`, appelé par `/ideas`) — table existante créée manuellement, **formalisée** dans la migration 0006 en `if not exists`.
 - **DB** : migration 0006 **déjà appliquée** sur Supabase (via MCP) — pas besoin de la rejouer. Base partagée prod+dev.
 - ⚠️ **Déploiement** : mergé `dev → main` (Render backend + Netlify prod). Aucune nouvelle env var.
-- **Suite possible** : UI pour relire/réutiliser les posts & idées sauvegardés (endpoints `GET` + onglet/historique) — pour l'instant on persiste sans interface de relecture.
+
+### 2026-06-19 (interface « Mes contenus » : relire & réutiliser posts/idées sauvegardés)
+- **Nouvel onglet « Mes contenus »** (`view === "library"` → `LibraryView` dans `page.tsx`, premium/auth) : deux sous-onglets **Posts** / **Idées** listant tout ce qui a été généré et persisté. Chargé via `GET /me/generated-posts` + `GET /me/generated-ideas` au montage.
+- **Réutilisation** : bouton « Générer ce post » (idée) / « Régénérer sur ce sujet » (post) → remonte le sujet à `Home` (`generatorSeed = {topic, nonce}`) qui bascule sur l'onglet Générateur ; `Generator` reçoit la prop `seed` et un `useEffect([seed.nonce])` pré-remplit le sujet et lance la génération. Aussi : copier le post / l'accroche (clipboard), supprimer (optimiste + `DELETE`).
+- **Backend** : `list_generated_ideas`/`list_generated_posts` + `delete_generated_idea`/`delete_generated_post` dans `db.py` ; endpoints `GET`/`DELETE /me/generated-ideas[/{id}]` et `…/generated-posts[/{id}]` dans `api.py` (tous `require_token`, scope RLS `user_id`).
+- Pas de nouvelle migration (réutilise `generated_posts`/`generated_ideas` de la 0006).
 
 ### 2026-06-18 (ALE-79 : assistant conversationnel V1 — chat avec mémoire + contexte)
 - **Objectif** : remplacer les générations one-shot stateless (`/ideas`, `/generate`) par un **chat itératif** type Claude, avec mémoire, contexte client et benchmark influenceurs. **V1 sans outils** (le tool-use — image, publication, relance d'analyse depuis la conversation — est l'évolution prévue, pas encore implémentée).

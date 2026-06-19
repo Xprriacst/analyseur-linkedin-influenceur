@@ -19,9 +19,11 @@ import {
   Lock,
   LogIn,
   LogOut,
+  Bookmark,
   MessageSquare,
   PenTool,
   PlusCircle,
+  Trash2,
   RefreshCw,
   Send,
   Settings2,
@@ -80,6 +82,17 @@ type Variant = {
   strategy: string;
   predicted_lift: string;
   post: string;
+};
+type SavedIdea = Idea & { id: string; created_at?: string };
+type SavedPost = {
+  id: string;
+  topic?: string;
+  editorial_role?: string;
+  hook_type?: string;
+  strategy?: string;
+  predicted_lift?: string;
+  post: string;
+  created_at?: string;
 };
 type ChatConversation = {
   id: string;
@@ -154,7 +167,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "influencers", "assistant", "generator", "dashboard"] as const;
+const mainViews = ["analyze", "profile", "influencers", "assistant", "generator", "library", "dashboard"] as const;
 type MainView = typeof mainViews[number];
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
@@ -625,6 +638,7 @@ function Sidebar({
     { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} />, auth: true },
     { key: "assistant", label: "Assistant", icon: <MessageSquare size={14} />, premium: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
+    { key: "library", label: "Mes contenus", icon: <Bookmark size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
   ];
 
@@ -738,6 +752,7 @@ function TopHeader({
     influencers: "Mes influenceurs",
     assistant: "Assistant LinkedIn",
     generator: "Générateur de posts",
+    library: "Mes contenus sauvegardés",
     dashboard: "Dashboard global",
   };
 
@@ -1113,7 +1128,7 @@ function useLinkedIn(isAuthed: boolean) {
   return { status, busy, error, connect };
 }
 
-function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
+function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null }) {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
   const [topic, setTopic] = useState("");
@@ -1131,6 +1146,14 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
   const [variantImages, setVariantImages] = useState<Record<number, string>>({});
   const [generatingImage, setGeneratingImage] = useState<number | null>(null);
   const [imageError, setImageError] = useState("");
+
+  // "Réutiliser" depuis Mes contenus : pré-remplit le sujet et lance la génération.
+  useEffect(() => {
+    if (!seed?.topic) return;
+    setTopic(seed.topic);
+    void generateFromTopic(seed.topic);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed?.nonce]);
 
   function publishVariant(i: number, text: string, draft: boolean = false) {
     if (!isAuthed) { requireAuth("Connecte-toi pour publier sur LinkedIn."); return; }
@@ -1460,6 +1483,203 @@ function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
               </button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LibraryView({
+  isAuthed,
+  requireAuth,
+  onReuse,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string) => void;
+  onReuse: (topic: string) => void;
+}) {
+  const [tab, setTab] = useState<"posts" | "ideas">("posts");
+  const [posts, setPosts] = useState<SavedPost[]>([]);
+  const [ideas, setIdeas] = useState<SavedIdea[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
+  const roleLabels: Record<string, string> = {
+    performance: "Performance", methodologie: "Méthodologie", autorite: "Autorité",
+    story: "Story", quotidien: "Quotidien", opinion: "Opinion", relationnel: "Relationnel",
+  };
+  const fmtDate = (s?: string) => {
+    if (!s) return "";
+    try { return new Date(s).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" }); }
+    catch { return ""; }
+  };
+
+  async function loadAll() {
+    if (!isAuthed) return;
+    setLoading(true);
+    setError("");
+    try {
+      const headers = await authHeaders();
+      const [pRes, iRes] = await Promise.all([
+        fetch(`${DIRECT_API_URL}/me/generated-posts`, { headers }),
+        fetch(`${DIRECT_API_URL}/me/generated-ideas`, { headers }),
+      ]);
+      const pData = await pRes.json();
+      const iData = await iRes.json();
+      if (!pRes.ok) throw new Error(pData.detail || "Chargement des posts impossible");
+      if (!iRes.ok) throw new Error(iData.detail || "Chargement des idées impossible");
+      setPosts(Array.isArray(pData) ? pData : []);
+      setIdeas(Array.isArray(iData) ? iData : []);
+    } catch (err: any) {
+      setError(err.message || "Chargement impossible");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAuthed) void loadAll();
+    else { setPosts([]); setIdeas([]); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  function copy(text: string, id: string) {
+    navigator.clipboard.writeText(text);
+    setCopied(id);
+    setTimeout(() => setCopied((c) => (c === id ? null : c)), 1500);
+  }
+
+  async function deletePost(id: string) {
+    setPosts((prev) => prev.filter((p) => p.id !== id));
+    try {
+      await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void loadAll(); }
+  }
+
+  async function deleteIdea(id: string) {
+    setIdeas((prev) => prev.filter((i) => i.id !== id));
+    try {
+      await fetch(`${DIRECT_API_URL}/me/generated-ideas/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void loadAll(); }
+  }
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Bookmark size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Mes contenus</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Connecte-toi pour retrouver les posts et idées générés et les réutiliser.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour retrouver tes contenus générés.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><Bookmark size={20} /> Mes contenus sauvegardés</h2>
+          <p className="section-desc">Tes posts et idées générés sont enregistrés automatiquement. Relis-les, copie-les ou réutilise-les.</p>
+        </div>
+        <button className="secondary-button" onClick={loadAll} disabled={loading}>
+          {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+          Rafraîchir
+        </button>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button className={tab === "posts" ? "primary-button" : "secondary-button"} onClick={() => setTab("posts")}>
+          <PenTool size={14} /> Posts ({posts.length})
+        </button>
+        <button className={tab === "ideas" ? "primary-button" : "secondary-button"} onClick={() => setTab("ideas")}>
+          <Lightbulb size={14} /> Idées ({ideas.length})
+        </button>
+      </div>
+
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {loading && posts.length === 0 && ideas.length === 0 ? (
+        <div className="card" style={{ padding: 32, textAlign: "center" }}>
+          <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
+          <p style={{ color: "var(--muted)" }}>Chargement de tes contenus…</p>
+        </div>
+      ) : tab === "posts" ? (
+        posts.length === 0 ? (
+          <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
+            Aucun post sauvegardé pour l'instant. Génère des posts dans l'onglet « Générateur de posts ».
+          </div>
+        ) : (
+          <div className="variants-list">
+            {posts.map((p) => (
+              <div className="variant-card" key={p.id}>
+                <div className="variant-header" style={{ flexWrap: "wrap" }}>
+                  {p.editorial_role && (
+                    <span className="badge role-badge">{roleLabels[p.editorial_role] || p.editorial_role}</span>
+                  )}
+                  {p.hook_type && <span className="badge">{p.hook_type}</span>}
+                  {p.predicted_lift && <span className="idea-lift">{p.predicted_lift}</span>}
+                  <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--muted)" }}>{fmtDate(p.created_at)}</span>
+                </div>
+                {p.topic && <p className="variant-strategy"><strong>Sujet :</strong> {p.topic}</p>}
+                <textarea className="variant-text" readOnly value={p.post} rows={12} />
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                  <button className="secondary-button" onClick={() => copy(p.post, p.id)}>
+                    {copied === p.id ? "Copié ✓" : "Copier le post"}
+                  </button>
+                  {p.topic && (
+                    <button className="secondary-button" onClick={() => onReuse(p.topic!)}>
+                      <Sparkles size={14} /> Régénérer sur ce sujet
+                    </button>
+                  )}
+                  <button className="secondary-button" style={{ marginLeft: "auto" }} onClick={() => deletePost(p.id)}>
+                    <Trash2 size={14} /> Supprimer
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      ) : ideas.length === 0 ? (
+        <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
+          Aucune idée sauvegardée pour l'instant. Génère des idées dans l'onglet « Générateur de posts ».
+        </div>
+      ) : (
+        <div className="ideas-grid">
+          {ideas.map((idea) => (
+            <div className="idea-card" key={idea.id}>
+              <div className="idea-header">
+                <span className="idea-funnel" style={{ borderColor: funnelColors[idea.funnel] || "var(--border)", color: funnelColors[idea.funnel] || "var(--muted)" }}>
+                  {idea.funnel}
+                </span>
+                <span className="badge">{idea.hook_type}</span>
+                <span className="idea-lift">{idea.estimated_lift}</span>
+              </div>
+              <h3 className="idea-title">{idea.title}</h3>
+              <p className="idea-hook">"{idea.hook}"</p>
+              <p className="idea-angle">{idea.angle}</p>
+              {idea.why_it_works && <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>}
+              <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8 }}>
+                <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtDate(idea.created_at)}</span>
+                <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
+                  <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => copy(idea.hook, idea.id)}>
+                    {copied === idea.id ? "Copié ✓" : "Copier l'accroche"}
+                  </button>
+                  <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => onReuse(idea.title)}>
+                    <Sparkles size={12} /> Générer ce post
+                  </button>
+                  <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => deleteIdea(idea.id)}>
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -2457,6 +2677,8 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("analyze");
+  // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
+  const [generatorSeed, setGeneratorSeed] = useState<{ topic: string; nonce: number } | null>(null);
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
@@ -2748,7 +2970,17 @@ export default function Home() {
           )}
           {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "assistant" && <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />}
-          {view === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} />}
+          {view === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={generatorSeed} />}
+          {view === "library" && (
+            <LibraryView
+              isAuthed={isAuthed}
+              requireAuth={requireAuth}
+              onReuse={(topic) => {
+                setGeneratorSeed({ topic, nonce: Date.now() });
+                setView("generator");
+              }}
+            />
+          )}
           {view === "dashboard" && <GlobalDashboard />}
         </main>
       </div>

@@ -781,6 +781,36 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
     return {"variants": variants, "save_error": save_error}
 
 
+@app.get("/me/generated-ideas")
+def me_generated_ideas(
+    limit: int = 100,
+    token: str = Depends(require_token),
+) -> list[dict[str, Any]]:
+    """List the authenticated user's saved post ideas."""
+    return db.list_generated_ideas(token, limit=max(1, min(limit, 500)))
+
+
+@app.get("/me/generated-posts")
+def me_generated_posts(
+    limit: int = 100,
+    token: str = Depends(require_token),
+) -> list[dict[str, Any]]:
+    """List the authenticated user's saved generated posts."""
+    return db.list_generated_posts(token, limit=max(1, min(limit, 500)))
+
+
+@app.delete("/me/generated-ideas/{idea_id}")
+def delete_me_generated_idea(idea_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Delete one of the authenticated user's saved ideas."""
+    return {"deleted": db.delete_generated_idea(token, idea_id)}
+
+
+@app.delete("/me/generated-posts/{post_id}")
+def delete_me_generated_post(post_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Delete one of the authenticated user's saved posts."""
+    return {"deleted": db.delete_generated_post(token, post_id)}
+
+
 @app.post("/generate-image")
 def generate_image(payload: GenerateImageRequest) -> dict[str, Any]:
     """Generate an image to accompany a LinkedIn post (GPT Image 2)."""
