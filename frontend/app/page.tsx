@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import {
   Activity,
   BarChart3,
+  BookOpen,
   CheckCircle2,
   Clock3,
   Download,
@@ -154,7 +155,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "influencers", "assistant", "generator", "dashboard"] as const;
+const mainViews = ["analyze", "profile", "influencers", "assistant", "generator", "dashboard", "library"] as const;
 type MainView = typeof mainViews[number];
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
@@ -626,6 +627,7 @@ function Sidebar({
     { key: "assistant", label: "Assistant", icon: <MessageSquare size={14} />, premium: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
+    { key: "library", label: "Bibliothèque", icon: <BookOpen size={14} />, auth: true },
   ];
 
   return (
@@ -739,6 +741,7 @@ function TopHeader({
     assistant: "Assistant LinkedIn",
     generator: "Générateur de posts",
     dashboard: "Dashboard global",
+    library: "Bibliothèque — idées & posts sauvegardés",
   };
 
   return (
@@ -1111,6 +1114,197 @@ function useLinkedIn(isAuthed: boolean) {
   }
 
   return { status, busy, error, connect };
+}
+
+type SavedIdea = {
+  id: string;
+  title: string;
+  hook?: string;
+  hook_type?: string;
+  funnel?: string;
+  angle?: string;
+  why_it_works?: string;
+  difficulty?: string;
+  estimated_lift?: number;
+  created_at: string;
+};
+
+type SavedPost = {
+  id: string;
+  topic?: string;
+  editorial_role?: string;
+  hook_type?: string;
+  strategy?: string;
+  predicted_lift?: number;
+  post: string;
+  created_at: string;
+};
+
+function LibraryView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
+  const [ideas, setIdeas] = useState<SavedIdea[]>([]);
+  const [posts, setPosts] = useState<SavedPost[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [activeTab, setActiveTab] = useState<"ideas" | "posts">("posts");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isAuthed) return;
+    void load();
+  }, [isAuthed]);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const headers = await authHeaders();
+      const [ideasRes, postsRes] = await Promise.all([
+        fetch(`${DIRECT_API_URL}/me/ideas`, { headers }),
+        fetch(`${DIRECT_API_URL}/me/posts`, { headers }),
+      ]);
+      if (!ideasRes.ok || !postsRes.ok) throw new Error("Erreur de chargement");
+      setIdeas(await ideasRes.json());
+      setPosts(await postsRes.json());
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Erreur inattendue");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function copyPost(post: SavedPost) {
+    navigator.clipboard.writeText(post.post).then(() => {
+      setCopiedId(post.id);
+      setTimeout(() => setCopiedId(null), 2000);
+    });
+  }
+
+  function formatDate(iso: string) {
+    return new Date(iso).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" });
+  }
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <BookOpen size={32} style={{ opacity: 0.3, marginBottom: 12 }} />
+        <p style={{ opacity: 0.6 }}>Connecte-toi pour accéder à ta bibliothèque.</p>
+        <button className="primary-button" onClick={() => requireAuth("Crée un compte pour sauvegarder tes idées et posts.")}>
+          Se connecter
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button
+          className={`tab-button ${activeTab === "posts" ? "active" : ""}`}
+          onClick={() => setActiveTab("posts")}
+          style={{ padding: "6px 16px", borderRadius: 8, border: "1px solid var(--border)", cursor: "pointer", background: activeTab === "posts" ? "var(--ink)" : "transparent", color: activeTab === "posts" ? "var(--bg)" : "var(--ink)", fontWeight: 600, fontSize: 13 }}
+        >
+          Posts générés {posts.length > 0 && <span style={{ opacity: 0.6, fontWeight: 400 }}>({posts.length})</span>}
+        </button>
+        <button
+          className={`tab-button ${activeTab === "ideas" ? "active" : ""}`}
+          onClick={() => setActiveTab("ideas")}
+          style={{ padding: "6px 16px", borderRadius: 8, border: "1px solid var(--border)", cursor: "pointer", background: activeTab === "ideas" ? "var(--ink)" : "transparent", color: activeTab === "ideas" ? "var(--bg)" : "var(--ink)", fontWeight: 600, fontSize: 13 }}
+        >
+          Idées de posts {ideas.length > 0 && <span style={{ opacity: 0.6, fontWeight: 400 }}>({ideas.length})</span>}
+        </button>
+        <button onClick={load} style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", opacity: 0.5 }} title="Rafraîchir">
+          <RefreshCw size={14} />
+        </button>
+      </div>
+
+      {loading && (
+        <div style={{ textAlign: "center", padding: 32, opacity: 0.5 }}>
+          <Loader2 size={20} className="spinning" />
+        </div>
+      )}
+      {error && <p style={{ color: "var(--error, #e53e3e)", fontSize: 13 }}>{error}</p>}
+
+      {!loading && activeTab === "posts" && (
+        posts.length === 0 ? (
+          <div className="card" style={{ textAlign: "center", padding: 32 }}>
+            <PenTool size={28} style={{ opacity: 0.25, marginBottom: 10 }} />
+            <p style={{ opacity: 0.5, fontSize: 14 }}>Aucun post sauvegardé pour l&apos;instant.<br />Génère des posts dans l&apos;onglet Générateur.</p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {posts.map((p) => (
+              <div key={p.id} className="card" style={{ padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {p.editorial_role && (
+                      <span style={{ fontSize: 11, background: "var(--muted,#f1f5f9)", padding: "2px 8px", borderRadius: 12, color: "var(--ink)", fontWeight: 500 }}>
+                        {p.editorial_role}
+                      </span>
+                    )}
+                    {p.hook_type && (
+                      <span style={{ fontSize: 11, background: "var(--muted,#f1f5f9)", padding: "2px 8px", borderRadius: 12, color: "var(--ink)" }}>
+                        {p.hook_type}
+                      </span>
+                    )}
+                    {p.topic && (
+                      <span style={{ fontSize: 11, opacity: 0.5 }}>{p.topic}</span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 11, opacity: 0.4, whiteSpace: "nowrap", marginLeft: 8 }}>{formatDate(p.created_at)}</span>
+                </div>
+                <p style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", margin: "0 0 12px" }}>
+                  {p.post.length > 300 ? p.post.slice(0, 300) + "…" : p.post}
+                </p>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={() => copyPost(p)}
+                    style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
+                  >
+                    {copiedId === p.id ? <CheckCircle2 size={12} /> : <FileText size={12} />}
+                    {copiedId === p.id ? "Copié !" : "Copier"}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      )}
+
+      {!loading && activeTab === "ideas" && (
+        ideas.length === 0 ? (
+          <div className="card" style={{ textAlign: "center", padding: 32 }}>
+            <Lightbulb size={28} style={{ opacity: 0.25, marginBottom: 10 }} />
+            <p style={{ opacity: 0.5, fontSize: 14 }}>Aucune idée sauvegardée pour l&apos;instant.<br />Génère des idées dans l&apos;onglet Générateur.</p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {ideas.map((idea) => (
+              <div key={idea.id} className="card" style={{ padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {idea.funnel && (
+                      <span style={{ fontSize: 11, background: "var(--muted,#f1f5f9)", padding: "2px 8px", borderRadius: 12, fontWeight: 500 }}>
+                        {idea.funnel}
+                      </span>
+                    )}
+                    {idea.hook_type && (
+                      <span style={{ fontSize: 11, background: "var(--muted,#f1f5f9)", padding: "2px 8px", borderRadius: 12 }}>
+                        {idea.hook_type}
+                      </span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 11, opacity: 0.4, whiteSpace: "nowrap", marginLeft: 8 }}>{formatDate(idea.created_at)}</span>
+                </div>
+                <p style={{ fontSize: 14, fontWeight: 600, margin: "0 0 4px" }}>{idea.title}</p>
+                {idea.angle && <p style={{ fontSize: 13, opacity: 0.7, margin: "0 0 6px" }}>{idea.angle}</p>}
+                {idea.hook && <p style={{ fontSize: 12, opacity: 0.55, fontStyle: "italic", margin: 0 }}>Hook : {idea.hook}</p>}
+              </div>
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  );
 }
 
 function Generator({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
@@ -2749,6 +2943,7 @@ export default function Home() {
           {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "assistant" && <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} />}
+          {view === "library" && <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "dashboard" && <GlobalDashboard />}
         </main>
       </div>

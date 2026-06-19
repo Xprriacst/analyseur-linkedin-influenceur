@@ -526,6 +526,44 @@ def save_generated_posts(
     return resp.data if resp.data else variants
 
 
+def get_generated_ideas(access_token: str, limit: int = 100) -> list[dict]:
+    """List saved generated ideas for the authenticated user."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_ideas")
+        .select("id,title,hook,hook_type,funnel,angle,why_it_works,difficulty,estimated_lift,created_at")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_generated_posts(access_token: str, limit: int = 100) -> list[dict]:
+    """List saved generated posts for the authenticated user."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .select("id,topic,editorial_role,hook_type,strategy,predicted_lift,post,created_at")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
 import re as _re
 
 

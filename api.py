@@ -150,6 +150,24 @@ def update_me_profile(
     return profile
 
 
+@app.get("/me/ideas")
+def me_ideas(
+    limit: int = 100,
+    token: str = Depends(require_token),
+) -> list[dict[str, Any]]:
+    """List the authenticated user's saved generated ideas."""
+    return db.get_generated_ideas(token, limit=max(1, min(limit, 500)))
+
+
+@app.get("/me/posts")
+def me_posts(
+    limit: int = 100,
+    token: str = Depends(require_token),
+) -> list[dict[str, Any]]:
+    """List the authenticated user's saved generated posts."""
+    return db.get_generated_posts(token, limit=max(1, min(limit, 500)))
+
+
 def _clean_html_text(html: str) -> str:
     """Extract a compact text summary from public HTML without adding dependencies."""
     import html as html_lib
