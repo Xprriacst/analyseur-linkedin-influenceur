@@ -370,13 +370,25 @@ def generate_ideas(
     count: int = 5,
     user_context: dict[str, Any] | None = None,
     web_search: bool = False,
+    seed_topic: str | None = None,
 ) -> list[dict]:
-    """Generate post ideas based on analyzed influencer insights."""
+    """Generate post ideas based on analyzed influencer insights.
+
+    When `seed_topic` is provided (e.g. an idea the client dropped in their
+    reservoir), it becomes the mandatory theme to develop in priority — the
+    benchmark/corpus is then used to enrich it rather than to pick the angle.
+    """
     examples_text = "\n\n".join(
         f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')}]\n{e.get('text', '')[:400]}"
         for e in top_posts_examples[:8]
     )
     context_text = _format_user_context(user_context)
+    seed_directive = (
+        f"\n\nIdée imposée par le client à développer en priorité aujourd'hui : « {seed_topic} ».\n"
+        "Construis les idées autour de ce thème en l'enrichissant avec les patterns du corpus.\n"
+        if seed_topic
+        else ""
+    )
 
     system = (
         "Tu es un stratège contenu LinkedIn. "
@@ -388,6 +400,7 @@ def generate_ideas(
     user = (
         "Contexte client à respecter en priorité :\n"
         + context_text
+        + seed_directive
         + "\n\nBenchmarks issus de l'analyse d'influenceurs LinkedIn :\n"
         + json.dumps(benchmark, ensure_ascii=False, indent=2)
         + "\n\nExemples des posts les plus performants :\n"

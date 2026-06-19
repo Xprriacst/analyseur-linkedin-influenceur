@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import db, zernio
+from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src.jobs import start_job_thread
 from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream
@@ -464,19 +465,7 @@ def _load_cached_influencers() -> list[dict]:
 
 def _enrich_influencers(corpus: list[dict]) -> list[dict]:
     """Compute stats + patterns on a raw corpus of {handle, profile, posts}."""
-    result = []
-    for inf in corpus:
-        posts = inf["posts"]
-        if not posts:
-            continue
-        result.append({
-            "handle": inf["handle"],
-            "profile": inf["profile"],
-            "posts": posts,
-            "stats": compute_stats(posts, profile=inf["profile"]),
-            "patterns": analyze_patterns(posts),
-        })
-    return result
+    return enrich_influencers(corpus)
 
 
 def _get_influencers(token: Optional[str]) -> list[dict]:
@@ -494,39 +483,7 @@ def _get_influencers(token: Optional[str]) -> list[dict]:
 
 def _build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
     """Build top posts list and benchmark summary."""
-    from collections import Counter
-    all_posts: list[dict] = []
-    hook_totals: Counter = Counter()
-    for inf in influencers:
-        name = inf["profile"].get("name", inf["handle"])
-        enriched = inf["patterns"].get("posts_enriched", inf["posts"])
-        for p in enriched:
-            all_posts.append({**p, "influencer": name})
-        for hook, count in inf["patterns"].get("hook_distribution", {}).items():
-            hook_totals[hook] += count
-
-    top_posts = sorted(all_posts, key=lambda x: x.get("engagement", 0), reverse=True)[:6]
-    benchmarks = []
-    for inf in influencers:
-        s = inf["stats"].get("engagement", {})
-        benchmarks.append({
-            "influencer": inf["profile"].get("name", inf["handle"]),
-            "followers": inf["profile"].get("follower_count", 0),
-            "avg_engagement": round(s.get("mean_engagement", 0), 1),
-            "avg_comments": round(s.get("mean_comments", 0), 1),
-        })
-    benchmark = {
-        "benchmarks": benchmarks,
-        "top_hook_types": dict(hook_totals.most_common(6)),
-        "proven_insights": [
-            "Hook stat+contrarian : combo sous-exploité, +40-80% vs post standard",
-            "Triple CTA (comment+repost+save) : multiplicateur x2-3 prouvé sur le corpus",
-            "Format image/carousel : 2x plus d'engagement que texte seul",
-            "Longueur optimale : 1 400-1 800 caractères",
-            "Hook question : quasi absent du corpus = alpha, +150% engagement potentiel",
-        ],
-    }
-    return top_posts, benchmark
+    return build_benchmark(influencers)
 
 
 @app.get("/dashboard")
@@ -809,6 +766,61 @@ def delete_me_generated_idea(idea_id: str, token: str = Depends(require_token)) 
 def delete_me_generated_post(post_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
     """Delete one of the authenticated user's saved posts."""
     return {"deleted": db.delete_generated_post(token, post_id)}
+
+
+# --------------------------------------------------------------------------- #
+# Idée du jour — réservoir de seeds + idées générées + opt-in
+# --------------------------------------------------------------------------- #
+
+class IdeaSeedRequest(BaseModel):
+    text: str = Field(..., min_length=3, max_length=2000)
+
+
+class DailyIdeasEnabledRequest(BaseModel):
+    enabled: bool
+
+
+@app.get("/me/idea-seeds")
+def me_idea_seeds(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List the user's idea reservoir."""
+    return db.list_idea_seeds(token)
+
+
+@app.post("/me/idea-seeds")
+def add_me_idea_seed(payload: IdeaSeedRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Add an idea to the user's reservoir."""
+    seed = db.add_idea_seed(token, payload.text.strip())
+    if not seed:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer l'idée.")
+    return seed
+
+
+@app.delete("/me/idea-seeds/{seed_id}")
+def delete_me_idea_seed(seed_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Delete one of the user's seeds."""
+    return {"deleted": db.delete_idea_seed(token, seed_id)}
+
+
+@app.get("/me/daily-ideas")
+def me_daily_ideas(
+    limit: int = 30,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """List the user's generated daily ideas + opt-in state."""
+    return {
+        "ideas": db.list_daily_ideas(token, limit=max(1, min(limit, 90))),
+        "enabled": db.get_daily_ideas_enabled(token),
+    }
+
+
+@app.post("/me/daily-ideas/enabled")
+def set_me_daily_ideas_enabled(
+    payload: DailyIdeasEnabledRequest,
+    token: str = Depends(require_token),
+) -> dict[str, bool]:
+    """Toggle the daily-idea opt-in for the authenticated user."""
+    db.set_daily_ideas_enabled(token, payload.enabled)
+    return {"enabled": payload.enabled}
 
 
 @app.post("/generate-image")

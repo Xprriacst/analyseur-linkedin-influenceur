@@ -167,7 +167,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "influencers", "assistant", "generator", "library", "dashboard"] as const;
+const mainViews = ["analyze", "profile", "influencers", "assistant", "daily", "generator", "library", "dashboard"] as const;
 type MainView = typeof mainViews[number];
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
@@ -637,6 +637,7 @@ function Sidebar({
     { key: "profile", label: "Mon profil", icon: <UserRound size={14} />, auth: true },
     { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} />, auth: true },
     { key: "assistant", label: "Assistant", icon: <MessageSquare size={14} />, premium: true },
+    { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} />, premium: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
     { key: "library", label: "Mes contenus", icon: <Bookmark size={14} />, premium: true },
     { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
@@ -751,6 +752,7 @@ function TopHeader({
     profile: "Mon profil éditorial",
     influencers: "Mes influenceurs",
     assistant: "Assistant LinkedIn",
+    daily: "Idée du jour",
     generator: "Générateur de posts",
     library: "Mes contenus sauvegardés",
     dashboard: "Dashboard global",
@@ -1485,6 +1487,214 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string };
+type IdeaSeed = { id: string; text: string; used_at?: string | null; created_at?: string };
+
+function DailyIdeasView({
+  isAuthed,
+  requireAuth,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string) => void;
+}) {
+  const [ideas, setIdeas] = useState<DailyIdea[]>([]);
+  const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
+  const [enabled, setEnabled] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+
+  const fmtDate = (s?: string) => {
+    if (!s) return "";
+    try { return new Date(s).toLocaleDateString("fr-FR", { weekday: "long", day: "2-digit", month: "long" }); }
+    catch { return s || ""; }
+  };
+
+  async function loadAll() {
+    if (!isAuthed) return;
+    setLoading(true);
+    setError("");
+    try {
+      const headers = await authHeaders();
+      const [dRes, sRes] = await Promise.all([
+        fetch(`${DIRECT_API_URL}/me/daily-ideas`, { headers }),
+        fetch(`${DIRECT_API_URL}/me/idea-seeds`, { headers }),
+      ]);
+      const dData = await dRes.json();
+      const sData = await sRes.json();
+      if (!dRes.ok) throw new Error(dData.detail || "Chargement des idées impossible");
+      if (!sRes.ok) throw new Error(sData.detail || "Chargement du réservoir impossible");
+      setIdeas(Array.isArray(dData?.ideas) ? dData.ideas : []);
+      setEnabled(!!dData?.enabled);
+      setSeeds(Array.isArray(sData) ? sData : []);
+    } catch (err: any) {
+      setError(err.message || "Chargement impossible");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAuthed) void loadAll();
+    else { setIdeas([]); setSeeds([]); setEnabled(false); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  async function addSeed() {
+    const text = draft.trim();
+    if (text.length < 3) return;
+    setAdding(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Ajout impossible");
+      setSeeds((prev) => [...prev, data]);
+      setDraft("");
+    } catch (err: any) {
+      setError(err.message || "Ajout impossible");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function deleteSeed(id: string) {
+    setSeeds((prev) => prev.filter((s) => s.id !== id));
+    try {
+      await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void loadAll(); }
+  }
+
+  async function toggleEnabled() {
+    const next = !enabled;
+    setEnabled(next);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/daily-ideas/enabled`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setEnabled(!next);
+      setError("Impossible de mettre à jour l'option.");
+    }
+  }
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Sparkles size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Idée du jour</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Connecte-toi pour recevoir une idée de post chaque matin et alimenter ton réservoir d'idées.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour activer l'idée du jour.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  const latest = ideas[0];
+  const history = ideas.slice(1);
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><Sparkles size={20} /> Idée du jour</h2>
+          <p className="section-desc">Chaque matin, une idée de post est générée à partir de ton benchmark d'influenceurs et de ton réservoir d'idées.</p>
+        </div>
+        <button className="secondary-button" onClick={loadAll} disabled={loading}>
+          {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+          Rafraîchir
+        </button>
+      </div>
+
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {latest ? (
+        <div className="card daily-hero">
+          <div className="daily-hero-date">{fmtDate(latest.idea_date)}</div>
+          <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{latest.idea_markdown}</ReactMarkdown></div>
+        </div>
+      ) : (
+        <div className="card" style={{ padding: 28, textAlign: "center", color: "var(--muted)" }}>
+          {loading ? (
+            <><Loader2 size={20} className="spinning" style={{ opacity: 0.45 }} /><p>Chargement…</p></>
+          ) : (
+            <p style={{ margin: 0 }}>
+              Pas encore d'idée générée. Active l'option ci-dessous et ajoute des idées à ton réservoir —
+              la première arrivera demain matin.
+            </p>
+          )}
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <h3 className="daily-subtitle">Jours précédents</h3>
+          <div className="daily-history">
+            {history.map((it) => (
+              <details key={it.id} className="card daily-history-item">
+                <summary>{fmtDate(it.idea_date)}</summary>
+                <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{it.idea_markdown}</ReactMarkdown></div>
+              </details>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="card daily-reservoir" style={{ marginTop: 24 }}>
+        <div className="daily-reservoir-head">
+          <div>
+            <h3 className="daily-subtitle" style={{ margin: 0 }}><Lightbulb size={16} /> Mon réservoir d'idées</h3>
+            <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées : l'idée du jour piochera dedans en priorité.</p>
+          </div>
+          <label className="daily-switch">
+            <input type="checkbox" checked={enabled} onChange={toggleEnabled} />
+            <span>Recevoir une idée chaque matin</span>
+          </label>
+        </div>
+
+        <div className="daily-add">
+          <input
+            type="text"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
+            placeholder="Ex. Mon retour sur 6 mois de cold outreach…"
+            maxLength={2000}
+          />
+          <button className="primary-button" onClick={addSeed} disabled={adding || draft.trim().length < 3}>
+            {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter
+          </button>
+        </div>
+
+        {seeds.length === 0 ? (
+          <p style={{ color: "var(--muted)", margin: "12px 0 0", fontSize: 13 }}>Réservoir vide — l'idée du jour s'appuiera sur ton seul benchmark.</p>
+        ) : (
+          <ul className="daily-seed-list">
+            {seeds.map((s) => (
+              <li key={s.id} className={s.used_at ? "used" : ""}>
+                <span>{s.text}</span>
+                {s.used_at ? <span className="daily-seed-tag"><CheckCircle2 size={12} /> utilisée</span> : null}
+                <button className="icon-button" title="Supprimer" onClick={() => deleteSeed(s.id)}><Trash2 size={14} /></button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
@@ -2970,6 +3180,7 @@ export default function Home() {
           )}
           {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "assistant" && <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />}
+          {view === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={generatorSeed} />}
           {view === "library" && (
             <LibraryView
