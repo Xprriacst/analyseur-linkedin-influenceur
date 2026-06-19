@@ -27,3 +27,9 @@ export async function gotoTab(page: Page, label: string) {
   await page.locator(".nav-item", { hasText: label }).click();
   await expect(page.locator(".nav-item.active", { hasText: label })).toBeVisible();
 }
+
+/** Navigue vers un sous-onglet (barre `.tab`) par son libellé, ex. dans « Contenu ». */
+export async function gotoSubTab(page: Page, label: string) {
+  await page.locator(".tab", { hasText: label }).click();
+  await expect(page.locator(".tab.active", { hasText: label })).toBeVisible();
+}
