@@ -653,10 +653,6 @@ function Sidebar({
         </div>
       </div>
 
-      <button className="primary-button" style={{ width: "100%", marginBottom: 12 }} onClick={() => onNavigate("analyze")}>
-        <Sparkles size={14} /> Nouvelle analyse
-      </button>
-
       {/* Sidebar navigation */}
       <section className="sidebar-section">
         <p className="eyebrow">Navigation</p>
