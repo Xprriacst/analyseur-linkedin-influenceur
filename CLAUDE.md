@@ -26,6 +26,14 @@ Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.p
 
 ## Changelog
 
+### 2026-06-19 (persistance : profil auto-sauvé + posts générés en base)
+- **Profil éditorial auto-sauvé** : le bouton **« Pré-remplir »** (`draftProfile` dans `page.tsx`) enchaîne désormais un `PUT /me/profile` juste après la génération → le profil généré est **persisté immédiatement** en base, plus besoin de cliquer « Sauvegarder ». Cause du bug initial : `/me/profile/draft` ne fait que renvoyer le brouillon (remplit le formulaire), seul `PUT /me/profile` écrit en base.
+- **Posts générés persistés** : nouvelle table `generated_posts` (migration `0006_generated_posts.sql`, RLS `auth.uid() = user_id`) + `save_generated_posts(token, topic, variants)` dans `db.py`. `/generate` auto-sauve les variants par utilisateur et renvoie `save_error`. Colonnes : `topic, editorial_role, hook_type, strategy, predicted_lift, post`.
+- **Idées** : déjà auto-sauvées dans `generated_ideas` (via `save_ideas`, appelé par `/ideas`) — table existante créée manuellement, **formalisée** dans la migration 0006 en `if not exists`.
+- **DB** : migration 0006 **déjà appliquée** sur Supabase (via MCP) — pas besoin de la rejouer. Base partagée prod+dev.
+- ⚠️ **Déploiement** : mergé `dev → main` (Render backend + Netlify prod). Aucune nouvelle env var.
+- **Suite possible** : UI pour relire/réutiliser les posts & idées sauvegardés (endpoints `GET` + onglet/historique) — pour l'instant on persiste sans interface de relecture.
+
 ### 2026-06-18 (ALE-79 : assistant conversationnel V1 — chat avec mémoire + contexte)
 - **Objectif** : remplacer les générations one-shot stateless (`/ideas`, `/generate`) par un **chat itératif** type Claude, avec mémoire, contexte client et benchmark influenceurs. **V1 sans outils** (le tool-use — image, publication, relance d'analyse depuis la conversation — est l'évolution prévue, pas encore implémentée).
 - **DB** : migration `supabase/migrations/0005_chat.sql` → tables `chat_conversations` + `chat_messages` (RLS `auth.uid() = user_id`, message insert vérifie aussi la propriété de la conversation). **À exécuter manuellement dans le SQL editor Supabase.**
