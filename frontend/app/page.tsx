@@ -637,7 +637,6 @@ function Sidebar({
 
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean; auth?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
-    { key: "profile", label: "Mon profil", icon: <UserRound size={14} />, auth: true },
     { key: "assistant", label: "Assistant", icon: <MessageSquare size={14} />, premium: true },
     { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} />, premium: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
@@ -693,6 +692,28 @@ function Sidebar({
       </section>
 
       <section className="sidebar-section" style={{ marginTop: "auto" }}>
+        <p className="eyebrow"><Settings2 size={12} style={{ verticalAlign: "-2px", marginRight: 5 }} />Réglages</p>
+        <div className="nav-list" style={{ marginBottom: 10 }}>
+          {(() => {
+            const locked = !isAuthed;
+            return (
+              <button
+                className={`nav-item ${view === "profile" ? "active" : ""} ${locked ? "locked" : ""}`}
+                onClick={() => {
+                  if (locked) {
+                    requireAuth("Crée un compte gratuit pour retrouver tes données et ton contexte éditorial.");
+                    return;
+                  }
+                  onNavigate("profile");
+                }}
+              >
+                <UserRound size={14} />
+                <span>Mon profil</span>
+                {locked ? <Lock size={12} className="lock-ico" /> : null}
+              </button>
+            );
+          })()}
+        </div>
         <div className="config-card">
           <button
             className="config-toggle"
