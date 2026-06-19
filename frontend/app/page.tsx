@@ -167,8 +167,11 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "influencers", "assistant", "daily", "generator", "library", "dashboard"] as const;
+const mainViews = ["analyze", "profile", "assistant", "daily", "generator", "library"] as const;
 type MainView = typeof mainViews[number];
+
+/** Sous-onglets de la vue « Analyser » (analyse, influenceurs, dashboard fusionnés). */
+type AnalyzeTab = "analyze" | "influencers" | "dashboard";
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
 const steps = [
@@ -635,12 +638,10 @@ function Sidebar({
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean; auth?: boolean }[] = [
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
     { key: "profile", label: "Mon profil", icon: <UserRound size={14} />, auth: true },
-    { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} />, auth: true },
     { key: "assistant", label: "Assistant", icon: <MessageSquare size={14} />, premium: true },
     { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} />, premium: true },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
     { key: "library", label: "Mes contenus", icon: <Bookmark size={14} />, premium: true },
-    { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} />, premium: true },
   ];
 
   return (
@@ -750,12 +751,10 @@ function TopHeader({
   const viewTitles: Record<MainView, string> = {
     analyze: "Analyser des profils LinkedIn",
     profile: "Mon profil éditorial",
-    influencers: "Mes influenceurs",
     assistant: "Assistant LinkedIn",
     daily: "Idée du jour",
     generator: "Générateur de posts",
     library: "Mes contenus sauvegardés",
-    dashboard: "Dashboard global",
   };
 
   return (
@@ -2886,6 +2885,81 @@ function InfluencersView({
   );
 }
 
+/**
+ * Vue « Analyser » fusionnée : barre de sous-onglets qui regroupe l'ancien
+ * onglet Analyser (séries), Mes influenceurs et Dashboard global.
+ */
+function AnalyzeHub({
+  tab,
+  onTab,
+  jobs,
+  jobsLoading,
+  onJobCreated,
+  onOpenReport,
+  influencers,
+  influencersLoading,
+  onOpenLibraryReport,
+  isAuthed,
+  requireAuth,
+}: {
+  tab: AnalyzeTab;
+  onTab: (t: AnalyzeTab) => void;
+  jobs: Job[];
+  jobsLoading: boolean;
+  onJobCreated: (job: Job) => void;
+  onOpenReport: (markdown: string, name: string) => void;
+  influencers: InfluencerLibraryEntry[];
+  influencersLoading: boolean;
+  onOpenLibraryReport: (entry: InfluencerLibraryEntry) => Promise<void>;
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
+  const subTabs: { key: AnalyzeTab; label: string; icon: React.ReactNode }[] = [
+    { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
+    { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} /> },
+    { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} /> },
+  ];
+
+  return (
+    <div>
+      <div className="tabs">
+        {subTabs.map((t) => (
+          <button
+            key={t.key}
+            className={`tab ${tab === t.key ? "active" : ""}`}
+            onClick={() => onTab(t.key)}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "analyze" && (
+        <JobsView
+          jobs={jobs}
+          loading={jobsLoading}
+          isAuthed={isAuthed}
+          onCreated={onJobCreated}
+          onOpenReport={onOpenReport}
+          requireAuth={requireAuth}
+        />
+      )}
+      {tab === "influencers" && (
+        <InfluencersView
+          entries={influencers}
+          loading={influencersLoading}
+          isAuthed={isAuthed}
+          requireAuth={requireAuth}
+          onOpenReport={onOpenLibraryReport}
+        />
+      )}
+      {tab === "dashboard" && <GlobalDashboard />}
+    </div>
+  );
+}
+
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
@@ -2896,6 +2970,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("analyze");
+  const [analyzeTab, setAnalyzeTab] = useState<AnalyzeTab>("analyze");
   // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
   const [generatorSeed, setGeneratorSeed] = useState<{ topic: string; nonce: number } | null>(null);
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
@@ -3082,6 +3157,7 @@ export default function Home() {
     setLoadedReport({ name, path: name, updated_at: Date.now() / 1000, content: markdown });
     setResult(null);
     setView("analyze");
+    setAnalyzeTab("analyze");
   }
 
   async function openLibraryReport(entry: InfluencerLibraryEntry) {
@@ -3098,6 +3174,7 @@ export default function Home() {
     });
     setResult(null);
     setView("analyze");
+    setAnalyzeTab("influencers");
   }
 
   async function analyze(payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) {
@@ -3142,7 +3219,7 @@ export default function Home() {
           jobBadge={activeJob ? { completed: activeJob.completed, total: activeJob.total } : null}
           onNavigate={(v) => {
             setView(v);
-            if (v === "analyze" || v === "profile" || v === "influencers") {
+            if (v === "analyze" || v === "profile") {
               setResult(null);
               setLoadedReport(null);
               setError("");
@@ -3176,16 +3253,21 @@ export default function Home() {
                       <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
                     </>
                   )
-                  : <JobsView jobs={jobs} loading={jobsLoading} isAuthed={isAuthed} onCreated={onJobCreated} onOpenReport={openReport} requireAuth={requireAuth} />
-          )}
-          {view === "influencers" && (
-            <InfluencersView
-              entries={influencers}
-              loading={influencersLoading}
-              isAuthed={isAuthed}
-              requireAuth={requireAuth}
-              onOpenReport={openLibraryReport}
-            />
+                  : (
+                    <AnalyzeHub
+                      tab={analyzeTab}
+                      onTab={setAnalyzeTab}
+                      jobs={jobs}
+                      jobsLoading={jobsLoading}
+                      onJobCreated={onJobCreated}
+                      onOpenReport={openReport}
+                      influencers={influencers}
+                      influencersLoading={influencersLoading}
+                      onOpenLibraryReport={openLibraryReport}
+                      isAuthed={isAuthed}
+                      requireAuth={requireAuth}
+                    />
+                  )
           )}
           {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "assistant" && <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />}
@@ -3201,7 +3283,6 @@ export default function Home() {
               }}
             />
           )}
-          {view === "dashboard" && <GlobalDashboard />}
         </main>
       </div>
       <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} reason={authReason} defaultMode={authMode} />
