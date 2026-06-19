@@ -31,7 +31,7 @@ Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netli
 - **Compte de test** : `qa.playwright@lkd-outreach.app` / `Lkd!Test2026` (dans Supabase `auth.users`+`auth.identities`, email confirmé).
 - **Après toute feature UI** : ajouter/ajuster un spec dans `e2e/tests/` et relancer la suite avant de merger.
 - **Pièges** : Playwright **pinné `1.49.1`** (1.61 cassé avec Node 22). Création SQL d'un user GoTrue → colonnes token à `''` (pas `NULL`), `auth.identities.email` est générée.
-- **Génération réelle** (post/idée/analyse) : non couverte (coûteuse) — testée manuellement par Alex.
+- **Génération réelle** (post/idée/analyse) : non couverte (coûteuse) — testée manuellement par Alex via la checklist `e2e/MANUAL-CHECKLIST.md` (génération, publication LinkedIn/image, persistance après refresh, isolation cross-user).
 
 ## Changelog
 

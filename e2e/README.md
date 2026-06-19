@@ -34,6 +34,11 @@ Pour tester la prod : `E2E_BASE_URL=https://lkd-outreach.netlify.app npx playwri
 - `tests/authenticated.spec.ts` — onglets Profil / Mes contenus / Générateur / Assistant.
 - `tests/helpers.ts` — `login()` + `gotoTab()`.
 
+## Test manuel (avant release)
+
+Ce que l'auto ne couvre pas (génération réelle, publication, persistance après refresh) :
+voir **`MANUAL-CHECKLIST.md`**.
+
 ## Pistes (opt-in, coûteux)
 
 Tests de **génération réelle** (idées, posts, analyse) non inclus car ils consomment des
