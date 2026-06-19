@@ -1,13 +1,13 @@
 import { test, expect } from "@playwright/test";
-import { gotoTab } from "./helpers";
+import { gotoTab, gotoSubTab } from "./helpers";
 
 // Parcours authentifiés en LECTURE SEULE (pas de génération → aucun coût LLM/Apify).
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
-test("onglet Analyser : sous-onglets Analyser / Mes influenceurs / Dashboard", async ({ page }) => {
-  await gotoTab(page, "Analyser");
+test("onglet Veille : sous-onglets Analyser / Mes influenceurs / Dashboard", async ({ page }) => {
+  await gotoTab(page, "Veille");
   // Les trois sous-onglets fusionnés sont rendus.
   await expect(page.locator(".tab", { hasText: "Analyser" })).toBeVisible();
   await expect(page.locator(".tab", { hasText: "Mes influenceurs" })).toBeVisible();
@@ -32,8 +32,9 @@ test("onglet Mon profil : contexte éditorial + pré-remplissage IA + sauvegarde
   await expect(page.getByRole("button", { name: /Pré-remplir/i })).toBeVisible();
 });
 
-test("onglet Mes contenus : liste posts/idées sans erreur", async ({ page }) => {
-  await gotoTab(page, "Mes contenus");
+test("Contenu › Mes contenus : liste posts/idées sans erreur", async ({ page }) => {
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Mes contenus");
   await expect(page.getByRole("heading", { name: /Mes contenus sauvegardés/i })).toBeVisible();
   // Les deux sous-onglets de bascule.
   await expect(page.getByRole("button", { name: /^Posts \(/ })).toBeVisible();
@@ -45,21 +46,23 @@ test("onglet Mes contenus : liste posts/idées sans erreur", async ({ page }) =>
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("onglet Générateur de posts : formulaires rendus", async ({ page }) => {
-  await gotoTab(page, "Générateur de posts");
+test("Contenu › Générateur de posts : formulaires rendus", async ({ page }) => {
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Générateur de posts");
   await expect(page.getByRole("heading", { name: /Idées de posts/i })).toBeVisible();
   await expect(page.getByRole("heading", { name: /Générer des posts/i })).toBeVisible();
   await expect(page.getByPlaceholder(/Sujet du post/i)).toBeVisible();
 });
 
-test("onglet Assistant : interface chat rendue", async ({ page }) => {
-  await gotoTab(page, "Assistant");
+test("onglet Agent IA : interface chat rendue", async ({ page }) => {
+  await gotoTab(page, "Agent IA");
   // L'onglet doit devenir actif sans rediriger vers l'auth (donc session OK).
-  await expect(page.locator(".nav-item.active", { hasText: "Assistant" })).toBeVisible();
+  await expect(page.locator(".nav-item.active", { hasText: "Agent IA" })).toBeVisible();
 });
 
-test("onglet Idée du jour : idée + réservoir + opt-in sans erreur", async ({ page }) => {
-  await gotoTab(page, "Idée du jour");
+test("Contenu › Idée du jour : idée + réservoir + opt-in sans erreur", async ({ page }) => {
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Idée du jour");
   await expect(page.getByRole("heading", { name: /^Idée du jour$/i })).toBeVisible();
   // Le réservoir et son switch d'opt-in sont rendus.
   await expect(page.getByRole("heading", { name: /Mon réservoir d'idées/i })).toBeVisible();

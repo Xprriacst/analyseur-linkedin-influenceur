@@ -167,11 +167,14 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "assistant", "daily", "generator", "library"] as const;
+const mainViews = ["analyze", "profile", "assistant", "content"] as const;
 type MainView = typeof mainViews[number];
 
 /** Sous-onglets de la vue « Analyser » (analyse, influenceurs, dashboard fusionnés). */
 type AnalyzeTab = "analyze" | "influencers" | "dashboard";
+
+/** Sous-onglets de la vue « Contenu » (idée du jour, générateur, mes contenus fusionnés). */
+type ContentTab = "daily" | "generator" | "library";
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
 const steps = [
@@ -635,11 +638,9 @@ function Sidebar({
 }) {
 
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean; auth?: boolean }[] = [
-    { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
-    { key: "assistant", label: "Assistant", icon: <MessageSquare size={14} />, premium: true },
-    { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} />, premium: true },
-    { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} />, premium: true },
-    { key: "library", label: "Mes contenus", icon: <Bookmark size={14} />, premium: true },
+    { key: "content", label: "Contenu", icon: <PenTool size={14} />, premium: true },
+    { key: "analyze", label: "Veille", icon: <ListChecks size={14} /> },
+    { key: "assistant", label: "Agent IA", icon: <MessageSquare size={14} />, premium: true },
   ];
 
   return (
@@ -754,12 +755,10 @@ function TopHeader({
   onSignOut: () => void;
 }) {
   const viewTitles: Record<MainView, string> = {
-    analyze: "Analyser des profils LinkedIn",
+    analyze: "Veille LinkedIn",
     profile: "Mon profil éditorial",
-    assistant: "Assistant LinkedIn",
-    daily: "Idée du jour",
-    generator: "Générateur de posts",
-    library: "Mes contenus sauvegardés",
+    assistant: "Agent IA",
+    content: "Contenu",
   };
 
   return (
@@ -2965,6 +2964,53 @@ function AnalyzeHub({
   );
 }
 
+/** Onglet « Contenu » : regroupe Idée du jour, Générateur et Mes contenus en sous-onglets. */
+function ContentHub({
+  tab,
+  onTab,
+  seed,
+  onReuse,
+  isAuthed,
+  requireAuth,
+}: {
+  tab: ContentTab;
+  onTab: (t: ContentTab) => void;
+  seed?: { topic: string; nonce: number } | null;
+  onReuse: (topic: string) => void;
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
+  const subTabs: { key: ContentTab; label: string; icon: React.ReactNode }[] = [
+    { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} /> },
+    { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} /> },
+    { key: "library", label: "Mes contenus", icon: <Bookmark size={14} /> },
+  ];
+
+  return (
+    <div>
+      <div className="tabs">
+        {subTabs.map((t) => (
+          <button
+            key={t.key}
+            className={`tab ${tab === t.key ? "active" : ""}`}
+            onClick={() => onTab(t.key)}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} />}
+      {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} />}
+      {tab === "library" && (
+        <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
@@ -2974,8 +3020,9 @@ export default function Home() {
   const [result, setResult] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [view, setView] = useState<MainView>("analyze");
+  const [view, setView] = useState<MainView>("content");
   const [analyzeTab, setAnalyzeTab] = useState<AnalyzeTab>("analyze");
+  const [contentTab, setContentTab] = useState<ContentTab>("generator");
   // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
   const [generatorSeed, setGeneratorSeed] = useState<{ topic: string; nonce: number } | null>(null);
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
@@ -3134,7 +3181,7 @@ export default function Home() {
       setLoadedReport(null);
       setJobs([]);
       setError("");
-      setView("analyze");
+      setView("content");
       if (uid) setTimeout(() => { loadReports(); loadJobs(); loadInfluencerLibrary(); }, 0);
     });
     return () => sub.subscription.unsubscribe();
@@ -3276,15 +3323,16 @@ export default function Home() {
           )}
           {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
           {view === "assistant" && <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />}
-          {view === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} />}
-          {view === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={generatorSeed} />}
-          {view === "library" && (
-            <LibraryView
+          {view === "content" && (
+            <ContentHub
+              tab={contentTab}
+              onTab={setContentTab}
+              seed={generatorSeed}
               isAuthed={isAuthed}
               requireAuth={requireAuth}
               onReuse={(topic) => {
                 setGeneratorSeed({ topic, nonce: Date.now() });
-                setView("generator");
+                setContentTab("generator");
               }}
             />
           )}
