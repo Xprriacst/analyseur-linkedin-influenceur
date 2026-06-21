@@ -76,6 +76,7 @@ type Analysis = {
   path: string;
 };
 type Idea = {
+  id?: string;
   title: string;
   hook: string;
   hook_type: string;
@@ -84,6 +85,7 @@ type Idea = {
   why_it_works: string;
   difficulty: string;
   estimated_lift: string;
+  slack_status?: string | null;
 };
 type Variant = {
   editorial_role?: string;
@@ -1147,6 +1149,68 @@ function useLinkedIn(isAuthed: boolean) {
   return { status, busy, error, connect };
 }
 
+type SlackStatus = {
+  connected: boolean;
+  configured: boolean;
+  team_name?: string | null;
+  channel_id?: string | null;
+  connected_at?: string | null;
+};
+
+function useSlack(isAuthed: boolean) {
+  const [status, setStatus] = useState<SlackStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function refresh() {
+    if (!isAuthed) { setStatus(null); return; }
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/integrations/slack/status`, { headers: await authHeaders() });
+      if (res.ok) setStatus(await res.json());
+    } catch { /* ignore */ }
+  }
+
+  useEffect(() => { void refresh(); }, [isAuthed]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function connect() {
+    setError("");
+    setBusy(true);
+    try {
+      const redirectUri = `${window.location.origin}${window.location.pathname}`;
+      const res = await fetch(`${DIRECT_API_URL}/me/integrations/slack/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ redirect_uri: redirectUri }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion Slack impossible");
+      sessionStorage.setItem("slack_oauth_pending", "1");
+      window.location.href = data.auth_url;
+    } catch (err: any) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    setError("");
+    setBusy(true);
+    try {
+      await fetch(`${DIRECT_API_URL}/me/integrations/slack`, {
+        method: "DELETE",
+        headers: await authHeaders(),
+      });
+      setStatus((prev) => prev ? { ...prev, connected: false } : prev);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return { status, busy, error, connect, disconnect, refresh };
+}
+
 function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null }) {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
@@ -1157,6 +1221,9 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
   const linkedin = useLinkedIn(isAuthed);
+  const slack = useSlack(isAuthed);
+  const [slackSent, setSlackSent] = useState<Record<number, boolean>>({});
+  const [slackSending, setSlackSending] = useState<Record<number, boolean>>({});
   const [publishing, setPublishing] = useState<number | null>(null);
   const [published, setPublished] = useState<number | null>(null);
   const [drafted, setDrafted] = useState<number | null>(null);
@@ -1343,13 +1410,39 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>
               <div className="idea-footer">
                 <span className={`idea-difficulty ${idea.difficulty}`}>{idea.difficulty}</span>
-                <button
-                  className="primary-button"
-                  style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                  onClick={() => { setTopic(idea.title); generateFromTopic(idea.title); }}
-                >
-                  <Sparkles size={12} /> Générer ce post
-                </button>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {slack.status?.connected && idea.id && (
+                    <button
+                      className="secondary-button"
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                      disabled={!!slackSending[i] || !!slackSent[i]}
+                      onClick={async () => {
+                        if (!idea.id) return;
+                        setSlackSending((p) => ({ ...p, [i]: true }));
+                        try {
+                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-ideas`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+                            body: JSON.stringify({ idea_ids: [idea.id] }),
+                          });
+                          setSlackSent((p) => ({ ...p, [i]: true }));
+                        } finally {
+                          setSlackSending((p) => ({ ...p, [i]: false }));
+                        }
+                      }}
+                    >
+                      {slackSending[i] ? <Loader2 size={12} className="spinning" /> : null}
+                      {slackSent[i] ? "Envoyé ✓" : "Valider sur Slack"}
+                    </button>
+                  )}
+                  <button
+                    className="primary-button"
+                    style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                    onClick={() => { setTopic(idea.title); generateFromTopic(idea.title); }}
+                  >
+                    <Sparkles size={12} /> Générer ce post
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -1765,6 +1858,9 @@ function LibraryView({
   const [editedPosts, setEditedPosts] = useState<Record<string, string>>({});
   const [savingPost, setSavingPost] = useState<string | null>(null);
   const [savedPost, setSavedPost] = useState<string | null>(null);
+  const slack = useSlack(isAuthed);
+  const [slackSent, setSlackSent] = useState<Record<string, boolean>>({});
+  const [slackSending, setSlackSending] = useState<Record<string, boolean>>({});
 
   const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
   const roleLabels: Record<string, string> = {
@@ -1971,6 +2067,30 @@ function LibraryView({
                   <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => copy(idea.hook, idea.id)}>
                     {copied === idea.id ? "Copié ✓" : "Copier l'accroche"}
                   </button>
+                  {slack.status?.connected && (
+                    <button
+                      className="secondary-button"
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                      disabled={!!slackSending[idea.id] || !!slackSent[idea.id]}
+                      onClick={async () => {
+                        setSlackSending((p) => ({ ...p, [idea.id]: true }));
+                        try {
+                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-ideas`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+                            body: JSON.stringify({ idea_ids: [idea.id] }),
+                          });
+                          setSlackSent((p) => ({ ...p, [idea.id]: true }));
+                          setIdeas((prev) => prev.map((i) => i.id === idea.id ? { ...i, slack_status: "pending" } : i));
+                        } finally {
+                          setSlackSending((p) => ({ ...p, [idea.id]: false }));
+                        }
+                      }}
+                    >
+                      {slackSending[idea.id] ? <Loader2 size={12} className="spinning" /> : null}
+                      {slackSent[idea.id] || idea.slack_status === "pending" ? "Sur Slack ✓" : "Valider sur Slack"}
+                    </button>
+                  )}
                   <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => onReuse(idea.title)}>
                     <Sparkles size={12} /> Générer ce post
                   </button>
@@ -2274,6 +2394,7 @@ function ProfileView({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [draftInfo, setDraftInfo] = useState("");
   const linkedin = useLinkedIn(isAuthed);
+  const slack = useSlack(isAuthed);
 
   // `Field` lit toujours la dernière valeur du profil via cette ref, ce qui
   // permet de garder une identité de composant stable (useCallback ci-dessous)
@@ -2502,6 +2623,34 @@ function ProfileView({
         )}
       </section>
       {linkedin.error ? <div className="error" style={{ marginBottom: 12 }}>{linkedin.error}</div> : null}
+
+      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <svg width="20" height="20" viewBox="0 0 122.8 122.8" style={{ flexShrink: 0 }}><path d="M25.8 77.6h14.9V51.2H25.8v26.4zm7.5-36.3a8.6 8.6 0 100-17.3 8.6 8.6 0 000 17.3zm53 36.3h14.9V61.4c0-13-7-19.1-16.3-19.1-7.5 0-11 4.2-12.9 7.1V51.2H57.1c.2-4.1 0-43.6 0-43.6H72v6.3c2-3 5.5-7.4 13.4-7.4 9.8 0 17.2 6.4 17.2 20.3v26.4-.1zm0 0" fill="none"/><path d="M0 11.1C0 5 5.1 0 11.3 0h100.2c6.2 0 11.3 5 11.3 11.1v100.6c0 6.1-5.1 11.1-11.3 11.1H11.3C5.1 122.8 0 117.8 0 111.7V11.1zm32.2 12.4a8.6 8.6 0 10.1 17.2 8.6 8.6 0 00-.1-17.2zM25.8 77.6h14.9V51.2H25.8v26.4zm36.1 0h14.9V61.4c0-13-7-19.1-16.3-19.1-7.5 0-11 4.2-12.9 7.1V51.2H57.1c.2-4.1 0-43.6 0-43.6H72v6.3c2-3 5.5-7.4 13.4-7.4 9.8 0 17.2 6.4 17.2 20.3v26.4H61.9z" fill="#4A154B"/></svg>
+          <div>
+            <strong>Valider les idées sur Slack</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              {slack.status?.connected
+                ? `Workspace connecté : ${slack.status.team_name || "Slack"} — envoie tes idées générées sur Slack avec boutons ✅ / ❌.`
+                : !slack.status?.configured
+                  ? "Intégration Slack non configurée sur le serveur (SLACK_CLIENT_ID manquant)."
+                  : "Connecte Slack pour valider tes idées de posts directement depuis ton téléphone."}
+            </p>
+          </div>
+        </div>
+        {slack.status?.connected ? (
+          <button className="secondary-button" onClick={slack.disconnect} disabled={slack.busy} style={{ fontSize: 12 }}>
+            {slack.busy ? <Loader2 size={14} className="spinning" /> : null}
+            Déconnecter
+          </button>
+        ) : slack.status?.configured ? (
+          <button className="primary-button" onClick={slack.connect} disabled={slack.busy}>
+            {slack.busy ? <Loader2 size={14} className="spinning" /> : null}
+            {slack.busy ? "Redirection…" : "Connecter Slack"}
+          </button>
+        ) : null}
+      </section>
+      {slack.error ? <div className="error" style={{ marginBottom: 12 }}>{slack.error}</div> : null}
 
       {error ? <div className="error" style={{ marginBottom: 12 }}>{error}</div> : null}
       {draftInfo ? <div className="auth-info" style={{ marginBottom: 12 }}>{draftInfo}</div> : null}
@@ -3309,6 +3458,31 @@ export default function Home() {
         await fetch(`${DIRECT_API_URL}/me/linkedin/refresh`, { method: "POST", headers: await authHeaders() });
       } catch { /* ignore */ }
       params.delete("linkedin");
+      const qs = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+      setView("profile");
+    })();
+  }, [isAuthed]);
+
+  // Retour du flux OAuth Slack : le code arrive en query param.
+  // On vérifie sessionStorage pour distinguer des autres OAuth éventuels.
+  useEffect(() => {
+    if (!isAuthed) return;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    if (!code || !sessionStorage.getItem("slack_oauth_pending")) return;
+    sessionStorage.removeItem("slack_oauth_pending");
+    (async () => {
+      try {
+        const redirectUri = `${window.location.origin}${window.location.pathname}`;
+        await fetch(`${DIRECT_API_URL}/me/integrations/slack/callback`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ code, redirect_uri: redirectUri }),
+        });
+      } catch { /* ignore */ }
+      params.delete("code");
+      params.delete("state");
       const qs = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
       setView("profile");
