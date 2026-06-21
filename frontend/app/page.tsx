@@ -305,6 +305,7 @@ type Job = {
   limit_posts: number | null;
   run_llm: boolean;
   use_cache: boolean;
+  platform?: string;
   created_at: string;
   updated_at: string;
   items: JobItem[];
@@ -329,6 +330,30 @@ function parseUrls(raw: string): string[] {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(url);
+  }
+  return out;
+}
+
+/** Découpe un bloc de texte en handles/URLs Instagram distincts (une par ligne, dédupliqués). */
+function parseIgHandles(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of raw.split(/[\n,]/)) {
+    const entry = line.trim();
+    if (!entry) continue;
+    // Accept instagram.com URLs or @handles or bare handles
+    let handle = entry;
+    const m = entry.match(/instagram\.com\/([A-Za-z0-9_.]+)/i);
+    if (m) {
+      handle = m[1].replace(/\/$/, "");
+    } else {
+      handle = entry.replace(/^@/, "").replace(/\/.*$/, "").replace(/\?.*$/, "");
+    }
+    if (!handle || handle.length < 1) continue;
+    const key = handle.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(handle);
   }
   return out;
 }
@@ -550,6 +575,199 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
       ) : (
         <div className="jobs-list">
           {jobs.map((job) => {
+            const active = jobIsActive(job);
+            const date = new Date(job.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+            return (
+              <div className="job-block" key={job.id}>
+                <div className="job-head">
+                  <div className="job-head-main">
+                    {active ? <Loader2 size={15} className="spinning" /> : job.status === "cancelled" ? <span style={{ color: "var(--muted)" }}>–</span> : job.failed && !job.completed ? <span style={{ color: "#ef4444" }}>✕</span> : <CheckCircle2 size={15} color="#10b981" />}
+                    <strong>Série du {date}</strong>
+                    <span className="badge">{job.completed}/{job.total} terminé{job.completed > 1 ? "s" : ""}</span>
+                    {job.failed > 0 ? <span className="status-pill no">{job.failed} échec{job.failed > 1 ? "s" : ""}</span> : null}
+                    {job.status === "cancelled" ? <span className="status-pill">Annulée</span> : null}
+                  </div>
+                  {active ? (
+                    <button
+                      className="ghost-button"
+                      style={{ fontSize: 12, padding: "2px 10px", color: "var(--muted)" }}
+                      disabled={cancellingId === job.id}
+                      onClick={() => cancelJob(job.id)}
+                    >
+                      {cancellingId === job.id ? <Loader2 size={12} className="spinning" /> : "Annuler"}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="backlog-list">
+                  {job.items.map((item) => (
+                    <ItemRow
+                      key={item.id}
+                      item={item}
+                      onOpen={openItem}
+                      opening={openingId === item.id}
+                      onCancel={(it) => cancelItem(job.id, it.id)}
+                      cancelling={cancellingItemId === item.id}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Instagram analyse hub ─────────────────────────────────────────────── */
+
+function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth, onJobUpdated }: {
+  jobs: Job[];
+  loading: boolean;
+  isAuthed: boolean;
+  onCreated: (job: Job) => void;
+  onOpenReport: (markdown: string, name: string) => void;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onJobUpdated: (job: Job) => void;
+}) {
+  const [handles, setHandles] = useState("");
+  const [limit, setLimit] = useState(30);
+  const [useCache, setUseCache] = useState(true);
+  const [runLlm, setRunLlm] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
+
+  // Filter to only Instagram jobs
+  const igJobs = jobs.filter((j) => j.platform === "instagram");
+  const handleList = parseIgHandles(handles);
+
+  async function submit() {
+    if (handleList.length === 0) { setError("Colle au moins un handle ou une URL Instagram."); return; }
+    if (!isAuthed) {
+      requireAuth("Crée un compte gratuit pour lancer ton analyse Instagram et conserver ton historique.");
+      return;
+    }
+    setSubmitting(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ profile_urls: handleList, limit, use_cache: useCache, run_llm: runLlm, platform: "instagram" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Échec de la création de la série");
+      setHandles("");
+      onCreated(data as Job);
+    } catch (err: any) {
+      setError(err.message || "Échec de la création de la série");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function cancelJob(jobId: string) {
+    setCancellingId(jobId);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${jobId}/cancel`, { method: "POST", headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && data?.id) onJobUpdated(data as Job);
+    } catch { /* polling will sync */ } finally { setCancellingId(null); }
+  }
+
+  async function cancelItem(jobId: string, itemId: string) {
+    setCancellingItemId(itemId);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${jobId}/items/${itemId}/cancel`, { method: "POST", headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && data?.id) onJobUpdated(data as Job);
+    } catch { /* polling will sync */ } finally { setCancellingItemId(null); }
+  }
+
+  async function openItem(item: JobItem) {
+    if (!item.analysis_id) return;
+    setOpeningId(item.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/analyses/${item.analysis_id}`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && data?.report_markdown) {
+        onOpenReport(data.report_markdown, item.name || item.handle || "Rapport Instagram");
+      } else {
+        setError(data?.detail || "Rapport introuvable.");
+      }
+    } catch (err: any) {
+      setError(err.message || "Impossible d'ouvrir le rapport");
+    } finally {
+      setOpeningId(null);
+    }
+  }
+
+  return (
+    <div>
+      <div className="section-header" style={{ marginBottom: 16 }}>
+        <div>
+          <h2 className="section-title"><InstagramIcon size={20} /> Analyser des profils Instagram</h2>
+          <p className="section-desc">Colle un ou plusieurs handles Instagram (un par ligne). L'analyse scrape les Reels, détecte les accroches et génère une synthèse stratégique.</p>
+        </div>
+      </div>
+
+      <div className="analyzer-card" style={{ marginBottom: 20 }}>
+        <div className="url-input url-input--multi">
+          <InstagramIcon size={16} />
+          <textarea
+            value={handles}
+            onChange={(e) => setHandles(e.target.value)}
+            placeholder={"leaplusbeaudesinsta\n@monautrecompte\nhttps://www.instagram.com/untroisieme/"}
+            rows={Math.min(8, Math.max(3, handleList.length + 1))}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }}
+          />
+        </div>
+        <div className="batch-submit-row">
+          <span className="batch-count">
+            {handleList.length === 0
+              ? "Un handle par ligne — ⌘/Ctrl + Entrée pour lancer"
+              : `${handleList.length} compte${handleList.length > 1 ? "s" : ""} dans la série`}
+          </span>
+          <button className="primary-button" disabled={submitting || handleList.length === 0} onClick={submit}>
+            {submitting ? <Loader2 size={14} className="spinning" /> : <Zap size={14} />}
+            Lancer la série
+          </button>
+        </div>
+        <div className="controls">
+          <label className="control">
+            <span>Reels à analyser : <b>{limit}</b></span>
+            <input type="range" min="10" max="50" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
+          </label>
+          <label className="control" onClick={() => setUseCache(!useCache)} style={{ cursor: "pointer" }}>
+            <span>Utiliser le cache</span>
+            <button className={`switch ${useCache ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setUseCache(!useCache); }} />
+          </label>
+          <label className="control" onClick={() => setRunLlm(!runLlm)} style={{ cursor: "pointer" }}>
+            <span>Synthèse Claude</span>
+            <button className={`switch ${runLlm ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setRunLlm(!runLlm); }} />
+          </label>
+        </div>
+      </div>
+
+      {error ? <div className="error">{error}</div> : null}
+
+      {!isAuthed ? (
+        <div className="report-card" style={{ maxWidth: 720, cursor: "pointer" }} onClick={() => requireAuth("Crée un compte gratuit pour analyser des profils Instagram et conserver ton historique.")}>
+          <div className="report-icon"><Lock size={13} /></div>
+          <div><strong>Historique & séries multi-profils</strong><span>Crée un compte gratuit pour garder tes rapports et analyser plusieurs comptes d'un coup.</span></div>
+        </div>
+      ) : loading ? (
+        <p style={{ color: "var(--muted)" }}>Chargement des séries…</p>
+      ) : igJobs.length === 0 ? (
+        <div className="report-card" style={{ maxWidth: 720 }}>
+          <div className="report-icon"><Activity size={13} /></div>
+          <div><strong>Aucune série Instagram pour l'instant</strong><span>Colle des handles ci-dessus pour lancer ton premier backlog Instagram.</span></div>
+        </div>
+      ) : (
+        <div className="jobs-list">
+          {igJobs.map((job) => {
             const active = jobIsActive(job);
             const date = new Date(job.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
             return (
@@ -3985,6 +4203,25 @@ export default function Home() {
           ) : platform === "instagram" ? (
             view === "content" ? (
               <InstagramContentHub tab={contentTab} onTab={setContentTab} isAuthed={isAuthed} requireAuth={requireAuth} />
+            ) : view === "analyze" ? (
+              loadedReport ? (
+                <>
+                  <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => setLoadedReport(null)}>
+                    ← Retour aux analyses
+                  </button>
+                  <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
+                </>
+              ) : (
+                <InstagramAnalyzeHub
+                  jobs={jobs}
+                  loading={jobsLoading}
+                  isAuthed={isAuthed}
+                  onCreated={onJobCreated}
+                  onOpenReport={(markdown, name) => { setLoadedReport({ content: markdown, name, path: "", updated_at: Date.now() / 1000 }); }}
+                  requireAuth={requireAuth}
+                  onJobUpdated={onJobUpdated}
+                />
+              )
             ) : (
               <InstagramPlaceholder />
             )
