@@ -6,7 +6,7 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 const jetbrains = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
 
 export const metadata: Metadata = {
-  title: "LinkedIn Strategy Decoder — Décodeur de stratégie",
+  title: "Cibl — Stratégie de contenu LinkedIn",
   description: "Décrypte la stratégie de contenu LinkedIn avec des stats déterministes et une synthèse IA.",
 };
 

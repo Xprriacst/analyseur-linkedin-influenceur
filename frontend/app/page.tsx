@@ -7,6 +7,8 @@ import {
   Activity,
   BarChart3,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Download,
   FileText,
@@ -28,6 +30,7 @@ import {
   Send,
   Settings2,
   Sparkles,
+  Target,
   TrendingUp,
   UserRound,
   Users,
@@ -339,8 +342,9 @@ function jobIsCancelled(j: Job): boolean {
   return j.status === "cancelled";
 }
 
-function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean }) {
+function ItemRow({ item, onOpen, opening, onCancel, cancelling }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean; onCancel: (i: JobItem) => void; cancelling: boolean }) {
   const clickable = item.status === "done" && !!item.analysis_id;
+  const cancellable = item.status === "pending" || item.status === "running";
   return (
     <div
       className={`backlog-row ${item.status} ${clickable ? "clickable" : ""}`}
@@ -369,17 +373,30 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
       <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : item.status === "cancelled" ? "no" : ""}`}>
         {ITEM_STATUS_LABELS[item.status]}
       </span>
+      {cancellable ? (
+        <button
+          type="button"
+          className="ghost-button"
+          style={{ fontSize: 11, padding: "2px 8px", color: "var(--muted)" }}
+          disabled={cancelling}
+          onClick={(e) => { e.stopPropagation(); onCancel(item); }}
+          title="Annuler ce profil"
+        >
+          {cancelling ? <Loader2 size={11} className="spinning" /> : "Annuler"}
+        </button>
+      ) : null}
     </div>
   );
 }
 
-function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth }: {
+function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth, onJobUpdated }: {
   jobs: Job[];
   loading: boolean;
   isAuthed: boolean;
   onCreated: (job: Job) => void;
   onOpenReport: (markdown: string, name: string) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onJobUpdated: (job: Job) => void;
 }) {
   const [urls, setUrls] = useState("");
   const [limit, setLimit] = useState(25);
@@ -389,6 +406,7 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   const [error, setError] = useState("");
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
 
   const urlList = parseUrls(urls);
 
@@ -420,14 +438,32 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   async function cancelJob(jobId: string) {
     setCancellingId(jobId);
     try {
-      await fetch(`${DIRECT_API_URL}/jobs/${jobId}/cancel`, {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${jobId}/cancel`, {
         method: "POST",
         headers: await authHeaders(),
       });
+      const data = await res.json();
+      if (res.ok && data?.id) onJobUpdated(data as Job);
     } catch {
       /* le polling remettra le statut à jour */
     } finally {
       setCancellingId(null);
+    }
+  }
+
+  async function cancelItem(jobId: string, itemId: string) {
+    setCancellingItemId(itemId);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${jobId}/items/${itemId}/cancel`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (res.ok && data?.id) onJobUpdated(data as Job);
+    } catch {
+      /* le polling remettra le statut à jour */
+    } finally {
+      setCancellingItemId(null);
     }
   }
 
@@ -540,7 +576,14 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
                 </div>
                 <div className="backlog-list">
                   {job.items.map((item) => (
-                    <ItemRow key={item.id} item={item} onOpen={openItem} opening={openingId === item.id} />
+                    <ItemRow
+                      key={item.id}
+                      item={item}
+                      onOpen={openItem}
+                      opening={openingId === item.id}
+                      onCancel={(it) => cancelItem(job.id, it.id)}
+                      cancelling={cancellingItemId === item.id}
+                    />
                   ))}
                 </div>
               </div>
@@ -665,6 +708,15 @@ function Sidebar({
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 
 }) {
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem("sidebar-collapsed") === "true"; } catch { return false; }
+  });
+
+  useEffect(() => {
+    const w = collapsed ? "64px" : "260px";
+    document.documentElement.style.setProperty("--sidebar-w", w);
+    try { localStorage.setItem("sidebar-collapsed", String(collapsed)); } catch {}
+  }, [collapsed]);
 
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean; auth?: boolean }[] = [
     { key: "content", label: "Contenu", icon: <PenTool size={14} />, premium: true },
@@ -673,17 +725,26 @@ function Sidebar({
   ];
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}>
       <div className="logo">
-        <div className="logo-mark">SD</div>
-        <div className="logo-text">
-          Strategy Decoder
-          <span className="logo-sub">SaaS Premium</span>
-        </div>
+        <div className="logo-mark"><Target size={18} strokeWidth={2.5} /></div>
+        {!collapsed && (
+          <div className="logo-text">
+            Cibl
+            <span className="logo-sub">SaaS Premium</span>
+          </div>
+        )}
+        <button
+          className="sidebar-collapse-btn"
+          onClick={() => setCollapsed((c) => !c)}
+          title={collapsed ? "Étendre la sidebar" : "Réduire la sidebar"}
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+        </button>
       </div>
 
       {/* Platform switch */}
-      <div className="platform-switch">
+      {!collapsed && <div className="platform-switch">
         <button
           className={`platform-btn${platform === "linkedin" ? " active" : ""}`}
           onClick={() => onPlatformChange("linkedin")}
@@ -698,18 +759,19 @@ function Sidebar({
           <InstagramIcon size={13} />
           Instagram
         </button>
-      </div>
+      </div>}
 
       {/* Sidebar navigation */}
       <section className="sidebar-section">
-        <p className="eyebrow">Navigation</p>
+        {!collapsed && <p className="eyebrow">Navigation</p>}
         <div className="nav-list">
           {navItems.map((item) => {
             const locked = (!!item.premium || !!item.auth) && !isAuthed;
             return (
               <button
                 key={item.key}
-                className={`nav-item ${view === item.key ? "active" : ""} ${locked ? "locked" : ""}`}
+                className={`nav-item ${view === item.key ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                title={collapsed ? item.label : undefined}
                 onClick={() => {
                   if (locked) {
                     requireAuth(
@@ -723,9 +785,12 @@ function Sidebar({
                 }}
               >
                 {item.icon}
-                <span>{item.label}</span>
-                {item.key === "analyze" && jobBadge ? (
+                {!collapsed && <span>{item.label}</span>}
+                {!collapsed && item.key === "analyze" && jobBadge ? (
                   <span className="nav-job-badge"><Loader2 size={11} className="spinning" />{jobBadge.completed}/{jobBadge.total}</span>
+                ) : null}
+                {collapsed && item.key === "analyze" && jobBadge ? (
+                  <span className="nav-job-badge nav-job-badge-dot"><Loader2 size={11} className="spinning" /></span>
                 ) : null}
                 {locked ? <Lock size={12} className="lock-ico" /> : null}
               </button>
@@ -735,13 +800,14 @@ function Sidebar({
       </section>
 
       <section className="sidebar-section" style={{ marginTop: "auto" }}>
-        <p className="eyebrow"><Settings2 size={12} style={{ verticalAlign: "-2px", marginRight: 5 }} />Réglages</p>
+        {!collapsed && <p className="eyebrow"><Settings2 size={12} style={{ verticalAlign: "-2px", marginRight: 5 }} />Réglages</p>}
         <div className="nav-list" style={{ marginBottom: 10 }}>
           {(() => {
             const locked = !isAuthed;
             return (
               <button
-                className={`nav-item ${view === "profile" ? "active" : ""} ${locked ? "locked" : ""}`}
+                className={`nav-item ${view === "profile" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                title={collapsed ? "Mon profil" : undefined}
                 onClick={() => {
                   if (locked) {
                     requireAuth("Crée un compte gratuit pour retrouver tes données et ton contexte éditorial.");
@@ -751,35 +817,37 @@ function Sidebar({
                 }}
               >
                 <UserRound size={14} />
-                <span>Mon profil</span>
+                {!collapsed && <span>Mon profil</span>}
                 {locked ? <Lock size={12} className="lock-ico" /> : null}
               </button>
             );
           })()}
         </div>
-        {isAuthed && credits !== null && (
+        {!collapsed && isAuthed && credits !== null && (
           <div style={{ marginBottom: 8 }}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: credits <= 5 ? "#ef4444" : "var(--muted)", border: "1px solid var(--border)", borderRadius: 20, padding: "3px 10px" }}>
               ✦ {credits} crédit{credits !== 1 ? "s" : ""}
             </span>
           </div>
         )}
-        <div
-          title={`Apify : ${health?.apify ? "OK" : "manquant"} · Anthropic : ${health?.anthropic ? "OK" : "manquant"} · Modèle : ${health?.model || "—"}`}
-          style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 10.5, color: "var(--muted)" }}
-        >
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: health?.apify ? "#10b981" : "#ef4444" }} />
-            Apify
-          </span>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: health?.anthropic ? "#10b981" : "#ef4444" }} />
-            Anthropic
-          </span>
-          <span style={{ opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
-            {health?.model || "—"}
-          </span>
-        </div>
+        {!collapsed && (
+          <div
+            title={`Apify : ${health?.apify ? "OK" : "manquant"} · Anthropic : ${health?.anthropic ? "OK" : "manquant"} · Modèle : ${health?.model || "—"}`}
+            style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 10.5, color: "var(--muted)" }}
+          >
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: health?.apify ? "#10b981" : "#ef4444" }} />
+              Apify
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: health?.anthropic ? "#10b981" : "#ef4444" }} />
+              Anthropic
+            </span>
+            <span style={{ opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
+              {health?.model || "—"}
+            </span>
+          </div>
+        )}
       </section>
     </aside>
   );
@@ -2219,7 +2287,7 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
       setMessages([]);
       return;
     }
-    loadConversations(true);
+    loadConversations(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
@@ -3186,6 +3254,7 @@ function AnalyzeHub({
   jobs,
   jobsLoading,
   onJobCreated,
+  onJobUpdated,
   onOpenReport,
   influencers,
   influencersLoading,
@@ -3198,6 +3267,7 @@ function AnalyzeHub({
   jobs: Job[];
   jobsLoading: boolean;
   onJobCreated: (job: Job) => void;
+  onJobUpdated: (job: Job) => void;
   onOpenReport: (markdown: string, name: string) => void;
   influencers: InfluencerLibraryEntry[];
   influencersLoading: boolean;
@@ -3233,6 +3303,7 @@ function AnalyzeHub({
           loading={jobsLoading}
           isAuthed={isAuthed}
           onCreated={onJobCreated}
+          onJobUpdated={onJobUpdated}
           onOpenReport={onOpenReport}
           requireAuth={requireAuth}
         />
@@ -3378,6 +3449,12 @@ export default function Home() {
     setJobs((prev) => [job, ...prev]);
     loadReports();
     loadInfluencerLibrary();
+  }
+
+  // Remplace une série par sa version à jour (retournée par cancel série/item),
+  // pour un affichage immédiat même si le polling s'est arrêté.
+  function onJobUpdated(job: Job) {
+    setJobs((prev) => prev.map((j) => (j.id === job.id ? job : j)));
   }
 
   const activeJob = jobs.find(jobIsActive) ?? null;
@@ -3660,6 +3737,7 @@ export default function Home() {
                           jobs={jobs}
                           jobsLoading={jobsLoading}
                           onJobCreated={onJobCreated}
+                          onJobUpdated={onJobUpdated}
                           onOpenReport={openReport}
                           influencers={influencers}
                           influencersLoading={influencersLoading}

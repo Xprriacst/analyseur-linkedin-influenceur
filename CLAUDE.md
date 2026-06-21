@@ -35,6 +35,18 @@ Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netli
 
 ## Changelog
 
+### 2026-06-21 (job queue : annulation par item + récupération des séries figées)
+- **Incident** : une analyse a figé un item à `running` (profil `louisgraffeuil`), « Annuler » ne nettoyait rien → spinner « Analyse en cours » éternel. Cause : le thread de traitement a été tué (redémarrage Render) **pile au lancement** (service redémarré à 12:54:58, item `running` à 12:54:53), et l'annulation ne touchait que la série, jamais les items.
+- **Bugs corrigés** (4) :
+  1. `cancel_job` (`api.py`) ne soldait que le **job**, pas les items → ajout de `db.cancel_pending_items` (tous les `pending`/`running` → `cancelled`). Le front affiche un spinner pour **toute ligne `running`** indépendamment du statut série, d'où le symptôme.
+  2. `process_job` (`src/jobs.py`) **écrasait** un `cancelled` par `done`/`error` en fin de boucle (+ reposait `running` après chaque item) → le thread ne réécrit plus jamais par-dessus un `cancelled` (vérif `get_job_status`/`get_job_item_status` avant chaque écriture). `final_counts` : `failed` ne compte plus que les vrais échecs (cancelled ≠ failed). Nouvelle `final_status(items)`.
+  3. **Pas de timeout** : un appel Apify figé bloquait le `_compute_lock` **global** (toutes les séries de tous les users) indéfiniment → `_run_analysis_guarded` borne chaque profil à `ITEM_TIMEOUT_S = 600 s` (run isolé dans un thread jetable, `shutdown(wait=False)` libère le lock).
+  4. **Séries orphelines jamais nettoyées** (ex. job `c158b9f0` resté `running` 3/4 depuis le 16/06) → `db.reconcile_stale_jobs` (appelé dans `list_jobs`) solde en `error` les items d'une série active sans update depuis `JOB_STALE_MINUTES = 15`, puis finalise la série. Idempotent.
+- **Annulation par item** (demande Alex) : nouvel endpoint `POST /jobs/{job_id}/items/{item_id}/cancel` + bouton « Annuler » sur **chaque ligne** `pending`/`running` (`ItemRow` dans `page.tsx`). Le thread respecte l'annulation d'un item précis sans toucher aux autres. Le front met à jour l'état immédiatement via le job retourné (`onJobUpdated`), sans attendre le polling.
+- **Ce que ça règle / ne règle pas** : ça n'empêche pas Apify/Render de planter (externe), mais plus rien ne reste bloqué — timeout (10 min), réconciliation (15 min) ou clic « Annuler » (immédiat) rendent toujours la main.
+- **Constat infra Render** (métriques 7 j, backend `srv-d8gn0n7lk1mc73f2pcf0`, plan **free**) : (1) **~40 instances distinctes/semaine** = redémarrages/spin-down constants qui tuent les threads d'analyse = cause #1 des jobs orphelins ; (2) **mémoire à 97-99 % du plafond 512 MiB** dès qu'une analyse tourne (pic 507 MiB le 21/06, 498 MiB le 14/06) → risque d'OOM kill réel. **Reco : passer en Standard (25 $, 2 GiB)** — Starter (7 $) supprime le spin-down mais garde 512 MiB donc ne règle pas l'OOM. Décision reportée par Alex (« la prochaine fois »).
+- ⚠️ **Déploiement** : aucun changement DB, aucune env var. À merger `dev → main` (backend Render depuis `main`).
+
 ### 2026-06-19 (idée du jour : cron quotidien + réservoir client)
 - **Objectif** : une **idée de post générée chaque matin** par utilisateur opt-in, piochée en priorité dans un **réservoir d'idées** que le client remplit lui-même dans l'app (choix in-app + Supabase plutôt que Google Doc : pas de dépendance externe, structuré, RLS automatique).
 - **DB** : migration `supabase/migrations/0007_daily_ideas.sql` → tables `idea_seeds` (réservoir, RLS user, `used_at`) + `daily_ideas` (1 idée/jour, `unique(user_id, idea_date)`, **lecture seule côté client** — seul le cron écrit) + colonne `daily_ideas_enabled` (opt-in) sur `user_editorial_profiles`. **À exécuter manuellement dans le SQL editor Supabase.**
