@@ -1505,3 +1505,150 @@ def set_idea_slack_pending(access_token: str, idea_ids: list[str]) -> int:
         .execute()
     )
     return len(resp.data) if resp.data else 0
+
+
+# ── Monitoring influenceurs (ALE-32) ── #
+
+def get_monitoring_for_user(access_token: str) -> list[dict]:
+    """Liste les entrées de monitoring actives de l'utilisateur (avec infos influenceur)."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("influencer_monitoring")
+        .select("*, influencers(handle, name, follower_count, profile_url)")
+        .eq("is_active", True)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    rows = resp.data or []
+    result = []
+    for row in rows:
+        inf = row.pop("influencers", {}) or {}
+        row["handle"] = inf.get("handle", "")
+        row["name"] = inf.get("name", "")
+        row["follower_count"] = inf.get("follower_count")
+        row["profile_url"] = inf.get("profile_url", "")
+        result.append(row)
+    return result
+
+
+def upsert_influencer_monitoring(
+    access_token: str,
+    influencer_id: str,
+    is_active: bool = True,
+    frequency: str = "daily",
+) -> dict | None:
+    """Active ou met à jour le monitoring d'un influenceur pour l'utilisateur."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "influencer_id": influencer_id,
+        "is_active": is_active,
+        "frequency": frequency,
+    }
+    resp = (
+        db.table("influencer_monitoring")
+        .upsert(row, on_conflict="user_id,influencer_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def delete_influencer_monitoring(access_token: str, influencer_id: str) -> None:
+    """Supprime le monitoring d'un influenceur pour l'utilisateur."""
+    if not supabase_enabled():
+        return
+    db = client_for_token(access_token)
+    db.table("influencer_monitoring").delete().eq("influencer_id", influencer_id).execute()
+
+
+# ── Helpers cron monitoring (admin seulement — jamais exposés via HTTP) ── #
+
+def list_active_monitoring_entries() -> list[dict]:
+    """Retourne toutes les entrées de monitoring actives (admin, pour le cron)."""
+    if not admin_enabled():
+        return []
+    resp = (
+        admin_client()
+        .table("influencer_monitoring")
+        .select("*, influencers(handle, profile_url)")
+        .eq("is_active", True)
+        .execute()
+    )
+    rows = resp.data or []
+    result = []
+    for row in rows:
+        inf = row.pop("influencers", {}) or {}
+        row["handle"] = inf.get("handle", "")
+        row["profile_url"] = inf.get("profile_url", "")
+        result.append(row)
+    return result
+
+
+def get_post_urls_for_influencer(influencer_id: str) -> set:
+    """Retourne les URLs de posts existants pour cet influenceur (admin)."""
+    resp = (
+        admin_client()
+        .table("posts")
+        .select("url")
+        .eq("influencer_id", influencer_id)
+        .execute()
+    )
+    return {row["url"] for row in (resp.data or []) if row.get("url")}
+
+
+def save_new_posts_for_influencer(influencer_id: str, posts: list[dict]) -> int:
+    """Insère les nouveaux posts sans supprimer les existants. Retourne le nombre inséré."""
+    if not posts:
+        return 0
+    rows = _post_rows(influencer_id, posts)
+    if not rows:
+        return 0
+    resp = admin_client().table("posts").insert(rows).execute()
+    return len(resp.data or [])
+
+
+def update_monitoring_last_checked(monitor_id: str, new_posts_count: int = 0) -> None:
+    """Met à jour last_monitored_at et le compteur de nouveaux posts (admin)."""
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    admin_client().table("influencer_monitoring").update({
+        "last_monitored_at": now,
+        "new_posts_since_last": new_posts_count,
+    }).eq("id", monitor_id).execute()
+
+
+def get_user_credits_admin(user_id: str) -> int:
+    """Retourne le solde de crédits d'un user sans JWT (admin, pour le cron)."""
+    if not admin_enabled():
+        return 999
+    resp = (
+        admin_client()
+        .table("user_credits")
+        .select("balance")
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    return resp.data["balance"] if resp.data else 0
+
+
+def debit_credits_admin(user_id: str, amount: int, action: str) -> bool:
+    """Débite des crédits via le service-role (pour le cron, sans JWT user)."""
+    if not admin_enabled():
+        return True
+    try:
+        admin_client().rpc("debit_credits", {
+            "p_user_id": user_id,
+            "p_amount": amount,
+            "p_action": action,
+            "p_description": f"[cron] {action}",
+        }).execute()
+        return True
+    except Exception:
+        return False

@@ -6,6 +6,8 @@ import remarkGfm from "remark-gfm";
 import {
   Activity,
   BarChart3,
+  Bell,
+  BellOff,
   CheckCircle2,
   ChevronLeft,
   Clock3,
@@ -3570,6 +3572,40 @@ function InfluencersView({
   const [sort, setSort] = useState<"date" | "name">("date");
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [monitoredIds, setMonitoredIds] = useState<Set<string>>(new Set());
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isAuthed) return;
+    fetch("/api/me/monitoring", { headers: authHeaders() })
+      .then((r) => r.ok ? r.json() : [])
+      .then((data: { influencer_id: string }[]) => {
+        setMonitoredIds(new Set(data.map((d) => d.influencer_id)));
+      })
+      .catch(() => {});
+  }, [isAuthed]);
+
+  async function toggleMonitoring(influencerId: string) {
+    setTogglingId(influencerId);
+    const isActive = monitoredIds.has(influencerId);
+    try {
+      if (isActive) {
+        await fetch(`/api/me/monitoring/${influencerId}`, { method: "DELETE", headers: authHeaders() });
+        setMonitoredIds((prev) => { const s = new Set(prev); s.delete(influencerId); return s; });
+      } else {
+        await fetch(`/api/me/monitoring/${influencerId}`, {
+          method: "POST",
+          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ is_active: true, frequency: "daily" }),
+        });
+        setMonitoredIds((prev) => new Set([...prev, influencerId]));
+      }
+    } catch {
+      // silently ignore — toggle is non-critical
+    } finally {
+      setTogglingId(null);
+    }
+  }
 
   if (!isAuthed) {
     return (
@@ -3675,12 +3711,16 @@ function InfluencersView({
                   <th>Handle</th>
                   <th>Abonnés</th>
                   <th>Dernière analyse</th>
+                  <th>Veille</th>
                   <th>Profil</th>
                   <th>Rapport</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((entry) => (
+                {filtered.map((entry) => {
+                  const monitored = monitoredIds.has(entry.influencer_id);
+                  const toggling = togglingId === entry.influencer_id;
+                  return (
                   <tr key={entry.influencer_id}>
                     <td>
                       <strong>{entry.name}</strong>
@@ -3696,6 +3736,21 @@ function InfluencersView({
                       {entry.analyzed_at
                         ? new Date(entry.analyzed_at * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" })
                         : "—"}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        title={monitored ? "Désactiver la veille automatique" : "Activer la veille (nouveaux posts détectés chaque jour)"}
+                        className={monitored ? "primary-button" : "secondary-button"}
+                        style={{ padding: "4px 10px", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4 }}
+                        disabled={toggling}
+                        onClick={() => toggleMonitoring(entry.influencer_id)}
+                      >
+                        {toggling
+                          ? <Loader2 size={12} className="spinning" />
+                          : monitored ? <Bell size={12} /> : <BellOff size={12} />}
+                        {monitored ? "Actif" : "Veille"}
+                      </button>
                     </td>
                     <td>
                       <a href={entry.profile_url} target="_blank" rel="noopener noreferrer" className="secondary-button" style={{ padding: "4px 10px", fontSize: 12 }}>
@@ -3717,7 +3772,8 @@ function InfluencersView({
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
