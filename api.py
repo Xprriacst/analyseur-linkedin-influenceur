@@ -21,6 +21,7 @@ from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_posts, fetch_profile
 from src.stats import compute_stats
+from src.instagram_hooks import select_hooks
 
 load_dotenv()
 
@@ -1371,3 +1372,25 @@ def persist_analysis(
     if not saved:
         raise HTTPException(status_code=500, detail="Sauvegarde échouée (session invalide ou RLS).")
     return {"saved": saved}
+
+
+# ── ALE-103 : Instagram hooks ─────────────────────────────────────────────────
+
+class InstagramHooksRequest(BaseModel):
+    count: int = 8
+
+
+@app.post("/instagram/hooks")
+def instagram_hooks(
+    payload: InstagramHooksRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Génère des hooks Instagram personnalisés depuis la base de hooks."""
+    user_context: dict[str, Any] = {}
+    try:
+        profile = db.get_editorial_profile(token) or {}
+        user_context = {k: v for k, v in profile.items() if v not in (None, "")}
+    except Exception:
+        pass
+    hooks = select_hooks(user_context, count=max(1, min(payload.count, 20)))
+    return {"hooks": hooks}

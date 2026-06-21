@@ -205,44 +205,8 @@ a { color: inherit; text-decoration: none; }
   color: var(--primary);
 }
 
-/* ── Platform switch ── */
-.platform-switch {
-  display: flex;
-  gap: 3px;
-  padding: 3px;
-  background: var(--surface-low);
-  border-radius: 10px;
-  margin: 4px 0 2px;
-}
-
-.platform-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 6px 8px;
-  border: none;
-  border-radius: 7px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  background: transparent;
-  cursor: pointer;
-  transition: all 120ms ease;
-  white-space: nowrap;
-}
-
-.platform-btn:hover {
-  color: var(--ink);
-  background: var(--surface);
-}
-
-.platform-btn.active {
-  color: var(--primary);
-  background: var(--bg);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-}
+/* ── Platform switch (réseau) — réutilise le style .nav-item ── */
+.sidebar-platforms { margin-top: 4px; }
 
 .sidebar-section { margin-top: 16px; }
 
