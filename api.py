@@ -768,6 +768,19 @@ def delete_me_generated_post(post_id: str, token: str = Depends(require_token)) 
     return {"deleted": db.delete_generated_post(token, post_id)}
 
 
+class UpdatePostRequest(BaseModel):
+    post: str = Field(..., min_length=1, max_length=50000)
+
+
+@app.put("/me/generated-posts/{post_id}")
+def update_me_generated_post(post_id: str, payload: UpdatePostRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Update the text of a saved post."""
+    updated = db.update_generated_post(token, post_id, payload.post)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Post introuvable ou non autorisé.")
+    return updated
+
+
 # --------------------------------------------------------------------------- #
 # Idée du jour — réservoir de seeds + idées générées + opt-in
 # --------------------------------------------------------------------------- #

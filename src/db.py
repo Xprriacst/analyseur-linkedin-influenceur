@@ -618,6 +618,22 @@ def delete_generated_post(access_token: str, post_id: str) -> bool:
     return bool(resp.data)
 
 
+def update_generated_post(access_token: str, post_id: str, new_post: str) -> dict | None:
+    """Update the text of a saved post. Returns the updated row or None."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"post": new_post})
+        .eq("user_id", user["id"])
+        .eq("id", post_id)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 import re as _re
 
 
