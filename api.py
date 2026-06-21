@@ -692,6 +692,12 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
+    if token:
+        ok, balance = db.debit_credits(token, "generate_ideas", payload.count)
+        if not ok:
+            cost = db.CREDIT_COSTS["generate_ideas"] * payload.count
+            raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} idée(s) = {cost} crédit(s).")
+
     influencers = _get_influencers(token)
     if not influencers:
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
@@ -713,6 +719,12 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
     """Generate optimized post variants for a given topic."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    if token:
+        ok, balance = db.debit_credits(token, "generate_post", payload.count)
+        if not ok:
+            cost = db.CREDIT_COSTS["generate_post"] * payload.count
+            raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} post(s) = {cost} crédit(s).")
 
     influencers = _get_influencers(token)
     if not influencers:
@@ -784,6 +796,16 @@ def update_me_generated_post(post_id: str, payload: UpdatePostRequest, token: st
 
 
 # --------------------------------------------------------------------------- #
+# Crédits utilisateur (ALE-41)
+# --------------------------------------------------------------------------- #
+
+@app.get("/me/credits")
+def me_credits(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Retourne le solde de crédits de l'utilisateur authentifié."""
+    return db.get_user_credits(token)
+
+
+# --------------------------------------------------------------------------- #
 # Idée du jour — réservoir de seeds + idées générées + opt-in
 # --------------------------------------------------------------------------- #
 
@@ -839,10 +861,14 @@ def set_me_daily_ideas_enabled(
 
 
 @app.post("/generate-image")
-def generate_image(payload: GenerateImageRequest) -> dict[str, Any]:
+def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
     """Generate an image to accompany a LinkedIn post (GPT Image 2)."""
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(status_code=400, detail="OPENAI_API_KEY manquant dans .env")
+    if token:
+        ok, balance = db.debit_credits(token, "generate_image")
+        if not ok:
+            raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération d'image = {db.CREDIT_COSTS['generate_image']} crédit(s).")
     try:
         # Import paresseux : la génération d'image dépend d'`openai`. Un import
         # au niveau module ferait planter tout le démarrage de l'API si la
@@ -885,6 +911,10 @@ def chat(payload: ChatRequest, token: str = Depends(require_token)) -> Streaming
     message = payload.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message vide.")
+
+    ok, balance = db.debit_credits(token, "chat")
+    if not ok:
+        raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Message = {db.CREDIT_COSTS['chat']} crédit(s).")
 
     influencers = _get_influencers(token)
     if not influencers:

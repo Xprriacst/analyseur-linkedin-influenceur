@@ -621,6 +621,7 @@ function Sidebar({
   view,
   isAuthed,
   jobBadge,
+  credits,
   onNavigate,
   onLoadReport,
   requireAuth,
@@ -631,6 +632,7 @@ function Sidebar({
   view: MainView;
   isAuthed: boolean;
   jobBadge: { completed: number; total: number } | null;
+  credits: number | null;
   onNavigate: (v: MainView) => void;
   onLoadReport: (report: Report) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
@@ -710,6 +712,13 @@ function Sidebar({
             );
           })()}
         </div>
+        {isAuthed && credits !== null && (
+          <div style={{ marginBottom: 8 }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: credits <= 5 ? "#ef4444" : "var(--muted)", border: "1px solid var(--border)", borderRadius: 20, padding: "3px 10px" }}>
+              ✦ {credits} crédit{credits !== 1 ? "s" : ""}
+            </span>
+          </div>
+        )}
         <div
           title={`Apify : ${health?.apify ? "OK" : "manquant"} · Anthropic : ${health?.anthropic ? "OK" : "manquant"} · Modèle : ${health?.model || "—"}`}
           style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 10.5, color: "var(--muted)" }}
@@ -3098,6 +3107,7 @@ export default function Home() {
   const [authOpen, setAuthOpen] = useState(false);
   const [authReason, setAuthReason] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
+  const [credits, setCredits] = useState<number | null>(null);
   const userIdRef = useRef<string | null>(null);
   const prevJobActiveRef = useRef(false);
   // Analyse anonyme affichée mais pas encore sauvegardée : sauvée dès l'inscription.
@@ -3170,6 +3180,17 @@ export default function Home() {
   useEffect(() => {
     if (!isAuthed) { setInfluencers([]); return; }
     loadInfluencerLibrary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.access_token]);
+
+  useEffect(() => {
+    if (!isAuthed) { setCredits(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/credits`, { headers: await authHeaders() });
+        if (res.ok) { const d = await res.json(); setCredits(d.balance ?? null); }
+      } catch { /* ignore */ }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, session?.access_token]);
 
@@ -3335,6 +3356,7 @@ export default function Home() {
           view={view}
           isAuthed={isAuthed}
           jobBadge={activeJob ? { completed: activeJob.completed, total: activeJob.total } : null}
+          credits={credits}
           onNavigate={(v) => {
             setView(v);
             if (v === "analyze" || v === "profile") {
