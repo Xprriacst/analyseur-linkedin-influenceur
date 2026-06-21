@@ -21,7 +21,7 @@ import concurrent.futures
 import threading
 
 from src import db
-from src.pipeline import run_analysis
+from src.pipeline import run_analysis, run_analysis_instagram
 
 # Sérialise le calcul lui-même (usage global dans src.usage, rate limit Apify).
 _compute_lock = threading.Lock()
@@ -59,15 +59,16 @@ def final_status(items: list[dict]) -> str | None:
     return "cancelled"
 
 
-def _run_analysis_guarded(url, limit, no_cache, with_llm):
-    """Exécute `run_analysis` avec un timeout dur.
+def _run_analysis_guarded(url, limit, no_cache, with_llm, platform="linkedin"):
+    """Exécute `run_analysis` (ou `run_analysis_instagram`) avec un timeout dur.
 
     On l'isole dans un thread jetable : si Apify se fige, `result(timeout=…)`
     lève `TimeoutError` et on rend la main (le thread fantôme est abandonné sans
     blocage via `shutdown(wait=False)`), ce qui libère le verrou global appelant.
     """
+    fn = run_analysis_instagram if platform == "instagram" else run_analysis
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    fut = ex.submit(run_analysis, url, limit=limit, no_cache=no_cache, with_llm=with_llm)
+    fut = ex.submit(fn, url, limit=limit, no_cache=no_cache, with_llm=with_llm)
     try:
         return fut.result(timeout=ITEM_TIMEOUT_S)
     finally:
@@ -89,6 +90,7 @@ def process_job(access_token: str, job_id: str) -> None:
     limit = job.get("limit_posts") or 25
     no_cache = not job.get("use_cache", True)
     with_llm = job.get("run_llm", True)
+    platform = job.get("platform") or "linkedin"
 
     # Série déjà annulée avant même le démarrage du thread → rien à faire.
     if db.get_job_status(access_token, job_id) == "cancelled":
@@ -115,7 +117,7 @@ def process_job(access_token: str, job_id: str) -> None:
         db.update_job_item(access_token, item["id"], status="running", error=None)
         try:
             with _compute_lock:
-                result = _run_analysis_guarded(item["url"], limit, no_cache, with_llm)
+                result = _run_analysis_guarded(item["url"], limit, no_cache, with_llm, platform=platform)
             # L'item a-t-il été annulé pendant le scraping ? Si oui, on respecte
             # l'annulation au lieu d'écrire `done` par-dessus.
             if db.get_job_item_status(access_token, item["id"]) == "cancelled":

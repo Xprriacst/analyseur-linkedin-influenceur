@@ -137,6 +137,89 @@ def cta_breakdown(enriched_posts: list[dict]) -> dict[str, Any]:
     return out
 
 
+def compute_ig_stats(posts: list[dict], profile: dict | None = None) -> dict[str, Any]:
+    """Compute Instagram-specific stats on top of the generic compute_stats.
+
+    Adds:
+    - engagement.median_views / mean_views
+    - engagement.virality_ratio (median_views / follower_count)
+    - engagement.quality_ratio (median_engagement / median_views)
+    - top_posts_by_views (top 5 reels by view count)
+    - video_duration (median_s, mean_s, distribution by bucket)
+    """
+    stats = compute_stats(posts, profile=profile)
+    if not posts:
+        return stats
+
+    df = pd.DataFrame(posts)
+    if df.empty:
+        return stats
+
+    # Rebuild the same "exclude recent" mask as compute_stats to be consistent
+    from datetime import datetime, timezone
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce")
+    else:
+        df["date"] = pd.NaT
+    cutoff = pd.Timestamp(datetime.now(timezone.utc)) - pd.Timedelta(hours=24)
+    recent_mask = df["date"].notna() & (df["date"] > cutoff)
+    df_eng = df[~recent_mask] if (~recent_mask).any() else df
+
+    # --- Views metrics ---
+    if "views" in df_eng.columns:
+        views_series = df_eng["views"].fillna(0).astype(float)
+        median_views = int(views_series.median())
+        mean_views = float(views_series.mean())
+        eng = stats.setdefault("engagement", {})
+        eng["median_views"] = median_views
+        eng["mean_views"] = round(mean_views, 1)
+
+        follower_count = int((profile or {}).get("follower_count", 0) or 0)
+        if follower_count > 0 and median_views > 0:
+            eng["virality_ratio"] = round(median_views / follower_count, 4)
+        else:
+            eng["virality_ratio"] = None
+
+        median_engagement = eng.get("median_engagement", 0)
+        if median_views > 0:
+            eng["quality_ratio"] = round(median_engagement / median_views, 4)
+        else:
+            eng["quality_ratio"] = None
+
+    # --- Top 5 by views ---
+    if "views" in df_eng.columns:
+        top5_cols = [c for c in ["url", "text", "format", "likes", "comments", "views", "engagement"] if c in df_eng.columns]
+        top5 = (
+            df_eng.sort_values("views", ascending=False)
+            .head(5)[top5_cols]
+            .to_dict(orient="records")
+        )
+        stats["top_posts_by_views"] = top5
+
+    # --- Video duration ---
+    if "video_duration_s" in df_eng.columns:
+        dur = df_eng["video_duration_s"].dropna()
+        if not dur.empty:
+            def _dur_bucket(s: float) -> str:
+                if s < 30:
+                    return "<30s"
+                if s < 60:
+                    return "30–60s"
+                if s < 90:
+                    return "60–90s"
+                return ">90s"
+            buckets = dur.map(_dur_bucket)
+            bucket_order = ["<30s", "30–60s", "60–90s", ">90s"]
+            dist = {b: int((buckets == b).sum()) for b in bucket_order if (buckets == b).any()}
+            stats["video_duration"] = {
+                "median_s": round(float(dur.median()), 1),
+                "mean_s": round(float(dur.mean()), 1),
+                "distribution": dist,
+            }
+
+    return stats
+
+
 def engagement_by_classification(
     classifications: list[dict],
     posts: list[dict],
