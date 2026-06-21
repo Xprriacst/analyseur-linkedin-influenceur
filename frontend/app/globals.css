@@ -205,8 +205,13 @@ a { color: inherit; text-decoration: none; }
   color: var(--primary);
 }
 
-/* ── Platform switch (réseau) — réutilise le style .nav-item ── */
+/* ── Niveau 1 (réseaux + Agent IA) — réutilise le style .nav-item ── */
 .sidebar-platforms { margin-top: 4px; }
+
+/* ── Niveau 2 (sous-onglets Veille / Contenu) — indenté sous le réseau ── */
+.sidebar-subnav { margin-top: 6px; }
+.nav-item-sub { padding-left: 22px; }
+.sidebar-collapsed .nav-item-sub { padding-left: 8px; }
 
 .sidebar-section { margin-top: 16px; }
 
