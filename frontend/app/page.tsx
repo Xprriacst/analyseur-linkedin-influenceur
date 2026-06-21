@@ -3554,6 +3554,85 @@ function AnalyzeHub({
   );
 }
 
+type ProgressData = {
+  influencers: number;
+  analyses: number;
+  ideas: number;
+  posts: number;
+  linkedin_connected: boolean;
+  credits: number;
+};
+
+function ProgressDashboard({ isAuthed }: { isAuthed: boolean }) {
+  const [data, setData] = useState<ProgressData | null>(null);
+  const [open, setOpen] = useState(true);
+
+  useEffect(() => {
+    if (!isAuthed) { setData(null); return; }
+    void (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/dashboard/progress`, { headers: await authHeaders() });
+        if (res.ok) setData(await res.json());
+      } catch { /* ignore */ }
+    })();
+  }, [isAuthed]);
+
+  if (!isAuthed || !data) return null;
+
+  const metrics: { label: string; value: React.ReactNode }[] = [
+    { label: "Influenceurs analysés", value: data.influencers },
+    { label: "Analyses", value: data.analyses },
+    { label: "Idées générées", value: data.ideas },
+    { label: "Posts générés", value: data.posts },
+    { label: "LinkedIn", value: data.linkedin_connected ? "✓ connecté" : "✗ non connecté" },
+    {
+      label: "Crédits",
+      value: (
+        <span style={{ color: data.credits <= 5 ? "#ef4444" : undefined, fontWeight: data.credits <= 5 ? 700 : undefined }}>
+          {data.credits}
+        </span>
+      ),
+    },
+  ];
+
+  return (
+    <div className="card progress-dashboard" style={{ marginBottom: 16 }}>
+      <button
+        type="button"
+        className="daily-history-toggle"
+        style={{ paddingBottom: open ? 10 : 0 }}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span style={{ fontWeight: 700, fontSize: 14 }}>Ma progression</span>
+        <svg
+          className="daily-chevron"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {open && (
+        <div className="progress-grid" style={{ paddingTop: 12 }}>
+          {metrics.map((m) => (
+            <div key={m.label} className="progress-metric">
+              <div className="progress-metric-value">{m.value}</div>
+              <div className="progress-metric-label">{m.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Onglet « Contenu » : regroupe Idée du jour, Générateur et Mes contenus en sous-onglets. */
 function ContentHub({
   tab,
@@ -3989,17 +4068,20 @@ export default function Home() {
                       )
               )}
               {view === "content" && (
-                <ContentHub
-                  tab={contentTab}
-                  onTab={setContentTab}
-                  seed={generatorSeed}
-                  isAuthed={isAuthed}
-                  requireAuth={requireAuth}
-                  onReuse={(topic) => {
-                    setGeneratorSeed({ topic, nonce: Date.now() });
-                    setContentTab("generator");
-                  }}
-                />
+                <>
+                  <ProgressDashboard isAuthed={isAuthed} />
+                  <ContentHub
+                    tab={contentTab}
+                    onTab={setContentTab}
+                    seed={generatorSeed}
+                    isAuthed={isAuthed}
+                    requireAuth={requireAuth}
+                    onReuse={(topic) => {
+                      setGeneratorSeed({ topic, nonce: Date.now() });
+                      setContentTab("generator");
+                    }}
+                  />
+                </>
               )}
             </>
           )}

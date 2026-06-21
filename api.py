@@ -870,6 +870,74 @@ def set_me_daily_ideas_enabled(
 
 
 # --------------------------------------------------------------------------- #
+# Dashboard de progression global (ALE-69)
+# --------------------------------------------------------------------------- #
+
+@app.get("/dashboard/progress")
+def dashboard_progress(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Agrège les métriques de progression de l'utilisateur en un seul appel."""
+    user = db.get_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentification requise.")
+    user_id = user["id"]
+    db_client = db.client_for_token(token)
+
+    def count_table(table: str, **filters: Any) -> int:
+        try:
+            q = db_client.table(table).select("id", count="exact").eq("user_id", user_id)
+            for col, val in filters.items():
+                q = q.eq(col, val)
+            resp = q.execute()
+            return resp.count or 0
+        except Exception:
+            return 0
+
+    # Nombre d'influenceurs analysés
+    influencers_count = count_table("influencers")
+
+    # Nombre d'analyses
+    analyses_count = count_table("analyses")
+
+    # Nombre d'idées générées
+    ideas_count = count_table("generated_ideas")
+
+    # Nombre de posts générés
+    posts_count = count_table("generated_posts")
+
+    # LinkedIn connecté
+    linkedin_connected = False
+    try:
+        resp = (
+            db_client.table("user_editorial_profiles")
+            .select("zernio_account_id")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        linkedin_connected = bool(rows and rows[0].get("zernio_account_id"))
+    except Exception:
+        pass
+
+    # Solde crédits
+    credits_balance = 0
+    try:
+        credits_data = db.get_user_credits(token)
+        credits_balance = credits_data.get("balance", 0)
+    except Exception:
+        pass
+
+    return {
+        "influencers": influencers_count,
+        "analyses": analyses_count,
+        "ideas": ideas_count,
+        "posts": posts_count,
+        "linkedin_connected": linkedin_connected,
+        "credits": credits_balance,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Slack integration (ALE-63) — validation d'idées par boutons Slack
 # --------------------------------------------------------------------------- #
 
