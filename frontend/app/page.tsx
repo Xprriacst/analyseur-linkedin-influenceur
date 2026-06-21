@@ -42,6 +42,15 @@ const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL ??
   "https://analyseur-linkedin-influenceur-api.onrender.com";
 
+// Solde de crédits : les endpoints coûteux renvoient le nouveau solde. On le
+// diffuse via un évènement window pour rafraîchir la pastille de la sidebar
+// (gérée par Home) sans prop-drilling à travers le hub « Contenu ».
+function emitCredits(balance: unknown) {
+  if (typeof balance === "number" && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("credits:update", { detail: balance }));
+  }
+}
+
 type Health = { ok: boolean; apify: boolean; anthropic: boolean; model: string };
 type Report = { name: string; path: string; updated_at: number; content: string };
 type InfluencerLibraryEntry = {
@@ -1213,6 +1222,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération d'image");
+      emitCredits(data.credits);
       setVariantImages((prev) => ({ ...prev, [i]: data.image_data }));
     } catch (err: any) {
       setImageError(err.message);
@@ -1232,6 +1242,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération d'idées");
+      emitCredits(data.credits);
       setIdeas(data.ideas || []);
     } catch (err: any) {
       setError(err.message);
@@ -1255,6 +1266,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération de posts");
+      emitCredits(data.credits);
       setEditedVariants({}); // éditions indexées par position : à purger sinon elles contaminent le nouveau batch
       setVariants(data.variants || []);
     } catch (err: any) {
@@ -2078,6 +2090,7 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
     const data = JSON.parse(dataLines.join("\n"));
     if (event === "meta" && data.conversation_id) {
       setActiveConversationId(data.conversation_id);
+      emitCredits(data.credits);
     } else if (event === "delta") {
       appendAssistant(data.text || "");
     } else if (event === "error") {
@@ -3194,6 +3207,16 @@ export default function Home() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, session?.access_token]);
+
+  // Rafraîchit le solde en direct après chaque action coûteuse (cf. emitCredits).
+  useEffect(() => {
+    const onCredits = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (typeof detail === "number") setCredits(detail);
+    };
+    window.addEventListener("credits:update", onCredits);
+    return () => window.removeEventListener("credits:update", onCredits);
+  }, []);
 
   // Premier chargement des séries + polling tant qu'une série tourne (toutes pages).
   // Keyé sur le token (pas seulement isAuthed) pour les mêmes raisons que les rapports.

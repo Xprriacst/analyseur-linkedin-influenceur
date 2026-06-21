@@ -653,15 +653,21 @@ def get_user_credits(access_token: str) -> dict:
     if not user:
         return {"balance": 0, "enabled": True}
     db_client = client_for_token(access_token)
-    resp = (
-        db_client.table("user_credits")
-        .select("balance, updated_at")
-        .eq("user_id", user["id"])
-        .maybe_single()
-        .execute()
-    )
-    if resp.data:
-        return {"balance": resp.data["balance"], "enabled": True}
+    # maybe_single() peut renvoyer None (0 ligne) ou lever selon la version de
+    # supabase-py → on lit la liste brute et on reste défensif.
+    try:
+        resp = (
+            db_client.table("user_credits")
+            .select("balance, updated_at")
+            .eq("user_id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data if resp and getattr(resp, "data", None) else []
+    except Exception:
+        rows = []
+    if rows:
+        return {"balance": rows[0]["balance"], "enabled": True}
     # Première visite : initialiser via service-role
     if admin_enabled():
         try:
