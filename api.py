@@ -109,6 +109,7 @@ def health() -> dict[str, Any]:
         "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "model": os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7"),
         "supabase": db.supabase_enabled(),
+        "service_role": db.admin_enabled(),
     }
 
 
