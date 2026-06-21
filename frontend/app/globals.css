@@ -1,3 +1,28 @@
+/* Tailwind v4 — utilities only, no preflight to preserve existing styles */
+@import "tailwindcss/utilities";
+
+/* Design tokens — aligned with Polaris (ALE-82) */
+@theme {
+  --color-coral: #ff6b4a;
+  --color-coral-hover: #e85a39;
+  --color-coral-light: #fff2ef;
+  --color-surface: #ffffff;
+  --color-surface-low: #f7f7f8;
+  --color-surface-high: #f1f1f3;
+  --color-ink: #1b1b23;
+  --color-muted: #767586;
+  --color-border: #e5e7eb;
+  --color-primary: #4648d4;
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --radius-card: 0.75rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.08);
+}
+
 :root {
   --bg: #ffffff;
   --surface: #ffffff;
