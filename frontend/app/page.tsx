@@ -1471,6 +1471,51 @@ function useLinkedIn(isAuthed: boolean) {
   return { status, busy, error, connect };
 }
 
+type XStatus = {
+  configured: boolean;
+  connected: boolean;
+  account_id?: string | null;
+  connected_at?: string | null;
+};
+
+/** Statut de connexion X/Twitter (via Zernio) + lancement du flux OAuth. */
+function useX(isAuthed: boolean) {
+  const [status, setStatus] = useState<XStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) { setStatus(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/x/status`, { headers: await authHeaders() });
+        if (res.ok) setStatus(await res.json());
+      } catch { /* ignore */ }
+    })();
+  }, [isAuthed]);
+
+  async function connect() {
+    setError("");
+    setBusy(true);
+    try {
+      const redirect = `${window.location.origin}${window.location.pathname}?x=connected`;
+      const res = await fetch(`${DIRECT_API_URL}/me/x/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ redirect_url: redirect }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion X impossible");
+      window.location.href = data.auth_url;
+    } catch (err: any) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  return { status, busy, error, connect };
+}
+
 type SlackStatus = {
   connected: boolean;
   configured: boolean;
@@ -1543,6 +1588,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
   const linkedin = useLinkedIn(isAuthed);
+  const xPlatform = useX(isAuthed);
   const slack = useSlack(isAuthed);
   const [slackSent, setSlackSent] = useState<Record<number, boolean>>({});
   const [slackSending, setSlackSending] = useState<Record<number, boolean>>({});
@@ -1550,6 +1596,10 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [published, setPublished] = useState<number | null>(null);
   const [drafted, setDrafted] = useState<number | null>(null);
   const [confirmIndex, setConfirmIndex] = useState<number | null>(null);
+  const [confirmIndexX, setConfirmIndexX] = useState<number | null>(null);
+  const [publishingX, setPublishingX] = useState<number | null>(null);
+  const [publishedX, setPublishedX] = useState<number | null>(null);
+  const [publishErrorX, setPublishErrorX] = useState("");
   const [publishError, setPublishError] = useState("");
   const [variantImages, setVariantImages] = useState<Record<number, string>>({});
   const [generatingImage, setGeneratingImage] = useState<number | null>(null);
@@ -1597,6 +1647,36 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       setPublishError(err.message);
     } finally {
       setPublishing(null);
+    }
+  }
+
+  function publishVariantX(i: number, text: string) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour publier sur X."); return; }
+    if (!xPlatform.status?.connected) {
+      setPublishErrorX("Connecte d'abord ton compte X dans l'onglet Profil.");
+      return;
+    }
+    setConfirmIndexX(i);
+  }
+
+  async function doPublishX(i: number, text: string) {
+    setPublishErrorX("");
+    setPublishedX(null);
+    setPublishingX(i);
+    setConfirmIndexX(null);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/x/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication sur X impossible");
+      setPublishedX(i);
+    } catch (err: any) {
+      setPublishErrorX(err.message);
+    } finally {
+      setPublishingX(null);
     }
   }
 
@@ -1881,6 +1961,15 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   </button>
                   <button
                     className="secondary-button"
+                    disabled={publishingX === i}
+                    title={xPlatform.status?.connected ? "Publier sur X (Twitter)" : "Connecte ton compte X dans l'onglet Profil"}
+                    onClick={() => publishVariantX(i, editedVariants[i] ?? v.post)}
+                  >
+                    {publishingX === i ? <Loader2 size={14} className="spinning" /> : <span style={{ fontWeight: 700, fontSize: 13, lineHeight: 1 }}>𝕏</span>}
+                    {publishingX === i ? "Publication…" : publishedX === i ? "Publié sur X ✓" : "Publier sur X"}
+                  </button>
+                  <button
+                    className="secondary-button"
                     disabled={generatingImage === i}
                     onClick={() => generateImage(i, editedVariants[i] ?? v.post)}
                   >
@@ -1893,6 +1982,9 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 )}
                 {drafted === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré dans LinkedIn ✓</p>
+                )}
+                {publishedX === i && (
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur X ✓</p>
                 )}
                 {variantImages[i] && (
                   <div style={{ marginTop: 12 }}>
@@ -1913,6 +2005,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
         </div>
       )}
       {publishError && <div className="error" style={{ marginTop: 12 }}>{publishError}</div>}
+      {publishErrorX && <div className="error" style={{ marginTop: 12 }}>{publishErrorX}</div>}
       {imageError && <div className="error" style={{ marginTop: 12 }}>{imageError}</div>}
 
       {confirmIndex !== null && (
@@ -1944,6 +2037,42 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 {publishing !== null
                   ? <><Loader2 size={14} className="spinning" /> Publication…</>
                   : <><Linkedin size={14} /> Confirmer la publication</>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmIndexX !== null && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Publier ce post sur X ?</h3>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+              Le post sera publié <strong>immédiatement</strong> sur ton compte X (Twitter).
+            </p>
+            <textarea
+              readOnly
+              value={editedVariants[confirmIndexX] ?? variants[confirmIndexX]?.post ?? ""}
+              rows={8}
+              className="variant-text"
+              style={{ width: "100%", boxSizing: "border-box", marginBottom: 16 }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="secondary-button" onClick={() => setConfirmIndexX(null)}>
+                Annuler
+              </button>
+              <button
+                className="primary-button"
+                disabled={publishingX !== null}
+                onClick={() => doPublishX(confirmIndexX, editedVariants[confirmIndexX] ?? variants[confirmIndexX]?.post ?? "")}
+              >
+                {publishingX !== null
+                  ? <><Loader2 size={14} className="spinning" /> Publication…</>
+                  : <><span style={{ fontWeight: 700, fontSize: 13 }}>𝕏</span> Confirmer la publication</>
                 }
               </button>
             </div>
@@ -2743,6 +2872,7 @@ function ProfileView({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [draftInfo, setDraftInfo] = useState("");
   const linkedin = useLinkedIn(isAuthed);
+  const xPlatform = useX(isAuthed);
   const slack = useSlack(isAuthed);
 
   // `Field` lit toujours la dernière valeur du profil via cette ref, ce qui
@@ -2972,6 +3102,29 @@ function ProfileView({
         )}
       </section>
       {linkedin.error ? <div className="error" style={{ marginBottom: 12 }}>{linkedin.error}</div> : null}
+
+      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontWeight: 900, fontSize: 20, lineHeight: 1, color: "#000", flexShrink: 0 }}>𝕏</span>
+          <div>
+            <strong>Publier sur X (Twitter)</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              {xPlatform.status?.connected
+                ? "Compte X connecté — tes posts générés peuvent être publiés directement sur X en un clic."
+                : "Connecte ton compte X pour publier tes posts générés directement sur X, sans copier-coller."}
+            </p>
+          </div>
+        </div>
+        {xPlatform.status?.connected ? (
+          <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+        ) : (
+          <button className="primary-button" onClick={xPlatform.connect} disabled={xPlatform.busy}>
+            {xPlatform.busy ? <Loader2 size={14} className="spinning" /> : <span style={{ fontWeight: 700, fontSize: 13 }}>𝕏</span>}
+            {xPlatform.busy ? "Redirection…" : "Connecter X"}
+          </button>
+        )}
+      </section>
+      {xPlatform.error ? <div className="error" style={{ marginBottom: 12 }}>{xPlatform.error}</div> : null}
 
       <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -3899,6 +4052,23 @@ export default function Home() {
         await fetch(`${DIRECT_API_URL}/me/linkedin/refresh`, { method: "POST", headers: await authHeaders() });
       } catch { /* ignore */ }
       params.delete("linkedin");
+      const qs = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+      setView("profile");
+    })();
+  }, [isAuthed]);
+
+  // Retour du flux OAuth X (Zernio) : on relit le compte connecté côté
+  // serveur, on nettoie l'URL, puis on bascule sur l'onglet Profil.
+  useEffect(() => {
+    if (!isAuthed) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("x") !== "connected") return;
+    (async () => {
+      try {
+        await fetch(`${DIRECT_API_URL}/me/x/refresh`, { method: "POST", headers: await authHeaders() });
+      } catch { /* ignore */ }
+      params.delete("x");
       const qs = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
       setView("profile");

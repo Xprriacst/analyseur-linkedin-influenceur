@@ -1,9 +1,9 @@
-"""Thin Zernio API client (LinkedIn publishing).
+"""Thin Zernio API client (multi-platform publishing: LinkedIn, X/Twitter).
 
 A single server-side API key (ZERNIO_API_KEY) drives one Zernio "profile" per
-app user. Each profile connects one LinkedIn account via OAuth (handled by
-Zernio). We only need to: create a profile, build the OAuth connect URL, read
-back the connected account id, and publish a post.
+app user. Each profile connects social accounts via OAuth (handled by Zernio).
+We only need to: create a profile, build the OAuth connect URL, read back the
+connected account id, and publish a post.
 
 Uses stdlib urllib to avoid adding an HTTP dependency (matches api.py).
 """
@@ -17,7 +17,8 @@ import urllib.request
 from typing import Any
 
 BASE_URL = "https://zernio.com/api/v1"
-PLATFORM = "linkedin"
+# Kept for backward-compat references inside this module only
+_DEFAULT_PLATFORM = "linkedin"
 
 
 class ZernioError(RuntimeError):
@@ -74,11 +75,11 @@ def create_profile(name: str, description: str | None = None) -> str:
     return profile_id
 
 
-def get_connect_url(profile_id: str, redirect_url: str | None = None) -> str:
-    """Return the LinkedIn OAuth authorization URL for this profile."""
+def get_connect_url(profile_id: str, redirect_url: str | None = None, platform: str = "linkedin") -> str:
+    """Return the OAuth authorization URL for this profile and platform."""
     data = _request(
         "GET",
-        f"/connect/{PLATFORM}",
+        f"/connect/{platform}",
         params={"profileId": profile_id, "redirect_url": redirect_url},
     )
     auth_url = data.get("authUrl")
@@ -87,26 +88,41 @@ def get_connect_url(profile_id: str, redirect_url: str | None = None) -> str:
     return auth_url
 
 
-def find_linkedin_account_id(profile_id: str) -> str | None:
-    """Return the connected LinkedIn account id for this profile, if any."""
+def find_account_id(profile_id: str, platform: str = "linkedin") -> str | None:
+    """Return the connected account id for the given platform, if any."""
     data = _request("GET", "/accounts", params={"profileId": profile_id})
     for account in data.get("accounts", []):
-        if account.get("platform") == PLATFORM:
+        if account.get("platform") == platform:
             return account.get("_id")
     return None
 
+
+# --- Backward-compat aliases ------------------------------------------------
+
+def find_linkedin_account_id(profile_id: str) -> str | None:
+    """Return the connected LinkedIn account id for this profile, if any."""
+    return find_account_id(profile_id, platform="linkedin")
+
+
+def find_x_account_id(profile_id: str) -> str | None:
+    """Return the connected X (Twitter) account id for this profile, if any."""
+    return find_account_id(profile_id, platform="x")
+
+
+# ---------------------------------------------------------------------------
 
 def create_post(
     content: str,
     account_id: str,
     *,
+    platform: str = "linkedin",
     publish_now: bool = True,
     is_draft: bool = False,
 ) -> dict[str, Any]:
-    """Publish or save as draft a post on the given LinkedIn account."""
+    """Publish or save as draft a post on the given social account."""
     body: dict[str, Any] = {
         "content": content,
-        "platforms": [{"platform": PLATFORM, "accountId": account_id}],
+        "platforms": [{"platform": platform, "accountId": account_id}],
     }
     if is_draft:
         body["isDraft"] = True
