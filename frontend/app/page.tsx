@@ -339,8 +339,9 @@ function jobIsCancelled(j: Job): boolean {
   return j.status === "cancelled";
 }
 
-function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean }) {
+function ItemRow({ item, onOpen, opening, onCancel, cancelling }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean; onCancel: (i: JobItem) => void; cancelling: boolean }) {
   const clickable = item.status === "done" && !!item.analysis_id;
+  const cancellable = item.status === "pending" || item.status === "running";
   return (
     <div
       className={`backlog-row ${item.status} ${clickable ? "clickable" : ""}`}
@@ -369,17 +370,30 @@ function ItemRow({ item, onOpen, opening }: { item: JobItem; onOpen: (i: JobItem
       <span className={`status-pill ${item.status === "done" ? "ok" : item.status === "error" ? "no" : item.status === "cancelled" ? "no" : ""}`}>
         {ITEM_STATUS_LABELS[item.status]}
       </span>
+      {cancellable ? (
+        <button
+          type="button"
+          className="ghost-button"
+          style={{ fontSize: 11, padding: "2px 8px", color: "var(--muted)" }}
+          disabled={cancelling}
+          onClick={(e) => { e.stopPropagation(); onCancel(item); }}
+          title="Annuler ce profil"
+        >
+          {cancelling ? <Loader2 size={11} className="spinning" /> : "Annuler"}
+        </button>
+      ) : null}
     </div>
   );
 }
 
-function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth }: {
+function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth, onJobUpdated }: {
   jobs: Job[];
   loading: boolean;
   isAuthed: boolean;
   onCreated: (job: Job) => void;
   onOpenReport: (markdown: string, name: string) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onJobUpdated: (job: Job) => void;
 }) {
   const [urls, setUrls] = useState("");
   const [limit, setLimit] = useState(25);
@@ -389,6 +403,7 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   const [error, setError] = useState("");
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
 
   const urlList = parseUrls(urls);
 
@@ -420,14 +435,32 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   async function cancelJob(jobId: string) {
     setCancellingId(jobId);
     try {
-      await fetch(`${DIRECT_API_URL}/jobs/${jobId}/cancel`, {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${jobId}/cancel`, {
         method: "POST",
         headers: await authHeaders(),
       });
+      const data = await res.json();
+      if (res.ok && data?.id) onJobUpdated(data as Job);
     } catch {
       /* le polling remettra le statut à jour */
     } finally {
       setCancellingId(null);
+    }
+  }
+
+  async function cancelItem(jobId: string, itemId: string) {
+    setCancellingItemId(itemId);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${jobId}/items/${itemId}/cancel`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (res.ok && data?.id) onJobUpdated(data as Job);
+    } catch {
+      /* le polling remettra le statut à jour */
+    } finally {
+      setCancellingItemId(null);
     }
   }
 
@@ -540,7 +573,14 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
                 </div>
                 <div className="backlog-list">
                   {job.items.map((item) => (
-                    <ItemRow key={item.id} item={item} onOpen={openItem} opening={openingId === item.id} />
+                    <ItemRow
+                      key={item.id}
+                      item={item}
+                      onOpen={openItem}
+                      opening={openingId === item.id}
+                      onCancel={(it) => cancelItem(job.id, it.id)}
+                      cancelling={cancellingItemId === item.id}
+                    />
                   ))}
                 </div>
               </div>
@@ -3186,6 +3226,7 @@ function AnalyzeHub({
   jobs,
   jobsLoading,
   onJobCreated,
+  onJobUpdated,
   onOpenReport,
   influencers,
   influencersLoading,
@@ -3198,6 +3239,7 @@ function AnalyzeHub({
   jobs: Job[];
   jobsLoading: boolean;
   onJobCreated: (job: Job) => void;
+  onJobUpdated: (job: Job) => void;
   onOpenReport: (markdown: string, name: string) => void;
   influencers: InfluencerLibraryEntry[];
   influencersLoading: boolean;
@@ -3233,6 +3275,7 @@ function AnalyzeHub({
           loading={jobsLoading}
           isAuthed={isAuthed}
           onCreated={onJobCreated}
+          onJobUpdated={onJobUpdated}
           onOpenReport={onOpenReport}
           requireAuth={requireAuth}
         />
@@ -3378,6 +3421,12 @@ export default function Home() {
     setJobs((prev) => [job, ...prev]);
     loadReports();
     loadInfluencerLibrary();
+  }
+
+  // Remplace une série par sa version à jour (retournée par cancel série/item),
+  // pour un affichage immédiat même si le polling s'est arrêté.
+  function onJobUpdated(job: Job) {
+    setJobs((prev) => prev.map((j) => (j.id === job.id ? job : j)));
   }
 
   const activeJob = jobs.find(jobIsActive) ?? null;
@@ -3660,6 +3709,7 @@ export default function Home() {
                           jobs={jobs}
                           jobsLoading={jobsLoading}
                           onJobCreated={onJobCreated}
+                          onJobUpdated={onJobUpdated}
                           onOpenReport={openReport}
                           influencers={influencers}
                           influencersLoading={influencersLoading}

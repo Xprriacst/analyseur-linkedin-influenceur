@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from src import db, slack as slack_client, zernio
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
+from src import jobs as jobs_module
 from src.jobs import start_job_thread
 from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream
 from src.normalize import normalize_posts, normalize_profile
@@ -1311,6 +1312,40 @@ def cancel_job(job_id: str, token: str = Depends(require_token)) -> dict[str, An
             detail=f"La série est déjà terminée (statut : {job.get('status')}).",
         )
     db.update_job(token, job_id, status="cancelled")
+    db.cancel_pending_items(token, job_id)  # solde aussi les items en cours/attente
+    return db.get_job(token, job_id)
+
+
+@app.post("/jobs/{job_id}/items/{item_id}/cancel")
+def cancel_job_item(
+    job_id: str, item_id: str, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Annule un profil précis d'une série (sans toucher aux autres).
+
+    L'item passe en `cancelled` (si encore `pending`/`running`). Si plus aucun
+    profil n'est actif, la série est finalisée immédiatement — utile quand le
+    thread de traitement est figé/mort et ne le ferait pas de lui-même.
+    """
+    job = db.get_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Série introuvable.")
+    item = next((it for it in job.get("items", []) if it["id"] == item_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Profil introuvable dans la série.")
+    if item["status"] not in ("pending", "running"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ce profil est déjà terminé (statut : {item['status']}).",
+        )
+
+    db.cancel_job_item(token, item_id)
+    item["status"] = "cancelled"
+
+    # Finalise la série si plus rien n'est actif (cas thread figé/mort).
+    final = jobs_module.final_status(job.get("items", []))
+    if final and job.get("status") in ("queued", "running"):
+        done, failed = jobs_module.final_counts(job.get("items", []))
+        db.update_job(token, job_id, status=final, completed=done, failed=failed)
     return db.get_job(token, job_id)
 
 

@@ -882,7 +882,7 @@ def list_jobs(access_token: str, limit: int = 20) -> list[dict]:
         by_job.setdefault(it["job_id"], []).append(it)
     for j in jobs:
         j["items"] = by_job.get(j["id"], [])
-    return jobs
+    return reconcile_stale_jobs(access_token, jobs)
 
 
 def get_job_status(access_token: str, job_id: str) -> str | None:
@@ -912,6 +912,105 @@ def update_job_item(access_token: str, item_id: str, **fields: Any) -> None:
     db = client_for_token(access_token)
     fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     db.table("analysis_job_items").update(fields).eq("id", item_id).execute()
+
+
+def get_job_item_status(access_token: str, item_id: str) -> str | None:
+    """Statut d'un item précis (lecture légère, pour la vérif d'annulation du thread)."""
+    db = client_for_token(access_token)
+    r = (
+        db.table("analysis_job_items")
+        .select("status")
+        .eq("id", item_id)
+        .limit(1)
+        .execute()
+    )
+    return r.data[0]["status"] if r.data else None
+
+
+def cancel_job_item(access_token: str, item_id: str) -> str | None:
+    """Annule un item s'il est encore `pending`/`running`. Retourne le statut résultant.
+
+    L'`in_("status", …)` garantit qu'on n'écrase jamais un item déjà terminé
+    (`done`/`error`). RLS scope l'update au propriétaire via le JWT.
+    """
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    (
+        db.table("analysis_job_items")
+        .update({"status": "cancelled", "updated_at": now})
+        .eq("id", item_id)
+        .in_("status", ["pending", "running"])
+        .execute()
+    )
+    return get_job_item_status(access_token, item_id)
+
+
+def cancel_pending_items(access_token: str, job_id: str) -> None:
+    """Annule tous les items encore en attente/en cours d'une série (cancel global)."""
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    (
+        db.table("analysis_job_items")
+        .update({"status": "cancelled", "updated_at": now})
+        .eq("job_id", job_id)
+        .in_("status", ["pending", "running"])
+        .execute()
+    )
+
+
+# Une série dont rien n'a bougé depuis ce délai est considérée morte (thread tué
+# par un redémarrage Render, ou figé) → ses items non terminés sont soldés.
+JOB_STALE_MINUTES = 15
+
+
+def _parse_ts(value: str | None) -> "datetime.datetime | None":
+    if not value:
+        return None
+    try:
+        text = value.replace(" ", "T")
+        if text.endswith("+00"):  # Postgres renvoie parfois "+00" (non ISO strict)
+            text = text[:-3] + "+00:00"
+        return datetime.datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return None
+
+
+def reconcile_stale_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
+    """Solde les séries actives orphelines (thread mort/figé) — appelé au listing.
+
+    Si une série `queued`/`running` n'a pas été touchée depuis `JOB_STALE_MINUTES`,
+    on en déduit que son thread de traitement n'existe plus : les items `running`
+    et `pending` sont passés en `error`, et la série est finalisée. Idempotent :
+    une fois finalisée la série n'est plus active, donc plus jamais reconsidérée.
+    Mute les dicts en place pour que la réponse reflète la réconciliation.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(minutes=JOB_STALE_MINUTES)
+    for job in jobs:
+        if job.get("status") not in ("queued", "running"):
+            continue
+        job_ts = _parse_ts(job.get("updated_at"))
+        if job_ts is None or job_ts > cutoff:
+            continue  # récemment actif (ou date illisible) → on laisse tourner
+        for it in job.get("items", []):
+            if it.get("status") == "running":
+                update_job_item(
+                    access_token, it["id"], status="error",
+                    error="Analyse interrompue (délai dépassé).",
+                )
+                it["status"] = "error"
+            elif it.get("status") == "pending":
+                update_job_item(
+                    access_token, it["id"], status="error",
+                    error="Non démarrée — série interrompue.",
+                )
+                it["status"] = "error"
+        done = sum(1 for it in job.get("items", []) if it.get("status") == "done")
+        failed = sum(1 for it in job.get("items", []) if it.get("status") == "error")
+        final = "error" if failed and not done else "done"
+        update_job(access_token, job["id"], status=final, completed=done, failed=failed)
+        job["status"], job["completed"], job["failed"] = final, done, failed
+    return jobs
 
 
 def get_analysis(access_token: str, analysis_id: str) -> dict | None:
