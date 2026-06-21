@@ -8,7 +8,6 @@ import {
   BarChart3,
   CheckCircle2,
   ChevronLeft,
-  ChevronRight,
   Clock3,
   Download,
   FileText,
@@ -727,20 +726,29 @@ function Sidebar({
   return (
     <aside className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}>
       <div className="logo">
-        <div className="logo-mark"><Target size={18} strokeWidth={2.5} /></div>
+        <div
+          className={`logo-mark${collapsed ? " logo-mark-toggle" : ""}`}
+          onClick={collapsed ? () => setCollapsed(false) : undefined}
+          role={collapsed ? "button" : undefined}
+          title={collapsed ? "Étendre la sidebar" : undefined}
+        >
+          <Target size={18} strokeWidth={2.5} />
+        </div>
         {!collapsed && (
           <div className="logo-text">
             Cibl
             <span className="logo-sub">SaaS Premium</span>
           </div>
         )}
-        <button
-          className="sidebar-collapse-btn"
-          onClick={() => setCollapsed((c) => !c)}
-          title={collapsed ? "Étendre la sidebar" : "Réduire la sidebar"}
-        >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
-        </button>
+        {!collapsed && (
+          <button
+            className="sidebar-collapse-btn"
+            onClick={() => setCollapsed(true)}
+            title="Réduire la sidebar"
+          >
+            <ChevronLeft size={14} />
+          </button>
+        )}
       </div>
 
       {/* Platform switch */}
