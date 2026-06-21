@@ -745,88 +745,86 @@ function Sidebar({
         )}
       </div>
 
-      {/* Niveau 1 — Réseaux (LinkedIn / Instagram) + Agent IA */}
+      {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {(() => {
         const isNetworkView = view === "content" || view === "analyze";
-        const topItems: { key: Platform | "assistant"; label: string; icon: React.ReactNode; network: boolean; premium?: boolean }[] = [
-          { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} />, network: true },
-          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} />, network: true },
-          { key: "assistant", label: "Agent IA", icon: <MessageSquare size={14} />, network: false, premium: true },
+        const networks: { key: Platform; label: string; icon: React.ReactNode }[] = [
+          { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
+          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
         ];
-        return (
-          <section className="sidebar-section sidebar-platforms">
-            {!collapsed && <p className="eyebrow">Espace</p>}
-            <div className="nav-list">
-              {topItems.map((item) => {
-                const active = item.network ? (platform === item.key && isNetworkView) : view === "assistant";
-                const locked = !!item.premium && !isAuthed;
-                return (
-                  <button
-                    key={item.key}
-                    className={`nav-item ${active ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
-                    title={collapsed ? item.label : undefined}
-                    onClick={() => {
-                      if (locked) {
-                        requireAuth("Crée un compte gratuit pour débloquer l'Agent IA.");
-                        return;
-                      }
-                      if (item.network) {
-                        onPlatformChange(item.key as Platform);
-                        if (view !== "content" && view !== "analyze") onNavigate("content");
-                      } else {
-                        onNavigate("assistant");
-                      }
-                    }}
-                  >
-                    {item.icon}
-                    {!collapsed && <span>{item.label}</span>}
-                    {locked ? <Lock size={12} className="lock-ico" /> : null}
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-        );
-      })()}
-
-      {/* Niveau 2 — Sous-onglets du réseau actif (Veille / Contenu) */}
-      {(view === "content" || view === "analyze") && (() => {
         const subTabs: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
           { key: "analyze", label: "Veille", icon: <ListChecks size={14} /> },
           { key: "content", label: "Contenu", icon: <PenTool size={14} />, premium: true },
         ];
         return (
-          <section className="sidebar-section sidebar-subnav">
-            {!collapsed && <p className="eyebrow">{platform === "instagram" ? "Instagram" : "LinkedIn"}</p>}
+          <section className="sidebar-section sidebar-nav-tree">
             <div className="nav-list">
-              {subTabs.map((item) => {
-                const locked = !!item.premium && !isAuthed;
-                const showBadge = platform === "linkedin" && item.key === "analyze" && jobBadge;
+              {networks.map((net) => {
+                const expanded = platform === net.key && isNetworkView;
+                return (
+                  <React.Fragment key={net.key}>
+                    <button
+                      className={`nav-item ${expanded ? "active" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                      title={collapsed ? net.label : undefined}
+                      onClick={() => {
+                        onPlatformChange(net.key);
+                        if (view !== "content" && view !== "analyze") onNavigate("content");
+                      }}
+                    >
+                      {net.icon}
+                      {!collapsed && <span>{net.label}</span>}
+                    </button>
+                    {expanded && subTabs.map((tab) => {
+                      const locked = !!tab.premium && !isAuthed;
+                      const showBadge = net.key === "linkedin" && tab.key === "analyze" && jobBadge;
+                      return (
+                        <button
+                          key={tab.key}
+                          className={`nav-item nav-item-sub ${view === tab.key ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                          title={collapsed ? tab.label : undefined}
+                          onClick={() => {
+                            if (locked) {
+                              requireAuth("Crée un compte gratuit pour débloquer le générateur de contenu.");
+                              return;
+                            }
+                            onNavigate(tab.key);
+                          }}
+                        >
+                          {tab.icon}
+                          {!collapsed && <span>{tab.label}</span>}
+                          {!collapsed && showBadge ? (
+                            <span className="nav-job-badge"><Loader2 size={11} className="spinning" />{jobBadge.completed}/{jobBadge.total}</span>
+                          ) : null}
+                          {collapsed && showBadge ? (
+                            <span className="nav-job-badge nav-job-badge-dot"><Loader2 size={11} className="spinning" /></span>
+                          ) : null}
+                          {locked ? <Lock size={12} className="lock-ico" /> : null}
+                        </button>
+                      );
+                    })}
+                  </React.Fragment>
+                );
+              })}
+              {(() => {
+                const locked = !isAuthed;
                 return (
                   <button
-                    key={item.key}
-                    className={`nav-item nav-item-sub ${view === item.key ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
-                    title={collapsed ? item.label : undefined}
+                    className={`nav-item ${view === "assistant" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                    title={collapsed ? "Agent IA" : undefined}
                     onClick={() => {
                       if (locked) {
-                        requireAuth("Crée un compte gratuit pour débloquer le générateur de contenu.");
+                        requireAuth("Crée un compte gratuit pour débloquer l'Agent IA.");
                         return;
                       }
-                      onNavigate(item.key);
+                      onNavigate("assistant");
                     }}
                   >
-                    {item.icon}
-                    {!collapsed && <span>{item.label}</span>}
-                    {!collapsed && showBadge ? (
-                      <span className="nav-job-badge"><Loader2 size={11} className="spinning" />{jobBadge.completed}/{jobBadge.total}</span>
-                    ) : null}
-                    {collapsed && showBadge ? (
-                      <span className="nav-job-badge nav-job-badge-dot"><Loader2 size={11} className="spinning" /></span>
-                    ) : null}
+                    <MessageSquare size={14} />
+                    {!collapsed && <span>Agent IA</span>}
                     {locked ? <Lock size={12} className="lock-ico" /> : null}
                   </button>
                 );
-              })}
+              })()}
             </div>
           </section>
         );
