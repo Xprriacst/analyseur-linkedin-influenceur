@@ -751,23 +751,31 @@ function Sidebar({
         )}
       </div>
 
-      {/* Platform switch */}
-      {!collapsed && <div className="platform-switch">
-        <button
-          className={`platform-btn${platform === "linkedin" ? " active" : ""}`}
-          onClick={() => onPlatformChange("linkedin")}
-        >
-          <Linkedin size={13} />
-          LinkedIn
-        </button>
-        <button
-          className={`platform-btn${platform === "instagram" ? " active" : ""}`}
-          onClick={() => onPlatformChange("instagram")}
-        >
-          <InstagramIcon size={13} />
-          Instagram
-        </button>
-      </div>}
+      {/* Platform switch — visible en mode plié (icônes seules) et déplié (icônes + labels) */}
+      {(() => {
+        const platforms: { key: Platform; label: string; icon: React.ReactNode }[] = [
+          { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
+          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
+        ];
+        return (
+          <section className="sidebar-section sidebar-platforms">
+            {!collapsed && <p className="eyebrow">Réseau</p>}
+            <div className="nav-list">
+              {platforms.map((p) => (
+                <button
+                  key={p.key}
+                  className={`nav-item ${platform === p.key ? "active" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                  title={collapsed ? p.label : undefined}
+                  onClick={() => onPlatformChange(p.key)}
+                >
+                  {p.icon}
+                  {!collapsed && <span>{p.label}</span>}
+                </button>
+              ))}
+            </div>
+          </section>
+        );
+      })()}
 
       {/* Sidebar navigation */}
       <section className="sidebar-section">
