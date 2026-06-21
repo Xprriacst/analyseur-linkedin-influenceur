@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from src import db, zernio
+from src import db, slack as slack_client, zernio
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src.jobs import start_job_thread
@@ -865,6 +865,206 @@ def set_me_daily_ideas_enabled(
     """Toggle the daily-idea opt-in for the authenticated user."""
     db.set_daily_ideas_enabled(token, payload.enabled)
     return {"enabled": payload.enabled}
+
+
+# --------------------------------------------------------------------------- #
+# Slack integration (ALE-63) — validation d'idées par boutons Slack
+# --------------------------------------------------------------------------- #
+
+class SlackConnectRequest(BaseModel):
+    redirect_uri: str = Field(..., min_length=10)
+
+
+class SlackCallbackRequest(BaseModel):
+    code: str = Field(..., min_length=4)
+    redirect_uri: str = Field(..., min_length=10)
+
+
+class SlackSendIdeasRequest(BaseModel):
+    idea_ids: list[str] = Field(..., min_length=1, max_length=10)
+
+
+@app.get("/me/integrations/slack/status")
+def slack_status(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Check whether the authenticated user has connected their Slack workspace."""
+    row = db.get_slack_integration(token)
+    if not row:
+        return {"connected": False, "configured": slack_client.enabled()}
+    return {
+        "connected": True,
+        "configured": slack_client.enabled(),
+        "team_name": row.get("team_name"),
+        "team_id": row.get("team_id"),
+        "channel_id": row.get("channel_id"),
+        "connected_at": row.get("connected_at"),
+    }
+
+
+@app.post("/me/integrations/slack/connect")
+def slack_connect(
+    payload: SlackConnectRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Return the Slack OAuth authorization URL to redirect the user to."""
+    if not slack_client.enabled():
+        raise HTTPException(status_code=400, detail="SLACK_CLIENT_ID / SLACK_CLIENT_SECRET manquants sur le serveur.")
+    try:
+        auth_url = slack_client.build_oauth_url(payload.redirect_uri)
+    except slack_client.SlackError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"auth_url": auth_url}
+
+
+@app.post("/me/integrations/slack/callback")
+def slack_callback(
+    payload: SlackCallbackRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Exchange an OAuth code for tokens and persist the Slack integration."""
+    if not slack_client.enabled():
+        raise HTTPException(status_code=400, detail="SLACK_CLIENT_ID / SLACK_CLIENT_SECRET manquants sur le serveur.")
+    try:
+        oauth = slack_client.exchange_code(payload.code, payload.redirect_uri)
+    except slack_client.SlackError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    bot_token: str = oauth.get("access_token", "")
+    authed_user: dict = oauth.get("authed_user") or {}
+    team: dict = oauth.get("team") or {}
+    slack_user_id: str = authed_user.get("id", "")
+
+    # Open a DM channel so we know where to post ideas
+    channel_id: str | None = None
+    if bot_token and slack_user_id:
+        try:
+            channel_id = slack_client.open_dm_channel(bot_token, slack_user_id)
+        except slack_client.SlackError:
+            pass  # non-blocking; the user can still connect
+
+    row = db.save_slack_integration(token, {
+        "access_token": bot_token,
+        "service_user_id": slack_user_id,
+        "channel_id": channel_id,
+        "team_id": team.get("id"),
+        "team_name": team.get("name"),
+        "metadata": {"bot_user_id": oauth.get("bot_user_id")},
+    })
+    if not row:
+        raise HTTPException(status_code=500, detail="Impossible de sauvegarder l'intégration Slack.")
+    return {
+        "ok": True,
+        "team_name": team.get("name"),
+        "channel_id": channel_id,
+    }
+
+
+@app.delete("/me/integrations/slack")
+def slack_disconnect(token: str = Depends(require_token)) -> dict[str, bool]:
+    """Remove the Slack integration for the authenticated user."""
+    return {"deleted": db.delete_slack_integration(token)}
+
+
+@app.post("/me/integrations/slack/send-ideas")
+def slack_send_ideas(
+    payload: SlackSendIdeasRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Send a batch of generated ideas to the user's Slack DM for validation."""
+    row = db.get_slack_integration(token)
+    if not row:
+        raise HTTPException(status_code=400, detail="Compte Slack non connecté. Connecte Slack dans ton profil.")
+    channel_id: str = row.get("channel_id") or ""
+    bot_token: str = row.get("access_token") or ""
+    if not channel_id or not bot_token:
+        raise HTTPException(status_code=400, detail="Intégration Slack incomplète (channel ou token manquant).")
+
+    sent = 0
+    errors: list[str] = []
+    for idea_id in payload.idea_ids:
+        idea = db.get_generated_idea(token, idea_id)
+        if not idea:
+            errors.append(f"Idée {idea_id} introuvable.")
+            continue
+        try:
+            slack_client.send_idea_for_validation(bot_token, channel_id, idea)
+            sent += 1
+        except slack_client.SlackError as exc:
+            errors.append(str(exc))
+
+    if sent:
+        db.set_idea_slack_pending(token, payload.idea_ids)
+
+    return {"sent": sent, "errors": errors}
+
+
+@app.post("/slack/webhooks/interactive")
+async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
+    """Receive Slack interactive component payloads (button clicks).
+
+    Verifies the Slack signing secret, then updates the idea status in DB.
+    This endpoint has no user auth — it's called directly by Slack.
+    """
+    body = await request.body()
+    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+    signature = request.headers.get("X-Slack-Signature", "")
+
+    if not slack_client.verify_signature(body, timestamp, signature):
+        raise HTTPException(status_code=403, detail="Signature Slack invalide.")
+
+    # Slack sends payload as URL-encoded form: payload=<JSON>
+    import urllib.parse
+    form = urllib.parse.parse_qs(body.decode("utf-8", errors="replace"))
+    raw = form.get("payload", [""])[0]
+    if not raw:
+        raise HTTPException(status_code=400, detail="Payload Slack manquant.")
+    try:
+        data = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Payload Slack invalide (JSON).")
+
+    if data.get("type") != "block_actions":
+        return {"ok": True}
+
+    actions: list[dict] = data.get("actions") or []
+    slack_user_id: str = (data.get("user") or {}).get("id", "")
+
+    if not actions or not slack_user_id:
+        return {"ok": True}
+
+    action = actions[0]
+    action_id: str = action.get("action_id", "")
+    idea_id: str = action.get("value", "")
+
+    if action_id not in ("validate_idea", "decline_idea") or not idea_id:
+        return {"ok": True}
+
+    status = "validated" if action_id == "validate_idea" else "declined"
+
+    # Lookup user by Slack user ID (service-role, no JWT available here)
+    integration = db.get_user_by_slack_id(slack_user_id)
+    if integration:
+        db.update_idea_slack_status(idea_id, integration["user_id"], status)
+
+        # Update the Slack message to replace buttons with a status badge
+        bot_token: str = integration.get("access_token", "")
+        channel_id: str = (data.get("channel") or {}).get("id", "")
+        ts: str = (data.get("message") or {}).get("ts", "")
+        if bot_token and channel_id and ts:
+            try:
+                # Minimal idea dict for the update (just title + hook from message)
+                idea_blocks = (data.get("message") or {}).get("blocks") or []
+                title = ""
+                if idea_blocks and idea_blocks[0].get("text"):
+                    title = idea_blocks[0]["text"].get("text", "").split("\n")[0].strip("*")
+                slack_client.update_idea_message(
+                    bot_token, channel_id, ts,
+                    {"id": idea_id, "title": title},
+                    status,
+                )
+            except slack_client.SlackError:
+                pass  # non-blocking
+
+    return {"ok": True}
 
 
 @app.post("/generate-image")

@@ -1235,3 +1235,128 @@ def insert_daily_idea(
         .execute()
     )
     return resp.data[0] if resp.data else None
+
+
+# ── Slack integration (ALE-63) ── #
+
+def get_slack_integration(access_token: str) -> dict | None:
+    """Return the user's Slack integration row, or None if not connected."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_integrations")
+        .select("*")
+        .eq("user_id", user["id"])
+        .eq("service", "slack")
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def save_slack_integration(access_token: str, data: dict) -> dict | None:
+    """Upsert Slack integration for the authenticated user."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "service": "slack",
+        "access_token": data["access_token"],
+        "service_user_id": data.get("service_user_id"),
+        "channel_id": data.get("channel_id"),
+        "team_id": data.get("team_id"),
+        "team_name": data.get("team_name"),
+        "metadata": data.get("metadata"),
+        "connected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    resp = (
+        db.table("user_integrations")
+        .upsert(row, on_conflict="user_id,service")
+        .select("*")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def delete_slack_integration(access_token: str) -> bool:
+    """Remove the user's Slack integration. Returns True if a row was deleted."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_integrations")
+        .delete()
+        .eq("user_id", user["id"])
+        .eq("service", "slack")
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def get_user_by_slack_id(slack_user_id: str) -> dict | None:
+    """Find user_id + bot token by Slack user ID (service-role, for webhook)."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("user_integrations")
+        .select("user_id, access_token, channel_id")
+        .eq("service", "slack")
+        .eq("service_user_id", slack_user_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_generated_idea(access_token: str, idea_id: str) -> dict | None:
+    """Fetch a single generated idea for the authenticated user."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_ideas")
+        .select("*")
+        .eq("user_id", user["id"])
+        .eq("id", idea_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_idea_slack_status(idea_id: str, user_id: str, status: str) -> bool:
+    """Update slack_status on a generated_idea (service-role, called from webhook)."""
+    if not admin_enabled():
+        return False
+    resp = (
+        admin_client()
+        .table("generated_ideas")
+        .update({"slack_status": status})
+        .eq("id", idea_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def set_idea_slack_pending(access_token: str, idea_ids: list[str]) -> int:
+    """Mark a batch of ideas as 'pending' Slack validation. Returns count updated."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return 0
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_ideas")
+        .update({"slack_status": "pending"})
+        .in_("id", idea_ids)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return len(resp.data) if resp.data else 0
