@@ -124,12 +124,13 @@ HOOK_TEMPLATES: list[str] = [
 ]
 
 
-def select_hooks(user_context: dict[str, Any], count: int = 8) -> list[str]:
+def select_hooks(user_context: dict[str, Any], count: int = 8, topic: str | None = None) -> list[str]:
     """Sélectionne et personnalise les hooks les plus adaptés au profil utilisateur.
 
     Sélectionne aléatoirement count*3 hooks depuis la base, puis appelle Claude
     pour choisir les `count` hooks les plus pertinents et les personnaliser
-    (placeholders remplacés par des infos du profil éditorial).
+    (placeholders remplacés par des infos du profil éditorial). Si `topic` est
+    fourni, les hooks sont orientés vers ce sujet/thème.
 
     En cas d'absence de clé API ou d'erreur LLM, renvoie un fallback de hooks
     bruts sans placeholder résiduel (les gabarits non personnalisables sont écartés).
@@ -163,6 +164,8 @@ def select_hooks(user_context: dict[str, Any], count: int = 8) -> list[str]:
 
         pool_text = "\n".join(f"{i+1}. {h}" for i, h in enumerate(pool))
 
+        topic_line = f"\nSujet/thème à privilégier pour les hooks : {topic.strip()}\n" if (topic and topic.strip()) else ""
+
         system = (
             "Tu es un expert en contenu Instagram et réseaux sociaux. "
             "Ta mission : choisir les hooks les plus percutants pour ce profil "
@@ -174,10 +177,11 @@ def select_hooks(user_context: dict[str, Any], count: int = 8) -> list[str]:
         )
 
         user_msg = (
-            f"Profil éditorial du client :\n{context_text}\n\n"
+            f"Profil éditorial du client :\n{context_text}\n"
+            f"{topic_line}\n"
             f"Hooks disponibles :\n{pool_text}\n\n"
             f"Sélectionne exactement {count} hooks parmi cette liste "
-            f"(les plus adaptés au profil) et personnalise-les. "
+            f"(les plus adaptés au profil{' et au sujet' if topic_line else ''}) et personnalise-les. "
             f"Réponds avec un tableau JSON de {count} chaînes."
         )
 

@@ -1378,6 +1378,7 @@ def persist_analysis(
 
 class InstagramHooksRequest(BaseModel):
     count: int = 8
+    topic: str | None = None
 
 
 @app.post("/instagram/hooks")
@@ -1392,5 +1393,5 @@ def instagram_hooks(
         user_context = {k: v for k, v in profile.items() if v not in (None, "")}
     except Exception:
         pass
-    hooks = select_hooks(user_context, count=max(1, min(payload.count, 20)))
+    hooks = select_hooks(user_context, count=max(1, min(payload.count, 20)), topic=payload.topic)
     return {"hooks": hooks}
