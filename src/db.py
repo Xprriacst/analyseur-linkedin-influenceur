@@ -1235,3 +1235,103 @@ def insert_daily_idea(
         .execute()
     )
     return resp.data[0] if resp.data else None
+
+
+# ── ALE-96 : Posts LinkedIn planifiés ─────────────────────────────────────────
+
+def create_scheduled_post(access_token: str, post_text: str, scheduled_at_iso: str) -> dict | None:
+    """Store a scheduled LinkedIn post for later publication by the cron."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .insert({"user_id": user["id"], "post_text": post_text, "scheduled_at": scheduled_at_iso})
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def list_scheduled_posts(access_token: str, limit: int = 50) -> list[dict]:
+    """List all scheduled posts for the authenticated user, newest first."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .select("id, post_text, scheduled_at, status, zernio_post_id, error_message, created_at")
+        .order("scheduled_at", desc=False)
+        .limit(max(1, min(limit, 200)))
+        .execute()
+    )
+    return resp.data or []
+
+
+def cancel_scheduled_post(access_token: str, post_id: str) -> bool:
+    """Cancel a pending scheduled post (RLS ensures ownership)."""
+    if not supabase_enabled():
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .update({"status": "cancelled", "updated_at": "now()"})
+        .eq("id", post_id)
+        .eq("status", "pending")
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def get_due_scheduled_posts() -> list[dict]:
+    """Return pending posts whose scheduled_at <= now() (service-role, for cron)."""
+    if not admin_enabled():
+        return []
+    admin = admin_client()
+    resp = (
+        admin.table("scheduled_posts")
+        .select(
+            "id, user_id, post_text, "
+            "user_editorial_profiles!inner(zernio_account_id)"
+        )
+        .eq("status", "pending")
+        .lte("scheduled_at", "now()")
+        .limit(100)
+        .execute()
+    )
+    rows = []
+    for row in (resp.data or []):
+        zernio_account_id = None
+        profile = row.get("user_editorial_profiles")
+        if isinstance(profile, dict):
+            zernio_account_id = profile.get("zernio_account_id")
+        elif isinstance(profile, list) and profile:
+            zernio_account_id = profile[0].get("zernio_account_id")
+        rows.append({
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "post_text": row["post_text"],
+            "zernio_account_id": zernio_account_id,
+        })
+    return rows
+
+
+def update_scheduled_post_status(
+    post_id: str,
+    status: str,
+    *,
+    zernio_post_id: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Update publication status for a scheduled post (service-role, for cron)."""
+    if not admin_enabled():
+        return
+    admin = admin_client()
+    payload: dict[str, Any] = {"status": status, "updated_at": "now()"}
+    if zernio_post_id is not None:
+        payload["zernio_post_id"] = zernio_post_id
+    if error is not None:
+        payload["error_message"] = error[:500]
+    admin.table("scheduled_posts").update(payload).eq("id", post_id).execute()

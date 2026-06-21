@@ -400,6 +400,58 @@ def me_linkedin_publish(
     return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft}
 
 
+# ── ALE-96 : Planification LinkedIn ──────────────────────────────────────────
+
+class LinkedInScheduleRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=8000)
+    scheduled_at: str = Field(..., description="ISO 8601 datetime (ex. 2026-06-22T09:00:00+02:00)")
+
+
+@app.post("/me/linkedin/schedule")
+def me_linkedin_schedule(
+    payload: LinkedInScheduleRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Store a LinkedIn post for future publication at the given datetime."""
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    if not profile.get("zernio_account_id"):
+        raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
+    # Basic ISO 8601 validation (full parse done by Supabase as timestamptz)
+    from datetime import datetime
+    try:
+        datetime.fromisoformat(payload.scheduled_at.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format de date invalide. Utilise ISO 8601 (ex. 2026-06-22T09:00:00+02:00).")
+
+    row = db.create_scheduled_post(token, payload.content.strip(), payload.scheduled_at)
+    if row is None:
+        raise HTTPException(status_code=500, detail="Impossible d'enregistrer le post planifié.")
+    return {"ok": True, "scheduled_post": row}
+
+
+@app.get("/me/linkedin/scheduled")
+def me_linkedin_scheduled_list(
+    limit: int = 50,
+    token: str = Depends(require_token),
+) -> list[dict[str, Any]]:
+    """List the authenticated user's scheduled LinkedIn posts."""
+    return db.list_scheduled_posts(token, limit=limit)
+
+
+@app.delete("/me/linkedin/scheduled/{post_id}")
+def me_linkedin_scheduled_cancel(
+    post_id: str,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Cancel a pending scheduled post."""
+    ok = db.cancel_scheduled_post(token, post_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Post planifié introuvable ou déjà publié.")
+    return {"ok": True}
+
+
 @app.get("/reports")
 def reports(
     limit: int = 3,

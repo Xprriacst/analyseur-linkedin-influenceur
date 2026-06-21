@@ -1167,6 +1167,11 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [imageError, setImageError] = useState("");
   const [editedVariants, setEditedVariants] = useState<Record<number, string>>({});
   const [variantCount, setVariantCount] = useState(1);
+  const [scheduleModal, setScheduleModal] = useState<{ index: number; text: string } | null>(null);
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduledIndices, setScheduledIndices] = useState<Record<number, boolean>>({});
+  const [scheduleError, setScheduleError] = useState("");
 
   // "Réutiliser" depuis Mes contenus : pré-remplit le sujet et lance la génération.
   useEffect(() => {
@@ -1208,6 +1213,47 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       setPublishError(err.message);
     } finally {
       setPublishing(null);
+    }
+  }
+
+  function openScheduleModal(i: number, text: string) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour programmer une publication LinkedIn."); return; }
+    if (!linkedin.status?.connected) {
+      setScheduleError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    // Prefill to tomorrow 9:00 local time
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const localIso = `${tomorrow.getFullYear()}-${pad(tomorrow.getMonth() + 1)}-${pad(tomorrow.getDate())}T${pad(tomorrow.getHours())}:${pad(tomorrow.getMinutes())}`;
+    setScheduleDate(localIso);
+    setScheduleError("");
+    setScheduleModal({ index: i, text });
+  }
+
+  async function doSchedule() {
+    if (!scheduleModal) return;
+    setScheduleError("");
+    setScheduling(true);
+    try {
+      const localDate = new Date(scheduleDate);
+      if (isNaN(localDate.getTime())) throw new Error("Date invalide.");
+      if (localDate <= new Date()) throw new Error("La date doit être dans le futur.");
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: scheduleModal.text, scheduled_at: localDate.toISOString() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Planification impossible.");
+      setScheduledIndices((prev) => ({ ...prev, [scheduleModal.index]: true }));
+      setScheduleModal(null);
+    } catch (err: any) {
+      setScheduleError(err.message);
+    } finally {
+      setScheduling(false);
     }
   }
 
@@ -1466,6 +1512,15 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   </button>
                   <button
                     className="secondary-button"
+                    disabled={publishing === i || scheduling}
+                    title={linkedin.status?.connected ? "Programmer la publication à une date/heure choisie" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                    onClick={() => openScheduleModal(i, editedVariants[i] ?? v.post)}
+                  >
+                    <Clock3 size={14} />
+                    {scheduledIndices[i] ? "Programmé ✓" : "Programmer"}
+                  </button>
+                  <button
+                    className="secondary-button"
                     disabled={generatingImage === i}
                     onClick={() => generateImage(i, editedVariants[i] ?? v.post)}
                   >
@@ -1478,6 +1533,9 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 )}
                 {drafted === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré dans LinkedIn ✓</p>
+                )}
+                {scheduledIndices[i] && (
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post programmé ✓ — visible dans l&apos;onglet Profil.</p>
                 )}
                 {variantImages[i] && (
                   <div style={{ marginTop: 12 }}>
@@ -1535,6 +1593,46 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
           </div>
         </div>
       )}
+
+      {scheduleModal !== null && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{ maxWidth: 520, width: "100%", padding: 24 }}>
+            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Programmer ce post</h3>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+              Le post sera publié automatiquement sur LinkedIn à la date et l&apos;heure choisies.
+            </p>
+            <textarea
+              readOnly
+              value={scheduleModal.text}
+              rows={6}
+              className="variant-text"
+              style={{ width: "100%", boxSizing: "border-box", marginBottom: 12 }}
+            />
+            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
+              Date et heure de publication
+            </label>
+            <input
+              type="datetime-local"
+              value={scheduleDate}
+              onChange={(e) => setScheduleDate(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 14, marginBottom: 12 }}
+            />
+            {scheduleError && <p style={{ color: "var(--error, #e53e3e)", fontSize: 13, marginBottom: 8 }}>{scheduleError}</p>}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="secondary-button" onClick={() => setScheduleModal(null)}>
+                Annuler
+              </button>
+              <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={doSchedule}>
+                {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Confirmer</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {scheduleError && !scheduleModal && <div className="error" style={{ marginTop: 12 }}>{scheduleError}</div>}
     </div>
   );
 }
@@ -2274,6 +2372,33 @@ function ProfileView({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [draftInfo, setDraftInfo] = useState("");
   const linkedin = useLinkedIn(isAuthed);
+  const [scheduledPosts, setScheduledPosts] = useState<Array<{ id: string; post_text: string; scheduled_at: string; status: string; error_message?: string }>>([]);
+  const [cancellingPost, setCancellingPost] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isAuthed || !linkedin.status?.connected) return;
+    let cancelled = false;
+    authHeaders().then((h) =>
+      fetch(`${DIRECT_API_URL}/me/linkedin/scheduled`, { headers: h })
+        .then((r) => r.ok ? r.json() : [])
+        .then((data) => { if (!cancelled) setScheduledPosts(data); })
+        .catch(() => {})
+    );
+    return () => { cancelled = true; };
+  }, [isAuthed, linkedin.status?.connected]);
+
+  async function cancelScheduled(postId: string) {
+    setCancellingPost(postId);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${postId}`, {
+        method: "DELETE",
+        headers: await authHeaders(),
+      });
+      if (res.ok) setScheduledPosts((prev) => prev.map((p) => p.id === postId ? { ...p, status: "cancelled" } : p));
+    } catch (_) {} finally {
+      setCancellingPost(null);
+    }
+  }
 
   // `Field` lit toujours la dernière valeur du profil via cette ref, ce qui
   // permet de garder une identité de composant stable (useCallback ci-dessous)
@@ -2502,6 +2627,37 @@ function ProfileView({
         )}
       </section>
       {linkedin.error ? <div className="error" style={{ marginBottom: 12 }}>{linkedin.error}</div> : null}
+
+      {linkedin.status?.connected && scheduledPosts.length > 0 && (
+        <section className="card" style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <Clock3 size={16} />
+            <strong>Posts programmés</strong>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {scheduledPosts.map((p) => (
+              <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ margin: "0 0 4px", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.post_text.slice(0, 120)}{p.post_text.length > 120 ? "…" : ""}</p>
+                  <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+                    {new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
+                    {" — "}
+                    <span style={{ color: p.status === "published" ? "var(--success, #38a169)" : p.status === "failed" ? "var(--error, #e53e3e)" : p.status === "cancelled" ? "var(--muted)" : "var(--accent)" }}>
+                      {p.status === "pending" ? "En attente" : p.status === "published" ? "Publié ✓" : p.status === "failed" ? "Échec" : "Annulé"}
+                    </span>
+                  </p>
+                  {p.status === "failed" && p.error_message && <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--error, #e53e3e)" }}>{p.error_message}</p>}
+                </div>
+                {p.status === "pending" && (
+                  <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px", flexShrink: 0 }} disabled={cancellingPost === p.id} onClick={() => cancelScheduled(p.id)}>
+                    {cancellingPost === p.id ? <Loader2 size={12} className="spinning" /> : <Trash2 size={12} />}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {error ? <div className="error" style={{ marginBottom: 12 }}>{error}</div> : null}
       {draftInfo ? <div className="auth-info" style={{ marginBottom: 12 }}>{draftInfo}</div> : null}
