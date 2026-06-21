@@ -899,7 +899,50 @@ function InstagramPlaceholder() {
   );
 }
 
-// ── ALE-103 : Générateur Instagram — partie Hooks (idées : bientôt disponible) ──
+// ── ALE-103 : Contenu Instagram — même structure que LinkedIn (hooks au lieu de posts) ──
+
+function InstagramContentHub({
+  tab,
+  onTab,
+  isAuthed,
+  requireAuth,
+}: {
+  tab: ContentTab;
+  onTab: (t: ContentTab) => void;
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
+  const subTabs: { key: ContentTab; label: string; icon: React.ReactNode }[] = [
+    { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} /> },
+    { key: "generator", label: "Générateur de hooks", icon: <PenTool size={14} /> },
+    { key: "library", label: "Mes contenus", icon: <Bookmark size={14} /> },
+  ];
+  return (
+    <div>
+      <div className="tabs">
+        {subTabs.map((t) => (
+          <button
+            key={t.key}
+            className={`tab ${tab === t.key ? "active" : ""}`}
+            onClick={() => onTab(t.key)}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === "generator" ? (
+        <InstagramGenerator isAuthed={isAuthed} requireAuth={requireAuth} />
+      ) : (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "28px 20px", color: "var(--muted)" }}>
+          <Clock3 size={16} />
+          <span style={{ fontSize: 14 }}>Bientôt disponible pour Instagram.</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function InstagramGenerator({
   isAuthed,
@@ -908,58 +951,64 @@ function InstagramGenerator({
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 }) {
-  const [hooks, setHooks] = useState<string[]>([]);
-  const [loadingHooks, setLoadingHooks] = useState(false);
-  const [hooksError, setHooksError] = useState("");
-  const [copiedHook, setCopiedHook] = useState<number | null>(null);
-
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [loadingIdeas, setLoadingIdeas] = useState(false);
-  const [ideasError, setIdeasError] = useState("");
+  const [webSearch, setWebSearch] = useState(false);
 
-  async function generateHooks() {
-    if (!isAuthed) {
-      requireAuth("Crée un compte gratuit pour générer des hooks Instagram personnalisés.");
-      return;
-    }
-    setLoadingHooks(true);
-    setHooksError("");
-    try {
-      const res = await fetch(`${API_URL}/instagram/hooks`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ count: 8 }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Erreur");
-      setHooks(data.hooks || []);
-    } catch (err: any) {
-      setHooksError(err.message || "Erreur lors de la génération des hooks.");
-    } finally {
-      setLoadingHooks(false);
-    }
-  }
+  const [hooks, setHooks] = useState<string[]>([]);
+  const [topic, setTopic] = useState("");
+  const [hookCount, setHookCount] = useState(8);
+  const [loadingHooks, setLoadingHooks] = useState(false);
+  const [copiedHook, setCopiedHook] = useState<number | null>(null);
 
-  async function generateIdeas() {
+  const [error, setError] = useState("");
+
+  const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
+
+  async function fetchIdeas() {
     if (!isAuthed) {
       requireAuth("Crée un compte gratuit pour générer des idées de posts Instagram.");
       return;
     }
+    setError("");
     setLoadingIdeas(true);
-    setIdeasError("");
     try {
-      const res = await fetch(`${API_URL}/ideas`, {
+      const res = await fetch(`${DIRECT_API_URL}/ideas`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ count: 5 }),
+        body: JSON.stringify({ count: 5, web_search: webSearch }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Erreur");
+      if (!res.ok) throw new Error(data.detail || "Échec de la génération d'idées");
+      emitCredits(data.credits);
       setIdeas(data.ideas || []);
     } catch (err: any) {
-      setIdeasError(err.message || "Erreur lors de la génération des idées.");
+      setError(err.message);
     } finally {
       setLoadingIdeas(false);
+    }
+  }
+
+  async function generateHooks(t: string) {
+    if (!isAuthed) {
+      requireAuth("Crée un compte gratuit pour générer des hooks Instagram personnalisés.");
+      return;
+    }
+    setError("");
+    setLoadingHooks(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/instagram/hooks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ count: hookCount, topic: t.trim() || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Échec de la génération de hooks");
+      setHooks(data.hooks || []);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoadingHooks(false);
     }
   }
 
@@ -972,100 +1021,111 @@ function InstagramGenerator({
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24, maxWidth: 720, margin: "0 auto" }}>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
-        <div style={{ width: 40, height: 40, borderRadius: 12, background: "linear-gradient(135deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)", display: "grid", placeItems: "center" }}>
-          <InstagramIcon size={20} />
-        </div>
+    <div>
+      {/* Idées — même structure que LinkedIn */}
+      <div className="section-header">
         <div>
-          <h2 style={{ margin: 0, fontWeight: 700, fontSize: 18, color: "var(--ink)" }}>Générateur Instagram</h2>
-          <p style={{ margin: 0, fontSize: 13, color: "var(--muted)" }}>Hooks viraux + idées de posts adaptés à ton profil</p>
+          <h2 className="section-title"><Lightbulb size={20} /> Idées de posts</h2>
+          <p className="section-desc">Claude analyse ton profil et propose des idées de contenu Instagram à fort potentiel.</p>
         </div>
-      </div>
-
-      {/* Section Hooks */}
-      <div className="card" style={{ padding: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>Hooks accrocheurs</h3>
-            <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--muted)" }}>Premières lignes percutantes, personnalisées pour ton secteur</p>
-          </div>
-          <button
-            className="primary-button"
-            style={{ fontSize: 13, padding: "7px 14px" }}
-            onClick={generateHooks}
-            disabled={loadingHooks}
-          >
-            {loadingHooks ? <><Loader2 size={13} className="spinning" style={{ marginRight: 5 }} />Génération...</> : <><Sparkles size={13} style={{ marginRight: 5 }} />Générer des hooks</>}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={webSearch}
+              onChange={(e) => setWebSearch(e.target.checked)}
+              style={{ accentColor: "var(--accent)", width: 14, height: 14 }}
+            />
+            Recherche web
+          </label>
+          <button className="secondary-button" onClick={fetchIdeas} disabled={loadingIdeas}>
+            {loadingIdeas ? <Loader2 size={14} className="spinning" /> : <Lightbulb size={14} />}
+            {loadingIdeas ? "Génération…" : "Générer des idées"}
           </button>
         </div>
-        {hooksError && <p style={{ color: "#ef4444", fontSize: 13, margin: "0 0 10px" }}>{hooksError}</p>}
-        {hooks.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {hooks.map((hook, idx) => (
-              <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", background: "var(--surface-low)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                <span style={{ flex: 1, fontSize: 13, color: "var(--ink)", lineHeight: 1.5 }}>{hook}</span>
-                <button
-                  onClick={() => copyHook(hook, idx)}
-                  style={{ flexShrink: 0, background: "none", border: "none", cursor: "pointer", color: copiedHook === idx ? "#10b981" : "var(--muted)", fontSize: 12, display: "flex", alignItems: "center", gap: 4, padding: "2px 6px" }}
-                  title="Copier"
-                >
-                  {copiedHook === idx ? <CheckCircle2 size={13} /> : <Link2 size={13} />}
-                  {copiedHook === idx ? "Copié" : "Copier"}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {hooks.length === 0 && !loadingHooks && (
-          <p style={{ color: "var(--muted)", fontSize: 13, margin: 0, textAlign: "center", padding: "16px 0" }}>
-            Clique sur « Générer des hooks » pour obtenir des accroches personnalisées.
-          </p>
-        )}
       </div>
 
-      {/* Section Idées */}
-      <div className="card" style={{ padding: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>Idées de posts</h3>
-            <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--muted)" }}>Idées de contenu basées sur ton profil éditorial</p>
-          </div>
-          <button
-            className="primary-button"
-            style={{ fontSize: 13, padding: "7px 14px" }}
-            onClick={generateIdeas}
-            disabled={loadingIdeas}
-          >
-            {loadingIdeas ? <><Loader2 size={13} className="spinning" style={{ marginRight: 5 }} />Génération...</> : <><Lightbulb size={13} style={{ marginRight: 5 }} />Générer des idées</>}
-          </button>
+      {error && <div className="error">{error}</div>}
+
+      {ideas.length > 0 && (
+        <div className="ideas-grid">
+          {ideas.map((idea, i) => (
+            <div className="idea-card" key={i}>
+              <div className="idea-header">
+                <span className="idea-funnel" style={{ borderColor: funnelColors[idea.funnel] || "var(--border)", color: funnelColors[idea.funnel] || "var(--muted)" }}>
+                  {idea.funnel}
+                </span>
+                <span className="badge">{idea.hook_type}</span>
+                <span className="idea-lift">{idea.estimated_lift}</span>
+              </div>
+              <h3 className="idea-title">{idea.title}</h3>
+              <p className="idea-hook">"{idea.hook}"</p>
+              <p className="idea-angle">{idea.angle}</p>
+              <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>
+              <div className="idea-footer">
+                <span className={`idea-difficulty ${idea.difficulty}`}>{idea.difficulty}</span>
+              </div>
+            </div>
+          ))}
         </div>
-        {ideasError && <p style={{ color: "#ef4444", fontSize: 13, margin: "0 0 10px" }}>{ideasError}</p>}
-        {ideas.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {ideas.map((idea, idx) => (
-              <div key={idx} style={{ padding: "12px 14px", background: "var(--surface-low)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                <div style={{ fontWeight: 700, fontSize: 13, color: "var(--ink)", marginBottom: 4 }}>{idea.title}</div>
-                <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 6, fontStyle: "italic" }}>« {idea.hook} »</div>
-                <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", gap: 12, flexWrap: "wrap" }}>
-                  <span>Type : {idea.hook_type}</span>
-                  <span>Funnel : {idea.funnel}</span>
-                  {idea.estimated_lift && <span>Lift estimé : {idea.estimated_lift}</span>}
-                </div>
-              </div>
-            ))}
+      )}
+
+      {/* Génération de hooks — même structure que « Générer des posts » */}
+      <div className="gen-section">
+        <h2 className="section-title"><PenTool size={20} /> Générer des hooks</h2>
+        <div className="gen-form">
+          <div className="url-input">
+            <PenTool size={16} color="var(--primary)" />
+            <input
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              placeholder="Sujet du hook (optionnel) : ex. routine matinale, productivité…"
+              onKeyDown={(e) => e.key === "Enter" && generateHooks(topic)}
+            />
+            <button className="primary-button" disabled={loadingHooks} onClick={() => generateHooks(topic)}>
+              {loadingHooks ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
+              Générer
+            </button>
           </div>
-        )}
-        {ideas.length === 0 && !loadingIdeas && (
-          <p style={{ color: "var(--muted)", fontSize: 13, margin: 0, textAlign: "center", padding: "16px 0" }}>
-            Clique sur « Générer des idées » pour obtenir des idées de posts adaptées.
-          </p>
-        )}
+          <div className="role-picker">
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)" }}>
+              Nombre de hooks :
+              <select
+                value={hookCount}
+                onChange={(e) => setHookCount(Number(e.target.value))}
+                style={{ fontSize: 13, padding: "2px 6px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", cursor: "pointer" }}
+              >
+                <option value={5}>5</option>
+                <option value={8}>8</option>
+                <option value={12}>12</option>
+              </select>
+            </label>
+            <span className="role-picker-hint">
+              Hooks personnalisés selon ton profil éditorial (secteur, audience, offre, ton). Renseigne un sujet pour les orienter.
+            </span>
+          </div>
+        </div>
       </div>
 
-      {/* Le reste (génération de posts complets, publication, image) — bientôt disponible */}
-      <div className="card" style={{ padding: 16, opacity: 0.7, display: "flex", alignItems: "center", gap: 10 }}>
+      {hooks.length > 0 && (
+        <div className="variants-list">
+          {hooks.map((hook, i) => (
+            <div className="variant-card" key={i}>
+              <div className="variant-header">
+                <span className="variant-number" style={{ background: "var(--primary)" }}>{i + 1}</span>
+              </div>
+              <p style={{ fontSize: 14, color: "var(--ink)", lineHeight: 1.5, margin: "4px 0 10px" }}>{hook}</p>
+              <button className="secondary-button" onClick={() => copyHook(hook, i)}>
+                {copiedHook === i ? <CheckCircle2 size={14} /> : <Link2 size={14} />}
+                {copiedHook === i ? "Copié ✓" : "Copier le hook"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Le reste (posts complets, publication, visuels) — bientôt disponible */}
+      <div className="card" style={{ padding: 16, opacity: 0.7, display: "flex", alignItems: "center", gap: 10, marginTop: 16 }}>
         <Clock3 size={15} style={{ color: "var(--muted)" }} />
         <span style={{ fontSize: 12, color: "var(--muted)" }}>Génération de posts complets, publication et visuels Instagram — bientôt disponible.</span>
       </div>
@@ -3924,7 +3984,7 @@ export default function Home() {
             <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : platform === "instagram" ? (
             view === "content" ? (
-              <InstagramGenerator isAuthed={isAuthed} requireAuth={requireAuth} />
+              <InstagramContentHub tab={contentTab} onTab={setContentTab} isAuthed={isAuthed} requireAuth={requireAuth} />
             ) : (
               <InstagramPlaceholder />
             )
