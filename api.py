@@ -614,6 +614,46 @@ def _compute_growth(influencers: list[dict]) -> list[dict[str, Any]]:
     return result
 
 
+@app.get("/dashboard/progress")
+def dashboard_progress(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Agrégation de progression : influenceurs, analyses, idées, posts, LinkedIn, crédits."""
+    result: dict[str, Any] = {
+        "influencers": 0,
+        "analyses": 0,
+        "ideas": 0,
+        "posts": 0,
+        "linkedin_connected": False,
+        "credits_balance": 0,
+    }
+    try:
+        result["influencers"] = len(db.list_influencers(token))
+    except Exception:
+        pass
+    try:
+        result["analyses"] = len(db.list_analyses(token))
+    except Exception:
+        pass
+    try:
+        result["ideas"] = len(db.list_generated_ideas(token))
+    except Exception:
+        pass
+    try:
+        result["posts"] = len(db.list_generated_posts(token))
+    except Exception:
+        pass
+    try:
+        profile = db.get_editorial_profile(token) or {}
+        result["linkedin_connected"] = bool(profile.get("zernio_account_id"))
+    except Exception:
+        pass
+    try:
+        credits = db.get_user_credits(token)
+        result["credits_balance"] = credits.get("balance", 0)
+    except Exception:
+        pass
+    return result
+
+
 @app.get("/dashboard/growth")
 def dashboard_growth(token: Optional[str] = Depends(optional_token)) -> list[dict[str, Any]]:
     """Growth comparison endpoint, scoped to the authenticated user."""

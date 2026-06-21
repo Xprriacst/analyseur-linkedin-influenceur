@@ -5,8 +5,10 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Activity,
+  BarChart2,
   BarChart3,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   Clock3,
   Download,
@@ -1971,6 +1973,7 @@ function DailyIdeasView({
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const fmtDate = (s?: string) => {
     if (!s) return "";
@@ -1993,6 +1996,7 @@ function DailyIdeasView({
       if (!dRes.ok) throw new Error(dData.detail || "Chargement des idées impossible");
       if (!sRes.ok) throw new Error(sData.detail || "Chargement du réservoir impossible");
       setIdeas(Array.isArray(dData?.ideas) ? dData.ideas : []);
+      setExpandedId(prev => prev ?? (Array.isArray(dData?.ideas) && dData.ideas.length > 0 ? dData.ideas[0].id : null));
       setEnabled(!!dData?.enabled);
       setSeeds(Array.isArray(sData) ? sData : []);
     } catch (err: any) {
@@ -2068,8 +2072,7 @@ function DailyIdeasView({
     );
   }
 
-  const latest = ideas[0];
-  const history = ideas.slice(1);
+  const today = new Date().toISOString().slice(0, 10);
 
   return (
     <div>
@@ -2086,12 +2089,7 @@ function DailyIdeasView({
 
       {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {latest ? (
-        <div className="card daily-hero">
-          <div className="daily-hero-date">{fmtDate(latest.idea_date)}</div>
-          <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{latest.idea_markdown}</ReactMarkdown></div>
-        </div>
-      ) : (
+      {ideas.length === 0 ? (
         <div className="card" style={{ padding: 28, textAlign: "center", color: "var(--muted)" }}>
           {loading ? (
             <><Loader2 size={20} className="spinning" style={{ opacity: 0.45 }} /><p>Chargement…</p></>
@@ -2102,19 +2100,29 @@ function DailyIdeasView({
             </p>
           )}
         </div>
-      )}
-
-      {history.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <h3 className="daily-subtitle">Jours précédents</h3>
-          <div className="daily-history">
-            {history.map((it) => (
-              <details key={it.id} className="card daily-history-item">
-                <summary>{fmtDate(it.idea_date)}</summary>
-                <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{it.idea_markdown}</ReactMarkdown></div>
-              </details>
-            ))}
-          </div>
+      ) : (
+        <div className="daily-history">
+          {ideas.map((it) => {
+            const isToday = it.idea_date === today;
+            const open = expandedId === it.id;
+            return (
+              <div key={it.id} className={`card daily-history-item${open ? " open" : ""}`}>
+                <button
+                  className="daily-history-toggle"
+                  onClick={() => setExpandedId(open ? null : it.id)}
+                >
+                  <span style={{ textTransform: "capitalize" }}>{fmtDate(it.idea_date)}</span>
+                  {isToday && <span className="daily-today-badge">Aujourd'hui</span>}
+                  <ChevronDown size={14} className={`daily-chevron${open ? " open" : ""}`} />
+                </button>
+                {open && (
+                  <div className="markdown" style={{ marginTop: 12 }}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{it.idea_markdown}</ReactMarkdown>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -3527,6 +3535,57 @@ function AnalyzeHub({
   );
 }
 
+function ProgressDashboard({ isAuthed }: { isAuthed: boolean }) {
+  type Progress = { influencers: number; analyses: number; ideas: number; posts: number; linkedin_connected: boolean; credits_balance: number };
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthed) { setProgress(null); return; }
+    authHeaders().then(headers =>
+      fetch(`${DIRECT_API_URL}/dashboard/progress`, { headers })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d) setProgress(d); })
+        .catch(() => {})
+    );
+  }, [isAuthed]);
+
+  if (!isAuthed || !progress) return null;
+
+  const items = [
+    { label: "Influenceurs analysés", value: progress.influencers },
+    { label: "Analyses disponibles", value: progress.analyses },
+    { label: "Idées générées", value: progress.ideas },
+    { label: "Posts générés", value: progress.posts },
+    { label: "LinkedIn", value: progress.linkedin_connected ? "Connecté ✓" : "Non connecté" },
+    { label: "Crédits restants", value: progress.credits_balance, warn: progress.credits_balance <= 5 },
+  ];
+
+  return (
+    <div className="card progress-dashboard" style={{ marginBottom: 16 }}>
+      <button
+        className="progress-dashboard-toggle"
+        onClick={() => setCollapsed(c => !c)}
+        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "none", border: "none", cursor: "pointer", padding: 0, color: "inherit" }}
+      >
+        <BarChart2 size={16} style={{ opacity: 0.7 }} />
+        <span style={{ fontWeight: 600, fontSize: 14 }}>Ma progression</span>
+        <ChevronDown size={14} style={{ marginLeft: "auto", transform: collapsed ? "rotate(-90deg)" : "none", transition: "transform 0.2s" }} />
+      </button>
+      {!collapsed && (
+        <div className="progress-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginTop: 14 }}>
+          {items.map((it) => (
+            <div key={it.label} className="progress-item">
+              <span className="progress-value" style={{ color: (it as any).warn ? "var(--danger, #e53)" : undefined }}>{it.value}</span>
+              <span className="progress-label">{it.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Onglet « Contenu » : regroupe Idée du jour, Générateur et Mes contenus en sous-onglets. */
 function ContentHub({
   tab,
@@ -3551,6 +3610,7 @@ function ContentHub({
 
   return (
     <div>
+      <ProgressDashboard isAuthed={isAuthed} />
       <div className="tabs">
         {subTabs.map((t) => (
           <button
