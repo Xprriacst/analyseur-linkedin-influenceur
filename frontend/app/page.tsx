@@ -1255,6 +1255,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération de posts");
+      setEditedVariants({}); // éditions indexées par position : à purger sinon elles contaminent le nouveau batch
       setVariants(data.variants || []);
     } catch (err: any) {
       setError(err.message);

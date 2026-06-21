@@ -97,3 +97,12 @@ begin
   return v_new_balance;
 end;
 $$;
+
+-- Sécurité : ces fonctions SECURITY DEFINER prennent p_user_id en paramètre.
+-- Exposées en RPC PostgREST, un user authentifié pourrait s'auto-créditer (add_credits)
+-- ou débiter le solde d'un autre user (debit_credits). On révoque donc l'EXECUTE par
+-- défaut et on ne l'accorde qu'au service-role (le backend les appelle via admin_client()).
+revoke execute on function public.debit_credits(uuid, integer, text, text) from public, anon, authenticated;
+revoke execute on function public.add_credits(uuid, integer, text) from public, anon, authenticated;
+grant execute on function public.debit_credits(uuid, integer, text, text) to service_role;
+grant execute on function public.add_credits(uuid, integer, text) to service_role;

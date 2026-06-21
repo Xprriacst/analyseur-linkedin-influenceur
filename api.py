@@ -692,15 +692,16 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
+    influencers = _get_influencers(token)
+    if not influencers:
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
+
+    # Débit après toutes les préconditions : un user sans influenceur ne perd pas de crédits.
     if token:
         ok, balance = db.debit_credits(token, "generate_ideas", payload.count)
         if not ok:
             cost = db.CREDIT_COSTS["generate_ideas"] * payload.count
             raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} idée(s) = {cost} crédit(s).")
-
-    influencers = _get_influencers(token)
-    if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
@@ -720,15 +721,16 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
+    influencers = _get_influencers(token)
+    if not influencers:
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
+
+    # Débit après toutes les préconditions : un user sans influenceur ne perd pas de crédits.
     if token:
         ok, balance = db.debit_credits(token, "generate_post", payload.count)
         if not ok:
             cost = db.CREDIT_COSTS["generate_post"] * payload.count
             raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} post(s) = {cost} crédit(s).")
-
-    influencers = _get_influencers(token)
-    if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     top_posts, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
