@@ -17,7 +17,7 @@ import urllib.request
 from typing import Any
 
 BASE_URL = "https://zernio.com/api/v1"
-PLATFORM = "linkedin"
+PLATFORM = "linkedin"  # default / legacy constant
 
 
 class ZernioError(RuntimeError):
@@ -74,39 +74,50 @@ def create_profile(name: str, description: str | None = None) -> str:
     return profile_id
 
 
-def get_connect_url(profile_id: str, redirect_url: str | None = None) -> str:
-    """Return the LinkedIn OAuth authorization URL for this profile."""
+def get_connect_url(profile_id: str, redirect_url: str | None = None, platform: str = PLATFORM) -> str:
+    """Return the OAuth authorization URL for the given platform (linkedin or x)."""
     data = _request(
         "GET",
-        f"/connect/{PLATFORM}",
+        f"/connect/{platform}",
         params={"profileId": profile_id, "redirect_url": redirect_url},
     )
     auth_url = data.get("authUrl")
     if not auth_url:
-        raise ZernioError("Réponse Zernio inattendue : pas d'authUrl.")
+        raise ZernioError(f"Réponse Zernio inattendue : pas d'authUrl pour {platform}.")
     return auth_url
+
+
+def find_account_id(profile_id: str, platform: str) -> str | None:
+    """Return the connected account id for the given platform, if any."""
+    data = _request("GET", "/accounts", params={"profileId": profile_id})
+    for account in data.get("accounts", []):
+        if account.get("platform") == platform:
+            return account.get("_id")
+    return None
 
 
 def find_linkedin_account_id(profile_id: str) -> str | None:
     """Return the connected LinkedIn account id for this profile, if any."""
-    data = _request("GET", "/accounts", params={"profileId": profile_id})
-    for account in data.get("accounts", []):
-        if account.get("platform") == PLATFORM:
-            return account.get("_id")
-    return None
+    return find_account_id(profile_id, "linkedin")
+
+
+def find_x_account_id(profile_id: str) -> str | None:
+    """Return the connected X (Twitter) account id for this profile, if any."""
+    return find_account_id(profile_id, "x")
 
 
 def create_post(
     content: str,
     account_id: str,
     *,
+    platform: str = PLATFORM,
     publish_now: bool = True,
     is_draft: bool = False,
 ) -> dict[str, Any]:
-    """Publish or save as draft a post on the given LinkedIn account."""
+    """Publish or save as draft a post on the given account/platform."""
     body: dict[str, Any] = {
         "content": content,
-        "platforms": [{"platform": PLATFORM, "accountId": account_id}],
+        "platforms": [{"platform": platform, "accountId": account_id}],
     }
     if is_draft:
         body["isDraft"] = True
