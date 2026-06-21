@@ -133,7 +133,8 @@ def _post_rows(influencer_id: str, posts: list[dict]) -> list[dict]:
 def save_analysis(access_token: str, result: dict, posts_limit: int | None = None) -> dict | None:
     """Persist an analysis run for the authenticated user.
 
-    Upserts the influencer (and its posts), then inserts the analysis report.
+    Upserts the influencer (and its posts), then replaces the current analysis
+    report for that user/influencer pair.
     Returns {"influencer_id", "analysis_id"} or None on failure.
     """
     user = get_user(access_token)
@@ -160,7 +161,9 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
     if rows:
         db.table("posts").insert(rows).execute()
 
-    # insert analysis
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    # replace current analysis (unique on user_id + influencer_id)
     analysis_row = {
         "user_id": user_id,
         "influencer_id": influencer_id,
@@ -173,8 +176,14 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
         "cta_stats": _json_safe(result.get("cta_stats")),
         "usage": _json_safe(result.get("usage")),
         "posts_limit": posts_limit,
+        "updated_at": now,
     }
-    an_resp = db.table("analyses").insert(analysis_row).execute()
+    an_resp = (
+        db.table("analyses")
+        .upsert(analysis_row, on_conflict="user_id,influencer_id")
+        .select("id")
+        .execute()
+    )
     analysis_id = an_resp.data[0]["id"] if an_resp.data else None
     return {"influencer_id": influencer_id, "analysis_id": analysis_id}
 
@@ -265,9 +274,9 @@ def list_analyses(access_token: str, limit: int = 20) -> list[dict]:
     db = client_for_token(access_token)
     resp = (
         db.table("analyses")
-        .select("id,handle,created_at,posts_limit")
+        .select("id,handle,created_at,updated_at,posts_limit")
         .eq("user_id", user["id"])
-        .order("created_at", desc=True)
+        .order("updated_at", desc=True)
         .limit(limit)
         .execute()
     )
@@ -328,18 +337,18 @@ def list_reports(access_token: str, limit: int = 3) -> list[dict]:
     db = client_for_token(access_token)
     resp = (
         db.table("analyses")
-        .select("id,handle,created_at,report_markdown,influencers(name)")
+        .select("id,handle,created_at,updated_at,report_markdown,influencers(name)")
         .eq("user_id", user["id"])
-        .order("created_at", desc=True)
+        .order("updated_at", desc=True)
         .limit(limit)
         .execute()
     )
     reports = []
     for row in resp.data or []:
-        created = row.get("created_at") or ""
+        updated = row.get("updated_at") or row.get("created_at") or ""
         try:
             from datetime import datetime
-            ts = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+            ts = datetime.fromisoformat(updated.replace("Z", "+00:00")).timestamp()
         except Exception:
             ts = 0
         # Nom lisible : prénom + nom de l'influenceur, fallback handle décodé
@@ -607,6 +616,91 @@ def delete_generated_post(access_token: str, post_id: str) -> bool:
         .execute()
     )
     return bool(resp.data)
+
+
+def update_generated_post(access_token: str, post_id: str, new_post: str) -> dict | None:
+    """Update the text of a saved post. Returns the updated row or None."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"post": new_post})
+        .eq("user_id", user["id"])
+        .eq("id", post_id)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+# ── Crédits utilisateur (ALE-41) ── #
+
+CREDIT_COSTS: dict[str, int] = {
+    "generate_post": 5,    # par variant
+    "generate_ideas": 3,   # par idée
+    "analyze_job": 20,     # par influenceur
+    "chat": 2,             # par message
+    "generate_image": 5,
+}
+
+
+def get_user_credits(access_token: str) -> dict:
+    """Retourne le solde de crédits de l'utilisateur (crée 20 crédits au 1er appel)."""
+    if not supabase_enabled():
+        return {"balance": 999, "enabled": False}
+    user = get_user(access_token)
+    if not user:
+        return {"balance": 0, "enabled": True}
+    db_client = client_for_token(access_token)
+    resp = (
+        db_client.table("user_credits")
+        .select("balance, updated_at")
+        .eq("user_id", user["id"])
+        .maybe_single()
+        .execute()
+    )
+    if resp.data:
+        return {"balance": resp.data["balance"], "enabled": True}
+    # Première visite : initialiser via service-role
+    if admin_enabled():
+        try:
+            admin_client().table("user_credits").insert({"user_id": user["id"], "balance": 20}).execute()
+        except Exception:
+            pass
+    return {"balance": 20, "enabled": True}
+
+
+def debit_credits(access_token: str, action: str, count: int = 1) -> tuple[bool, int]:
+    """Débite les crédits pour une action. Retourne (succès, nouveau_solde).
+
+    Utilise la fonction Postgres debit_credits() pour l'atomicité.
+    Si Supabase ou la service-role key ne sont pas configurés, retourne toujours True.
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return (True, 999)
+    user = get_user(access_token)
+    if not user:
+        return (False, 0)
+    cost = CREDIT_COSTS.get(action, 5) * max(1, count)
+    try:
+        resp = admin_client().rpc("debit_credits", {
+            "p_user_id": user["id"],
+            "p_amount": cost,
+            "p_action": action,
+            "p_description": f"{action} x{count}",
+        }).execute()
+        new_balance = resp.data if isinstance(resp.data, int) else 0
+        return (True, new_balance)
+    except Exception as exc:
+        if "INSUFFICIENT_CREDITS" in str(exc):
+            # Récupère le solde actuel pour le message d'erreur
+            try:
+                info = get_user_credits(access_token)
+                return (False, info.get("balance", 0))
+            except Exception:
+                return (False, 0)
+        raise
 
 
 import re as _re

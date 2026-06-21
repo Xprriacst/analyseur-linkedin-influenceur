@@ -614,11 +614,13 @@ ROLE_SPECS: dict[str, dict[str, str]] = {
 
 
 def _auto_role_mix() -> list[str]:
-    """Mix éditorial par défaut : performance + (méthodo|autorité) + (relationnel|quotidien)."""
+    """Mix éditorial par défaut : performance + méthodo/autorité + relationnel/quotidien + opinion + story."""
     return [
         "performance",
         random.choice(["methodologie", "autorite"]),
         random.choice(["relationnel", "quotidien"]),
+        random.choice(["opinion", "story"]),
+        random.choice(["methodologie", "autorite", "relationnel", "quotidien"]),
     ]
 
 
@@ -629,10 +631,11 @@ def generate_posts(
     user_context: dict[str, Any] | None = None,
     editorial_role: str | None = None,
     web_search: bool = False,
+    count: int = 1,
 ) -> list[dict]:
-    """Generate 3 LinkedIn post variants covering a mix of editorial roles.
+    """Generate LinkedIn post variants (default 1) covering editorial roles.
 
-    If ``editorial_role`` is provided and known, the 3 variants all use that role.
+    If ``editorial_role`` is provided and known, all variants use that role.
     Otherwise an automatic mix of complementary roles is produced.
     """
     examples_text = "\n\n".join(
@@ -641,10 +644,12 @@ def generate_posts(
     )
     context_text = _format_user_context(user_context)
 
+    count = max(1, min(count, 5))
     if editorial_role and editorial_role in ROLE_SPECS:
-        roles = [editorial_role, editorial_role, editorial_role]
+        roles = [editorial_role] * count
     else:
-        roles = _auto_role_mix()
+        all_roles = _auto_role_mix()
+        roles = all_roles[:count]
 
     roles_block = "\n\n".join(
         f'Variant {i + 1} — rôle éditorial "{r}" ({ROLE_SPECS[r]["label"]}) :\n{ROLE_SPECS[r]["guidance"]}'
@@ -668,7 +673,7 @@ def generate_posts(
         + json.dumps(benchmark, ensure_ascii=False, indent=2)
         + "\n\nExemples des posts les plus performants :\n"
         + examples_text
-        + "\n\nGénère exactement 3 variants de posts LinkedIn, un par rôle éditorial ci-dessous, "
+        + f"\n\nGénère exactement {count} variant{'s' if count > 1 else ''} de post{'s' if count > 1 else ''} LinkedIn, un par rôle éditorial ci-dessous, "
         "DANS L'ORDRE indiqué :\n\n"
         + roles_block
         + """
