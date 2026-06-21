@@ -764,7 +764,7 @@ function Sidebar({
                 return (
                   <React.Fragment key={net.key}>
                     <button
-                      className={`nav-item ${expanded ? "active" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                      className={`nav-item ${expanded ? "nav-item-open" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
                       title={collapsed ? net.label : undefined}
                       onClick={() => {
                         onPlatformChange(net.key);
