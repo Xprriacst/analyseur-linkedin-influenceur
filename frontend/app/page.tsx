@@ -884,6 +884,174 @@ function InstagramPlaceholder() {
   );
 }
 
+// ── ALE-103 : Générateur Instagram (hooks + idées) ───────────────────────────
+
+function InstagramGenerator({
+  isAuthed,
+  requireAuth,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string) => void;
+}) {
+  const [hooks, setHooks] = useState<string[]>([]);
+  const [loadingHooks, setLoadingHooks] = useState(false);
+  const [hooksError, setHooksError] = useState("");
+  const [copiedHook, setCopiedHook] = useState<number | null>(null);
+
+  const [ideas, setIdeas] = useState<Idea[]>([]);
+  const [loadingIdeas, setLoadingIdeas] = useState(false);
+  const [ideasError, setIdeasError] = useState("");
+
+  async function generateHooks() {
+    if (!isAuthed) {
+      requireAuth("Crée un compte gratuit pour générer des hooks Instagram personnalisés.");
+      return;
+    }
+    setLoadingHooks(true);
+    setHooksError("");
+    try {
+      const res = await fetch(`${API_URL}/instagram/hooks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ count: 8 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Erreur");
+      setHooks(data.hooks || []);
+    } catch (err: any) {
+      setHooksError(err.message || "Erreur lors de la génération des hooks.");
+    } finally {
+      setLoadingHooks(false);
+    }
+  }
+
+  async function generateIdeas() {
+    if (!isAuthed) {
+      requireAuth("Crée un compte gratuit pour générer des idées de posts Instagram.");
+      return;
+    }
+    setLoadingIdeas(true);
+    setIdeasError("");
+    try {
+      const res = await fetch(`${API_URL}/ideas`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ count: 5 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Erreur");
+      setIdeas(data.ideas || []);
+    } catch (err: any) {
+      setIdeasError(err.message || "Erreur lors de la génération des idées.");
+    } finally {
+      setLoadingIdeas(false);
+    }
+  }
+
+  async function copyHook(text: string, idx: number) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedHook(idx);
+      setTimeout(() => setCopiedHook(null), 2000);
+    } catch { /* ignore */ }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 24, maxWidth: 720, margin: "0 auto" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+        <div style={{ width: 40, height: 40, borderRadius: 12, background: "linear-gradient(135deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)", display: "grid", placeItems: "center" }}>
+          <InstagramIcon size={20} />
+        </div>
+        <div>
+          <h2 style={{ margin: 0, fontWeight: 700, fontSize: 18, color: "var(--ink)" }}>Générateur Instagram</h2>
+          <p style={{ margin: 0, fontSize: 13, color: "var(--muted)" }}>Hooks viraux + idées de posts adaptés à ton profil</p>
+        </div>
+      </div>
+
+      {/* Section Hooks */}
+      <div className="card" style={{ padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>Hooks accrocheurs</h3>
+            <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--muted)" }}>Premières lignes percutantes, personnalisées pour ton secteur</p>
+          </div>
+          <button
+            className="primary-button"
+            style={{ fontSize: 13, padding: "7px 14px" }}
+            onClick={generateHooks}
+            disabled={loadingHooks}
+          >
+            {loadingHooks ? <><Loader2 size={13} className="spinning" style={{ marginRight: 5 }} />Génération...</> : <><Sparkles size={13} style={{ marginRight: 5 }} />Générer des hooks</>}
+          </button>
+        </div>
+        {hooksError && <p style={{ color: "#ef4444", fontSize: 13, margin: "0 0 10px" }}>{hooksError}</p>}
+        {hooks.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {hooks.map((hook, idx) => (
+              <div key={idx} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", background: "var(--surface-low)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                <span style={{ flex: 1, fontSize: 13, color: "var(--ink)", lineHeight: 1.5 }}>{hook}</span>
+                <button
+                  onClick={() => copyHook(hook, idx)}
+                  style={{ flexShrink: 0, background: "none", border: "none", cursor: "pointer", color: copiedHook === idx ? "#10b981" : "var(--muted)", fontSize: 12, display: "flex", alignItems: "center", gap: 4, padding: "2px 6px" }}
+                  title="Copier"
+                >
+                  {copiedHook === idx ? <CheckCircle2 size={13} /> : <Link2 size={13} />}
+                  {copiedHook === idx ? "Copié" : "Copier"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {hooks.length === 0 && !loadingHooks && (
+          <p style={{ color: "var(--muted)", fontSize: 13, margin: 0, textAlign: "center", padding: "16px 0" }}>
+            Clique sur « Générer des hooks » pour obtenir des accroches personnalisées.
+          </p>
+        )}
+      </div>
+
+      {/* Section Idées */}
+      <div className="card" style={{ padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>Idées de posts</h3>
+            <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--muted)" }}>Idées de contenu basées sur ton profil éditorial</p>
+          </div>
+          <button
+            className="primary-button"
+            style={{ fontSize: 13, padding: "7px 14px" }}
+            onClick={generateIdeas}
+            disabled={loadingIdeas}
+          >
+            {loadingIdeas ? <><Loader2 size={13} className="spinning" style={{ marginRight: 5 }} />Génération...</> : <><Lightbulb size={13} style={{ marginRight: 5 }} />Générer des idées</>}
+          </button>
+        </div>
+        {ideasError && <p style={{ color: "#ef4444", fontSize: 13, margin: "0 0 10px" }}>{ideasError}</p>}
+        {ideas.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {ideas.map((idea, idx) => (
+              <div key={idx} style={{ padding: "12px 14px", background: "var(--surface-low)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: "var(--ink)", marginBottom: 4 }}>{idea.title}</div>
+                <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 6, fontStyle: "italic" }}>« {idea.hook} »</div>
+                <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", gap: 12, flexWrap: "wrap" }}>
+                  <span>Type : {idea.hook_type}</span>
+                  <span>Funnel : {idea.funnel}</span>
+                  {idea.estimated_lift && <span>Lift estimé : {idea.estimated_lift}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {ideas.length === 0 && !loadingIdeas && (
+          <p style={{ color: "var(--muted)", fontSize: 13, margin: 0, textAlign: "center", padding: "16px 0" }}>
+            Clique sur « Générer des idées » pour obtenir des idées de posts adaptées.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TopHeader({
   result,
   view,
@@ -3729,7 +3897,11 @@ export default function Home() {
         />
         <main className="main">
           {platform === "instagram" ? (
-            <InstagramPlaceholder />
+            view === "content" ? (
+              <InstagramGenerator isAuthed={isAuthed} requireAuth={requireAuth} />
+            ) : (
+              <InstagramPlaceholder />
+            )
           ) : (
             <>
               {view === "analyze" && (
