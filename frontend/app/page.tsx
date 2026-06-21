@@ -1052,6 +1052,90 @@ function InstagramGenerator({
   );
 }
 
+// ── ALE-69 : Dashboard de progression ────────────────────────────────────────
+
+type ProgressData = {
+  influencers: number;
+  analyses: number;
+  last_analysis: string | null;
+  ideas: number;
+  posts: number;
+  linkedin_connected: boolean;
+  credits: number | null;
+};
+
+function ProgressDashboard({ isAuthed }: { isAuthed: boolean }) {
+  const [data, setData] = useState<ProgressData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthed) return;
+    setLoading(true);
+    authHeaders().then((headers) => {
+      fetch(`${API_URL}/dashboard/progress`, { headers })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (d) setData(d); })
+        .catch(() => {})
+        .finally(() => setLoading(false));
+    });
+  }, [isAuthed]);
+
+  if (!isAuthed || (!loading && !data)) return null;
+
+  if (loading) {
+    return (
+      <div className="card" style={{ padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--muted)" }}>
+        <Loader2 size={12} className="spinning" />
+        Chargement de ta progression...
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  return (
+    <div className="card" style={{ padding: "12px 16px", marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }} onClick={() => setCollapsed(!collapsed)}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.07em" }}>Ma progression</span>
+        <ChevronLeft size={13} style={{ color: "var(--muted)", transform: collapsed ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 150ms" }} />
+      </div>
+      {!collapsed && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 20px", marginTop: 10 }}>
+          <span style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 5 }}>
+            <Users size={12} style={{ color: "var(--primary)" }} />
+            <strong style={{ color: "var(--ink)" }}>{data.influencers}</strong>&nbsp;influenceur{data.influencers !== 1 ? "s" : ""} analysé{data.influencers !== 1 ? "s" : ""}
+          </span>
+          <span style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 5 }}>
+            <BarChart3 size={12} style={{ color: "var(--primary)" }} />
+            <strong style={{ color: "var(--ink)" }}>{data.analyses}</strong>&nbsp;analyse{data.analyses !== 1 ? "s" : ""}
+          </span>
+          <span style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 5 }}>
+            <Lightbulb size={12} style={{ color: "var(--primary)" }} />
+            <strong style={{ color: "var(--ink)" }}>{data.ideas}</strong>&nbsp;idée{data.ideas !== 1 ? "s" : ""} générée{data.ideas !== 1 ? "s" : ""}
+          </span>
+          <span style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 5 }}>
+            <PenTool size={12} style={{ color: "var(--primary)" }} />
+            <strong style={{ color: "var(--ink)" }}>{data.posts}</strong>&nbsp;post{data.posts !== 1 ? "s" : ""} généré{data.posts !== 1 ? "s" : ""}
+          </span>
+          <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 5 }}>
+            <Linkedin size={12} style={{ color: data.linkedin_connected ? "#10b981" : "var(--muted)" }} />
+            <span style={{ color: data.linkedin_connected ? "#10b981" : "var(--muted)" }}>
+              LinkedIn&nbsp;: {data.linkedin_connected ? "connecté" : "non connecté"}
+            </span>
+          </span>
+          {data.credits !== null && (
+            <span style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 5 }}>
+              <Zap size={12} style={{ color: data.credits <= 5 ? "#ef4444" : "var(--primary)" }} />
+              <strong style={{ color: data.credits <= 5 ? "#ef4444" : "var(--ink)" }}>{data.credits}</strong>&nbsp;crédit{data.credits !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TopHeader({
   result,
   view,
@@ -3938,17 +4022,20 @@ export default function Home() {
               {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
               {view === "assistant" && <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />}
               {view === "content" && (
-                <ContentHub
-                  tab={contentTab}
-                  onTab={setContentTab}
-                  seed={generatorSeed}
-                  isAuthed={isAuthed}
-                  requireAuth={requireAuth}
-                  onReuse={(topic) => {
-                    setGeneratorSeed({ topic, nonce: Date.now() });
-                    setContentTab("generator");
-                  }}
-                />
+                <>
+                  <ProgressDashboard isAuthed={isAuthed} />
+                  <ContentHub
+                    tab={contentTab}
+                    onTab={setContentTab}
+                    seed={generatorSeed}
+                    isAuthed={isAuthed}
+                    requireAuth={requireAuth}
+                    onReuse={(topic) => {
+                      setGeneratorSeed({ topic, nonce: Date.now() });
+                      setContentTab("generator");
+                    }}
+                  />
+                </>
               )}
             </>
           )}

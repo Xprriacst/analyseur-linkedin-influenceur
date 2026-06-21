@@ -1394,3 +1394,63 @@ def instagram_hooks(
         pass
     hooks = select_hooks(user_context, count=max(1, min(payload.count, 20)))
     return {"hooks": hooks}
+
+
+# ── ALE-69 : Dashboard de progression ────────────────────────────────────────
+
+@app.get("/dashboard/progress")
+def dashboard_progress(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Agrège la progression de l'utilisateur : influenceurs, analyses, idées, posts, LinkedIn."""
+    # Influenceurs analysés
+    try:
+        influencers = db.list_influencers(token)
+        influencer_count = len(influencers)
+    except Exception:
+        influencer_count = 0
+
+    # Analyses
+    try:
+        analyses = db.list_analyses(token, limit=100)
+        analysis_count = len(analyses)
+        last_analysis = analyses[0]["created_at"] if analyses else None
+    except Exception:
+        analysis_count = 0
+        last_analysis = None
+
+    # Idées générées
+    try:
+        ideas = db.list_generated_ideas(token, limit=100)
+        ideas_count = len(ideas)
+    except Exception:
+        ideas_count = 0
+
+    # Posts générés
+    try:
+        posts = db.list_generated_posts(token, limit=100)
+        posts_count = len(posts)
+    except Exception:
+        posts_count = 0
+
+    # LinkedIn connecté
+    try:
+        li_status = _linkedin_status(token)
+        linkedin_connected = li_status.get("connected", False)
+    except Exception:
+        linkedin_connected = False
+
+    # Crédits
+    try:
+        credits_info = db.get_user_credits(token)
+        credits_balance = credits_info.get("balance", 0)
+    except Exception:
+        credits_balance = None
+
+    return {
+        "influencers": influencer_count,
+        "analyses": analysis_count,
+        "last_analysis": last_analysis,
+        "ideas": ideas_count,
+        "posts": posts_count,
+        "linkedin_connected": linkedin_connected,
+        "credits": credits_balance,
+    }
