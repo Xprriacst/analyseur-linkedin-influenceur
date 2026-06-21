@@ -698,11 +698,13 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     # Débit après toutes les préconditions : un user sans influenceur ne perd pas de crédits.
+    credits: int | None = None
     if token:
         ok, balance = db.debit_credits(token, "generate_ideas", payload.count)
         if not ok:
             cost = db.CREDIT_COSTS["generate_ideas"] * payload.count
             raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} idée(s) = {cost} crédit(s).")
+        credits = balance
 
     top_posts, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
@@ -713,7 +715,7 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
             ideas_list = db.save_ideas(token, ideas_list)
         except Exception as exc:
             save_error = str(exc)
-    return {"ideas": ideas_list, "influencer_count": len(influencers), "save_error": save_error}
+    return {"ideas": ideas_list, "influencer_count": len(influencers), "save_error": save_error, "credits": credits}
 
 
 @app.post("/generate")
@@ -727,11 +729,13 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
     # Débit après toutes les préconditions : un user sans influenceur ne perd pas de crédits.
+    credits: int | None = None
     if token:
         ok, balance = db.debit_credits(token, "generate_post", payload.count)
         if not ok:
             cost = db.CREDIT_COSTS["generate_post"] * payload.count
             raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} post(s) = {cost} crédit(s).")
+        credits = balance
 
     top_posts, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
@@ -752,7 +756,7 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
             variants = db.save_generated_posts(token, topic, variants)
         except Exception as exc:
             save_error = str(exc)
-    return {"variants": variants, "save_error": save_error}
+    return {"variants": variants, "save_error": save_error, "credits": credits}
 
 
 @app.get("/me/generated-ideas")
@@ -868,16 +872,23 @@ def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends
     """Generate an image to accompany a LinkedIn post (GPT Image 2)."""
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(status_code=400, detail="OPENAI_API_KEY manquant dans .env")
+    credits: int | None = None
     if token:
         ok, balance = db.debit_credits(token, "generate_image")
         if not ok:
             raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération d'image = {db.CREDIT_COSTS['generate_image']} crédit(s).")
+        credits = balance
     try:
         # Import paresseux : la génération d'image dépend d'`openai`. Un import
         # au niveau module ferait planter tout le démarrage de l'API si la
         # dépendance (ou le module) manque — on l'isole donc à cet endpoint.
         from src.image_gen import generate_post_image
-        return generate_post_image(payload.post_text)
+        result = generate_post_image(payload.post_text)
+        if isinstance(result, dict):
+            result["credits"] = credits
+        return result
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -918,6 +929,7 @@ def chat(payload: ChatRequest, token: str = Depends(require_token)) -> Streaming
     ok, balance = db.debit_credits(token, "chat")
     if not ok:
         raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Message = {db.CREDIT_COSTS['chat']} crédit(s).")
+    credits_balance = balance
 
     influencers = _get_influencers(token)
     if not influencers:
@@ -944,7 +956,7 @@ def chat(payload: ChatRequest, token: str = Depends(require_token)) -> Streaming
 
     def stream_response():
         assistant_text = ""
-        yield _sse("meta", {"conversation_id": conversation_id})
+        yield _sse("meta", {"conversation_id": conversation_id, "credits": credits_balance})
         try:
             for delta in chat_stream(history, top_posts, benchmark, user_context=user_context):
                 assistant_text += delta
