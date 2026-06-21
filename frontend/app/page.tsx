@@ -7,6 +7,8 @@ import {
   Activity,
   BarChart3,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Download,
   FileText,
@@ -705,6 +707,15 @@ function Sidebar({
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 
 }) {
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem("sidebar-collapsed") === "true"; } catch { return false; }
+  });
+
+  useEffect(() => {
+    const w = collapsed ? "64px" : "260px";
+    document.documentElement.style.setProperty("--sidebar-w", w);
+    try { localStorage.setItem("sidebar-collapsed", String(collapsed)); } catch {}
+  }, [collapsed]);
 
   const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean; auth?: boolean }[] = [
     { key: "content", label: "Contenu", icon: <PenTool size={14} />, premium: true },
@@ -713,17 +724,26 @@ function Sidebar({
   ];
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}>
       <div className="logo">
         <div className="logo-mark">SD</div>
-        <div className="logo-text">
-          Strategy Decoder
-          <span className="logo-sub">SaaS Premium</span>
-        </div>
+        {!collapsed && (
+          <div className="logo-text">
+            Strategy Decoder
+            <span className="logo-sub">SaaS Premium</span>
+          </div>
+        )}
+        <button
+          className="sidebar-collapse-btn"
+          onClick={() => setCollapsed((c) => !c)}
+          title={collapsed ? "Étendre la sidebar" : "Réduire la sidebar"}
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+        </button>
       </div>
 
       {/* Platform switch */}
-      <div className="platform-switch">
+      {!collapsed && <div className="platform-switch">
         <button
           className={`platform-btn${platform === "linkedin" ? " active" : ""}`}
           onClick={() => onPlatformChange("linkedin")}
@@ -738,18 +758,19 @@ function Sidebar({
           <InstagramIcon size={13} />
           Instagram
         </button>
-      </div>
+      </div>}
 
       {/* Sidebar navigation */}
       <section className="sidebar-section">
-        <p className="eyebrow">Navigation</p>
+        {!collapsed && <p className="eyebrow">Navigation</p>}
         <div className="nav-list">
           {navItems.map((item) => {
             const locked = (!!item.premium || !!item.auth) && !isAuthed;
             return (
               <button
                 key={item.key}
-                className={`nav-item ${view === item.key ? "active" : ""} ${locked ? "locked" : ""}`}
+                className={`nav-item ${view === item.key ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                title={collapsed ? item.label : undefined}
                 onClick={() => {
                   if (locked) {
                     requireAuth(
@@ -763,9 +784,12 @@ function Sidebar({
                 }}
               >
                 {item.icon}
-                <span>{item.label}</span>
-                {item.key === "analyze" && jobBadge ? (
+                {!collapsed && <span>{item.label}</span>}
+                {!collapsed && item.key === "analyze" && jobBadge ? (
                   <span className="nav-job-badge"><Loader2 size={11} className="spinning" />{jobBadge.completed}/{jobBadge.total}</span>
+                ) : null}
+                {collapsed && item.key === "analyze" && jobBadge ? (
+                  <span className="nav-job-badge nav-job-badge-dot"><Loader2 size={11} className="spinning" /></span>
                 ) : null}
                 {locked ? <Lock size={12} className="lock-ico" /> : null}
               </button>
@@ -775,13 +799,14 @@ function Sidebar({
       </section>
 
       <section className="sidebar-section" style={{ marginTop: "auto" }}>
-        <p className="eyebrow"><Settings2 size={12} style={{ verticalAlign: "-2px", marginRight: 5 }} />Réglages</p>
+        {!collapsed && <p className="eyebrow"><Settings2 size={12} style={{ verticalAlign: "-2px", marginRight: 5 }} />Réglages</p>}
         <div className="nav-list" style={{ marginBottom: 10 }}>
           {(() => {
             const locked = !isAuthed;
             return (
               <button
-                className={`nav-item ${view === "profile" ? "active" : ""} ${locked ? "locked" : ""}`}
+                className={`nav-item ${view === "profile" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                title={collapsed ? "Mon profil" : undefined}
                 onClick={() => {
                   if (locked) {
                     requireAuth("Crée un compte gratuit pour retrouver tes données et ton contexte éditorial.");
@@ -791,35 +816,37 @@ function Sidebar({
                 }}
               >
                 <UserRound size={14} />
-                <span>Mon profil</span>
+                {!collapsed && <span>Mon profil</span>}
                 {locked ? <Lock size={12} className="lock-ico" /> : null}
               </button>
             );
           })()}
         </div>
-        {isAuthed && credits !== null && (
+        {!collapsed && isAuthed && credits !== null && (
           <div style={{ marginBottom: 8 }}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: credits <= 5 ? "#ef4444" : "var(--muted)", border: "1px solid var(--border)", borderRadius: 20, padding: "3px 10px" }}>
               ✦ {credits} crédit{credits !== 1 ? "s" : ""}
             </span>
           </div>
         )}
-        <div
-          title={`Apify : ${health?.apify ? "OK" : "manquant"} · Anthropic : ${health?.anthropic ? "OK" : "manquant"} · Modèle : ${health?.model || "—"}`}
-          style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 10.5, color: "var(--muted)" }}
-        >
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: health?.apify ? "#10b981" : "#ef4444" }} />
-            Apify
-          </span>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: health?.anthropic ? "#10b981" : "#ef4444" }} />
-            Anthropic
-          </span>
-          <span style={{ opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
-            {health?.model || "—"}
-          </span>
-        </div>
+        {!collapsed && (
+          <div
+            title={`Apify : ${health?.apify ? "OK" : "manquant"} · Anthropic : ${health?.anthropic ? "OK" : "manquant"} · Modèle : ${health?.model || "—"}`}
+            style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 10.5, color: "var(--muted)" }}
+          >
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: health?.apify ? "#10b981" : "#ef4444" }} />
+              Apify
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: health?.anthropic ? "#10b981" : "#ef4444" }} />
+              Anthropic
+            </span>
+            <span style={{ opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
+              {health?.model || "—"}
+            </span>
+          </div>
+        )}
       </section>
     </aside>
   );
