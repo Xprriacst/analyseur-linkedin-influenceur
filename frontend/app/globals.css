@@ -52,7 +52,12 @@ a { color: inherit; text-decoration: none; }
 }
 
 .sidebar-collapsed { padding: 12px 8px; }
-.sidebar-collapsed .logo { justify-content: center; }
+.sidebar-collapsed .logo {
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 0;
+}
 .sidebar-collapse-btn {
   margin-left: auto;
   flex-shrink: 0;

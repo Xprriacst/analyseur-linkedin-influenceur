@@ -30,6 +30,7 @@ import {
   Send,
   Settings2,
   Sparkles,
+  Target,
   TrendingUp,
   UserRound,
   Users,
@@ -726,10 +727,10 @@ function Sidebar({
   return (
     <aside className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}>
       <div className="logo">
-        <div className="logo-mark">SD</div>
+        <div className="logo-mark"><Target size={18} strokeWidth={2.5} /></div>
         {!collapsed && (
           <div className="logo-text">
-            Strategy Decoder
+            Cibl
             <span className="logo-sub">SaaS Premium</span>
           </div>
         )}
