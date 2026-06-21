@@ -618,6 +618,91 @@ def delete_generated_post(access_token: str, post_id: str) -> bool:
     return bool(resp.data)
 
 
+def update_generated_post(access_token: str, post_id: str, new_post: str) -> dict | None:
+    """Update the text of a saved post. Returns the updated row or None."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"post": new_post})
+        .eq("user_id", user["id"])
+        .eq("id", post_id)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+# ── Crédits utilisateur (ALE-41) ── #
+
+CREDIT_COSTS: dict[str, int] = {
+    "generate_post": 5,    # par variant
+    "generate_ideas": 3,   # par idée
+    "analyze_job": 20,     # par influenceur
+    "chat": 2,             # par message
+    "generate_image": 5,
+}
+
+
+def get_user_credits(access_token: str) -> dict:
+    """Retourne le solde de crédits de l'utilisateur (crée 20 crédits au 1er appel)."""
+    if not supabase_enabled():
+        return {"balance": 999, "enabled": False}
+    user = get_user(access_token)
+    if not user:
+        return {"balance": 0, "enabled": True}
+    db_client = client_for_token(access_token)
+    resp = (
+        db_client.table("user_credits")
+        .select("balance, updated_at")
+        .eq("user_id", user["id"])
+        .maybe_single()
+        .execute()
+    )
+    if resp.data:
+        return {"balance": resp.data["balance"], "enabled": True}
+    # Première visite : initialiser via service-role
+    if admin_enabled():
+        try:
+            admin_client().table("user_credits").insert({"user_id": user["id"], "balance": 20}).execute()
+        except Exception:
+            pass
+    return {"balance": 20, "enabled": True}
+
+
+def debit_credits(access_token: str, action: str, count: int = 1) -> tuple[bool, int]:
+    """Débite les crédits pour une action. Retourne (succès, nouveau_solde).
+
+    Utilise la fonction Postgres debit_credits() pour l'atomicité.
+    Si Supabase ou la service-role key ne sont pas configurés, retourne toujours True.
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return (True, 999)
+    user = get_user(access_token)
+    if not user:
+        return (False, 0)
+    cost = CREDIT_COSTS.get(action, 5) * max(1, count)
+    try:
+        resp = admin_client().rpc("debit_credits", {
+            "p_user_id": user["id"],
+            "p_amount": cost,
+            "p_action": action,
+            "p_description": f"{action} x{count}",
+        }).execute()
+        new_balance = resp.data if isinstance(resp.data, int) else 0
+        return (True, new_balance)
+    except Exception as exc:
+        if "INSUFFICIENT_CREDITS" in str(exc):
+            # Récupère le solde actuel pour le message d'erreur
+            try:
+                info = get_user_credits(access_token)
+                return (False, info.get("balance", 0))
+            except Exception:
+                return (False, 0)
+        raise
+
+
 import re as _re
 
 

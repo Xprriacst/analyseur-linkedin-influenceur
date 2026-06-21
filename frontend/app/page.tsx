@@ -621,6 +621,7 @@ function Sidebar({
   view,
   isAuthed,
   jobBadge,
+  credits,
   onNavigate,
   onLoadReport,
   requireAuth,
@@ -631,6 +632,7 @@ function Sidebar({
   view: MainView;
   isAuthed: boolean;
   jobBadge: { completed: number; total: number } | null;
+  credits: number | null;
   onNavigate: (v: MainView) => void;
   onLoadReport: (report: Report) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
@@ -710,6 +712,13 @@ function Sidebar({
             );
           })()}
         </div>
+        {isAuthed && credits !== null && (
+          <div style={{ marginBottom: 8 }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: credits <= 5 ? "#ef4444" : "var(--muted)", border: "1px solid var(--border)", borderRadius: 20, padding: "3px 10px" }}>
+              ✦ {credits} crédit{credits !== 1 ? "s" : ""}
+            </span>
+          </div>
+        )}
         <div
           title={`Apify : ${health?.apify ? "OK" : "manquant"} · Anthropic : ${health?.anthropic ? "OK" : "manquant"} · Modèle : ${health?.model || "—"}`}
           style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 10.5, color: "var(--muted)" }}
@@ -1147,6 +1156,8 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [variantImages, setVariantImages] = useState<Record<number, string>>({});
   const [generatingImage, setGeneratingImage] = useState<number | null>(null);
   const [imageError, setImageError] = useState("");
+  const [editedVariants, setEditedVariants] = useState<Record<number, string>>({});
+  const [variantCount, setVariantCount] = useState(1);
 
   // "Réutiliser" depuis Mes contenus : pré-remplit le sujet et lance la génération.
   useEffect(() => {
@@ -1234,7 +1245,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     if (!t.trim()) { setError("Entre un sujet pour le post."); return; }
     setLoadingPosts(true);
     try {
-      const body: { topic: string; editorial_role?: string; web_search?: boolean } = { topic: t.trim() };
+      const body: { topic: string; editorial_role?: string; web_search?: boolean; count?: number } = { topic: t.trim(), count: variantCount };
       if (role !== "auto") body.editorial_role = role;
       if (webSearch) body.web_search = true;
       const res = await fetch(`${DIRECT_API_URL}/generate`, {
@@ -1244,6 +1255,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération de posts");
+      setEditedVariants({}); // éditions indexées par position : à purger sinon elles contaminent le nouveau batch
       setVariants(data.variants || []);
     } catch (err: any) {
       setError(err.message);
@@ -1370,6 +1382,18 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               />
               Recherche web en temps réel
             </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)" }}>
+              Variants :
+              <select
+                value={variantCount}
+                onChange={(e) => setVariantCount(Number(e.target.value))}
+                style={{ fontSize: 13, padding: "2px 6px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", cursor: "pointer" }}
+              >
+                <option value={1}>1</option>
+                <option value={2}>2</option>
+                <option value={3}>3</option>
+              </select>
+            </label>
           </div>
         </div>
       </div>
@@ -1392,16 +1416,29 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   <span className="idea-lift">{v.predicted_lift}</span>
                 </div>
                 <p className="variant-strategy">{v.strategy}</p>
-                <textarea className="variant-text" readOnly value={v.post} rows={14} />
+                <textarea
+                  className="variant-text"
+                  value={editedVariants[i] ?? v.post}
+                  rows={14}
+                  onChange={(e) => setEditedVariants((prev) => ({ ...prev, [i]: e.target.value }))}
+                />
+                {editedVariants[i] !== undefined && editedVariants[i] !== v.post && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                    <span style={{ fontSize: 12, color: "var(--muted)" }}>✏️ Modifié</span>
+                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} onClick={() => setEditedVariants((prev) => { const n = { ...prev }; delete n[i]; return n; })}>
+                      Revenir à l&apos;original
+                    </button>
+                  </div>
+                )}
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button className="secondary-button" onClick={() => navigator.clipboard.writeText(v.post)}>
+                  <button className="secondary-button" onClick={() => navigator.clipboard.writeText(editedVariants[i] ?? v.post)}>
                     Copier le post
                   </button>
                   <button
                     className="primary-button"
                     disabled={publishing === i}
                     title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => publishVariant(i, v.post)}
+                    onClick={() => publishVariant(i, editedVariants[i] ?? v.post)}
                   >
                     {publishing === i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
                     {publishing === i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
@@ -1410,7 +1447,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     className="secondary-button"
                     disabled={publishing === i}
                     title={linkedin.status?.connected ? "Enregistrer comme brouillon dans LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => publishVariant(i, v.post, true)}
+                    onClick={() => publishVariant(i, editedVariants[i] ?? v.post, true)}
                   >
                     {publishing === i && drafted !== i ? <Loader2 size={14} className="spinning" /> : <FileText size={14} />}
                     {drafted === i ? "Brouillon ✓" : "Enregistrer en brouillon"}
@@ -1418,7 +1455,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   <button
                     className="secondary-button"
                     disabled={generatingImage === i}
-                    onClick={() => generateImage(i, v.post)}
+                    onClick={() => generateImage(i, editedVariants[i] ?? v.post)}
                   >
                     {generatingImage === i ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
                     {generatingImage === i ? "Génération…" : variantImages[i] ? "Régénérer l'image" : "Générer une image"}
@@ -1463,7 +1500,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
             </p>
             <textarea
               readOnly
-              value={variants[confirmIndex]?.post ?? ""}
+              value={editedVariants[confirmIndex] ?? variants[confirmIndex]?.post ?? ""}
               rows={8}
               className="variant-text"
               style={{ width: "100%", boxSizing: "border-box", marginBottom: 16 }}
@@ -1475,7 +1512,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               <button
                 className="primary-button"
                 disabled={publishing !== null}
-                onClick={() => doPublish(confirmIndex, variants[confirmIndex]?.post ?? "")}
+                onClick={() => doPublish(confirmIndex, editedVariants[confirmIndex] ?? variants[confirmIndex]?.post ?? "")}
               >
                 {publishing !== null
                   ? <><Loader2 size={14} className="spinning" /> Publication…</>
@@ -1713,6 +1750,9 @@ function LibraryView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
+  const [editedPosts, setEditedPosts] = useState<Record<string, string>>({});
+  const [savingPost, setSavingPost] = useState<string | null>(null);
+  const [savedPost, setSavedPost] = useState<string | null>(null);
 
   const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
   const roleLabels: Record<string, string> = {
@@ -1836,9 +1876,49 @@ function LibraryView({
                   <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--muted)" }}>{fmtDate(p.created_at)}</span>
                 </div>
                 {p.topic && <p className="variant-strategy"><strong>Sujet :</strong> {p.topic}</p>}
-                <textarea className="variant-text" readOnly value={p.post} rows={12} />
+                <textarea
+                  className="variant-text"
+                  value={editedPosts[p.id] ?? p.post}
+                  rows={12}
+                  onChange={(e) => setEditedPosts((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                />
+                {editedPosts[p.id] !== undefined && editedPosts[p.id] !== p.post && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12, color: "var(--muted)" }}>✏️ Modifié</span>
+                    <button
+                      className="secondary-button"
+                      style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
+                      onClick={() => setEditedPosts((prev) => { const n = { ...prev }; delete n[p.id]; return n; })}
+                    >
+                      Revenir à l&apos;original
+                    </button>
+                    <button
+                      className="primary-button"
+                      style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
+                      disabled={savingPost === p.id}
+                      onClick={async () => {
+                        setSavingPost(p.id);
+                        try {
+                          const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${p.id}`, {
+                            method: "PUT",
+                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+                            body: JSON.stringify({ post: editedPosts[p.id] }),
+                          });
+                          if (res.ok) {
+                            setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, post: editedPosts[p.id] } : pp));
+                            setEditedPosts((prev) => { const n = { ...prev }; delete n[p.id]; return n; });
+                            setSavedPost(p.id);
+                            setTimeout(() => setSavedPost((s) => s === p.id ? null : s), 1500);
+                          }
+                        } finally { setSavingPost(null); }
+                      }}
+                    >
+                      {savingPost === p.id ? "Sauvegarde…" : savedPost === p.id ? "Sauvegardé ✓" : "Sauvegarder"}
+                    </button>
+                  </div>
+                )}
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button className="secondary-button" onClick={() => copy(p.post, p.id)}>
+                  <button className="secondary-button" onClick={() => copy(editedPosts[p.id] ?? p.post, p.id)}>
                     {copied === p.id ? "Copié ✓" : "Copier le post"}
                   </button>
                   {p.topic && (
@@ -3028,6 +3108,7 @@ export default function Home() {
   const [authOpen, setAuthOpen] = useState(false);
   const [authReason, setAuthReason] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
+  const [credits, setCredits] = useState<number | null>(null);
   const userIdRef = useRef<string | null>(null);
   const prevJobActiveRef = useRef(false);
   // Analyse anonyme affichée mais pas encore sauvegardée : sauvée dès l'inscription.
@@ -3100,6 +3181,17 @@ export default function Home() {
   useEffect(() => {
     if (!isAuthed) { setInfluencers([]); return; }
     loadInfluencerLibrary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.access_token]);
+
+  useEffect(() => {
+    if (!isAuthed) { setCredits(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/credits`, { headers: await authHeaders() });
+        if (res.ok) { const d = await res.json(); setCredits(d.balance ?? null); }
+      } catch { /* ignore */ }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, session?.access_token]);
 
@@ -3265,6 +3357,7 @@ export default function Home() {
           view={view}
           isAuthed={isAuthed}
           jobBadge={activeJob ? { completed: activeJob.completed, total: activeJob.total } : null}
+          credits={credits}
           onNavigate={(v) => {
             setView(v);
             if (v === "analyze" || v === "profile") {

@@ -7,3 +7,6 @@ cache/
 
 # Local Netlify folder
 .netlify
+
+# Claude Code internal
+.claude/worktrees/
