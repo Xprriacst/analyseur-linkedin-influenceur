@@ -674,6 +674,7 @@ class GenerateRequest(BaseModel):
     topic: str = Field(..., min_length=3)
     editorial_role: Optional[str] = Field(default=None)
     web_search: bool = Field(default=False)
+    count: int = Field(default=1, ge=1, le=3)
 
 
 class GenerateImageRequest(BaseModel):
@@ -728,6 +729,7 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
         user_context=user_context,
         editorial_role=role,
         web_search=payload.web_search,
+        count=payload.count,
     )
     save_error: str | None = None
     if token:

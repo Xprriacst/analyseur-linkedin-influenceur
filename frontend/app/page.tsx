@@ -1148,6 +1148,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [generatingImage, setGeneratingImage] = useState<number | null>(null);
   const [imageError, setImageError] = useState("");
   const [editedVariants, setEditedVariants] = useState<Record<number, string>>({});
+  const [variantCount, setVariantCount] = useState(1);
 
   // "Réutiliser" depuis Mes contenus : pré-remplit le sujet et lance la génération.
   useEffect(() => {
@@ -1235,7 +1236,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     if (!t.trim()) { setError("Entre un sujet pour le post."); return; }
     setLoadingPosts(true);
     try {
-      const body: { topic: string; editorial_role?: string; web_search?: boolean } = { topic: t.trim() };
+      const body: { topic: string; editorial_role?: string; web_search?: boolean; count?: number } = { topic: t.trim(), count: variantCount };
       if (role !== "auto") body.editorial_role = role;
       if (webSearch) body.web_search = true;
       const res = await fetch(`${DIRECT_API_URL}/generate`, {
@@ -1370,6 +1371,18 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 style={{ accentColor: "var(--accent)", width: 14, height: 14 }}
               />
               Recherche web en temps réel
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)" }}>
+              Variants :
+              <select
+                value={variantCount}
+                onChange={(e) => setVariantCount(Number(e.target.value))}
+                style={{ fontSize: 13, padding: "2px 6px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", cursor: "pointer" }}
+              >
+                <option value={1}>1</option>
+                <option value={2}>2</option>
+                <option value={3}>3</option>
+              </select>
             </label>
           </div>
         </div>
