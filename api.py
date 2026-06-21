@@ -1136,3 +1136,39 @@ def persist_analysis(
     if not saved:
         raise HTTPException(status_code=500, detail="Sauvegarde échouée (session invalide ou RLS).")
     return {"saved": saved}
+
+
+# ── Monitoring influenceurs (ALE-32) ── #
+
+class MonitoringUpdateRequest(BaseModel):
+    is_active: bool = True
+    frequency: str = "daily"
+
+
+@app.get("/me/monitoring")
+def get_monitoring(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """Liste les influenceurs sous monitoring pour l'utilisateur authentifié."""
+    return db.get_monitoring_for_user(token)
+
+
+@app.post("/me/monitoring/{influencer_id}")
+def upsert_monitoring(
+    influencer_id: str,
+    body: MonitoringUpdateRequest = MonitoringUpdateRequest(),
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Active ou met à jour le monitoring d'un influenceur (fréquence : daily | weekly)."""
+    if body.frequency not in ("daily", "weekly"):
+        raise HTTPException(status_code=400, detail="frequency doit être 'daily' ou 'weekly'.")
+    result = db.upsert_influencer_monitoring(
+        token, influencer_id, is_active=body.is_active, frequency=body.frequency
+    )
+    if not result:
+        raise HTTPException(status_code=500, detail="Impossible de mettre à jour le monitoring.")
+    return result
+
+
+@app.delete("/me/monitoring/{influencer_id}", status_code=204)
+def delete_monitoring(influencer_id: str, token: str = Depends(require_token)) -> None:
+    """Supprime le monitoring d'un influenceur."""
+    db.delete_influencer_monitoring(token, influencer_id)
