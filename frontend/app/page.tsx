@@ -2259,7 +2259,7 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
       setMessages([]);
       return;
     }
-    loadConversations(true);
+    loadConversations(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
