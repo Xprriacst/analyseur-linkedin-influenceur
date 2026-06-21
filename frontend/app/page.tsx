@@ -179,6 +179,18 @@ type GrowthRow = {
 const mainViews = ["analyze", "profile", "assistant", "content"] as const;
 type MainView = typeof mainViews[number];
 
+type Platform = "linkedin" | "instagram";
+
+function InstagramIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="2" width="20" height="20" rx="5" ry="5" />
+      <circle cx="12" cy="12" r="4" />
+      <circle cx="17.5" cy="6.5" r="0.5" fill="currentColor" />
+    </svg>
+  );
+}
+
 /** Sous-onglets de la vue « Analyser » (analyse, influenceurs, dashboard fusionnés). */
 type AnalyzeTab = "analyze" | "influencers" | "dashboard";
 
@@ -631,8 +643,10 @@ function Sidebar({
   isAuthed,
   jobBadge,
   credits,
+  platform,
   onNavigate,
   onLoadReport,
+  onPlatformChange,
   requireAuth,
 }: {
   health: Health | null;
@@ -642,8 +656,10 @@ function Sidebar({
   isAuthed: boolean;
   jobBadge: { completed: number; total: number } | null;
   credits: number | null;
+  platform: Platform;
   onNavigate: (v: MainView) => void;
   onLoadReport: (report: Report) => void;
+  onPlatformChange: (p: Platform) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 
 }) {
@@ -662,6 +678,24 @@ function Sidebar({
           Strategy Decoder
           <span className="logo-sub">SaaS Premium</span>
         </div>
+      </div>
+
+      {/* Platform switch */}
+      <div className="platform-switch">
+        <button
+          className={`platform-btn${platform === "linkedin" ? " active" : ""}`}
+          onClick={() => onPlatformChange("linkedin")}
+        >
+          <Linkedin size={13} />
+          LinkedIn
+        </button>
+        <button
+          className={`platform-btn${platform === "instagram" ? " active" : ""}`}
+          onClick={() => onPlatformChange("instagram")}
+        >
+          <InstagramIcon size={13} />
+          Instagram
+        </button>
       </div>
 
       {/* Sidebar navigation */}
@@ -746,6 +780,21 @@ function Sidebar({
         </div>
       </section>
     </aside>
+  );
+}
+
+function InstagramPlaceholder() {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "60vh", textAlign: "center", padding: "40px 24px" }}>
+      <div style={{ width: 72, height: 72, borderRadius: 20, background: "linear-gradient(135deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)", display: "grid", placeItems: "center", marginBottom: 24 }}>
+        <InstagramIcon size={36} />
+      </div>
+      <h2 style={{ fontWeight: 700, fontSize: 20, marginBottom: 8, color: "var(--ink)" }}>Instagram — Bientôt disponible</h2>
+      <p style={{ color: "var(--muted)", maxWidth: 360, lineHeight: 1.6, margin: 0 }}>
+        L'analyse et la génération de contenu Instagram arrivent prochainement.<br />
+        En attendant, restez sur LinkedIn !
+      </p>
+    </div>
   );
 }
 
@@ -3110,6 +3159,10 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("content");
+  const [platform, setPlatform] = useState<Platform>(() => {
+    if (typeof window === "undefined") return "linkedin";
+    return (localStorage.getItem("lkd_platform") as Platform) ?? "linkedin";
+  });
   const [analyzeTab, setAnalyzeTab] = useState<AnalyzeTab>("analyze");
   const [contentTab, setContentTab] = useState<ContentTab>("generator");
   // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
@@ -3381,6 +3434,7 @@ export default function Home() {
           isAuthed={isAuthed}
           jobBadge={activeJob ? { completed: activeJob.completed, total: activeJob.total } : null}
           credits={credits}
+          platform={platform}
           onNavigate={(v) => {
             setView(v);
             if (v === "analyze" || v === "profile") {
@@ -3390,6 +3444,10 @@ export default function Home() {
             }
           }}
           onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
+          onPlatformChange={(p) => {
+            setPlatform(p);
+            localStorage.setItem("lkd_platform", p);
+          }}
           requireAuth={requireAuth}
         />
         <TopHeader
@@ -3403,50 +3461,56 @@ export default function Home() {
           onSignOut={() => supabase.auth.signOut()}
         />
         <main className="main">
-          {view === "analyze" && (
-            loading
-              ? <LoadingState />
-              : result
-                ? <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
-                : loadedReport
-                  ? (
-                    <>
-                      <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => setLoadedReport(null)}>
-                        ← Retour aux analyses
-                      </button>
-                      <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
-                    </>
-                  )
-                  : (
-                    <AnalyzeHub
-                      tab={analyzeTab}
-                      onTab={setAnalyzeTab}
-                      jobs={jobs}
-                      jobsLoading={jobsLoading}
-                      onJobCreated={onJobCreated}
-                      onOpenReport={openReport}
-                      influencers={influencers}
-                      influencersLoading={influencersLoading}
-                      onOpenLibraryReport={openLibraryReport}
-                      isAuthed={isAuthed}
-                      requireAuth={requireAuth}
-                    />
-                  )
-          )}
-          {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
-          {view === "assistant" && <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />}
-          {view === "content" && (
-            <ContentHub
-              tab={contentTab}
-              onTab={setContentTab}
-              seed={generatorSeed}
-              isAuthed={isAuthed}
-              requireAuth={requireAuth}
-              onReuse={(topic) => {
-                setGeneratorSeed({ topic, nonce: Date.now() });
-                setContentTab("generator");
-              }}
-            />
+          {platform === "instagram" ? (
+            <InstagramPlaceholder />
+          ) : (
+            <>
+              {view === "analyze" && (
+                loading
+                  ? <LoadingState />
+                  : result
+                    ? <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
+                    : loadedReport
+                      ? (
+                        <>
+                          <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => setLoadedReport(null)}>
+                            ← Retour aux analyses
+                          </button>
+                          <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
+                        </>
+                      )
+                      : (
+                        <AnalyzeHub
+                          tab={analyzeTab}
+                          onTab={setAnalyzeTab}
+                          jobs={jobs}
+                          jobsLoading={jobsLoading}
+                          onJobCreated={onJobCreated}
+                          onOpenReport={openReport}
+                          influencers={influencers}
+                          influencersLoading={influencersLoading}
+                          onOpenLibraryReport={openLibraryReport}
+                          isAuthed={isAuthed}
+                          requireAuth={requireAuth}
+                        />
+                      )
+              )}
+              {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
+              {view === "assistant" && <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />}
+              {view === "content" && (
+                <ContentHub
+                  tab={contentTab}
+                  onTab={setContentTab}
+                  seed={generatorSeed}
+                  isAuthed={isAuthed}
+                  requireAuth={requireAuth}
+                  onReuse={(topic) => {
+                    setGeneratorSeed({ topic, nonce: Date.now() });
+                    setContentTab("generator");
+                  }}
+                />
+              )}
+            </>
           )}
         </main>
       </div>
