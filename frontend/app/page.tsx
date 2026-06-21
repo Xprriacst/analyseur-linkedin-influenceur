@@ -7,6 +7,7 @@ import {
   Activity,
   BarChart3,
   CheckCircle2,
+  ChevronDown,
   Clock3,
   Download,
   FileText,
@@ -1698,6 +1699,7 @@ function DailyIdeasView({
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const fmtDate = (s?: string) => {
     if (!s) return "";
@@ -1719,9 +1721,11 @@ function DailyIdeasView({
       const sData = await sRes.json();
       if (!dRes.ok) throw new Error(dData.detail || "Chargement des idées impossible");
       if (!sRes.ok) throw new Error(sData.detail || "Chargement du réservoir impossible");
-      setIdeas(Array.isArray(dData?.ideas) ? dData.ideas : []);
+      const loadedIdeas = Array.isArray(dData?.ideas) ? dData.ideas : [];
+      setIdeas(loadedIdeas);
       setEnabled(!!dData?.enabled);
       setSeeds(Array.isArray(sData) ? sData : []);
+      if (loadedIdeas.length > 0) setExpandedId((prev) => prev ?? loadedIdeas[0].id);
     } catch (err: any) {
       setError(err.message || "Chargement impossible");
     } finally {
@@ -1795,9 +1799,6 @@ function DailyIdeasView({
     );
   }
 
-  const latest = ideas[0];
-  const history = ideas.slice(1);
-
   return (
     <div>
       <div className="section-header">
@@ -1813,12 +1814,7 @@ function DailyIdeasView({
 
       {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {latest ? (
-        <div className="card daily-hero">
-          <div className="daily-hero-date">{fmtDate(latest.idea_date)}</div>
-          <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{latest.idea_markdown}</ReactMarkdown></div>
-        </div>
-      ) : (
+      {ideas.length === 0 ? (
         <div className="card" style={{ padding: 28, textAlign: "center", color: "var(--muted)" }}>
           {loading ? (
             <><Loader2 size={20} className="spinning" style={{ opacity: 0.45 }} /><p>Chargement…</p></>
@@ -1829,19 +1825,31 @@ function DailyIdeasView({
             </p>
           )}
         </div>
-      )}
-
-      {history.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <h3 className="daily-subtitle">Jours précédents</h3>
-          <div className="daily-history">
-            {history.map((it) => (
-              <details key={it.id} className="card daily-history-item">
-                <summary>{fmtDate(it.idea_date)}</summary>
-                <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{it.idea_markdown}</ReactMarkdown></div>
-              </details>
-            ))}
-          </div>
+      ) : (
+        <div className="daily-history">
+          {ideas.map((it, idx) => {
+            const isOpen = expandedId === it.id;
+            return (
+              <div key={it.id} className={`card daily-history-item${isOpen ? " open" : ""}`}>
+                <button
+                  className="daily-history-toggle"
+                  onClick={() => setExpandedId(isOpen ? null : it.id)}
+                  aria-expanded={isOpen}
+                >
+                  <span className="daily-history-date">
+                    {idx === 0 && <span className="daily-today-badge">Aujourd'hui</span>}
+                    {fmtDate(it.idea_date)}
+                  </span>
+                  <ChevronDown size={14} className={`daily-chevron${isOpen ? " rotated" : ""}`} />
+                </button>
+                {isOpen && (
+                  <div className="markdown daily-history-content">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{it.idea_markdown}</ReactMarkdown>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
