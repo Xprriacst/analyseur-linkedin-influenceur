@@ -717,12 +717,6 @@ function Sidebar({
     try { localStorage.setItem("sidebar-collapsed", String(collapsed)); } catch {}
   }, [collapsed]);
 
-  const navItems: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean; auth?: boolean }[] = [
-    { key: "content", label: "Contenu", icon: <PenTool size={14} />, premium: true },
-    { key: "analyze", label: "Veille", icon: <ListChecks size={14} /> },
-    { key: "assistant", label: "Agent IA", icon: <MessageSquare size={14} />, premium: true },
-  ];
-
   return (
     <aside className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}>
       <div className="logo">
@@ -751,69 +745,90 @@ function Sidebar({
         )}
       </div>
 
-      {/* Platform switch — visible en mode plié (icônes seules) et déplié (icônes + labels) */}
+      {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {(() => {
-        const platforms: { key: Platform; label: string; icon: React.ReactNode }[] = [
+        const isNetworkView = view === "content" || view === "analyze";
+        const networks: { key: Platform; label: string; icon: React.ReactNode }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
           { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
         ];
+        const subTabs: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
+          { key: "analyze", label: "Veille", icon: <ListChecks size={14} /> },
+          { key: "content", label: "Contenu", icon: <PenTool size={14} />, premium: true },
+        ];
         return (
-          <section className="sidebar-section sidebar-platforms">
-            {!collapsed && <p className="eyebrow">Réseau</p>}
+          <section className="sidebar-section sidebar-nav-tree">
             <div className="nav-list">
-              {platforms.map((p) => (
-                <button
-                  key={p.key}
-                  className={`nav-item ${platform === p.key ? "active" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
-                  title={collapsed ? p.label : undefined}
-                  onClick={() => onPlatformChange(p.key)}
-                >
-                  {p.icon}
-                  {!collapsed && <span>{p.label}</span>}
-                </button>
-              ))}
+              {networks.map((net) => {
+                const expanded = platform === net.key && isNetworkView;
+                return (
+                  <React.Fragment key={net.key}>
+                    <button
+                      className={`nav-item ${expanded ? "nav-item-open" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                      title={collapsed ? net.label : undefined}
+                      onClick={() => {
+                        onPlatformChange(net.key);
+                        if (view !== "content" && view !== "analyze") onNavigate("content");
+                      }}
+                    >
+                      {net.icon}
+                      {!collapsed && <span>{net.label}</span>}
+                    </button>
+                    {expanded && subTabs.map((tab) => {
+                      const locked = !!tab.premium && !isAuthed;
+                      const showBadge = net.key === "linkedin" && tab.key === "analyze" && jobBadge;
+                      return (
+                        <button
+                          key={tab.key}
+                          className={`nav-item nav-item-sub ${view === tab.key ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                          title={collapsed ? tab.label : undefined}
+                          onClick={() => {
+                            if (locked) {
+                              requireAuth("Crée un compte gratuit pour débloquer le générateur de contenu.");
+                              return;
+                            }
+                            onNavigate(tab.key);
+                          }}
+                        >
+                          {tab.icon}
+                          {!collapsed && <span>{tab.label}</span>}
+                          {!collapsed && showBadge ? (
+                            <span className="nav-job-badge"><Loader2 size={11} className="spinning" />{jobBadge.completed}/{jobBadge.total}</span>
+                          ) : null}
+                          {collapsed && showBadge ? (
+                            <span className="nav-job-badge nav-job-badge-dot"><Loader2 size={11} className="spinning" /></span>
+                          ) : null}
+                          {locked ? <Lock size={12} className="lock-ico" /> : null}
+                        </button>
+                      );
+                    })}
+                  </React.Fragment>
+                );
+              })}
+              {(() => {
+                const locked = !isAuthed;
+                return (
+                  <button
+                    className={`nav-item ${view === "assistant" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                    title={collapsed ? "Agent IA" : undefined}
+                    onClick={() => {
+                      if (locked) {
+                        requireAuth("Crée un compte gratuit pour débloquer l'Agent IA.");
+                        return;
+                      }
+                      onNavigate("assistant");
+                    }}
+                  >
+                    <MessageSquare size={14} />
+                    {!collapsed && <span>Agent IA</span>}
+                    {locked ? <Lock size={12} className="lock-ico" /> : null}
+                  </button>
+                );
+              })()}
             </div>
           </section>
         );
       })()}
-
-      {/* Sidebar navigation */}
-      <section className="sidebar-section">
-        {!collapsed && <p className="eyebrow">Navigation</p>}
-        <div className="nav-list">
-          {navItems.map((item) => {
-            const locked = (!!item.premium || !!item.auth) && !isAuthed;
-            return (
-              <button
-                key={item.key}
-                className={`nav-item ${view === item.key ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
-                title={collapsed ? item.label : undefined}
-                onClick={() => {
-                  if (locked) {
-                    requireAuth(
-                      item.auth
-                        ? "Crée un compte gratuit pour retrouver tes données et ton contexte éditorial."
-                        : "Crée un compte gratuit pour débloquer le générateur de posts et le dashboard global."
-                    );
-                    return;
-                  }
-                  onNavigate(item.key);
-                }}
-              >
-                {item.icon}
-                {!collapsed && <span>{item.label}</span>}
-                {!collapsed && item.key === "analyze" && jobBadge ? (
-                  <span className="nav-job-badge"><Loader2 size={11} className="spinning" />{jobBadge.completed}/{jobBadge.total}</span>
-                ) : null}
-                {collapsed && item.key === "analyze" && jobBadge ? (
-                  <span className="nav-job-badge nav-job-badge-dot"><Loader2 size={11} className="spinning" /></span>
-                ) : null}
-                {locked ? <Lock size={12} className="lock-ico" /> : null}
-              </button>
-            );
-          })}
-        </div>
-      </section>
 
       <section className="sidebar-section" style={{ marginTop: "auto" }}>
         {!collapsed && <p className="eyebrow"><Settings2 size={12} style={{ verticalAlign: "-2px", marginRight: 5 }} />Réglages</p>}
@@ -898,6 +913,10 @@ function InstagramGenerator({
   const [hooksError, setHooksError] = useState("");
   const [copiedHook, setCopiedHook] = useState<number | null>(null);
 
+  const [ideas, setIdeas] = useState<Idea[]>([]);
+  const [loadingIdeas, setLoadingIdeas] = useState(false);
+  const [ideasError, setIdeasError] = useState("");
+
   async function generateHooks() {
     if (!isAuthed) {
       requireAuth("Crée un compte gratuit pour générer des hooks Instagram personnalisés.");
@@ -921,6 +940,29 @@ function InstagramGenerator({
     }
   }
 
+  async function generateIdeas() {
+    if (!isAuthed) {
+      requireAuth("Crée un compte gratuit pour générer des idées de posts Instagram.");
+      return;
+    }
+    setLoadingIdeas(true);
+    setIdeasError("");
+    try {
+      const res = await fetch(`${API_URL}/ideas`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ count: 5 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Erreur");
+      setIdeas(data.ideas || []);
+    } catch (err: any) {
+      setIdeasError(err.message || "Erreur lors de la génération des idées.");
+    } finally {
+      setLoadingIdeas(false);
+    }
+  }
+
   async function copyHook(text: string, idx: number) {
     try {
       await navigator.clipboard.writeText(text);
@@ -938,7 +980,7 @@ function InstagramGenerator({
         </div>
         <div>
           <h2 style={{ margin: 0, fontWeight: 700, fontSize: 18, color: "var(--ink)" }}>Générateur Instagram</h2>
-          <p style={{ margin: 0, fontSize: 13, color: "var(--muted)" }}>Hooks viraux adaptés à ton profil</p>
+          <p style={{ margin: 0, fontSize: 13, color: "var(--muted)" }}>Hooks viraux + idées de posts adaptés à ton profil</p>
         </div>
       </div>
 
@@ -983,15 +1025,49 @@ function InstagramGenerator({
         )}
       </div>
 
-      {/* Section Idées — bientôt disponible */}
-      <div className="card" style={{ padding: 20, opacity: 0.75 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Lightbulb size={16} style={{ color: "var(--muted)" }} />
+      {/* Section Idées */}
+      <div className="card" style={{ padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
           <div>
             <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>Idées de posts</h3>
-            <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--muted)" }}>Bientôt disponible — idées de Reels/posts basées sur un benchmark Instagram.</p>
+            <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--muted)" }}>Idées de contenu basées sur ton profil éditorial</p>
           </div>
+          <button
+            className="primary-button"
+            style={{ fontSize: 13, padding: "7px 14px" }}
+            onClick={generateIdeas}
+            disabled={loadingIdeas}
+          >
+            {loadingIdeas ? <><Loader2 size={13} className="spinning" style={{ marginRight: 5 }} />Génération...</> : <><Lightbulb size={13} style={{ marginRight: 5 }} />Générer des idées</>}
+          </button>
         </div>
+        {ideasError && <p style={{ color: "#ef4444", fontSize: 13, margin: "0 0 10px" }}>{ideasError}</p>}
+        {ideas.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {ideas.map((idea, idx) => (
+              <div key={idx} style={{ padding: "12px 14px", background: "var(--surface-low)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: "var(--ink)", marginBottom: 4 }}>{idea.title}</div>
+                <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 6, fontStyle: "italic" }}>« {idea.hook} »</div>
+                <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", gap: 12, flexWrap: "wrap" }}>
+                  <span>Type : {idea.hook_type}</span>
+                  <span>Funnel : {idea.funnel}</span>
+                  {idea.estimated_lift && <span>Lift estimé : {idea.estimated_lift}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {ideas.length === 0 && !loadingIdeas && (
+          <p style={{ color: "var(--muted)", fontSize: 13, margin: 0, textAlign: "center", padding: "16px 0" }}>
+            Clique sur « Générer des idées » pour obtenir des idées de posts adaptées.
+          </p>
+        )}
+      </div>
+
+      {/* Le reste (génération de posts complets, publication, image) — bientôt disponible */}
+      <div className="card" style={{ padding: 16, opacity: 0.7, display: "flex", alignItems: "center", gap: 10 }}>
+        <Clock3 size={15} style={{ color: "var(--muted)" }} />
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>Génération de posts complets, publication et visuels Instagram — bientôt disponible.</span>
       </div>
     </div>
   );
@@ -3841,7 +3917,12 @@ export default function Home() {
           onSignOut={() => supabase.auth.signOut()}
         />
         <main className="main">
-          {platform === "instagram" ? (
+          {/* Agent IA et Profil sont indépendants du réseau (niveau 1 / Réglages) */}
+          {view === "assistant" ? (
+            <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />
+          ) : view === "profile" ? (
+            <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />
+          ) : platform === "instagram" ? (
             view === "content" ? (
               <InstagramGenerator isAuthed={isAuthed} requireAuth={requireAuth} />
             ) : (
@@ -3880,8 +3961,6 @@ export default function Home() {
                         />
                       )
               )}
-              {view === "profile" && <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />}
-              {view === "assistant" && <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />}
               {view === "content" && (
                 <ContentHub
                   tab={contentTab}

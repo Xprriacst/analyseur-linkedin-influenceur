@@ -205,8 +205,21 @@ a { color: inherit; text-decoration: none; }
   color: var(--primary);
 }
 
-/* ── Platform switch (réseau) — réutilise le style .nav-item ── */
-.sidebar-platforms { margin-top: 4px; }
+/* ── Navigation en accordéon (réseaux + Agent IA, sous-onglets en tiroir) ── */
+.sidebar-nav-tree { margin-top: 4px; }
+
+/* Réseau déplié (parent du tiroir) : titre coloré/gras SANS fond, pour le
+   distinguer du sous-onglet actif (lui seul garde la pastille violette). */
+.nav-item-open {
+  color: var(--ink);
+  font-weight: 700;
+  background: transparent;
+}
+.nav-item-open:hover { background: var(--surface-low); }
+
+/* Sous-onglets (tiroir) — indentés sous le réseau déplié */
+.nav-item-sub { padding-left: 22px; font-size: 13px; }
+.sidebar-collapsed .nav-item-sub { padding-left: 8px; font-size: inherit; }
 
 .sidebar-section { margin-top: 16px; }
 
