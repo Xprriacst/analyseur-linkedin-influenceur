@@ -662,6 +662,9 @@ def generate_posts(
         "puis en t'appuyant sur les patterns observés chez les influenceurs analysés. "
         "Tu produis des STRUCTURES VARIÉES : tous les posts ne sont pas des posts viraux optimisés engagement. "
         "Chaque rôle éditorial a sa propre intention et sa propre forme — respecte-les strictement. "
+        "Le champ `corpus_insights` du benchmark contient des insights dérivés statistiquement du corpus réel "
+        "(médiane d'engagement mesurée, pas de règles génériques) : n'affirme que ce qui y est explicitement chiffré, "
+        "n'extrapole pas et ne contredis pas ces données mesurées."
         + _date_directive()
         + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
