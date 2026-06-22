@@ -1823,3 +1823,87 @@ def update_post_slack_status(post_id: str, user_id: str, status: str) -> bool:
         .execute()
     )
     return bool(resp.data)
+
+
+# ---------------------------------------------------------------------------
+# ALE-109 — Incremental analysis: global per-post classification cache
+# ---------------------------------------------------------------------------
+
+def get_post_classifications_cache(
+    handle: str, platform: str = "linkedin"
+) -> dict[str, dict]:
+    """Return {post_url: classification_json} from the global cross-user cache.
+
+    Uses admin_client (service-role) to bypass RLS — no user_id in this table.
+    Returns an empty dict when cache is unavailable or empty.
+    """
+    if not admin_enabled():
+        return {}
+    try:
+        db = admin_client()
+        resp = (
+            db.table("post_classification_cache")
+            .select("post_url, classification_json")
+            .eq("handle", handle)
+            .eq("platform", platform)
+            .execute()
+        )
+        return {row["post_url"]: row["classification_json"] for row in (resp.data or [])}
+    except Exception:
+        return {}
+
+
+def save_post_classifications_cache(
+    handle: str,
+    classifications_by_url: "dict[str, dict]",
+    platform: str = "linkedin",
+) -> None:
+    """Upsert per-post classifications into the global cache. Service-role.
+
+    `classifications_by_url` is {post_url: classification_json}.
+    """
+    if not admin_enabled() or not classifications_by_url:
+        return
+    rows = [
+        {
+            "handle": handle,
+            "platform": platform,
+            "post_url": url,
+            "classification_json": cls,
+        }
+        for url, cls in classifications_by_url.items()
+        if url
+    ]
+    if not rows:
+        return
+    try:
+        admin_client().table("post_classification_cache").upsert(
+            rows, on_conflict="handle,platform,post_url"
+        ).execute()
+    except Exception:
+        pass
+
+
+def get_cached_synthesis(handle: str, platform: str = "linkedin") -> dict | None:
+    """Return the most recent synthesis for a handle across all users. Service-role.
+
+    Used in incremental analysis when there are no new posts — avoids regenerating
+    the strategic synthesis when the corpus hasn't changed.
+    """
+    if not admin_enabled():
+        return None
+    try:
+        db = admin_client()
+        resp = (
+            db.table("analyses")
+            .select("synthesis, updated_at")
+            .eq("handle", handle)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if resp.data:
+            return resp.data[0].get("synthesis")
+    except Exception:
+        pass
+    return None
