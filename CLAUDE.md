@@ -24,6 +24,27 @@ Copier `frontend/.env.local.example` → `frontend/.env.local` et pointer `BACKE
 ### Règle changement de domaine (reminder)
 Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.py`, (2) Supabase Auth Site URL + Redirect URLs, (3) variables d'env Netlify. Ne pas marquer terminé sans avoir vérifié les 3.
 
+## Règles PR & agents (anti méga-PR)
+
+> Contexte : des agents ont produit des méga-PR multi-issues, basées sur `main`, avec base périmée et marqueurs de conflit (PR #40/#41/#42 fermées sans merge ; #37/#39 ont dû être re-portées). Ces règles évitent que ça se reproduise. Elles sont **vérifiées en CI** (`.github/workflows/pr-guardrails.yml`) et par la **branch protection** sur `main`.
+
+### Règles dures (non négociables)
+1. **1 issue = 1 branche = 1 PR.** Jamais plusieurs issues dans une même PR. Si une issue en embarque d'autres, découpe.
+2. **Brancher depuis `origin/dev` à jour** (`git fetch origin && git checkout -B <branche> origin/dev`). Jamais depuis `main`, jamais depuis une vieille base locale.
+3. **Base de la PR = `dev`. Jamais `main`.** Seule exception : la PR de release `dev → main` (faite en fin de cycle, après test sur dev).
+4. **Avant d'ouvrir la PR**, en local : `python -m py_compile api.py src/*.py` **vert**, `cd frontend && npm run build` **vert**, et **zéro marqueur de conflit** (`git grep -nE '^(<<<<<<< |>>>>>>> |=======$)'` ne renvoie rien).
+5. **Migrations Supabase** : numéro = **prochain libre** dans `supabase/migrations/` au moment du merge (le repo est à 0013 le 2026-06-22 ; 0014 = analyse Instagram, 0015/0016 = ALE-104/109). Vérifier qu'aucune autre PR ouverte n'utilise le même numéro pour éviter une collision au merge. Migrations idempotentes (`IF NOT EXISTS`).
+6. **Vérifier qu'aucune PR/branche n'existe déjà** pour l'issue avant d'en créer une (`gh pr list`, `git branch -a`).
+7. **Périmètre** : ne traiter que les issues `Backlog`/`Todo`. Ignorer `Done`/`In Review`/`Cancelled`/`Duplicate` et les labels « manque d'info » / « à arbitrer ».
+8. **Mettre l'issue Linear à jour** (statut `In Review` + lien de la PR) une fois la PR ouverte.
+
+### Prompt agent corrigé (à donner aux agents qui ouvrent des PR)
+> Tu traites **une seule** issue. (1) `git fetch origin` puis branche depuis **`origin/dev` à jour** ; (2) **base de la PR = `dev`, jamais `main`** ; (3) vérifie qu'aucune PR/branche n'existe déjà pour cette issue ; (4) ne prends que les issues en **Backlog/Todo** (ignore Done/In Review/Cancelled/Duplicate + labels « manque d'info » / « à arbitrer ») ; (5) migrations Supabase numérotées au **prochain numéro libre**, idempotentes ; (6) avant d'ouvrir : `py_compile` + `npm run build` **verts** et **zéro marqueur de conflit** ; (7) une PR ne couvre **qu'une issue** ; (8) mets l'issue à jour (In Review + lien PR).
+
+### CI & protection
+- **`.github/workflows/pr-guardrails.yml`** (sur chaque PR) : échoue si marqueurs de conflit présents, ou si la base est `main` sans venir de `dev`.
+- **Branch protection `main`** : PR obligatoire + check `guardrails` requis + pas de push direct. `main` ne se met à jour que par release `dev → main`.
+
 ## Tests E2E (non-régression)
 Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netlify/Render). Tourne contre le **site dev déployé**, en **lecture seule** (aucune génération → zéro coût Anthropic/Apify).
 - **Lancer** : `cd e2e && npm install && npx playwright install chromium && npx playwright test`. Détails dans `e2e/README.md`.
