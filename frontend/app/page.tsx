@@ -1896,10 +1896,11 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
 
   async function generateFromTopic(t: string) {
     setError("");
-    if (!t.trim()) { setError("Entre un sujet pour le post."); return; }
     setLoadingPosts(true);
     try {
-      const body: { topic: string; editorial_role?: string; web_search?: boolean; count?: number } = { topic: t.trim(), count: variantCount };
+      // Sujet optionnel : sans sujet, le backend choisit lui-même un angle (idée = post).
+      const body: { topic?: string; editorial_role?: string; web_search?: boolean; count?: number } = { count: variantCount };
+      if (t.trim()) body.topic = t.trim();
       if (role !== "auto") body.editorial_role = role;
       if (webSearch) body.web_search = true;
       const res = await fetch(`${DIRECT_API_URL}/generate`, {
@@ -1948,14 +1949,14 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
 
       {/* Post generation */}
       <div className="gen-section">
-        <h2 className="section-title"><PenTool size={20} /> Générer des posts</h2>
+        <h2 className="section-title"><PenTool size={20} /> Générer des idées de posts</h2>
         <div className="gen-form">
           <div className="url-input">
             <PenTool size={16} color="var(--primary)" />
             <input
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              placeholder="Sujet du post : ex. les 5 erreurs avec Claude AI…"
+              placeholder="Sujet du post (optionnel) : ex. les 5 erreurs avec Claude AI…"
               onKeyDown={(e) => e.key === "Enter" && generateFromTopic(topic)}
             />
             <button className="primary-button" disabled={loadingPosts} onClick={() => generateFromTopic(topic)}>
@@ -1970,6 +1971,9 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
+            <span className="role-picker-hint">
+              Sujet optionnel : laisse vide et Claude propose lui-même des idées de posts à fort potentiel.
+            </span>
             <span className="role-picker-hint">
               {role === "auto"
                 ? "Mix automatique : performance + méthodologie/autorité + relationnel/quotidien."
