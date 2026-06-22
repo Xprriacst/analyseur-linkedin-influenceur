@@ -434,6 +434,10 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
 
+  // ALE-114 : la Veille LinkedIn ne doit afficher que les séries LinkedIn
+  // (les jobs sans `platform` = anciens jobs = LinkedIn).
+  const lkJobs = jobs.filter((j) => (j.platform ?? "linkedin") !== "instagram");
+
   const urlList = parseUrls(urls);
 
   async function submit() {
@@ -569,14 +573,14 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
         </div>
       ) : loading ? (
         <p style={{ color: "var(--muted)" }}>Chargement des séries…</p>
-      ) : jobs.length === 0 ? (
+      ) : lkJobs.length === 0 ? (
         <div className="report-card" style={{ maxWidth: 720 }}>
           <div className="report-icon"><Activity size={13} /></div>
           <div><strong>Aucune série pour l'instant</strong><span>Colle des profils ci-dessus pour lancer ton premier backlog.</span></div>
         </div>
       ) : (
         <div className="jobs-list">
-          {jobs.map((job) => {
+          {lkJobs.map((job) => {
             const active = jobIsActive(job);
             const date = new Date(job.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
             return (
@@ -905,7 +909,7 @@ function Sidebar({
   reportsLoading,
   view,
   isAuthed,
-  jobBadge,
+  jobBadges,
   credits,
   platform,
   onNavigate,
@@ -918,7 +922,7 @@ function Sidebar({
   reportsLoading: boolean;
   view: MainView;
   isAuthed: boolean;
-  jobBadge: { completed: number; total: number } | null;
+  jobBadges: { linkedin: { completed: number; total: number } | null; instagram: { completed: number; total: number } | null };
   credits: number | null;
   platform: Platform;
   onNavigate: (v: MainView) => void;
@@ -996,7 +1000,8 @@ function Sidebar({
                     </button>
                     {expanded && subTabs.map((tab) => {
                       const locked = !!tab.premium && !isAuthed;
-                      const showBadge = net.key === "linkedin" && tab.key === "analyze" && jobBadge;
+                      const badge = jobBadges[net.key];
+                      const showBadge = tab.key === "analyze" && badge;
                       return (
                         <button
                           key={tab.key}
@@ -1012,8 +1017,8 @@ function Sidebar({
                         >
                           {tab.icon}
                           {!collapsed && <span>{tab.label}</span>}
-                          {!collapsed && showBadge ? (
-                            <span className="nav-job-badge"><Loader2 size={11} className="spinning" />{jobBadge.completed}/{jobBadge.total}</span>
+                          {!collapsed && showBadge && badge ? (
+                            <span className="nav-job-badge"><Loader2 size={11} className="spinning" />{badge.completed}/{badge.total}</span>
                           ) : null}
                           {collapsed && showBadge ? (
                             <span className="nav-job-badge nav-job-badge-dot"><Loader2 size={11} className="spinning" /></span>
@@ -4203,6 +4208,10 @@ export default function Home() {
 
   const activeJob = jobs.find(jobIsActive) ?? null;
   const anyJobActive = !!activeJob;
+  // ALE-114 : badge de progression par réseau (un job Instagram ne doit pas
+  // s'afficher sur la Veille LinkedIn et inversement ; platform absent = linkedin).
+  const activeLkJob = jobs.find((j) => jobIsActive(j) && (j.platform ?? "linkedin") !== "instagram") ?? null;
+  const activeIgJob = jobs.find((j) => jobIsActive(j) && j.platform === "instagram") ?? null;
 
   // Rapports : rechargés à la connexion ET à chaque refresh de token.
   // Sinon, si le token stocké est expiré au chargement, /reports renvoie 401,
@@ -4427,7 +4436,10 @@ export default function Home() {
           reportsLoading={reportsLoading}
           view={view}
           isAuthed={isAuthed}
-          jobBadge={activeJob ? { completed: activeJob.completed, total: activeJob.total } : null}
+          jobBadges={{
+            linkedin: activeLkJob ? { completed: activeLkJob.completed, total: activeLkJob.total } : null,
+            instagram: activeIgJob ? { completed: activeIgJob.completed, total: activeIgJob.total } : null,
+          }}
           credits={credits}
           platform={platform}
           onNavigate={(v) => {
