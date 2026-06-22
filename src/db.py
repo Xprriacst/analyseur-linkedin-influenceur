@@ -91,11 +91,12 @@ def get_user(access_token: str) -> dict | None:
     return {"id": user.id, "email": getattr(user, "email", None)}
 
 
-def _influencer_row(user_id: str, result: dict) -> dict:
+def _influencer_row(user_id: str, result: dict, platform: str = "linkedin") -> dict:
     profile = result.get("profile", {}) or {}
     return {
         "user_id": user_id,
         "handle": result["handle"],
+        "platform": platform,
         "name": profile.get("name"),
         "headline": profile.get("headline"),
         "summary": profile.get("summary"),
@@ -109,12 +110,13 @@ def _influencer_row(user_id: str, result: dict) -> dict:
     }
 
 
-def _post_rows(influencer_id: str, posts: list[dict]) -> list[dict]:
+def _post_rows(influencer_id: str, posts: list[dict], platform: str = "linkedin") -> list[dict]:
     rows = []
     for p in posts:
         date = p.get("date")
-        rows.append({
+        row: dict = {
             "influencer_id": influencer_id,
+            "platform": platform,
             "url": p.get("url"),
             "text": p.get("text"),
             "posted_at": date.isoformat() if hasattr(date, "isoformat") else date,
@@ -126,7 +128,25 @@ def _post_rows(influencer_id: str, posts: list[dict]) -> list[dict]:
             "engagement": int(p.get("engagement", 0) or 0),
             "length_chars": int(p.get("length_chars", 0) or 0),
             "length_words": int(p.get("length_words", 0) or 0),
-        })
+        }
+        # Instagram-specific columns (ignored for LinkedIn rows by Postgres if columns absent)
+        if platform == "instagram":
+            views = p.get("views")
+            if views is not None:
+                row["views"] = int(views)
+            video_dur = p.get("video_duration_s")
+            if video_dur is not None:
+                row["video_duration_s"] = float(video_dur)
+            transcript = p.get("transcript")
+            if transcript:
+                row["transcript"] = transcript
+            hashtags = p.get("hashtags")
+            if hashtags is not None:
+                row["hashtags"] = hashtags
+            music = p.get("music")
+            if music is not None:
+                row["music"] = music
+        rows.append(row)
     return rows
 
 
@@ -143,13 +163,23 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
     db = client_for_token(access_token)
     user_id = user["id"]
 
-    # upsert influencer (unique on user_id + handle)
-    inf_row = _influencer_row(user_id, result)
-    inf_resp = (
-        db.table("influencers")
-        .upsert(inf_row, on_conflict="user_id,handle")
-        .execute()
-    )
+    platform = result.get("platform") or "linkedin"
+
+    # upsert influencer — try new constraint (user_id, handle, platform) first,
+    # fall back to old (user_id, handle) for legacy DB without migration 0015.
+    inf_row = _influencer_row(user_id, result, platform=platform)
+    try:
+        inf_resp = (
+            db.table("influencers")
+            .upsert(inf_row, on_conflict="user_id,handle,platform")
+            .execute()
+        )
+    except Exception:
+        inf_resp = (
+            db.table("influencers")
+            .upsert(inf_row, on_conflict="user_id,handle")
+            .execute()
+        )
     if not inf_resp.data:
         return None
     influencer_id = inf_resp.data[0]["id"]
@@ -157,7 +187,7 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
     # replace posts
     posts = result.get("posts", []) or []
     db.table("posts").delete().eq("influencer_id", influencer_id).execute()
-    rows = _post_rows(influencer_id, posts)
+    rows = _post_rows(influencer_id, posts, platform=platform)
     if rows:
         db.table("posts").insert(rows).execute()
 
@@ -790,34 +820,50 @@ def create_job(
     limit_posts: int,
     run_llm: bool,
     use_cache: bool,
+    platform: str = "linkedin",
 ) -> dict | None:
     """Crée une série (job) + ses items (un par URL). Retourne le job complet."""
     user = get_user(access_token)
     if not user:
         return None
     db = client_for_token(access_token)
+    job_row: dict = {
+        "user_id": user["id"],
+        "status": "queued",
+        "total": len(urls),
+        "limit_posts": limit_posts,
+        "run_llm": run_llm,
+        "use_cache": use_cache,
+    }
+    # Store platform if the column exists (migration 0015); ignored otherwise.
+    if platform != "linkedin":
+        job_row["platform"] = platform
     job_resp = (
         db.table("analysis_jobs")
-        .insert({
-            "user_id": user["id"],
-            "status": "queued",
-            "total": len(urls),
-            "limit_posts": limit_posts,
-            "run_llm": run_llm,
-            "use_cache": use_cache,
-        })
+        .insert(job_row)
         .execute()
     )
     if not job_resp.data:
         return None
     job = job_resp.data[0]
+
+    def _handle_from_raw(url: str) -> str | None:
+        """Extract handle from either LinkedIn or Instagram URL."""
+        if platform == "instagram":
+            try:
+                from src.scraper_instagram import extract_ig_handle
+                return extract_ig_handle(url)
+            except Exception:
+                pass
+        return _handle_from_url(url)
+
     items = [
         {
             "job_id": job["id"],
             "user_id": user["id"],
             "position": i,
             "url": url,
-            "handle": _handle_from_url(url),
+            "handle": _handle_from_raw(url),
             "status": "pending",
         }
         for i, url in enumerate(urls)

@@ -1422,6 +1422,7 @@ class JobRequest(BaseModel):
     limit: int = Field(default=25, ge=10, le=50)
     use_cache: bool = True
     run_llm: bool = True
+    platform: str = "linkedin"
 
 
 def _clean_urls(raw: list[str]) -> list[str]:
@@ -1441,6 +1442,26 @@ def _clean_urls(raw: list[str]) -> list[str]:
     return out
 
 
+def _clean_ig_urls(raw: list[str]) -> list[str]:
+    """Normalise les handles/URLs Instagram en URLs canoniques, déduplique."""
+    from src.scraper_instagram import extract_ig_handle
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        raw_item = (item or "").strip()
+        if not raw_item:
+            continue
+        handle = extract_ig_handle(raw_item)
+        if not handle:
+            continue
+        key = handle.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(f"https://www.instagram.com/{handle}/")
+    return out
+
+
 @app.post("/jobs")
 def create_job(payload: JobRequest, token: str = Depends(require_token)) -> dict[str, Any]:
     """Crée une série d'analyses (backlog) traitée en fond, profil par profil."""
@@ -1449,12 +1470,19 @@ def create_job(payload: JobRequest, token: str = Depends(require_token)) -> dict
     if payload.run_llm and not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    urls = _clean_urls(payload.profile_urls)
-    if not urls:
-        raise HTTPException(status_code=400, detail="Aucune URL de profil LinkedIn valide.")
+    platform = payload.platform or "linkedin"
+
+    if platform == "instagram":
+        urls = _clean_ig_urls(payload.profile_urls)
+        if not urls:
+            raise HTTPException(status_code=400, detail="Aucun handle Instagram valide.")
+    else:
+        urls = _clean_urls(payload.profile_urls)
+        if not urls:
+            raise HTTPException(status_code=400, detail="Aucune URL de profil LinkedIn valide.")
 
     try:
-        job = db.create_job(token, urls, payload.limit, payload.run_llm, payload.use_cache)
+        job = db.create_job(token, urls, payload.limit, payload.run_llm, payload.use_cache, platform=platform)
     except Exception as exc:
         raise HTTPException(
             status_code=500,
