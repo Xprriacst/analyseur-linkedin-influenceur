@@ -1,0 +1,48 @@
+name: PR guardrails
+
+# Garde-fous anti méga-PR (voir CLAUDE.md › « Règles PR & agents »).
+# 1. Aucune PR ne doit contenir de marqueur de conflit Git non résolu.
+# 2. Les features ciblent `dev`. Seule une PR `dev → main` est autorisée vers `main`
+#    (release). Toute autre PR vers `main` est bloquée.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Base branch must be dev (sauf release dev → main)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          echo "PR: $HEAD_REF → $BASE_REF"
+          if [ "$BASE_REF" = "main" ] && [ "$HEAD_REF" != "dev" ]; then
+            echo "::error::Les PR vers 'main' ne sont autorisées que depuis 'dev' (release). Pour une feature, cible 'dev'."
+            exit 1
+          fi
+          if [ "$BASE_REF" != "dev" ] && [ "$BASE_REF" != "main" ]; then
+            echo "::error::Base inattendue '$BASE_REF'. Une feature doit cibler 'dev'."
+            exit 1
+          fi
+          echo "Base OK."
+
+      - name: No unresolved conflict markers
+        run: |
+          # Marqueurs de conflit Git stricts : '<<<<<<< ', '=======' (ligne seule), '>>>>>>> '.
+          # On exclut ce dossier de workflows (qui mentionne les marqueurs en texte).
+          if git grep -nE '^(<<<<<<< |>>>>>>> |=======$)' -- . ':(exclude).github/workflows/' ; then
+            echo "::error::Marqueur(s) de conflit détecté(s) ci-dessus. Résous le merge avant de merger."
+            exit 1
+          fi
+          echo "Aucun marqueur de conflit."
