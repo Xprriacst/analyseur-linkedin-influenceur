@@ -182,7 +182,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "assistant", "content"] as const;
+const mainViews = ["analyze", "profile", "assistant", "content", "progress"] as const;
 type MainView = typeof mainViews[number];
 
 type Platform = "linkedin" | "instagram";
@@ -1045,6 +1045,26 @@ function Sidebar({
                   </button>
                 );
               })()}
+              {(() => {
+                const locked = !isAuthed;
+                return (
+                  <button
+                    className={`nav-item ${view === "progress" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                    title={collapsed ? "Tableau de bord" : undefined}
+                    onClick={() => {
+                      if (locked) {
+                        requireAuth("Crée un compte gratuit pour accéder au tableau de bord.");
+                        return;
+                      }
+                      onNavigate("progress");
+                    }}
+                  >
+                    <Activity size={14} />
+                    {!collapsed && <span>Tableau de bord</span>}
+                    {locked ? <Lock size={12} className="lock-ico" /> : null}
+                  </button>
+                );
+              })()}
             </div>
           </section>
         );
@@ -1377,6 +1397,7 @@ function TopHeader({
     profile: "Mon profil éditorial",
     assistant: "Agent IA",
     content: "Contenu",
+    progress: "Tableau de bord",
   };
 
   return (
@@ -1751,6 +1772,51 @@ function useLinkedIn(isAuthed: boolean) {
   return { status, busy, error, connect };
 }
 
+type XStatus = {
+  configured: boolean;
+  connected: boolean;
+  account_id?: string | null;
+  connected_at?: string | null;
+};
+
+/** Statut de connexion X/Twitter (via Zernio) + lancement du flux OAuth. */
+function useX(isAuthed: boolean) {
+  const [status, setStatus] = useState<XStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) { setStatus(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/x/status`, { headers: await authHeaders() });
+        if (res.ok) setStatus(await res.json());
+      } catch { /* ignore */ }
+    })();
+  }, [isAuthed]);
+
+  async function connect() {
+    setError("");
+    setBusy(true);
+    try {
+      const redirect = `${window.location.origin}${window.location.pathname}?x=connected`;
+      const res = await fetch(`${DIRECT_API_URL}/me/x/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ redirect_url: redirect }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion X impossible");
+      window.location.href = data.auth_url;
+    } catch (err: any) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  return { status, busy, error, connect };
+}
+
 type SlackStatus = {
   connected: boolean;
   configured: boolean;
@@ -1823,13 +1889,17 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
   const linkedin = useLinkedIn(isAuthed);
+  const x = useX(isAuthed);
   const slack = useSlack(isAuthed);
   const [slackSent, setSlackSent] = useState<Record<number, boolean>>({});
   const [slackSending, setSlackSending] = useState<Record<number, boolean>>({});
   const [publishing, setPublishing] = useState<number | null>(null);
   const [published, setPublished] = useState<number | null>(null);
+  const [publishedX, setPublishedX] = useState<number | null>(null);
+  const [draftedX, setDraftedX] = useState<number | null>(null);
   const [drafted, setDrafted] = useState<number | null>(null);
   const [confirmIndex, setConfirmIndex] = useState<number | null>(null);
+  const [confirmXIndex, setConfirmXIndex] = useState<number | null>(null);
   const [publishError, setPublishError] = useState("");
   const [variantImages, setVariantImages] = useState<Record<number, string>>({});
   const [generatingImage, setGeneratingImage] = useState<number | null>(null);
@@ -1923,6 +1993,42 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       setScheduleError(err.message);
     } finally {
       setScheduling(false);
+    }
+  }
+
+
+  function publishVariantX(i: number, text: string, draft: boolean = false) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour publier sur X."); return; }
+    if (!x.status?.connected) {
+      setPublishError("Connecte d'abord ton compte X dans l'onglet Profil.");
+      return;
+    }
+    if (!draft) {
+      setConfirmXIndex(i);
+      return;
+    }
+    void doPublishX(i, text, true);
+  }
+
+  async function doPublishX(i: number, text: string, draft: boolean = false) {
+    setPublishError("");
+    setPublishedX(null);
+    setDraftedX(null);
+    setPublishing(i);
+    setConfirmXIndex(null);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/x/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, draft }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon X impossible" : "Publication sur X impossible"));
+      if (draft) setDraftedX(i); else setPublishedX(i);
+    } catch (err: any) {
+      setPublishError(err.message);
+    } finally {
+      setPublishing(null);
     }
   }
 
@@ -2193,8 +2299,8 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
                     onClick={() => publishVariant(i, editedVariants[i] ?? v.post)}
                   >
-                    {publishing === i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
-                    {publishing === i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
+                    {publishing === i && published !== i && publishedX !== i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+                    {publishing === i && published !== i && publishedX !== i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
                   </button>
                   <button
                     className="secondary-button"
@@ -2205,6 +2311,17 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     {publishing === i && drafted !== i ? <Loader2 size={14} className="spinning" /> : <FileText size={14} />}
                     {drafted === i ? "Brouillon ✓" : "Enregistrer en brouillon"}
                   </button>
+                  {x.status?.connected && (
+                    <button
+                      className="secondary-button"
+                      disabled={publishing === i}
+                      title="Publier maintenant sur X (Twitter)"
+                      onClick={() => publishVariantX(i, editedVariants[i] ?? v.post)}
+                    >
+                      {publishing === i && publishedX !== i ? <Loader2 size={14} className="spinning" /> : <span style={{ fontWeight: 700, fontSize: 13 }}>𝕏</span>}
+                      {publishedX === i ? "Publié sur X ✓" : "Publier sur X"}
+                    </button>
+                  )}
                   <button
                     className="secondary-button"
                     disabled={publishing === i || scheduling}
@@ -2231,6 +2348,12 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 )}
                 {scheduledIndices[i] && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post programmé ✓ — visible dans l&apos;onglet Profil.</p>
+                )}
+                {publishedX === i && (
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur X ✓</p>
+                )}
+                {draftedX === i && (
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré sur X ✓</p>
                 )}
                 {variantImages[i] && (
                   <div style={{ marginTop: 12 }}>
@@ -2327,10 +2450,190 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
           </div>
         </div>
       )}
+
+      {confirmXIndex !== null && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Publier ce post sur X (Twitter) ?</h3>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+              Le post sera publié <strong>immédiatement</strong> sur ton compte X.
+            </p>
+            <textarea
+              readOnly
+              value={editedVariants[confirmXIndex] ?? variants[confirmXIndex]?.post ?? ""}
+              rows={8}
+              className="variant-text"
+              style={{ width: "100%", boxSizing: "border-box", marginBottom: 16 }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="secondary-button" onClick={() => setConfirmXIndex(null)}>
+                Annuler
+              </button>
+              <button
+                className="primary-button"
+                disabled={publishing !== null}
+                onClick={() => doPublishX(confirmXIndex, editedVariants[confirmXIndex] ?? variants[confirmXIndex]?.post ?? "")}
+              >
+                {publishing !== null
+                  ? <><Loader2 size={14} className="spinning" /> Publication…</>
+                  : <><span style={{ fontWeight: 700 }}>𝕏</span> Confirmer la publication</>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {scheduleError && !scheduleModal && <div className="error" style={{ marginTop: 12 }}>{scheduleError}</div>}
     </div>
   );
 }
+
+// ── ALE-69 : Dashboard de progression ────────────────────────────────────────
+
+type ProgressData = {
+  corpus: { influencer_count: number; analysis_count: number; last_analysis_at: string | null; active_jobs: number; done_jobs: number };
+  content: { ideas_count: number; posts_count: number };
+  publishing: { linkedin_connected: boolean; x_connected: boolean; slack_connected: boolean };
+  profile: { filled: boolean; has_linkedin_url: boolean };
+  credits: { balance: number };
+  next_action: string;
+};
+
+function ProgressStep({ done, label }: { done: boolean; label: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
+      <span style={{ width: 20, height: 20, borderRadius: "50%", background: done ? "var(--primary)" : "var(--border)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        {done ? <CheckCircle2 size={12} color="#fff" /> : <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--muted)", display: "block" }} />}
+      </span>
+      <span style={{ fontSize: 13, color: done ? "var(--fg)" : "var(--muted)" }}>{label}</span>
+    </div>
+  );
+}
+
+function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
+  const [data, setData] = useState<ProgressData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function load() {
+    if (!isAuthed) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/dashboard/progress`, { headers: await authHeaders() });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.detail || "Impossible de charger la progression");
+      setData(json);
+    } catch (err: any) {
+      setError(err.message || "Chargement impossible");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAuthed) void load();
+    else setData(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Activity size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Tableau de bord</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>Connecte-toi pour voir ton avancement.</p>
+        <button type="button" className="primary-button" onClick={() => requireAuth()}>Se connecter</button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><Activity size={20} /> Tableau de bord</h2>
+          <p className="section-desc">Ton avancement global sur Cibl.</p>
+        </div>
+        <button className="secondary-button" onClick={load} disabled={loading}>
+          {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+          Rafraîchir
+        </button>
+      </div>
+
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {loading && !data && (
+        <div className="card" style={{ padding: 32, textAlign: "center" }}>
+          <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
+        </div>
+      )}
+
+      {data && (
+        <>
+          {/* Prochaine action recommandée */}
+          <div className="card" style={{ marginBottom: 16, borderLeft: "3px solid var(--primary)", background: "var(--surface2)" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+              <Zap size={18} style={{ color: "var(--primary)", flexShrink: 0, marginTop: 2 }} />
+              <div>
+                <p style={{ margin: 0, fontWeight: 600, fontSize: 14 }}>Prochaine action</p>
+                <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--muted)" }}>{data.next_action}</p>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12, marginBottom: 16 }}>
+            <div className="card" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: "var(--primary)" }}>{data.corpus.influencer_count}</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Influenceurs analysés</div>
+            </div>
+            <div className="card" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: "var(--primary)" }}>{data.content.ideas_count}</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Idées générées</div>
+            </div>
+            <div className="card" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: "var(--primary)" }}>{data.content.posts_count}</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Posts générés</div>
+            </div>
+            <div className="card" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: data.credits.balance <= 5 ? "var(--error)" : "var(--primary)" }}>
+                {data.credits.balance}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Crédits restants</div>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div className="card">
+              <p style={{ margin: "0 0 12px", fontWeight: 600, fontSize: 14 }}>Configuration</p>
+              <ProgressStep done={data.profile.filled} label="Profil éditorial rempli" />
+              <ProgressStep done={data.profile.has_linkedin_url} label="URL LinkedIn renseignée" />
+              <ProgressStep done={data.corpus.influencer_count > 0} label="Au moins 1 influenceur analysé" />
+            </div>
+            <div className="card">
+              <p style={{ margin: "0 0 12px", fontWeight: 600, fontSize: 14 }}>Publication</p>
+              <ProgressStep done={data.publishing.linkedin_connected} label="LinkedIn connecté (Zernio)" />
+              <ProgressStep done={data.publishing.x_connected} label="X (Twitter) connecté" />
+              <ProgressStep done={data.publishing.slack_connected} label="Slack connecté" />
+            </div>
+          </div>
+
+          {data.corpus.active_jobs > 0 && (
+            <div className="auth-info" style={{ marginTop: 12 }}>
+              <Loader2 size={14} className="spinning" style={{ verticalAlign: "-2px", marginRight: 6 }} />
+              {data.corpus.active_jobs} analyse(s) en cours dans la queue.
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Fin ALE-69 ────────────────────────────────────────────────────────────────
 
 type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string };
 type IdeaSeed = { id: string; text: string; used_at?: string | null; created_at?: string };
@@ -2446,9 +2749,6 @@ function DailyIdeasView({
     );
   }
 
-  const latest = ideas[0];
-  const history = ideas.slice(1);
-
   return (
     <div>
       <div className="section-header">
@@ -2464,12 +2764,7 @@ function DailyIdeasView({
 
       {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {latest ? (
-        <div className="card daily-hero">
-          <div className="daily-hero-date">{fmtDate(latest.idea_date)}</div>
-          <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{latest.idea_markdown}</ReactMarkdown></div>
-        </div>
-      ) : (
+      {ideas.length === 0 ? (
         <div className="card" style={{ padding: 28, textAlign: "center", color: "var(--muted)" }}>
           {loading ? (
             <><Loader2 size={20} className="spinning" style={{ opacity: 0.45 }} /><p>Chargement…</p></>
@@ -2480,19 +2775,14 @@ function DailyIdeasView({
             </p>
           )}
         </div>
-      )}
-
-      {history.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <h3 className="daily-subtitle">Jours précédents</h3>
-          <div className="daily-history">
-            {history.map((it) => (
-              <details key={it.id} className="card daily-history-item">
-                <summary>{fmtDate(it.idea_date)}</summary>
-                <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{it.idea_markdown}</ReactMarkdown></div>
-              </details>
-            ))}
-          </div>
+      ) : (
+        <div className="daily-history" style={{ marginBottom: 20 }}>
+          {ideas.map((it, idx) => (
+            <details key={it.id} className="card daily-history-item" open={idx === 0}>
+              <summary>{fmtDate(it.idea_date)}{idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}</summary>
+              <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{it.idea_markdown}</ReactMarkdown></div>
+            </details>
+          ))}
         </div>
       )}
 
@@ -3094,6 +3384,7 @@ function ProfileView({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [draftInfo, setDraftInfo] = useState("");
   const linkedin = useLinkedIn(isAuthed);
+  const xAccount = useX(isAuthed);
   const slack = useSlack(isAuthed);
   const [scheduledPosts, setScheduledPosts] = useState<Array<{ id: string; post_text: string; scheduled_at: string; status: string; error_message?: string }>>([]);
   const [cancellingPost, setCancellingPost] = useState<string | null>(null);
@@ -3381,6 +3672,29 @@ function ProfileView({
           </div>
         </section>
       )}
+
+      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontWeight: 900, fontSize: 18, lineHeight: 1, width: 20, textAlign: "center" }}>𝕏</span>
+          <div>
+            <strong>Publier sur X (Twitter)</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              {xAccount.status?.connected
+                ? "Compte X connecté — tes posts générés peuvent être publiés directement sur X."
+                : "Connecte ton compte X pour publier tes posts sur X (Twitter) en un clic."}
+            </p>
+          </div>
+        </div>
+        {xAccount.status?.connected ? (
+          <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+        ) : (
+          <button className="primary-button" onClick={xAccount.connect} disabled={xAccount.busy}>
+            {xAccount.busy ? <Loader2 size={14} className="spinning" /> : <span style={{ fontWeight: 900 }}>𝕏</span>}
+            {xAccount.busy ? "Redirection…" : "Connecter X"}
+          </button>
+        )}
+      </section>
+      {xAccount.error ? <div className="error" style={{ marginBottom: 12 }}>{xAccount.error}</div> : null}
 
       <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -4289,6 +4603,22 @@ export default function Home() {
     })();
   }, [isAuthed]);
 
+  // Retour du flux OAuth X (Zernio) : relit le compte connecté et bascule sur Profil.
+  useEffect(() => {
+    if (!isAuthed) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("x") !== "connected") return;
+    (async () => {
+      try {
+        await fetch(`${DIRECT_API_URL}/me/x/refresh`, { method: "POST", headers: await authHeaders() });
+      } catch { /* ignore */ }
+      params.delete("x");
+      const qs = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+      setView("profile");
+    })();
+  }, [isAuthed]);
+
   // Retour du flux OAuth Slack : le code arrive en query param.
   // On vérifie sessionStorage pour distinguer des autres OAuth éventuels.
   useEffect(() => {
@@ -4407,9 +4737,11 @@ export default function Home() {
           onSignOut={() => supabase.auth.signOut()}
         />
         <main className="main">
-          {/* Agent IA et Profil sont indépendants du réseau (niveau 1 / Réglages) */}
+          {/* Agent IA, Profil et Tableau de bord sont indépendants du réseau */}
           {view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />
+          ) : view === "progress" ? (
+            <ProgressView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : view === "profile" ? (
             <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : platform === "instagram" ? (
