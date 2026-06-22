@@ -225,6 +225,89 @@ def update_idea_message(
     )
 
 
+def send_post_for_validation(
+    bot_token: str,
+    channel_id: str,
+    post: dict,
+) -> str:
+    """Post a generated post to Slack DM with ✅ / ❌ buttons for validation.
+
+    Returns the message timestamp (ts) for future updates.
+    """
+    post_id = post.get("id", "")
+    text = post.get("post") or ""
+    topic = post.get("topic") or ""
+
+    preview = text[:300] + ("…" if len(text) > 300 else "")
+
+    header = f"*{topic}*" if topic else "*Post généré*"
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"{header}\n> {preview}"},
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": "validate_post",
+                    "value": post_id,
+                    "text": {"type": "plain_text", "text": "✅ Valider", "emoji": True},
+                    "style": "primary",
+                },
+                {
+                    "type": "button",
+                    "action_id": "reject_post",
+                    "value": post_id,
+                    "text": {"type": "plain_text", "text": "❌ Rejeter", "emoji": True},
+                    "style": "danger",
+                },
+            ],
+        },
+    ]
+
+    data = _api_call(
+        "chat.postMessage",
+        bot_token,
+        channel=channel_id,
+        text=header,
+        blocks=blocks,
+    )
+    return data["ts"]
+
+
+def update_post_message(
+    bot_token: str,
+    channel_id: str,
+    ts: str,
+    post: dict,
+    status: str,
+) -> None:
+    """Replace the buttons with a status badge after a user validates or rejects a post."""
+    topic = post.get("topic") or ""
+    text = post.get("post") or ""
+    preview = text[:300] + ("…" if len(text) > 300 else "")
+
+    badge = "✅ Validé — prêt à publier" if status == "validated" else "❌ Rejeté"
+    header = f"*{topic}*" if topic else "*Post généré*"
+
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"{header}\n> {preview}\n{badge}"},
+        }
+    ]
+    _api_call(
+        "chat.update",
+        bot_token,
+        channel=channel_id,
+        ts=ts,
+        text=header,
+        blocks=blocks,
+    )
+
+
 def verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
     """Verify a Slack request signature to prevent webhook spoofing.
 
