@@ -90,6 +90,7 @@ type Idea = {
   slack_status?: string | null;
 };
 type Variant = {
+  id?: string;
   editorial_role?: string;
   hook_type: string;
   strategy: string;
@@ -106,6 +107,7 @@ type SavedPost = {
   predicted_lift?: string;
   post: string;
   created_at?: string;
+  slack_status?: string | null;
 };
 type ChatConversation = {
   id: string;
@@ -180,7 +182,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "assistant", "content"] as const;
+const mainViews = ["analyze", "profile", "assistant", "content", "progress"] as const;
 type MainView = typeof mainViews[number];
 
 type Platform = "linkedin" | "instagram";
@@ -1043,6 +1045,26 @@ function Sidebar({
                   </button>
                 );
               })()}
+              {(() => {
+                const locked = !isAuthed;
+                return (
+                  <button
+                    className={`nav-item ${view === "progress" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                    title={collapsed ? "Tableau de bord" : undefined}
+                    onClick={() => {
+                      if (locked) {
+                        requireAuth("Crée un compte gratuit pour accéder au tableau de bord.");
+                        return;
+                      }
+                      onNavigate("progress");
+                    }}
+                  >
+                    <Activity size={14} />
+                    {!collapsed && <span>Tableau de bord</span>}
+                    {locked ? <Lock size={12} className="lock-ico" /> : null}
+                  </button>
+                );
+              })()}
             </div>
           </section>
         );
@@ -1169,10 +1191,6 @@ function InstagramGenerator({
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 }) {
-  const [ideas, setIdeas] = useState<Idea[]>([]);
-  const [loadingIdeas, setLoadingIdeas] = useState(false);
-  const [webSearch, setWebSearch] = useState(false);
-
   const [hooks, setHooks] = useState<string[]>([]);
   const [topic, setTopic] = useState("");
   const [hookCount, setHookCount] = useState(8);
@@ -1180,32 +1198,6 @@ function InstagramGenerator({
   const [copiedHook, setCopiedHook] = useState<number | null>(null);
 
   const [error, setError] = useState("");
-
-  const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
-
-  async function fetchIdeas() {
-    if (!isAuthed) {
-      requireAuth("Crée un compte gratuit pour générer des idées de posts Instagram.");
-      return;
-    }
-    setError("");
-    setLoadingIdeas(true);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/ideas`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ count: 5, web_search: webSearch }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Échec de la génération d'idées");
-      emitCredits(data.credits);
-      setIdeas(data.ideas || []);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoadingIdeas(false);
-    }
-  }
 
   async function generateHooks(t: string) {
     if (!isAuthed) {
@@ -1240,53 +1232,7 @@ function InstagramGenerator({
 
   return (
     <div>
-      {/* Idées — même structure que LinkedIn */}
-      <div className="section-header">
-        <div>
-          <h2 className="section-title"><Lightbulb size={20} /> Idées de posts</h2>
-          <p className="section-desc">Claude analyse ton profil et propose des idées de contenu Instagram à fort potentiel.</p>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={webSearch}
-              onChange={(e) => setWebSearch(e.target.checked)}
-              style={{ accentColor: "var(--accent)", width: 14, height: 14 }}
-            />
-            Recherche web
-          </label>
-          <button className="secondary-button" onClick={fetchIdeas} disabled={loadingIdeas}>
-            {loadingIdeas ? <Loader2 size={14} className="spinning" /> : <Lightbulb size={14} />}
-            {loadingIdeas ? "Génération…" : "Générer des idées"}
-          </button>
-        </div>
-      </div>
-
       {error && <div className="error">{error}</div>}
-
-      {ideas.length > 0 && (
-        <div className="ideas-grid">
-          {ideas.map((idea, i) => (
-            <div className="idea-card" key={i}>
-              <div className="idea-header">
-                <span className="idea-funnel" style={{ borderColor: funnelColors[idea.funnel] || "var(--border)", color: funnelColors[idea.funnel] || "var(--muted)" }}>
-                  {idea.funnel}
-                </span>
-                <span className="badge">{idea.hook_type}</span>
-                <span className="idea-lift">{idea.estimated_lift}</span>
-              </div>
-              <h3 className="idea-title">{idea.title}</h3>
-              <p className="idea-hook">"{idea.hook}"</p>
-              <p className="idea-angle">{idea.angle}</p>
-              <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>
-              <div className="idea-footer">
-                <span className={`idea-difficulty ${idea.difficulty}`}>{idea.difficulty}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* Génération de hooks — même structure que « Générer des posts » */}
       <div className="gen-section">
@@ -1375,6 +1321,7 @@ function TopHeader({
     profile: "Mon profil éditorial",
     assistant: "Agent IA",
     content: "Contenu",
+    progress: "Tableau de bord",
   };
 
   return (
@@ -1812,12 +1759,10 @@ function useSlack(isAuthed: boolean) {
 }
 
 function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null }) {
-  const [ideas, setIdeas] = useState<Idea[]>([]);
   const [variants, setVariants] = useState<Variant[]>([]);
   const [topic, setTopic] = useState("");
   const [role, setRole] = useState("auto");
   const [webSearch, setWebSearch] = useState(false);
-  const [loadingIdeas, setLoadingIdeas] = useState(false);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
   const linkedin = useLinkedIn(isAuthed);
@@ -1944,26 +1889,6 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     }
   }
 
-  async function fetchIdeas() {
-    setError("");
-    setLoadingIdeas(true);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/ideas`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ count: 5, web_search: webSearch }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Échec de la génération d'idées");
-      emitCredits(data.credits);
-      setIdeas(data.ideas || []);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoadingIdeas(false);
-    }
-  }
-
   async function generateFromTopic(t: string) {
     setError("");
     if (!t.trim()) { setError("Entre un sujet pour le post."); return; }
@@ -2014,86 +1939,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
 
   return (
     <div>
-      {/* Ideas section */}
-      <div className="section-header">
-        <div>
-          <h2 className="section-title"><Lightbulb size={20} /> Idées de posts</h2>
-          <p className="section-desc">Claude analyse les patterns des influenceurs et propose des idées à fort potentiel.</p>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={webSearch}
-              onChange={(e) => setWebSearch(e.target.checked)}
-              style={{ accentColor: "var(--accent)", width: 14, height: 14 }}
-            />
-            Recherche web
-          </label>
-          <button className="secondary-button" onClick={fetchIdeas} disabled={loadingIdeas}>
-            {loadingIdeas ? <Loader2 size={14} className="spinning" /> : <Lightbulb size={14} />}
-            {loadingIdeas ? "Génération…" : "Générer des idées"}
-          </button>
-        </div>
-      </div>
-
       {error && <div className="error">{error}</div>}
-
-      {ideas.length > 0 && (
-        <div className="ideas-grid">
-          {ideas.map((idea, i) => (
-            <div className="idea-card" key={i}>
-              <div className="idea-header">
-                <span className="idea-funnel" style={{ borderColor: funnelColors[idea.funnel] || "var(--border)", color: funnelColors[idea.funnel] || "var(--muted)" }}>
-                  {idea.funnel}
-                </span>
-                <span className="badge">{idea.hook_type}</span>
-                <span className="idea-lift">{idea.estimated_lift}</span>
-              </div>
-              <h3 className="idea-title">{idea.title}</h3>
-              <p className="idea-hook">"{idea.hook}"</p>
-              <p className="idea-angle">{idea.angle}</p>
-              <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>
-              <div className="idea-footer">
-                <span className={`idea-difficulty ${idea.difficulty}`}>{idea.difficulty}</span>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {slack.status?.connected && idea.id && (
-                    <button
-                      className="secondary-button"
-                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                      disabled={!!slackSending[i] || !!slackSent[i]}
-                      onClick={async () => {
-                        if (!idea.id) return;
-                        setSlackSending((p) => ({ ...p, [i]: true }));
-                        try {
-                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-ideas`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ idea_ids: [idea.id] }),
-                          });
-                          setSlackSent((p) => ({ ...p, [i]: true }));
-                        } finally {
-                          setSlackSending((p) => ({ ...p, [i]: false }));
-                        }
-                      }}
-                    >
-                      {slackSending[i] ? <Loader2 size={12} className="spinning" /> : null}
-                      {slackSent[i] ? "Envoyé ✓" : "Valider sur Slack"}
-                    </button>
-                  )}
-                  <button
-                    className="primary-button"
-                    style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                    onClick={() => { setTopic(idea.title); generateFromTopic(idea.title); }}
-                  >
-                    <Sparkles size={12} /> Générer ce post
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* Post generation */}
       <div className="gen-section">
@@ -2191,8 +2037,8 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
                     onClick={() => publishVariant(i, editedVariants[i] ?? v.post)}
                   >
-                    {publishing === i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
-                    {publishing === i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
+                    {publishing === i && published !== i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+                    {publishing === i && published !== i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
                   </button>
                   <button
                     className="secondary-button"
@@ -2220,6 +2066,28 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     {generatingImage === i ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
                     {generatingImage === i ? "Génération…" : variantImages[i] ? "Régénérer l'image" : "Générer une image"}
                   </button>
+                  {slack.status?.connected && v.id && (
+                    <button
+                      className="secondary-button"
+                      disabled={!!slackSending[i] || !!slackSent[i]}
+                      onClick={async () => {
+                        setSlackSending((p) => ({ ...p, [i]: true }));
+                        try {
+                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+                            body: JSON.stringify({ post_id: v.id }),
+                          });
+                          setSlackSent((p) => ({ ...p, [i]: true }));
+                        } finally {
+                          setSlackSending((p) => ({ ...p, [i]: false }));
+                        }
+                      }}
+                    >
+                      {slackSending[i] ? <Loader2 size={14} className="spinning" /> : null}
+                      {slackSent[i] ? "Sur Slack ✓" : "Envoyer sur Slack"}
+                    </button>
+                  )}
                 </div>
                 {published === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
@@ -2330,6 +2198,149 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   );
 }
 
+// ── ALE-69 : Dashboard de progression ────────────────────────────────────────
+
+type ProgressData = {
+  corpus: { influencer_count: number; analysis_count: number; last_analysis_at: string | null; active_jobs: number; done_jobs: number };
+  content: { ideas_count: number; posts_count: number };
+  publishing: { linkedin_connected: boolean; slack_connected: boolean };
+  profile: { filled: boolean; has_linkedin_url: boolean };
+  credits: { balance: number };
+  next_action: string;
+};
+
+function ProgressStep({ done, label }: { done: boolean; label: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
+      <span style={{ width: 20, height: 20, borderRadius: "50%", background: done ? "var(--primary)" : "var(--border)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        {done ? <CheckCircle2 size={12} color="#fff" /> : <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--muted)", display: "block" }} />}
+      </span>
+      <span style={{ fontSize: 13, color: done ? "var(--fg)" : "var(--muted)" }}>{label}</span>
+    </div>
+  );
+}
+
+function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
+  const [data, setData] = useState<ProgressData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function load() {
+    if (!isAuthed) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/dashboard/progress`, { headers: await authHeaders() });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.detail || "Impossible de charger la progression");
+      setData(json);
+    } catch (err: any) {
+      setError(err.message || "Chargement impossible");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAuthed) void load();
+    else setData(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Activity size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Tableau de bord</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>Connecte-toi pour voir ton avancement.</p>
+        <button type="button" className="primary-button" onClick={() => requireAuth()}>Se connecter</button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><Activity size={20} /> Tableau de bord</h2>
+          <p className="section-desc">Ton avancement global sur Cibl.</p>
+        </div>
+        <button className="secondary-button" onClick={load} disabled={loading}>
+          {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+          Rafraîchir
+        </button>
+      </div>
+
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {loading && !data && (
+        <div className="card" style={{ padding: 32, textAlign: "center" }}>
+          <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
+        </div>
+      )}
+
+      {data && (
+        <>
+          {/* Prochaine action recommandée */}
+          <div className="card" style={{ marginBottom: 16, borderLeft: "3px solid var(--primary)", background: "var(--surface2)" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+              <Zap size={18} style={{ color: "var(--primary)", flexShrink: 0, marginTop: 2 }} />
+              <div>
+                <p style={{ margin: 0, fontWeight: 600, fontSize: 14 }}>Prochaine action</p>
+                <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--muted)" }}>{data.next_action}</p>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12, marginBottom: 16 }}>
+            <div className="card" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: "var(--primary)" }}>{data.corpus.influencer_count}</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Influenceurs analysés</div>
+            </div>
+            <div className="card" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: "var(--primary)" }}>{data.content.ideas_count}</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Idées générées</div>
+            </div>
+            <div className="card" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: "var(--primary)" }}>{data.content.posts_count}</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Posts générés</div>
+            </div>
+            <div className="card" style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 28, fontWeight: 700, color: data.credits.balance <= 5 ? "var(--error)" : "var(--primary)" }}>
+                {data.credits.balance}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Crédits restants</div>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div className="card">
+              <p style={{ margin: "0 0 12px", fontWeight: 600, fontSize: 14 }}>Configuration</p>
+              <ProgressStep done={data.profile.filled} label="Profil éditorial rempli" />
+              <ProgressStep done={data.profile.has_linkedin_url} label="URL LinkedIn renseignée" />
+              <ProgressStep done={data.corpus.influencer_count > 0} label="Au moins 1 influenceur analysé" />
+            </div>
+            <div className="card">
+              <p style={{ margin: "0 0 12px", fontWeight: 600, fontSize: 14 }}>Publication</p>
+              <ProgressStep done={data.publishing.linkedin_connected} label="LinkedIn connecté (Zernio)" />
+              <ProgressStep done={data.publishing.slack_connected} label="Slack connecté" />
+            </div>
+          </div>
+
+          {data.corpus.active_jobs > 0 && (
+            <div className="auth-info" style={{ marginTop: 12 }}>
+              <Loader2 size={14} className="spinning" style={{ verticalAlign: "-2px", marginRight: 6 }} />
+              {data.corpus.active_jobs} analyse(s) en cours dans la queue.
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Fin ALE-69 ────────────────────────────────────────────────────────────────
+
 type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string };
 type IdeaSeed = { id: string; text: string; used_at?: string | null; created_at?: string };
 
@@ -2345,6 +2356,7 @@ function DailyIdeasView({
   const [enabled, setEnabled] = useState(false);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
 
@@ -2383,6 +2395,31 @@ function DailyIdeasView({
     else { setIdeas([]); setSeeds([]); setEnabled(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
+
+  async function regenerate() {
+    setRegenerating(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/daily-ideas/regenerate`, {
+        method: "POST",
+        headers: { ...(await authHeaders()) },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Régénération impossible");
+      emitCredits(data.credits);
+      if (data.idea) {
+        setIdeas((prev) => {
+          const today = data.idea.idea_date;
+          const filtered = prev.filter((i) => i.idea_date !== today);
+          return [data.idea, ...filtered];
+        });
+      }
+    } catch (err: any) {
+      setError(err.message || "Régénération impossible");
+    } finally {
+      setRegenerating(false);
+    }
+  }
 
   async function addSeed() {
     const text = draft.trim();
@@ -2444,9 +2481,6 @@ function DailyIdeasView({
     );
   }
 
-  const latest = ideas[0];
-  const history = ideas.slice(1);
-
   return (
     <div>
       <div className="section-header">
@@ -2454,20 +2488,27 @@ function DailyIdeasView({
           <h2 className="section-title"><Sparkles size={20} /> Idée du jour</h2>
           <p className="section-desc">Chaque matin, une idée de post est générée à partir de ton benchmark d'influenceurs et de ton réservoir d'idées.</p>
         </div>
-        <button className="secondary-button" onClick={loadAll} disabled={loading}>
-          {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
-          Rafraîchir
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className="secondary-button"
+            onClick={regenerate}
+            disabled={regenerating || loading}
+            title="Régénérer l'idée du jour (1 crédit)"
+            style={{ padding: "0 12px" }}
+          >
+            {regenerating ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+            Régénérer (1 crédit)
+          </button>
+          <button className="secondary-button" onClick={loadAll} disabled={loading} style={{ padding: "0 12px" }}>
+            {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+            Rafraîchir
+          </button>
+        </div>
       </div>
 
       {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {latest ? (
-        <div className="card daily-hero">
-          <div className="daily-hero-date">{fmtDate(latest.idea_date)}</div>
-          <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{latest.idea_markdown}</ReactMarkdown></div>
-        </div>
-      ) : (
+      {ideas.length === 0 ? (
         <div className="card" style={{ padding: 28, textAlign: "center", color: "var(--muted)" }}>
           {loading ? (
             <><Loader2 size={20} className="spinning" style={{ opacity: 0.45 }} /><p>Chargement…</p></>
@@ -2478,19 +2519,14 @@ function DailyIdeasView({
             </p>
           )}
         </div>
-      )}
-
-      {history.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <h3 className="daily-subtitle">Jours précédents</h3>
-          <div className="daily-history">
-            {history.map((it) => (
-              <details key={it.id} className="card daily-history-item">
-                <summary>{fmtDate(it.idea_date)}</summary>
-                <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{it.idea_markdown}</ReactMarkdown></div>
-              </details>
-            ))}
-          </div>
+      ) : (
+        <div className="daily-history" style={{ marginBottom: 20 }}>
+          {ideas.map((it, idx) => (
+            <details key={it.id} className="card daily-history-item" open={idx === 0}>
+              <summary>{fmtDate(it.idea_date)}{idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}</summary>
+              <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{it.idea_markdown}</ReactMarkdown></div>
+            </details>
+          ))}
         </div>
       )}
 
@@ -2557,8 +2593,38 @@ function LibraryView({
   const [savingPost, setSavingPost] = useState<string | null>(null);
   const [savedPost, setSavedPost] = useState<string | null>(null);
   const slack = useSlack(isAuthed);
+  const linkedin = useLinkedIn(isAuthed);
   const [slackSent, setSlackSent] = useState<Record<string, boolean>>({});
   const [slackSending, setSlackSending] = useState<Record<string, boolean>>({});
+  const [publishingPost, setPublishingPost] = useState<string | null>(null);
+  const [publishedPost, setPublishedPost] = useState<string | null>(null);
+  const [publishError, setPublishError] = useState("");
+
+  async function publishSavedPost(p: SavedPost) {
+    if (!linkedin.status?.connected) {
+      setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    setPublishError("");
+    setPublishingPost(p.id);
+    try {
+      const text = editedPosts[p.id] ?? p.post;
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, draft: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication impossible");
+      setPublishedPost(p.id);
+      setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, slack_status: "published" } : pp));
+      setTimeout(() => setPublishedPost((s) => s === p.id ? null : s), 3000);
+    } catch (err: any) {
+      setPublishError(err.message);
+    } finally {
+      setPublishingPost(null);
+    }
+  }
 
   const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
   const roleLabels: Record<string, string> = {
@@ -2679,6 +2745,9 @@ function LibraryView({
                   )}
                   {p.hook_type && <span className="badge">{p.hook_type}</span>}
                   {p.predicted_lift && <span className="idea-lift">{p.predicted_lift}</span>}
+                  {p.slack_status === "validated" && (
+                    <span className="badge" style={{ borderColor: "#10b981", color: "#10b981" }}>✅ Validé Slack</span>
+                  )}
                   <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--muted)" }}>{fmtDate(p.created_at)}</span>
                 </div>
                 {p.topic && <p className="variant-strategy"><strong>Sujet :</strong> {p.topic}</p>}
@@ -2732,10 +2801,46 @@ function LibraryView({
                       <Sparkles size={14} /> Régénérer sur ce sujet
                     </button>
                   )}
+                  {p.slack_status === "validated" && (
+                    <button
+                      className="primary-button"
+                      disabled={publishingPost === p.id}
+                      onClick={() => publishSavedPost(p)}
+                    >
+                      {publishingPost === p.id ? <><Loader2 size={14} className="spinning" /> Publication…</> : <><Linkedin size={14} /> Publier sur LinkedIn</>}
+                      {publishedPost === p.id && " ✓"}
+                    </button>
+                  )}
+                  {slack.status?.connected && p.slack_status !== "validated" && (
+                    <button
+                      className="secondary-button"
+                      disabled={!!slackSending[p.id] || !!slackSent[p.id] || p.slack_status === "pending"}
+                      onClick={async () => {
+                        setSlackSending((prev) => ({ ...prev, [p.id]: true }));
+                        try {
+                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+                            body: JSON.stringify({ post_id: p.id }),
+                          });
+                          setSlackSent((prev) => ({ ...prev, [p.id]: true }));
+                          setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, slack_status: "pending" } : pp));
+                        } finally {
+                          setSlackSending((prev) => ({ ...prev, [p.id]: false }));
+                        }
+                      }}
+                    >
+                      {slackSending[p.id] ? <Loader2 size={14} className="spinning" /> : null}
+                      {slackSent[p.id] || p.slack_status === "pending" ? "Sur Slack ✓" : "Envoyer sur Slack"}
+                    </button>
+                  )}
                   <button className="secondary-button" style={{ marginLeft: "auto" }} onClick={() => deletePost(p.id)}>
                     <Trash2 size={14} /> Supprimer
                   </button>
                 </div>
+                {publishError && publishingPost === null && publishedPost === null && (
+                  <div className="error" style={{ marginTop: 6, fontSize: 13 }}>{publishError}</div>
+                )}
               </div>
             ))}
           </div>
@@ -4351,9 +4456,11 @@ export default function Home() {
           onSignOut={() => supabase.auth.signOut()}
         />
         <main className="main">
-          {/* Agent IA et Profil sont indépendants du réseau (niveau 1 / Réglages) */}
+          {/* Agent IA, Profil et Tableau de bord sont indépendants du réseau */}
           {view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />
+          ) : view === "progress" ? (
+            <ProgressView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : view === "profile" ? (
             <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : platform === "instagram" ? (
