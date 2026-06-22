@@ -1722,6 +1722,19 @@ a { color: inherit; text-decoration: none; }
 }
 .daily-history-item summary::-webkit-details-marker { display: none; }
 .daily-history-item[open] summary { color: var(--primary); margin-bottom: 8px; }
+.daily-today-tag {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 4px;
+  padding: 1px 6px;
+  vertical-align: middle;
+}
 
 .daily-reservoir-head {
   display: flex;

@@ -402,6 +402,89 @@ def me_linkedin_publish(
     return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft}
 
 
+# --- X (Twitter) publishing via Zernio --------------------------------------
+
+class XConnectRequest(BaseModel):
+    redirect_url: Optional[str] = Field(default=None, max_length=1000)
+
+
+class XPublishRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=4000)
+    draft: bool = False
+
+
+def _x_status(token: str) -> dict[str, Any]:
+    profile = db.get_editorial_profile(token) or {}
+    return {
+        "configured": zernio.enabled(),
+        "connected": bool(profile.get("zernio_x_account_id")),
+        "account_id": profile.get("zernio_x_account_id"),
+        "profile_id": profile.get("zernio_profile_id"),  # shared with LinkedIn
+        "connected_at": profile.get("zernio_x_connected_at"),
+    }
+
+
+@app.get("/me/x/status")
+def me_x_status(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Whether the user has an X/Twitter account connected through Zernio."""
+    return _x_status(token)
+
+
+@app.post("/me/x/connect")
+def me_x_connect(
+    payload: XConnectRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Return an X OAuth URL the user opens to authorize publishing."""
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    try:
+        profile_id = _ensure_zernio_profile(token)  # reuse the same Zernio profile
+        auth_url = zernio.get_connect_url(profile_id, redirect_url=payload.redirect_url, platform="x")
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"auth_url": auth_url}
+
+
+@app.post("/me/x/refresh")
+def me_x_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Re-read the connected X account from Zernio (call after OAuth return)."""
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    profile_id = profile.get("zernio_profile_id")
+    if not profile_id:
+        return _x_status(token)
+    try:
+        account_id = zernio.find_account_id(profile_id, platform="x")
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.set_zernio_x_account(token, account_id)
+    return _x_status(token)
+
+
+@app.post("/me/x/publish")
+def me_x_publish(
+    payload: XPublishRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Publish a post on the user's connected X/Twitter account."""
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    account_id = profile.get("zernio_x_account_id")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="Aucun compte X connecté. Connecte-le d'abord.")
+    try:
+        result = zernio.create_post(
+            payload.content.strip(), account_id, publish_now=True, is_draft=payload.draft, platform="x"
+        )
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    post = result.get("post") or result
+    return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft}
+
+
 @app.get("/reports")
 def reports(
     limit: int = 3,
@@ -618,6 +701,74 @@ def _compute_growth(influencers: list[dict]) -> list[dict[str, Any]]:
 def dashboard_growth(token: Optional[str] = Depends(optional_token)) -> list[dict[str, Any]]:
     """Growth comparison endpoint, scoped to the authenticated user."""
     return _compute_growth(_get_influencers(token))
+
+
+@app.get("/dashboard/progress")
+def dashboard_progress(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Aggregated progression dashboard for the authenticated user."""
+    profile = db.get_editorial_profile(token) or {}
+    credits_info = db.get_user_credits(token)
+    influencers = db.list_influencers(token) or []
+    analyses = db.list_analyses(token, limit=100) or []
+    generated_posts = db.list_generated_posts(token, limit=500) or []
+    generated_ideas = db.list_generated_ideas(token, limit=500) or []
+    jobs = db.list_jobs(token, limit=100) or []
+
+    last_analysis_at = None
+    if analyses:
+        ts = analyses[0].get("created_at") or analyses[0].get("updated_at")
+        last_analysis_at = ts
+
+    active_jobs = [j for j in jobs if j.get("status") in ("pending", "running")]
+    done_jobs = [j for j in jobs if j.get("status") == "done"]
+
+    return {
+        "corpus": {
+            "influencer_count": len(influencers),
+            "analysis_count": len(analyses),
+            "last_analysis_at": last_analysis_at,
+            "active_jobs": len(active_jobs),
+            "done_jobs": len(done_jobs),
+        },
+        "content": {
+            "ideas_count": len(generated_ideas),
+            "posts_count": len(generated_posts),
+        },
+        "publishing": {
+            "linkedin_connected": bool(profile.get("zernio_account_id")),
+            "x_connected": bool(profile.get("zernio_x_account_id")),
+            "slack_connected": bool(profile.get("slack_bot_token") or profile.get("slack_channel_id")),
+        },
+        "profile": {
+            "filled": bool(
+                profile.get("display_name") or profile.get("brand_name") or profile.get("business_description")
+            ),
+            "has_linkedin_url": bool(profile.get("linkedin_url")),
+        },
+        "credits": {
+            "balance": credits_info.get("balance", 0),
+        },
+        "next_action": _suggest_next_action(profile, influencers, generated_posts, generated_ideas),
+    }
+
+
+def _suggest_next_action(
+    profile: dict,
+    influencers: list,
+    posts: list,
+    ideas: list,
+) -> str:
+    if not profile.get("display_name") and not profile.get("business_description"):
+        return "Remplis ton profil éditorial pour personnaliser les générations."
+    if not influencers:
+        return "Analyse un premier influenceur LinkedIn pour construire ton benchmark."
+    if not ideas and not posts:
+        return "Génère tes premières idées de posts à partir de ton benchmark."
+    if posts and not profile.get("zernio_account_id"):
+        return "Connecte ton compte LinkedIn pour publier tes posts générés en un clic."
+    if ideas and not posts:
+        return "Transforme une idée en post complet via le Générateur."
+    return "Tout est en place — génère et publie !"
 
 
 @app.post("/dashboard/ai-analysis")
