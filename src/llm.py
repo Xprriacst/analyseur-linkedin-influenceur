@@ -625,7 +625,7 @@ def _auto_role_mix() -> list[str]:
 
 
 def generate_posts(
-    topic: str,
+    topic: str | None,
     top_posts_examples: list[dict],
     benchmark: dict,
     user_context: dict[str, Any] | None = None,
@@ -637,6 +637,10 @@ def generate_posts(
 
     If ``editorial_role`` is provided and known, all variants use that role.
     Otherwise an automatic mix of complementary roles is produced.
+
+    ``topic`` is optional : quand il est vide, le LLM choisit lui-même un sujet
+    à fort potentiel à partir du contexte client et du benchmark (comme la
+    génération d'idées) — une idée = un post.
     """
     examples_text = "\n\n".join(
         f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')}]\n{e.get('text', '')[:600]}"
@@ -665,9 +669,20 @@ def generate_posts(
         + _date_directive()
         + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
+    topic_clean = (topic or "").strip()
+    topic_directive = (
+        f'Sujet du post à créer : "{topic_clean}"\n\n'
+        if topic_clean
+        else (
+            "Aucun sujet imposé : choisis toi-même, pour chaque variant, un sujet "
+            "original à fort potentiel viral, déduit du contexte client (métier, marché, "
+            "audience, offre) et des patterns qui marchent dans le benchmark ci-dessous. "
+            "Varie les sujets entre les variants.\n\n"
+        )
+    )
     user = (
-        f'Sujet du post à créer : "{topic}"\n\n'
-        "Contexte client à respecter EN PRIORITÉ (prime sur les patterns viraux) :\n"
+        topic_directive
+        + "Contexte client à respecter EN PRIORITÉ (prime sur les patterns viraux) :\n"
         + context_text
         + "\n\nBenchmarks issus de l'analyse d'influenceurs LinkedIn :\n"
         + json.dumps(benchmark, ensure_ascii=False, indent=2)

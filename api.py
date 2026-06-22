@@ -794,7 +794,7 @@ class IdeasRequest(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    topic: str = Field(..., min_length=3)
+    topic: Optional[str] = Field(default=None)
     editorial_role: Optional[str] = Field(default=None)
     web_search: bool = Field(default=False)
     count: int = Field(default=1, ge=1, le=3)
@@ -862,7 +862,7 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
     top_posts, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
     role = (payload.editorial_role or "").strip() or None
-    topic = payload.topic.strip()
+    topic = (payload.topic or "").strip()
     variants = generate_posts(
         topic,
         top_posts,
