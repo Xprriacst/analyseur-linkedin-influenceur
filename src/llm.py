@@ -792,3 +792,122 @@ def chat_stream(
             int(getattr(usage, "input_tokens", 0) or 0),
             int(getattr(usage, "output_tokens", 0) or 0),
         )
+
+
+# ── Instagram LLM functions (ALE-93) ─────────────────────────────────────────
+
+
+class ReelClassification(BaseModel):
+    index: int
+    stage: str = Field(description="Awareness | Engagement | Conversion")
+    hook_type: str = Field(description="question | story | stat | bold_claim | list | contrarian | other")
+    topic: str
+    has_hook_parle: bool = Field(description="True if transcript has a clear spoken hook in the first 3 seconds")
+
+
+class ReelClassificationResponse(BaseModel):
+    classifications: list[ReelClassification]
+
+
+def classify_reels_instagram(posts: list[dict]) -> list[dict]:
+    """Classify Instagram Reels by funnel stage (Awareness/Engagement/Conversion) and hook type.
+
+    Uses both caption text and transcript (first 200 chars) for classification.
+    Handles up to 25 posts like classify_posts for LinkedIn.
+    """
+    items = []
+    for i, p in enumerate(posts[:25]):
+        transcript_preview = (p.get("transcript") or "")[:200].strip()
+        items.append({
+            "index": i,
+            "format": p.get("format", "reel"),
+            "caption": p.get("text", "")[:800],
+            "transcript_preview": transcript_preview,
+            "views": p.get("views", 0),
+            "likes": p.get("likes", 0),
+            "comments": p.get("comments", 0),
+        })
+
+    system = (
+        "Tu analyses des Reels Instagram. Classe chaque reel dans le funnel :\n"
+        "- Awareness : contenu large, divertissement, stories, opinions (attirer de nouvelles personnes)\n"
+        "- Engagement : tutoriels, éducation, méthodes, cas concrets (créer une relation)\n"
+        "- Conversion : preuves, offres, témoignages, appels à l'action directs (inciter à agir)\n\n"
+        "Et le type d'accroche (première ligne caption + 3 premières secondes du transcript si disponible):\n"
+        "question, story, stat, bold_claim, list, contrarian, other\n\n"
+        "Réponds UNIQUEMENT avec un objet JSON, sans texte avant ni après, sans balise markdown."
+    )
+    user = (
+        "Classe ces Reels Instagram. Pour chaque reel, donne :\n"
+        "index (0-based), stage (Awareness|Engagement|Conversion), hook_type, topic (sujet en 3-5 mots), "
+        "has_hook_parle (bool — true si le transcript a une accroche verbale claire dans les 3 premières secondes).\n\n"
+        "Schéma JSON attendu:\n"
+        '{"classifications": [{"index": int, "stage": "Awareness|Engagement|Conversion", '
+        '"hook_type": str, "topic": str, "has_hook_parle": bool}, ...]}\n\n'
+        "Reels:\n" + json.dumps(items, ensure_ascii=False)
+    )
+    data = _call(system, user, max_tokens=8192, temperature=0.2)
+    parsed = ReelClassificationResponse(**data)
+    return [c.model_dump() for c in parsed.classifications]
+
+
+def synthesize_ig_strategy(stats: dict, classifications: list[dict], posts_enriched: list[dict]) -> dict[str, Any]:
+    """Generate Instagram-specific strategic synthesis.
+
+    Uses the same StrategySynthesis schema as synthesize_strategy but with
+    an Instagram-focused prompt (retention, visual/spoken hooks, duration, sounds, hashtags).
+    """
+    sample_posts = [
+        {
+            "stage": c["stage"],
+            "topic": c["topic"],
+            "hook_type": c["hook_type"],
+            "has_hook_parle": c.get("has_hook_parle", False),
+            "format": posts_enriched[c["index"]].get("format") if c["index"] < len(posts_enriched) else "reel",
+            "views": posts_enriched[c["index"]].get("views", 0) if c["index"] < len(posts_enriched) else 0,
+            "engagement": posts_enriched[c["index"]].get("engagement", 0) if c["index"] < len(posts_enriched) else 0,
+            "video_duration_s": posts_enriched[c["index"]].get("video_duration_s") if c["index"] < len(posts_enriched) else None,
+            "has_cta": posts_enriched[c["index"]].get("has_cta", False) if c["index"] < len(posts_enriched) else False,
+            "cta_keyword": posts_enriched[c["index"]].get("cta_keyword") if c["index"] < len(posts_enriched) else None,
+            "first_lines": "\n".join((posts_enriched[c["index"]].get("text") or "").splitlines()[:2]) if c["index"] < len(posts_enriched) else "",
+        }
+        for c in classifications
+        if c["index"] < len(posts_enriched)
+    ]
+
+    system = (
+        "Tu es un stratège contenu Instagram spécialisé Reels. À partir des stats et des reels classés, "
+        "extrais une synthèse stratégique actionnable spécifique à Instagram. "
+        "Analyse notamment : la rétention (durée optimale des reels), les accroches visuelles et parlées, "
+        "les sons/musiques, les hashtags, les CTAs (lien bio, DM, tag, save, follow). "
+        "Sois concret, factuel, cite des données réelles quand utile, évite les généralités. "
+        "Réponds UNIQUEMENT avec un objet JSON, sans texte avant ni après, sans balise markdown."
+    )
+    payload = {
+        "stats": {
+            "posts_per_week": stats.get("posts_per_week"),
+            "format_mix_pct": stats.get("format_mix_pct"),
+            "engagement": stats.get("engagement"),
+            "video_duration": stats.get("video_duration"),
+            "hashtag_strategy": stats.get("cta_effect"),
+        },
+        "classifications": sample_posts,
+    }
+    user = (
+        "Données Instagram :\n" + json.dumps(payload, ensure_ascii=False) + "\n\n"
+        "Schéma JSON attendu (toutes les clés obligatoires, focus Instagram) :\n"
+        "{\n"
+        '  "positioning": "comment cet influenceur se positionne sur Instagram",\n'
+        '  "audience": "qui regarde ses Reels (centres d\'intérêt, niveau, attentes)",\n'
+        '  "content_pillars": ["thème 1", "thème 2", ...],\n'
+        '  "hook_patterns": ["type d\'accroche visuelle/parlée qui fonctionne", ...],\n'
+        '  "structural_patterns": ["durée, format, musique, hashtags récurrents", ...],\n'
+        '  "cta_strategy": "comment il appelle à l\'action (DM, lien bio, tag, save, follow)",\n'
+        '  "strengths": ["point fort Instagram 1", ...],\n'
+        '  "gaps": ["opportunité manquée 1", ...],\n'
+        '  "actions_to_replicate": ["action concrète à répliquer 1", ...]\n'
+        "}"
+    )
+
+    data = _call(system, user, max_tokens=4096, temperature=0.4)
+    return StrategySynthesis(**data).model_dump()
