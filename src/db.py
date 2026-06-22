@@ -91,11 +91,12 @@ def get_user(access_token: str) -> dict | None:
     return {"id": user.id, "email": getattr(user, "email", None)}
 
 
-def _influencer_row(user_id: str, result: dict) -> dict:
+def _influencer_row(user_id: str, result: dict, platform: str = "linkedin") -> dict:
     profile = result.get("profile", {}) or {}
     return {
         "user_id": user_id,
         "handle": result["handle"],
+        "platform": platform,
         "name": profile.get("name"),
         "headline": profile.get("headline"),
         "summary": profile.get("summary"),
@@ -109,12 +110,13 @@ def _influencer_row(user_id: str, result: dict) -> dict:
     }
 
 
-def _post_rows(influencer_id: str, posts: list[dict]) -> list[dict]:
+def _post_rows(influencer_id: str, posts: list[dict], platform: str = "linkedin") -> list[dict]:
     rows = []
     for p in posts:
         date = p.get("date")
-        rows.append({
+        row: dict = {
             "influencer_id": influencer_id,
+            "platform": platform,
             "url": p.get("url"),
             "text": p.get("text"),
             "posted_at": date.isoformat() if hasattr(date, "isoformat") else date,
@@ -126,7 +128,25 @@ def _post_rows(influencer_id: str, posts: list[dict]) -> list[dict]:
             "engagement": int(p.get("engagement", 0) or 0),
             "length_chars": int(p.get("length_chars", 0) or 0),
             "length_words": int(p.get("length_words", 0) or 0),
-        })
+        }
+        # Instagram-specific columns (ignored for LinkedIn rows by Postgres if columns absent)
+        if platform == "instagram":
+            views = p.get("views")
+            if views is not None:
+                row["views"] = int(views)
+            video_dur = p.get("video_duration_s")
+            if video_dur is not None:
+                row["video_duration_s"] = float(video_dur)
+            transcript = p.get("transcript")
+            if transcript:
+                row["transcript"] = transcript
+            hashtags = p.get("hashtags")
+            if hashtags is not None:
+                row["hashtags"] = hashtags
+            music = p.get("music")
+            if music is not None:
+                row["music"] = music
+        rows.append(row)
     return rows
 
 
@@ -143,13 +163,23 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
     db = client_for_token(access_token)
     user_id = user["id"]
 
-    # upsert influencer (unique on user_id + handle)
-    inf_row = _influencer_row(user_id, result)
-    inf_resp = (
-        db.table("influencers")
-        .upsert(inf_row, on_conflict="user_id,handle")
-        .execute()
-    )
+    platform = result.get("platform") or "linkedin"
+
+    # upsert influencer — try new constraint (user_id, handle, platform) first,
+    # fall back to old (user_id, handle) for legacy DB without migration 0015.
+    inf_row = _influencer_row(user_id, result, platform=platform)
+    try:
+        inf_resp = (
+            db.table("influencers")
+            .upsert(inf_row, on_conflict="user_id,handle,platform")
+            .execute()
+        )
+    except Exception:
+        inf_resp = (
+            db.table("influencers")
+            .upsert(inf_row, on_conflict="user_id,handle")
+            .execute()
+        )
     if not inf_resp.data:
         return None
     influencer_id = inf_resp.data[0]["id"]
@@ -157,7 +187,7 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
     # replace posts
     posts = result.get("posts", []) or []
     db.table("posts").delete().eq("influencer_id", influencer_id).execute()
-    rows = _post_rows(influencer_id, posts)
+    rows = _post_rows(influencer_id, posts, platform=platform)
     if rows:
         db.table("posts").insert(rows).execute()
 
@@ -790,34 +820,50 @@ def create_job(
     limit_posts: int,
     run_llm: bool,
     use_cache: bool,
+    platform: str = "linkedin",
 ) -> dict | None:
     """Crée une série (job) + ses items (un par URL). Retourne le job complet."""
     user = get_user(access_token)
     if not user:
         return None
     db = client_for_token(access_token)
+    job_row: dict = {
+        "user_id": user["id"],
+        "status": "queued",
+        "total": len(urls),
+        "limit_posts": limit_posts,
+        "run_llm": run_llm,
+        "use_cache": use_cache,
+    }
+    # Store platform if the column exists (migration 0015); ignored otherwise.
+    if platform != "linkedin":
+        job_row["platform"] = platform
     job_resp = (
         db.table("analysis_jobs")
-        .insert({
-            "user_id": user["id"],
-            "status": "queued",
-            "total": len(urls),
-            "limit_posts": limit_posts,
-            "run_llm": run_llm,
-            "use_cache": use_cache,
-        })
+        .insert(job_row)
         .execute()
     )
     if not job_resp.data:
         return None
     job = job_resp.data[0]
+
+    def _handle_from_raw(url: str) -> str | None:
+        """Extract handle from either LinkedIn or Instagram URL."""
+        if platform == "instagram":
+            try:
+                from src.scraper_instagram import extract_ig_handle
+                return extract_ig_handle(url)
+            except Exception:
+                pass
+        return _handle_from_url(url)
+
     items = [
         {
             "job_id": job["id"],
             "user_id": user["id"],
             "position": i,
             "url": url,
-            "handle": _handle_from_url(url),
+            "handle": _handle_from_raw(url),
             "status": "pending",
         }
         for i, url in enumerate(urls)
@@ -1299,6 +1345,53 @@ def mark_seed_used(seed_id: str) -> None:
     admin_client().table("idea_seeds").update({"used_at": now}).eq("id", seed_id).execute()
 
 
+def replace_daily_idea(access_token: str, idea_markdown: str, idea_date: str) -> dict | None:
+    """Upsert the daily idea for today — replaces an existing one (on-demand regen)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "idea_markdown": idea_markdown,
+        "idea_date": idea_date,
+    }
+    resp = (
+        db.table("daily_ideas")
+        .upsert(row, on_conflict="user_id,idea_date")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_unused_seed_by_token(access_token: str) -> dict | None:
+    """Return the oldest unused idea seed for the authenticated user."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("idea_seeds")
+        .select("*")
+        .eq("user_id", user["id"])
+        .is_("used_at", "null")
+        .order("created_at", desc=False)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def mark_seed_used_by_token(access_token: str, seed_id: str) -> None:
+    """Mark a seed as consumed for the authenticated user."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db.table("idea_seeds").update({"used_at": now}).eq("id", seed_id).eq("user_id", user["id"]).execute()
+
+
 def daily_idea_exists(user_id: str, idea_date: str) -> bool:
     """Whether a daily idea already exists for this user/date (idempotent cron)."""
     if not admin_enabled():
@@ -1479,6 +1572,23 @@ def create_scheduled_post(access_token: str, post_text: str, scheduled_at_iso: s
     return resp.data[0] if resp.data else None
 
 
+def get_generated_post(access_token: str, post_id: str) -> dict | None:
+    """Fetch a single generated post for the authenticated user."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .select("*")
+        .eq("user_id", user["id"])
+        .eq("id", post_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def list_scheduled_posts(access_token: str, limit: int = 50) -> list[dict]:
     """List all scheduled posts for the authenticated user, newest first."""
     if not supabase_enabled():
@@ -1504,6 +1614,37 @@ def cancel_scheduled_post(access_token: str, post_id: str) -> bool:
         .update({"status": "cancelled", "updated_at": "now()"})
         .eq("id", post_id)
         .eq("status", "pending")
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def set_post_slack_pending(access_token: str, post_ids: list[str]) -> int:
+    """Mark a batch of generated posts as 'pending' Slack validation. Returns count updated."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return 0
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"slack_status": "pending"})
+        .in_("id", post_ids)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return len(resp.data) if resp.data else 0
+
+
+def update_post_slack_status(post_id: str, user_id: str, status: str) -> bool:
+    """Update slack_status on a generated_post (service-role, called from webhook)."""
+    if not admin_enabled():
+        return False
+    resp = (
+        admin_client()
+        .table("generated_posts")
+        .update({"slack_status": status})
+        .eq("id", post_id)
+        .eq("user_id", user_id)
         .execute()
     )
     return bool(resp.data)
