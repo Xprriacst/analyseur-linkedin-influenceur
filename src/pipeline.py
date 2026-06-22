@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+from src import db as _db
 from src.llm import classify_posts, synthesize_strategy
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
@@ -11,6 +12,10 @@ from src.stats import compute_stats, cta_breakdown, engagement_by_classification
 from src.usage import get_usage, reset_usage
 
 ProgressCallback = Callable[[float, str], None]
+
+# Re-synthesize strategy only when ≥ this many new posts since last analysis.
+# Below this threshold, the cached synthesis is reused (saves one LLM call).
+RESYNTHESIS_THRESHOLD = 2
 
 
 def empty_synthesis() -> dict:
@@ -59,13 +64,60 @@ def run_analysis(
     cta_stats = cta_breakdown(patterns["posts_enriched"])
     stats["cta_effect"] = cta_stats
 
+    cached_cls_by_url: dict[str, dict] = {}
+    n_new = 0
+
     if with_llm:
-        tick(0.7, "Classifying TOFU/MOFU/BOFU")
-        classifications = classify_posts(posts)
+        # --- ALE-109: incremental classification via global cache ---
+        # Load cached classifications from the cross-user cache (service-role).
+        # Posts already classified by any user skip the LLM call.
+        cached_cls_by_url = _db.get_post_classifications_cache(handle)
+
+        new_posts = [p for p in posts if p.get("url", "") not in cached_cls_by_url]
+        n_new = len(new_posts)
+
+        if new_posts:
+            tick(0.7, f"Classifying {n_new} new / {len(posts)} posts")
+            new_classifications = classify_posts(new_posts)
+        else:
+            tick(0.7, f"All {len(posts)} posts already classified (cache hit)")
+            new_classifications = []
+
+        # Build url→classification for the new batch
+        new_cls_by_url: dict[str, dict] = {}
+        for i, p in enumerate(new_posts):
+            url_p = p.get("url", "")
+            if url_p and i < len(new_classifications):
+                new_cls_by_url[url_p] = new_classifications[i]
+
+        # Merge cached + new, preserving original post order
+        classifications = []
+        for p in posts:
+            url_p = p.get("url", "")
+            if url_p in new_cls_by_url:
+                classifications.append(new_cls_by_url[url_p])
+            elif url_p in cached_cls_by_url:
+                classifications.append(cached_cls_by_url[url_p])
+
         stats["stage_engagement"] = engagement_by_classification(classifications, posts, "stage")
         stats["hook_engagement"] = engagement_by_classification(classifications, posts, "hook_type")
-        tick(0.85, "Generating strategic synthesis")
-        synthesis = synthesize_strategy(stats, classifications, patterns["posts_enriched"])
+
+        # Re-synthesize only when there was no prior cache (first run) or delta is significant.
+        # With < RESYNTHESIS_THRESHOLD new posts the existing synthesis is still accurate enough.
+        needs_synthesis = (not cached_cls_by_url) or (n_new >= RESYNTHESIS_THRESHOLD)
+        if needs_synthesis:
+            tick(0.85, "Generating strategic synthesis")
+            synthesis = synthesize_strategy(stats, classifications, patterns["posts_enriched"])
+        else:
+            tick(0.85, "Reusing cached synthesis (no new posts)")
+            synthesis = _db.get_cached_synthesis(handle) or synthesize_strategy(
+                stats, classifications, patterns["posts_enriched"]
+            )
+
+        # Persist new classifications to the global cache for future incremental runs
+        if new_cls_by_url:
+            _db.save_post_classifications_cache(handle, new_cls_by_url)
+
     else:
         classifications = []
         synthesis = empty_synthesis()
@@ -99,4 +151,5 @@ def run_analysis(
         "usage": usage,
         "markdown": markdown,
         "path": str(path),
+        "incremental": {"cached": len(cached_cls_by_url), "new": n_new},
     }

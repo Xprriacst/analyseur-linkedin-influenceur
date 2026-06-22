@@ -1299,6 +1299,53 @@ def mark_seed_used(seed_id: str) -> None:
     admin_client().table("idea_seeds").update({"used_at": now}).eq("id", seed_id).execute()
 
 
+def replace_daily_idea(access_token: str, idea_markdown: str, idea_date: str) -> dict | None:
+    """Upsert the daily idea for today — replaces an existing one (on-demand regen)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "idea_markdown": idea_markdown,
+        "idea_date": idea_date,
+    }
+    resp = (
+        db.table("daily_ideas")
+        .upsert(row, on_conflict="user_id,idea_date")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_unused_seed_by_token(access_token: str) -> dict | None:
+    """Return the oldest unused idea seed for the authenticated user."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("idea_seeds")
+        .select("*")
+        .eq("user_id", user["id"])
+        .is_("used_at", "null")
+        .order("created_at", desc=False)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def mark_seed_used_by_token(access_token: str, seed_id: str) -> None:
+    """Mark a seed as consumed for the authenticated user."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db.table("idea_seeds").update({"used_at": now}).eq("id", seed_id).eq("user_id", user["id"]).execute()
+
+
 def daily_idea_exists(user_id: str, idea_date: str) -> bool:
     """Whether a daily idea already exists for this user/date (idempotent cron)."""
     if not admin_enabled():
@@ -1479,6 +1526,23 @@ def create_scheduled_post(access_token: str, post_text: str, scheduled_at_iso: s
     return resp.data[0] if resp.data else None
 
 
+def get_generated_post(access_token: str, post_id: str) -> dict | None:
+    """Fetch a single generated post for the authenticated user."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .select("*")
+        .eq("user_id", user["id"])
+        .eq("id", post_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def list_scheduled_posts(access_token: str, limit: int = 50) -> list[dict]:
     """List all scheduled posts for the authenticated user, newest first."""
     if not supabase_enabled():
@@ -1504,6 +1568,37 @@ def cancel_scheduled_post(access_token: str, post_id: str) -> bool:
         .update({"status": "cancelled", "updated_at": "now()"})
         .eq("id", post_id)
         .eq("status", "pending")
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def set_post_slack_pending(access_token: str, post_ids: list[str]) -> int:
+    """Mark a batch of generated posts as 'pending' Slack validation. Returns count updated."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return 0
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"slack_status": "pending"})
+        .in_("id", post_ids)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return len(resp.data) if resp.data else 0
+
+
+def update_post_slack_status(post_id: str, user_id: str, status: str) -> bool:
+    """Update slack_status on a generated_post (service-role, called from webhook)."""
+    if not admin_enabled():
+        return False
+    resp = (
+        admin_client()
+        .table("generated_posts")
+        .update({"slack_status": status})
+        .eq("id", post_id)
+        .eq("user_id", user_id)
         .execute()
     )
     return bool(resp.data)
@@ -1567,3 +1662,87 @@ def update_scheduled_post_status(
     if error is not None:
         payload["error_message"] = error[:500]
     admin.table("scheduled_posts").update(payload).eq("id", post_id).execute()
+
+
+# ---------------------------------------------------------------------------
+# ALE-109 — Incremental analysis: global per-post classification cache
+# ---------------------------------------------------------------------------
+
+def get_post_classifications_cache(
+    handle: str, platform: str = "linkedin"
+) -> dict[str, dict]:
+    """Return {post_url: classification_json} from the global cross-user cache.
+
+    Uses admin_client (service-role) to bypass RLS — no user_id in this table.
+    Returns an empty dict when cache is unavailable or empty.
+    """
+    if not admin_enabled():
+        return {}
+    try:
+        db = admin_client()
+        resp = (
+            db.table("post_classification_cache")
+            .select("post_url, classification_json")
+            .eq("handle", handle)
+            .eq("platform", platform)
+            .execute()
+        )
+        return {row["post_url"]: row["classification_json"] for row in (resp.data or [])}
+    except Exception:
+        return {}
+
+
+def save_post_classifications_cache(
+    handle: str,
+    classifications_by_url: "dict[str, dict]",
+    platform: str = "linkedin",
+) -> None:
+    """Upsert per-post classifications into the global cache. Service-role.
+
+    `classifications_by_url` is {post_url: classification_json}.
+    """
+    if not admin_enabled() or not classifications_by_url:
+        return
+    rows = [
+        {
+            "handle": handle,
+            "platform": platform,
+            "post_url": url,
+            "classification_json": cls,
+        }
+        for url, cls in classifications_by_url.items()
+        if url
+    ]
+    if not rows:
+        return
+    try:
+        admin_client().table("post_classification_cache").upsert(
+            rows, on_conflict="handle,platform,post_url"
+        ).execute()
+    except Exception:
+        pass
+
+
+def get_cached_synthesis(handle: str, platform: str = "linkedin") -> dict | None:
+    """Return the most recent synthesis for a handle across all users. Service-role.
+
+    Used in incremental analysis when there are no new posts — avoids regenerating
+    the strategic synthesis when the corpus hasn't changed.
+    """
+    if not admin_enabled():
+        return None
+    try:
+        db = admin_client()
+        resp = (
+            db.table("analyses")
+            .select("synthesis, updated_at")
+            .eq("handle", handle)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if resp.data:
+            return resp.data[0].get("synthesis")
+    except Exception:
+        pass
+    return None
