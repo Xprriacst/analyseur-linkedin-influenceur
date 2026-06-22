@@ -1320,6 +1320,53 @@ def mark_seed_used(seed_id: str) -> None:
     admin_client().table("idea_seeds").update({"used_at": now}).eq("id", seed_id).execute()
 
 
+def replace_daily_idea(access_token: str, idea_markdown: str, idea_date: str) -> dict | None:
+    """Upsert the daily idea for today — replaces an existing one (on-demand regen)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "idea_markdown": idea_markdown,
+        "idea_date": idea_date,
+    }
+    resp = (
+        db.table("daily_ideas")
+        .upsert(row, on_conflict="user_id,idea_date")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_unused_seed_by_token(access_token: str) -> dict | None:
+    """Return the oldest unused idea seed for the authenticated user."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("idea_seeds")
+        .select("*")
+        .eq("user_id", user["id"])
+        .is_("used_at", "null")
+        .order("created_at", desc=False)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def mark_seed_used_by_token(access_token: str, seed_id: str) -> None:
+    """Mark a seed as consumed for the authenticated user."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db.table("idea_seeds").update({"used_at": now}).eq("id", seed_id).eq("user_id", user["id"]).execute()
+
+
 def daily_idea_exists(user_id: str, idea_date: str) -> bool:
     """Whether a daily idea already exists for this user/date (idempotent cron)."""
     if not admin_enabled():
@@ -1480,3 +1527,51 @@ def set_idea_slack_pending(access_token: str, idea_ids: list[str]) -> int:
         .execute()
     )
     return len(resp.data) if resp.data else 0
+
+
+def get_generated_post(access_token: str, post_id: str) -> dict | None:
+    """Fetch a single generated post for the authenticated user."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .select("*")
+        .eq("user_id", user["id"])
+        .eq("id", post_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def set_post_slack_pending(access_token: str, post_ids: list[str]) -> int:
+    """Mark a batch of generated posts as 'pending' Slack validation. Returns count updated."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return 0
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"slack_status": "pending"})
+        .in_("id", post_ids)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return len(resp.data) if resp.data else 0
+
+
+def update_post_slack_status(post_id: str, user_id: str, status: str) -> bool:
+    """Update slack_status on a generated_post (service-role, called from webhook)."""
+    if not admin_enabled():
+        return False
+    resp = (
+        admin_client()
+        .table("generated_posts")
+        .update({"slack_status": status})
+        .eq("id", post_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return bool(resp.data)

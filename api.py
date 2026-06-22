@@ -22,6 +22,7 @@ from src.patterns import analyze_patterns
 from src.scraper import fetch_posts, fetch_profile
 from src.stats import compute_stats
 from src.instagram_hooks import select_hooks
+from src.daily_ideas import _render_idea_markdown
 
 load_dotenv()
 
@@ -1020,6 +1021,46 @@ def set_me_daily_ideas_enabled(
     return {"enabled": payload.enabled}
 
 
+@app.post("/me/daily-ideas/regenerate")
+def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Regenerate today's daily idea on demand (costs 1 credit)."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    influencers = _get_influencers(token)
+    if not influencers:
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
+
+    ok, balance = db.debit_credits(token, "generate_ideas", 1)
+    if not ok:
+        cost = db.CREDIT_COSTS["generate_ideas"]
+        raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Régénération = {cost} crédit(s).")
+
+    top_posts, benchmark = _build_benchmark(influencers)
+    user_context = db.get_user_ai_context(token)
+
+    seed = db.get_unused_seed_by_token(token)
+    seed_text = seed["text"] if seed else None
+
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+
+    ideas = generate_ideas(top_posts, benchmark, count=1, user_context=user_context, seed_topic=seed_text)
+    if not ideas:
+        raise HTTPException(status_code=500, detail="La génération n'a produit aucune idée.")
+
+    markdown = _render_idea_markdown(ideas[0], seed_text)
+    idea_row = db.replace_daily_idea(token, markdown, today)
+
+    if seed:
+        db.mark_seed_used_by_token(token, seed["id"])
+
+    return {
+        "idea": idea_row or {"idea_markdown": markdown, "idea_date": today},
+        "credits": balance,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Slack integration (ALE-63) — validation d'idées par boutons Slack
 # --------------------------------------------------------------------------- #
@@ -1035,6 +1076,10 @@ class SlackCallbackRequest(BaseModel):
 
 class SlackSendIdeasRequest(BaseModel):
     idea_ids: list[str] = Field(..., min_length=1, max_length=10)
+
+
+class SlackSendPostsRequest(BaseModel):
+    post_id: str = Field(..., min_length=1)
 
 
 @app.get("/me/integrations/slack/status")
@@ -1150,6 +1195,33 @@ def slack_send_ideas(
     return {"sent": sent, "errors": errors}
 
 
+@app.post("/me/integrations/slack/send-posts")
+def slack_send_post(
+    payload: SlackSendPostsRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Send a generated post to the user's Slack DM for validation (Option B)."""
+    row = db.get_slack_integration(token)
+    if not row:
+        raise HTTPException(status_code=400, detail="Compte Slack non connecté. Connecte Slack dans ton profil.")
+    channel_id: str = row.get("channel_id") or ""
+    bot_token: str = row.get("access_token") or ""
+    if not channel_id or not bot_token:
+        raise HTTPException(status_code=400, detail="Intégration Slack incomplète (channel ou token manquant).")
+
+    post = db.get_generated_post(token, payload.post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail=f"Post {payload.post_id} introuvable.")
+
+    try:
+        slack_client.send_post_for_validation(bot_token, channel_id, post)
+    except slack_client.SlackError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    db.set_post_slack_pending(token, [payload.post_id])
+    return {"sent": True}
+
+
 @app.post("/slack/webhooks/interactive")
 async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
     """Receive Slack interactive component payloads (button clicks).
@@ -1186,36 +1258,43 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
 
     action = actions[0]
     action_id: str = action.get("action_id", "")
-    idea_id: str = action.get("value", "")
+    item_id: str = action.get("value", "")
 
-    if action_id not in ("validate_idea", "decline_idea") or not idea_id:
+    if not item_id:
         return {"ok": True}
-
-    status = "validated" if action_id == "validate_idea" else "declined"
 
     # Lookup user by Slack user ID (service-role, no JWT available here)
     integration = db.get_user_by_slack_id(slack_user_id)
-    if integration:
-        db.update_idea_slack_status(idea_id, integration["user_id"], status)
 
-        # Update the Slack message to replace buttons with a status badge
-        bot_token: str = integration.get("access_token", "")
-        channel_id: str = (data.get("channel") or {}).get("id", "")
-        ts: str = (data.get("message") or {}).get("ts", "")
-        if bot_token and channel_id and ts:
-            try:
-                # Minimal idea dict for the update (just title + hook from message)
-                idea_blocks = (data.get("message") or {}).get("blocks") or []
-                title = ""
-                if idea_blocks and idea_blocks[0].get("text"):
-                    title = idea_blocks[0]["text"].get("text", "").split("\n")[0].strip("*")
-                slack_client.update_idea_message(
-                    bot_token, channel_id, ts,
-                    {"id": idea_id, "title": title},
-                    status,
-                )
-            except slack_client.SlackError:
-                pass  # non-blocking
+    if action_id in ("validate_idea", "decline_idea"):
+        status = "validated" if action_id == "validate_idea" else "declined"
+        if integration:
+            db.update_idea_slack_status(item_id, integration["user_id"], status)
+            bot_token_w: str = integration.get("access_token", "")
+            channel_id_w: str = (data.get("channel") or {}).get("id", "")
+            ts_w: str = (data.get("message") or {}).get("ts", "")
+            if bot_token_w and channel_id_w and ts_w:
+                try:
+                    idea_blocks = (data.get("message") or {}).get("blocks") or []
+                    title = ""
+                    if idea_blocks and idea_blocks[0].get("text"):
+                        title = idea_blocks[0]["text"].get("text", "").split("\n")[0].strip("*")
+                    slack_client.update_idea_message(bot_token_w, channel_id_w, ts_w, {"id": item_id, "title": title}, status)
+                except slack_client.SlackError:
+                    pass
+
+    elif action_id in ("validate_post", "reject_post"):
+        status = "validated" if action_id == "validate_post" else "rejected"
+        if integration:
+            db.update_post_slack_status(item_id, integration["user_id"], status)
+            bot_token_w = integration.get("access_token", "")
+            channel_id_w = (data.get("channel") or {}).get("id", "")
+            ts_w = (data.get("message") or {}).get("ts", "")
+            if bot_token_w and channel_id_w and ts_w:
+                try:
+                    slack_client.update_post_message(bot_token_w, channel_id_w, ts_w, {"id": item_id}, status)
+                except slack_client.SlackError:
+                    pass
 
     return {"ok": True}
 
