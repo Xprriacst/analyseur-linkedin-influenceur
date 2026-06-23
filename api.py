@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -313,9 +314,21 @@ class LinkedInConnectRequest(BaseModel):
     redirect_url: Optional[str] = Field(default=None, max_length=1000)
 
 
+class LinkedInImageRequest(BaseModel):
+    url: Optional[str] = Field(default=None, description="Public image URL or data:image/... base64 URL.")
+    data_url: Optional[str] = Field(default=None, description="Uploaded/generated image as a data:image/... base64 URL.")
+    filename: Optional[str] = Field(default=None, max_length=200)
+    title: Optional[str] = Field(default=None, max_length=200)
+
+
 class LinkedInPublishRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=8000)
     draft: bool = False
+    images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
+
+
+def _image_payload(images: list[LinkedInImageRequest]) -> list[dict[str, Any]]:
+    return [image.model_dump(exclude_none=True) for image in images]
 
 
 def _linkedin_status(token: str) -> dict[str, Any]:
@@ -386,7 +399,7 @@ def me_linkedin_publish(
     payload: LinkedInPublishRequest,
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
-    """Publish a post immediately on the user's connected LinkedIn account."""
+    """Publish or save a post draft on the user's connected LinkedIn account."""
     if not zernio.enabled():
         raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
     profile = db.get_editorial_profile(token) or {}
@@ -394,13 +407,18 @@ def me_linkedin_publish(
     if not account_id:
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
     try:
+        media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
         result = zernio.create_post(
-            payload.content.strip(), account_id, publish_now=True, is_draft=payload.draft
+            payload.content.strip(),
+            account_id,
+            publish_now=True,
+            is_draft=payload.draft,
+            media_items=media_items,
         )
     except zernio.ZernioError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     post = result.get("post") or result
-    return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft}
+    return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft, "media_count": len(payload.images)}
 
 
 # ── ALE-96 : Planification LinkedIn ──────────────────────────────────────────
@@ -408,6 +426,23 @@ def me_linkedin_publish(
 class LinkedInScheduleRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=8000)
     scheduled_at: str = Field(..., description="ISO 8601 datetime (ex. 2026-06-22T09:00:00+02:00)")
+    images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
+
+
+class LinkedInScheduledPostUpdateRequest(BaseModel):
+    post_text: str | None = Field(None, min_length=1, max_length=8000)
+    scheduled_at: str | None = Field(None, description="ISO 8601 datetime (ex. 2026-06-22T09:00:00+02:00)")
+
+
+def _validate_future_scheduled_at(scheduled_at: str) -> None:
+    try:
+        parsed = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format de date invalide. Utilise ISO 8601 (ex. 2026-06-22T09:00:00+02:00).")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="La date de programmation doit être dans le futur.")
 
 
 @app.post("/me/linkedin/schedule")
@@ -415,22 +450,38 @@ def me_linkedin_schedule(
     payload: LinkedInScheduleRequest,
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
-    """Store a LinkedIn post for future publication at the given datetime."""
+    """Store a LinkedIn post and request Slack validation before future publication."""
     if not zernio.enabled():
         raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
     profile = db.get_editorial_profile(token) or {}
     if not profile.get("zernio_account_id"):
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
-    # Basic ISO 8601 validation (full parse done by Supabase as timestamptz)
-    from datetime import datetime
-    try:
-        datetime.fromisoformat(payload.scheduled_at.replace("Z", "+00:00"))
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Format de date invalide. Utilise ISO 8601 (ex. 2026-06-22T09:00:00+02:00).")
+    _validate_future_scheduled_at(payload.scheduled_at)
+    slack_row = db.get_slack_integration(token)
+    if not slack_row:
+        raise HTTPException(status_code=400, detail="Connecte Slack dans ton profil pour valider les posts programmés.")
+    channel_id: str = slack_row.get("channel_id") or ""
+    bot_token: str = slack_row.get("access_token") or ""
+    if not channel_id or not bot_token:
+        raise HTTPException(status_code=400, detail="Intégration Slack incomplète (channel ou token manquant).")
 
-    row = db.create_scheduled_post(token, payload.content.strip(), payload.scheduled_at)
+    row = db.create_scheduled_post(
+        token,
+        payload.content.strip(),
+        payload.scheduled_at,
+        media_items=_image_payload(payload.images),
+    )
     if row is None:
         raise HTTPException(status_code=500, detail="Impossible d'enregistrer le post planifié.")
+    try:
+        message_ts = slack_client.send_scheduled_post_for_validation(bot_token, channel_id, row)
+    except slack_client.SlackError as exc:
+        db.mark_scheduled_post_slack_error(token, row["id"], str(exc))
+        raise HTTPException(status_code=502, detail=f"Programmation enregistrée, mais demande Slack impossible : {exc}") from exc
+    row = db.set_scheduled_post_slack_message(token, row["id"], message_ts) or {
+        **row,
+        "slack_message_ts": message_ts,
+    }
     return {"ok": True, "scheduled_post": row}
 
 
@@ -536,6 +587,36 @@ def me_x_publish(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft}
+
+
+@app.patch("/me/linkedin/scheduled/{post_id}")
+def me_linkedin_scheduled_update(
+    post_id: str,
+    payload: LinkedInScheduledPostUpdateRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Edit a pending scheduled LinkedIn post."""
+    if payload.post_text is None and payload.scheduled_at is None:
+        raise HTTPException(status_code=400, detail="Indique au moins un champ à modifier.")
+
+    post_text: str | None = None
+    if payload.post_text is not None:
+        post_text = payload.post_text.strip()
+        if not post_text:
+            raise HTTPException(status_code=400, detail="Le texte du post ne peut pas être vide.")
+
+    if payload.scheduled_at is not None:
+        _validate_future_scheduled_at(payload.scheduled_at)
+
+    row = db.update_scheduled_post(
+        token,
+        post_id,
+        post_text=post_text,
+        scheduled_at_iso=payload.scheduled_at,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Post planifié introuvable ou non éditable.")
+    return {"ok": True, "scheduled_post": row}
 
 
 @app.get("/reports")
@@ -879,6 +960,8 @@ class IdeasRequest(BaseModel):
 class GenerateRequest(BaseModel):
     topic: Optional[str] = Field(default=None)
     editorial_role: Optional[str] = Field(default=None)
+    # Deprecated client hint kept for backward compatibility. Post generation now
+    # exposes web search as an autonomous server-side tool; the model decides.
     web_search: bool = Field(default=False)
     count: int = Field(default=1, ge=1, le=3)
 
@@ -926,6 +1009,16 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
 @app.post("/generate")
 def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
     """Generate optimized post variants for a given topic."""
+    web_searches: list[dict[str, Any]] = []
+    response = _generate_posts_response(payload, token, on_web_search=web_searches.append)
+    response["web_search"] = {
+        "used": bool(web_searches),
+        "queries": web_searches,
+    }
+    return response
+
+
+def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) -> dict[str, Any]:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
@@ -946,22 +1039,105 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
     user_context = db.get_user_ai_context(token)
     role = (payload.editorial_role or "").strip() or None
     topic = (payload.topic or "").strip()
-    variants = generate_posts(
-        topic,
-        top_posts,
-        benchmark,
-        user_context=user_context,
-        editorial_role=role,
-        web_search=payload.web_search,
-        count=payload.count,
-    )
+    return {
+        "top_posts": top_posts,
+        "benchmark": benchmark,
+        "user_context": user_context,
+        "role": role,
+        "topic": topic,
+        "credits": credits,
+    }
+
+
+def _save_generated_variants(token: Optional[str], topic: str, variants: list[dict]) -> tuple[list[dict], str | None]:
     save_error: str | None = None
     if token:
         try:
             variants = db.save_generated_posts(token, topic, variants)
         except Exception as exc:
             save_error = str(exc)
-    return {"variants": variants, "save_error": save_error, "credits": credits}
+    return variants, save_error
+
+
+def _generate_posts_response(
+    payload: GenerateRequest,
+    token: Optional[str],
+    on_web_search=None,
+) -> dict[str, Any]:
+    context = _prepare_generate_context(payload, token)
+    variants = generate_posts(
+        context["topic"],
+        context["top_posts"],
+        context["benchmark"],
+        user_context=context["user_context"],
+        editorial_role=context["role"],
+        count=payload.count,
+        on_web_search=on_web_search,
+    )
+    variants, save_error = _save_generated_variants(token, context["topic"], variants)
+    return {"variants": variants, "save_error": save_error, "credits": context["credits"]}
+
+
+@app.post("/generate/stream")
+def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(optional_token)) -> StreamingResponse:
+    """Generate posts as SSE and report autonomous web-search starts live."""
+    context = _prepare_generate_context(payload, token)
+
+    def stream_response():
+        import queue
+        import threading
+
+        events: queue.Queue[tuple[str, dict[str, Any]] | None] = queue.Queue()
+        web_searches: list[dict[str, Any]] = []
+
+        def on_web_search(event: dict[str, Any]) -> None:
+            web_searches.append(event)
+            events.put(("search", event))
+
+        def worker() -> None:
+            try:
+                variants = generate_posts(
+                    context["topic"],
+                    context["top_posts"],
+                    context["benchmark"],
+                    user_context=context["user_context"],
+                    editorial_role=context["role"],
+                    count=payload.count,
+                    on_web_search=on_web_search,
+                )
+                variants, save_error = _save_generated_variants(token, context["topic"], variants)
+                events.put(("done", {
+                    "variants": variants,
+                    "save_error": save_error,
+                    "credits": context["credits"],
+                    "web_search": {
+                        "used": bool(web_searches),
+                        "queries": web_searches,
+                    },
+                }))
+            except Exception as exc:
+                events.put(("error", {"detail": str(exc)}))
+            finally:
+                events.put(None)
+
+        yield _sse("meta", {"credits": context["credits"]})
+        threading.Thread(target=worker, daemon=True).start()
+
+        while True:
+            item = events.get()
+            if item is None:
+                break
+            event, data = item
+            yield _sse(event, data)
+
+    return StreamingResponse(
+        stream_response(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/me/generated-ideas")
@@ -1344,6 +1520,20 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
             if bot_token_w and channel_id_w and ts_w:
                 try:
                     slack_client.update_post_message(bot_token_w, channel_id_w, ts_w, {"id": item_id}, status)
+                except slack_client.SlackError:
+                    pass
+
+    elif action_id in ("validate_scheduled_post", "decline_scheduled_post"):
+        status = "validated" if action_id == "validate_scheduled_post" else "declined"
+        if integration:
+            scheduled = db.get_scheduled_post_for_user(item_id, integration["user_id"]) or {"id": item_id}
+            db.update_scheduled_post_slack_status(item_id, integration["user_id"], status)
+            bot_token_w = integration.get("access_token", "")
+            channel_id_w = (data.get("channel") or {}).get("id", "")
+            ts_w = (data.get("message") or {}).get("ts", "")
+            if bot_token_w and channel_id_w and ts_w:
+                try:
+                    slack_client.update_scheduled_post_message(bot_token_w, channel_id_w, ts_w, scheduled, status)
                 except slack_client.SlackError:
                     pass
 

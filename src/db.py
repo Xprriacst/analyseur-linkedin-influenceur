@@ -1577,8 +1577,13 @@ def set_idea_slack_pending(access_token: str, idea_ids: list[str]) -> int:
 
 # ── ALE-96 : Posts LinkedIn planifiés ─────────────────────────────────────────
 
-def create_scheduled_post(access_token: str, post_text: str, scheduled_at_iso: str) -> dict | None:
-    """Store a scheduled LinkedIn post for later publication by the cron."""
+def create_scheduled_post(
+    access_token: str,
+    post_text: str,
+    scheduled_at_iso: str,
+    media_items: list[dict[str, Any]] | None = None,
+) -> dict | None:
+    """Store a scheduled LinkedIn post (with optional images) pending Slack validation."""
     if not supabase_enabled():
         return None
     user = get_user(access_token)
@@ -1587,7 +1592,13 @@ def create_scheduled_post(access_token: str, post_text: str, scheduled_at_iso: s
     db = client_for_token(access_token)
     resp = (
         db.table("scheduled_posts")
-        .insert({"user_id": user["id"], "post_text": post_text, "scheduled_at": scheduled_at_iso})
+        .insert({
+            "user_id": user["id"],
+            "post_text": post_text,
+            "scheduled_at": scheduled_at_iso,
+            "media_items": media_items or [],
+            "slack_status": "pending",
+        })
         .execute()
     )
     return resp.data[0] if resp.data else None
@@ -1617,7 +1628,7 @@ def list_scheduled_posts(access_token: str, limit: int = 50) -> list[dict]:
     db = client_for_token(access_token)
     resp = (
         db.table("scheduled_posts")
-        .select("id, post_text, scheduled_at, status, zernio_post_id, error_message, created_at")
+        .select("id, post_text, scheduled_at, status, slack_status, slack_message_ts, zernio_post_id, error_message, media_items, created_at")
         .order("scheduled_at", desc=False)
         .limit(max(1, min(limit, 200)))
         .execute()
@@ -1638,6 +1649,76 @@ def cancel_scheduled_post(access_token: str, post_id: str) -> bool:
         .execute()
     )
     return bool(resp.data)
+
+
+def update_scheduled_post(
+    access_token: str,
+    post_id: str,
+    *,
+    post_text: str | None = None,
+    scheduled_at_iso: str | None = None,
+) -> dict | None:
+    """Update a pending scheduled post owned by the authenticated user."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    payload: dict[str, Any] = {"updated_at": "now()"}
+    if post_text is not None:
+        payload["post_text"] = post_text
+    if scheduled_at_iso is not None:
+        payload["scheduled_at"] = scheduled_at_iso
+    if len(payload) == 1:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .update(payload)
+        .eq("id", post_id)
+        .eq("user_id", user["id"])
+        .eq("status", "pending")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def mark_scheduled_post_slack_error(access_token: str, post_id: str, error: str) -> bool:
+    """Mark the caller's scheduled post as failed when Slack validation cannot be sent."""
+    if not supabase_enabled():
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .update({
+            "status": "failed",
+            "error_message": error[:500],
+            "updated_at": "now()",
+        })
+        .eq("id", post_id)
+        .eq("status", "pending")
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def set_scheduled_post_slack_message(access_token: str, post_id: str, message_ts: str) -> dict | None:
+    """Persist the Slack message timestamp for a scheduled post."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .update({
+            "slack_status": "pending",
+            "slack_message_ts": message_ts,
+            "updated_at": "now()",
+        })
+        .eq("id", post_id)
+        .eq("status", "pending")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
 
 
 def set_post_slack_pending(access_token: str, post_ids: list[str]) -> int:
@@ -1671,6 +1752,45 @@ def update_post_slack_status(post_id: str, user_id: str, status: str) -> bool:
     return bool(resp.data)
 
 
+def get_scheduled_post_for_user(post_id: str, user_id: str) -> dict | None:
+    """Fetch a scheduled post by id/user with service-role access."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("scheduled_posts")
+        .select("id, user_id, post_text, scheduled_at, status, slack_status")
+        .eq("id", post_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_scheduled_post_slack_status(post_id: str, user_id: str, status: str) -> bool:
+    """Apply Slack validation result to a scheduled post.
+
+    Validation keeps the schedule pending for the cron. Decline cancels the
+    schedule immediately so a due cron run can never publish it.
+    """
+    if not admin_enabled():
+        return False
+    payload: dict[str, Any] = {"slack_status": status, "updated_at": "now()"}
+    if status == "declined":
+        payload["status"] = "cancelled"
+        payload["error_message"] = "Publication annulée après refus Slack."
+    resp = (
+        admin_client()
+        .table("scheduled_posts")
+        .update(payload)
+        .eq("id", post_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return bool(resp.data)
+
+
 def get_due_scheduled_posts() -> list[dict]:
     """Return pending posts whose scheduled_at <= now() (service-role, for cron).
 
@@ -1684,8 +1804,9 @@ def get_due_scheduled_posts() -> list[dict]:
     admin = admin_client()
     resp = (
         admin.table("scheduled_posts")
-        .select("id, user_id, post_text")
+        .select("id, user_id, post_text, media_items")
         .eq("status", "pending")
+        .eq("slack_status", "validated")
         .lte("scheduled_at", "now()")
         .limit(100)
         .execute()
@@ -1706,6 +1827,7 @@ def get_due_scheduled_posts() -> list[dict]:
             "id": p["id"],
             "user_id": p["user_id"],
             "post_text": p["post_text"],
+            "media_items": p.get("media_items") or [],
             "zernio_account_id": account_by_user.get(p["user_id"]),
         }
         for p in posts
