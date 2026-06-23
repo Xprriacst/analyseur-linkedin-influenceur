@@ -66,8 +66,41 @@ def _default_dataset_id(run: Any) -> str:
     return run.default_dataset_id
 
 
+def _posts_run_input(actor: str, handle: str, url: str, limit: int) -> dict[str, Any]:
+    if "harvestapi" in actor:
+        return {
+            "targetUrls": [url],
+            "maxPosts": limit,
+            "postedLimit": "any",
+            "scrapeComments": False,
+            "scrapeReactions": False,
+            "includeReposts": False,
+        }
+    if "datadoping" in actor:
+        return {"username": handle, "resultsLimit": limit}
+    return {"username": handle, "limit": limit}
+
+
+def _run_posts_actor(actor: str, handle: str, url: str, limit: int) -> list[dict]:
+    try:
+        run = _call_actor(actor, _posts_run_input(actor, handle, url, limit), timeout_secs=300)
+        items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
+    except Exception as exc:
+        print(f"[scraper] échec scrape posts {handle!r} via {actor}: {exc}", flush=True)
+        return []
+    # Certains actors renvoient un item d'erreur au lieu d'un dataset vide.
+    return [
+        i for i in items
+        if isinstance(i, dict) and (i.get("text") or i.get("content") or i.get("full_urn") or i.get("id"))
+    ]
+
+
 def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> list[dict[str, Any]]:
-    """Fetch the last `limit` posts of a LinkedIn profile via Apify."""
+    """Fetch the last `limit` posts of a LinkedIn profile via Apify.
+
+    Tries APIFY_ACTOR first (default: harvestapi/linkedin-profile-posts).
+    Falls back to POSTS_FALLBACK_ACTOR if the primary returns no results.
+    """
     handle = extract_handle(profile_url)
     cache_file = _cache_path(handle, "-posts")
 
@@ -80,41 +113,29 @@ def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> li
     actor = os.environ.get("APIFY_ACTOR", "harvestapi/linkedin-profile-posts")
     url = normalize_url(profile_url)
 
-    if "harvestapi" in actor:
-        run_input = {
-            "targetUrls": [url],
-            "maxPosts": limit,
-            "postedLimit": "any",
-            "scrapeComments": False,
-            "scrapeReactions": False,
-            "includeReposts": False,
-        }
-    else:
-        run_input = {
-            "username": handle,
-            "page_number": 1,
-            "limit": limit,
-        }
+    items = _run_posts_actor(actor, handle, url, limit)
 
-    run = _call_actor(actor, run_input, timeout_secs=300)
-    items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
-    # Certains actors renvoient un item d'erreur ({"message": ..., "profile_input": ...})
-    # au lieu d'un dataset vide : on ne garde que les vrais posts.
-    items = [
-        i for i in items
-        if isinstance(i, dict) and (i.get("text") or i.get("content") or i.get("full_urn") or i.get("id"))
-    ]
+    if not items and actor != POSTS_FALLBACK_ACTOR:
+        print(f"[scraper] 0 post via {actor!r} pour {handle!r} — tentative fallback {POSTS_FALLBACK_ACTOR!r}", flush=True)
+        items = _run_posts_actor(POSTS_FALLBACK_ACTOR, handle, url, limit)
+        if items:
+            actor = POSTS_FALLBACK_ACTOR
+
     track_apify(actor, len(items), cached=False)
-
     if items:  # ne jamais mettre en cache un échec
         cache_file.write_text(json.dumps(items, ensure_ascii=False, indent=2, default=str))
     return items
 
 
-# Actor de secours : fonctionne sans approbation de permissions Apify
+# Fallback profil : fonctionne sans approbation de permissions Apify
 # (harvestapi/linkedin-profile-scraper exige depuis ~06/2026 un "full access"
 # à approuver manuellement dans la console — sinon chaque scrape échoue).
 PROFILE_FALLBACK_ACTOR = "apimaestro/linkedin-profile-detail"
+
+# Fallback posts : utilisé automatiquement si l'actor principal renvoie 0 résultat.
+# ~$0.0014/post, 100% succès déclaré (vs harvestapi à $0.002/post).
+# Env var APIFY_ACTOR surcharge l'actor principal ; le fallback reste fixe.
+POSTS_FALLBACK_ACTOR = "datadoping/linkedin-profile-posts-scraper"
 
 
 def _profile_run_input(actor: str, url: str) -> dict[str, Any]:
