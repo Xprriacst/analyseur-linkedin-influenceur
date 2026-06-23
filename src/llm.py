@@ -543,10 +543,11 @@ ROLE_SPECS: dict[str, dict[str, str]] = {
         "hook_type": "stat+contrarian",
         "indicator": "+40-80% vs post standard",
         "guidance": (
-            "Objectif : maximiser l'engagement. Hook fort (chiffre frappant PUIS angle contrarian), "
-            "corps en paragraphes courts, framework numéroté (3-7 items avec ↳) puis triple CTA "
-            "(💬 commentaire / ♻️ repost / 🔖 enregistrer). C'est le SEUL rôle où la structure "
-            "« virale » complète (framework numéroté + triple CTA) est attendue. Cible 1 400-1 800 caractères."
+            "Objectif : maximiser l'engagement sans sonner comme un template. Hook précis et naturel "
+            "(chiffre, observation terrain ou contre-pied nuancé), corps en paragraphes courts, éventuellement "
+            "un framework numéroté si le sujet s'y prête. C'est le seul rôle où une structure plus optimisée "
+            "peut apparaître, mais elle ne doit jamais devenir mécanique : CTA clair, sobre, 1 action principale. "
+            "Cible 1 200-1 700 caractères."
         ),
     },
     "methodologie": {
@@ -613,6 +614,25 @@ ROLE_SPECS: dict[str, dict[str, str]] = {
 }
 
 
+POST_QUALITY_GUARDRAILS = """
+Qualité rédactionnelle obligatoire :
+- Calque le STYLE sur le profil éditorial du client et sur les exemples réels du benchmark : rythme, précision métier,
+  niveau de détail, vocabulaire, longueur des phrases, façon de relier les idées. Ne copie jamais les textes.
+- Évite le style générique "LinkedIn IA" : fausse gravité, punchlines isolées, oppositions binaires, retours à la ligne
+  dramatiques, formules recyclées, négations à rallonge.
+- Varie les accroches entre les variants : observation concrète, micro-scène, question simple, promesse utile,
+  diagnostic direct, retour d'expérience, opinion nuancée. Ne réutilise pas la même architecture d'ouverture.
+- Si tu utilises un contre-pied, formule-le comme une pensée humaine et fluide, pas comme "X.\n\nPas Y.".
+- Préfère des détails vérifiables et incarnés aux grandes phrases abstraites ("projets IA", "workflows", "PME")
+  quand le contexte client permet d'être plus spécifique.
+
+Contre-exemples à NE PAS reproduire :
+- "La majorité des projets IA en PME ne meurent pas à cause de l'outil choisi.\n\nIls meurent avant même que l'outil soit ouvert."
+- "Dans 7 ans de missions IA et automatisation, j'ai audité des dizaines de workflows en PME.\n\nLe problème numéro un que je retrouve partout n'est pas technique."
+- Toute ouverture en deux blocs du type : affirmation choc négative puis punchline "Pas/Il/Elle..." sur la ligne suivante.
+""".strip()
+
+
 def _auto_role_mix() -> list[str]:
     """Mix éditorial par défaut : performance + méthodo/autorité + relationnel/quotidien + opinion + story."""
     return [
@@ -664,8 +684,9 @@ def generate_posts(
         "Tu es un expert en stratégie LinkedIn. "
         "Tu génères des posts prêts à publier en respectant d'abord le contexte du client, "
         "puis en t'appuyant sur les patterns observés chez les influenceurs analysés. "
-        "Tu produis des STRUCTURES VARIÉES : tous les posts ne sont pas des posts viraux optimisés engagement. "
+        "Tu produis des STRUCTURES VARIÉES, naturelles et humaines : tous les posts ne sont pas des posts viraux optimisés engagement. "
         "Chaque rôle éditorial a sa propre intention et sa propre forme — respecte-les strictement. "
+        "Les patterns du benchmark servent à imiter un style réel (rythme, angle, niveau de détail), pas à recycler des templates. "
         + _date_directive()
         + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
@@ -699,6 +720,10 @@ Règles communes :
 - N'impose PAS le triple CTA à tous les rôles. N'impose PAS un framework numéroté à tous les rôles. Respecte la consigne propre à chaque rôle.
 - Langue : français.
 - Ne PAS mettre de balises markdown dans le texte du post.
+
+"""
+        + POST_QUALITY_GUARDRAILS
+        + """
 
 Schéma JSON attendu (toutes les clés obligatoires) :
 {
