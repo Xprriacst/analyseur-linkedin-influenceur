@@ -12,6 +12,10 @@ from src.usage import get_usage, reset_usage
 
 ProgressCallback = Callable[[float, str], None]
 
+# Seuils pour l'analyse incrémentale (ALE-109)
+CACHE_FRESH_DAYS = 7       # Cache considéré frais si < N jours (pour note de fraîcheur)
+RESYNTHESIS_THRESHOLD = 2  # Nb de nouveaux posts minimum pour refaire la synthèse LLM
+
 
 def empty_synthesis() -> dict:
     return {
@@ -25,6 +29,49 @@ def empty_synthesis() -> dict:
         "gaps": [],
         "actions_to_replicate": [],
     }
+
+
+def _build_url_classif_map(
+    new_posts: list[dict],
+    new_classifs: list[dict],
+    cached_url_to_classif: dict[str, dict],
+) -> dict[str, dict]:
+    """Fusionne les nouvelles classifications LLM avec celles du cache global.
+
+    new_classifs : résultat de classify_posts(new_posts), indices relatifs à new_posts.
+    cached_url_to_classif : {url → classif_dict} depuis le cache global.
+    Retourne {url → classif_dict} couvrant l'union des deux sources.
+    """
+    url_to_classif: dict[str, dict] = dict(cached_url_to_classif)
+    for c in new_classifs:
+        idx = c.get("index", -1)
+        if 0 <= idx < len(new_posts):
+            url = new_posts[idx].get("url")
+            if url:
+                url_to_classif[url] = {
+                    "stage": c.get("stage", "TOFU"),
+                    "hook_type": c.get("hook_type", "other"),
+                    "topic": c.get("topic", ""),
+                    "angle": c.get("angle", ""),
+                }
+    return url_to_classif
+
+
+def _reconstruct_classifications(
+    posts: list[dict], url_to_classif: dict[str, dict]
+) -> list[dict]:
+    """Reconstruit la liste de classifications indexée sur `posts`.
+
+    L'index i dans le résultat correspond à posts[i], ce qui est ce
+    qu'attendent synthesize_strategy et engagement_by_classification.
+    """
+    result = []
+    for i, post in enumerate(posts):
+        url = post.get("url")
+        classif = url_to_classif.get(url) if url else None
+        if classif:
+            result.append({"index": i, **classif})
+    return result
 
 
 def run_analysis(
@@ -41,6 +88,35 @@ def run_analysis(
     reset_usage()
     handle = extract_handle(url)
 
+    # ── Cache global cross-user (ALE-109) ─────────────────────────────────── #
+    # Import local pour éviter un import circulaire (db importe pipeline indirectement).
+    from src import db as _db
+
+    cache_entry: dict | None = None
+    cached_post_rows: list[dict] = []
+    cached_url_to_classif: dict[str, dict] = {}
+
+    if not no_cache:
+        try:
+            cache_entry = _db.get_influencer_from_cache(handle, platform="linkedin")
+            if cache_entry:
+                cached_post_rows = _db.get_cached_posts_for_influencer(cache_entry["id"])
+                cached_url_to_classif = {
+                    row["url"]: {
+                        "stage": row["stage"],
+                        "hook_type": row.get("hook_type", "other"),
+                        "topic": row.get("topic", ""),
+                        "angle": row.get("angle", ""),
+                    }
+                    for row in cached_post_rows
+                    if row.get("url") and row.get("stage")
+                }
+        except Exception:
+            cache_entry = None
+            cached_post_rows = []
+            cached_url_to_classif = {}
+    # ──────────────────────────────────────────────────────────────────────── #
+
     tick(0.05, "Scraping profile")
     raw_profile = fetch_profile(url, use_cache=not no_cache)
     profile = normalize_profile(raw_profile)
@@ -51,6 +127,16 @@ def run_analysis(
     if not posts:
         raise RuntimeError("Aucun post exploitable. Profil privé ou URL incorrecte ?")
 
+    # Posts absents du cache = delta à classifier
+    cached_post_urls: set[str] = {
+        row["url"] for row in cached_post_rows if row.get("url")
+    }
+    new_posts: list[dict] = (
+        [p for p in posts if p.get("url") and p["url"] not in cached_post_urls]
+        if cache_entry
+        else list(posts)
+    )
+
     tick(0.45, "Computing stats")
     stats = compute_stats(posts, profile=profile)
 
@@ -59,16 +145,66 @@ def run_analysis(
     cta_stats = cta_breakdown(patterns["posts_enriched"])
     stats["cta_effect"] = cta_stats
 
+    url_to_classif: dict[str, dict] = {}
+    new_classifs: list[dict] = []
+    classifications: list[dict] = []
+    synthesis: dict = empty_synthesis()
+
     if with_llm:
-        tick(0.7, "Classifying TOFU/MOFU/BOFU")
-        classifications = classify_posts(posts)
+        if new_posts:
+            tick(0.7, f"Classifying {len(new_posts)} new post(s) — TOFU/MOFU/BOFU")
+            new_classifs = classify_posts(new_posts)
+        else:
+            tick(0.7, f"Tous les posts sont déjà classifiés ({len(cached_url_to_classif)} en cache)")
+
+        url_to_classif = _build_url_classif_map(new_posts, new_classifs, cached_url_to_classif)
+        classifications = _reconstruct_classifications(posts, url_to_classif)
+
         stats["stage_engagement"] = engagement_by_classification(classifications, posts, "stage")
         stats["hook_engagement"] = engagement_by_classification(classifications, posts, "hook_type")
-        tick(0.85, "Generating strategic synthesis")
-        synthesis = synthesize_strategy(stats, classifications, patterns["posts_enriched"])
+
+        needs_synthesis = len(new_posts) >= RESYNTHESIS_THRESHOLD or not cache_entry
+        cached_synthesis: dict | None = (cache_entry or {}).get("synthesis") if cache_entry else None
+
+        if needs_synthesis:
+            tick(0.85, "Generating strategic synthesis")
+            synthesis = synthesize_strategy(stats, classifications, patterns["posts_enriched"])
+            # Note de fraîcheur si des anciens posts (métriques figées) sont inclus
+            n_old = len(cached_post_urls & {p.get("url") for p in posts if p.get("url")})
+            if cache_entry and n_old > 0:
+                note = (
+                    f"> *Note : métriques de {n_old} post(s) antérieur(s) "
+                    f"conservées telles qu'à leur 1ʳᵉ analyse (pas de re-scrape de l'engagement).*\n\n"
+                )
+                synthesis = dict(synthesis)
+                synthesis["positioning"] = note + synthesis.get("positioning", "")
+        elif cached_synthesis:
+            tick(0.85, "Synthèse existante réutilisée (delta < seuil de re-synthèse)")
+            synthesis = cached_synthesis
+        else:
+            tick(0.85, "Generating strategic synthesis")
+            synthesis = synthesize_strategy(stats, classifications, patterns["posts_enriched"])
     else:
         classifications = []
         synthesis = empty_synthesis()
+
+    # ── Mise à jour du cache global ───────────────────────────────────────── #
+    try:
+        save_synthesis = synthesis if with_llm else None
+        cache_id = _db.upsert_influencer_cache(handle, "linkedin", profile, synthesis=save_synthesis)
+        if cache_id:
+            posts_for_cache = [
+                {
+                    "post": p,
+                    "classification": url_to_classif.get(p.get("url")) if url_to_classif else None,
+                }
+                for p in posts
+                if p.get("url")
+            ]
+            _db.upsert_cached_posts(cache_id, posts_for_cache)
+    except Exception:
+        pass  # La persistance du cache ne doit jamais interrompre l'analyse
+    # ──────────────────────────────────────────────────────────────────────── #
 
     usage = get_usage()
     tick(0.95, "Rendering report")
