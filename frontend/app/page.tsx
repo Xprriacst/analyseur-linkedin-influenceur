@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   Clock3,
+  Copy,
   Download,
   FileText,
   Image as ImageIcon,
@@ -1832,6 +1833,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [generatingImage, setGeneratingImage] = useState<number | null>(null);
   const [imageError, setImageError] = useState("");
   const [editedVariants, setEditedVariants] = useState<Record<number, string>>({});
+  const [copiedVariant, setCopiedVariant] = useState<number | null>(null);
   const [variantCount, setVariantCount] = useState(1);
   const [scheduleModal, setScheduleModal] = useState<{ index: number; text: string } | null>(null);
   const [scheduleDate, setScheduleDate] = useState("");
@@ -1910,6 +1912,12 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     } finally {
       setPublishingX(null);
     }
+  }
+
+  function copyVariant(i: number, text: string) {
+    void navigator.clipboard.writeText(text);
+    setCopiedVariant(i);
+    setTimeout(() => setCopiedVariant((current) => (current === i ? null : current)), 1500);
   }
 
   function openScheduleModal(i: number, text: string) {
@@ -2101,12 +2109,23 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   <span className="idea-lift">{v.predicted_lift}</span>
                 </div>
                 <p className="variant-strategy">{v.strategy}</p>
-                <textarea
-                  className="variant-text"
-                  value={editedVariants[i] ?? v.post}
-                  rows={14}
-                  onChange={(e) => setEditedVariants((prev) => ({ ...prev, [i]: e.target.value }))}
-                />
+                <div className="variant-text-wrap">
+                  <textarea
+                    className="variant-text"
+                    value={editedVariants[i] ?? v.post}
+                    rows={14}
+                    onChange={(e) => setEditedVariants((prev) => ({ ...prev, [i]: e.target.value }))}
+                  />
+                  <button
+                    type="button"
+                    className="variant-copy-button"
+                    aria-label={copiedVariant === i ? "Post copié" : "Copier le post"}
+                    title={copiedVariant === i ? "Copié ✓" : "Copier le post"}
+                    onClick={() => copyVariant(i, editedVariants[i] ?? v.post)}
+                  >
+                    {copiedVariant === i ? <CheckCircle2 size={16} /> : <Copy size={16} />}
+                  </button>
+                </div>
                 {editedVariants[i] !== undefined && editedVariants[i] !== v.post && (
                   <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
                     <span style={{ fontSize: 12, color: "var(--muted)" }}>✏️ Modifié</span>
@@ -2116,9 +2135,6 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button className="secondary-button" onClick={() => navigator.clipboard.writeText(editedVariants[i] ?? v.post)}>
-                    Copier le post
-                  </button>
                   <button
                     className="primary-button"
                     disabled={publishing === i}
@@ -2131,7 +2147,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   <button
                     className="secondary-button"
                     disabled={publishing === i}
-                    title={linkedin.status?.connected ? "Enregistrer comme brouillon dans LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                    title={linkedin.status?.connected ? "Enregistrer comme brouillon dans Zernio" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
                     onClick={() => publishVariant(i, editedVariants[i] ?? v.post, true)}
                   >
                     {publishing === i && drafted !== i ? <Loader2 size={14} className="spinning" /> : <FileText size={14} />}
@@ -2192,7 +2208,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
                 )}
                 {drafted === i && (
-                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré dans LinkedIn ✓</p>
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré dans Zernio ✓</p>
                 )}
                 {publishedX === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur X ✓</p>
@@ -2961,12 +2977,23 @@ function LibraryView({
                   <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--muted)" }}>{fmtDate(p.created_at)}</span>
                 </div>
                 {p.topic && <p className="variant-strategy"><strong>Sujet :</strong> {p.topic}</p>}
-                <textarea
-                  className="variant-text"
-                  value={editedPosts[p.id] ?? p.post}
-                  rows={12}
-                  onChange={(e) => setEditedPosts((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                />
+                <div className="variant-text-wrap">
+                  <textarea
+                    className="variant-text"
+                    value={editedPosts[p.id] ?? p.post}
+                    rows={12}
+                    onChange={(e) => setEditedPosts((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                  />
+                  <button
+                    type="button"
+                    className="variant-copy-button"
+                    aria-label={copied === p.id ? "Post copié" : "Copier le post"}
+                    title={copied === p.id ? "Copié ✓" : "Copier le post"}
+                    onClick={() => copy(editedPosts[p.id] ?? p.post, p.id)}
+                  >
+                    {copied === p.id ? <CheckCircle2 size={16} /> : <Copy size={16} />}
+                  </button>
+                </div>
                 {editedPosts[p.id] !== undefined && editedPosts[p.id] !== p.post && (
                   <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 12, color: "var(--muted)" }}>✏️ Modifié</span>
@@ -3003,9 +3030,6 @@ function LibraryView({
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button className="secondary-button" onClick={() => copy(editedPosts[p.id] ?? p.post, p.id)}>
-                    {copied === p.id ? "Copié ✓" : "Copier le post"}
-                  </button>
                   {p.topic && (
                     <button className="secondary-button" onClick={() => onReuse(p.topic!)}>
                       <Sparkles size={14} /> Régénérer sur ce sujet
@@ -3077,8 +3101,14 @@ function LibraryView({
               <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8 }}>
                 <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtDate(idea.created_at)}</span>
                 <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
-                  <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => copy(idea.hook, idea.id)}>
-                    {copied === idea.id ? "Copié ✓" : "Copier l'accroche"}
+                  <button
+                    type="button"
+                    className="compact-copy-button"
+                    aria-label={copied === idea.id ? "Accroche copiée" : "Copier l'accroche"}
+                    title={copied === idea.id ? "Copié ✓" : "Copier l'accroche"}
+                    onClick={() => copy(idea.hook, idea.id)}
+                  >
+                    {copied === idea.id ? <CheckCircle2 size={14} /> : <Copy size={14} />}
                   </button>
                   {slack.status?.connected && (
                     <button
