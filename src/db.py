@@ -1577,7 +1577,12 @@ def set_idea_slack_pending(access_token: str, idea_ids: list[str]) -> int:
 
 # ── ALE-96 : Posts LinkedIn planifiés ─────────────────────────────────────────
 
-def create_scheduled_post(access_token: str, post_text: str, scheduled_at_iso: str) -> dict | None:
+def create_scheduled_post(
+    access_token: str,
+    post_text: str,
+    scheduled_at_iso: str,
+    media_items: list[dict[str, Any]] | None = None,
+) -> dict | None:
     """Store a scheduled LinkedIn post for later publication by the cron."""
     if not supabase_enabled():
         return None
@@ -1587,7 +1592,12 @@ def create_scheduled_post(access_token: str, post_text: str, scheduled_at_iso: s
     db = client_for_token(access_token)
     resp = (
         db.table("scheduled_posts")
-        .insert({"user_id": user["id"], "post_text": post_text, "scheduled_at": scheduled_at_iso})
+        .insert({
+            "user_id": user["id"],
+            "post_text": post_text,
+            "scheduled_at": scheduled_at_iso,
+            "media_items": media_items or [],
+        })
         .execute()
     )
     return resp.data[0] if resp.data else None
@@ -1617,7 +1627,7 @@ def list_scheduled_posts(access_token: str, limit: int = 50) -> list[dict]:
     db = client_for_token(access_token)
     resp = (
         db.table("scheduled_posts")
-        .select("id, post_text, scheduled_at, status, zernio_post_id, error_message, created_at")
+        .select("id, post_text, scheduled_at, status, zernio_post_id, error_message, media_items, created_at")
         .order("scheduled_at", desc=False)
         .limit(max(1, min(limit, 200)))
         .execute()
@@ -1716,7 +1726,7 @@ def get_due_scheduled_posts() -> list[dict]:
     admin = admin_client()
     resp = (
         admin.table("scheduled_posts")
-        .select("id, user_id, post_text")
+        .select("id, user_id, post_text, media_items")
         .eq("status", "pending")
         .lte("scheduled_at", "now()")
         .limit(100)
@@ -1738,6 +1748,7 @@ def get_due_scheduled_posts() -> list[dict]:
             "id": p["id"],
             "user_id": p["user_id"],
             "post_text": p["post_text"],
+            "media_items": p.get("media_items") or [],
             "zernio_account_id": account_by_user.get(p["user_id"]),
         }
         for p in posts

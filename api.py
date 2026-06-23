@@ -314,9 +314,21 @@ class LinkedInConnectRequest(BaseModel):
     redirect_url: Optional[str] = Field(default=None, max_length=1000)
 
 
+class LinkedInImageRequest(BaseModel):
+    url: Optional[str] = Field(default=None, description="Public image URL or data:image/... base64 URL.")
+    data_url: Optional[str] = Field(default=None, description="Uploaded/generated image as a data:image/... base64 URL.")
+    filename: Optional[str] = Field(default=None, max_length=200)
+    title: Optional[str] = Field(default=None, max_length=200)
+
+
 class LinkedInPublishRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=8000)
     draft: bool = False
+    images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
+
+
+def _image_payload(images: list[LinkedInImageRequest]) -> list[dict[str, Any]]:
+    return [image.model_dump(exclude_none=True) for image in images]
 
 
 def _linkedin_status(token: str) -> dict[str, Any]:
@@ -387,7 +399,7 @@ def me_linkedin_publish(
     payload: LinkedInPublishRequest,
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
-    """Publish a post immediately on the user's connected LinkedIn account."""
+    """Publish or save a post draft on the user's connected LinkedIn account."""
     if not zernio.enabled():
         raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
     profile = db.get_editorial_profile(token) or {}
@@ -395,13 +407,18 @@ def me_linkedin_publish(
     if not account_id:
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
     try:
+        media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
         result = zernio.create_post(
-            payload.content.strip(), account_id, publish_now=True, is_draft=payload.draft
+            payload.content.strip(),
+            account_id,
+            publish_now=True,
+            is_draft=payload.draft,
+            media_items=media_items,
         )
     except zernio.ZernioError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     post = result.get("post") or result
-    return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft}
+    return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft, "media_count": len(payload.images)}
 
 
 # ── ALE-96 : Planification LinkedIn ──────────────────────────────────────────
@@ -409,6 +426,7 @@ def me_linkedin_publish(
 class LinkedInScheduleRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=8000)
     scheduled_at: str = Field(..., description="ISO 8601 datetime (ex. 2026-06-22T09:00:00+02:00)")
+    images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
 
 
 class LinkedInScheduledPostUpdateRequest(BaseModel):
@@ -440,7 +458,12 @@ def me_linkedin_schedule(
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
     _validate_future_scheduled_at(payload.scheduled_at)
 
-    row = db.create_scheduled_post(token, payload.content.strip(), payload.scheduled_at)
+    row = db.create_scheduled_post(
+        token,
+        payload.content.strip(),
+        payload.scheduled_at,
+        media_items=_image_payload(payload.images),
+    )
     if row is None:
         raise HTTPException(status_code=500, detail="Impossible d'enregistrer le post planifié.")
     return {"ok": True, "scheduled_post": row}
