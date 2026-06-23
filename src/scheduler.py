@@ -26,7 +26,7 @@ def run() -> None:
         return
 
     due = db.get_due_scheduled_posts()
-    logger.info(f"Scheduler : {len(due)} post(s) à publier.")
+    logger.info(f"Scheduler : {len(due)} post(s) validé(s) sur Slack à publier.")
 
     for post in due:
         post_id = post["id"]

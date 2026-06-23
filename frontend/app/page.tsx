@@ -134,6 +134,9 @@ type ScheduledPost = {
   post_text: string;
   scheduled_at: string;
   status: "pending" | "published" | "failed" | "cancelled" | string;
+  slack_status?: string | null;
+  slack_message_ts?: string | null;
+  media_items?: LinkedInImageAttachment[] | null;
   error_message?: string | null;
   created_at?: string;
 };
@@ -1960,6 +1963,10 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       setScheduleError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
       return;
     }
+    if (!slack.status?.connected) {
+      setScheduleError("Connecte Slack dans l'onglet Profil pour valider les posts programmés.");
+      return;
+    }
     // Prefill to tomorrow 9:00 local time
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
@@ -2291,8 +2298,14 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   </button>
                   <button
                     className="secondary-button"
-                    disabled={publishing === i || scheduling}
-                    title={linkedin.status?.connected ? "Programmer la publication à une date/heure choisie" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                    disabled={publishing === i || scheduling || !!scheduledIndices[i]}
+                    title={
+                      !linkedin.status?.connected
+                        ? "Connecte ton compte LinkedIn dans l'onglet Profil"
+                        : !slack.status?.connected
+                          ? "Connecte Slack dans l'onglet Profil pour valider la programmation"
+                          : "Programmer la publication avec validation Slack"
+                    }
                     onClick={() => openScheduleModal(i, editedVariants[i] ?? v.post)}
                   >
                     <Clock3 size={14} />
@@ -2364,7 +2377,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur X ✓</p>
                 )}
                 {scheduledIndices[i] && (
-                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post programmé ✓ — visible dans l&apos;onglet Profil.</p>
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post programmé ✓ — demande de validation envoyée sur Slack.</p>
                 )}
                 {(variantImages[i] || []).length > 0 && (
                   <div style={{ marginTop: 12 }}>
@@ -2502,7 +2515,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
           <div className="card" style={{ maxWidth: 520, width: "100%", padding: 24 }}>
             <h3 style={{ marginTop: 0, marginBottom: 8 }}>Programmer ce post</h3>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-              Le post sera publié automatiquement sur LinkedIn à la date et l&apos;heure choisies.
+              Une demande de validation Slack sera envoyée maintenant. Le post ne sera publié à l&apos;heure choisie que s&apos;il est validé sur Slack.
             </p>
             <textarea
               readOnly
@@ -2543,7 +2556,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 Annuler
               </button>
               <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={doSchedule}>
-                {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Confirmer</>}
+                {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Confirmer et envoyer sur Slack</>}
               </button>
             </div>
           </div>
@@ -3953,31 +3966,51 @@ function ProfileView({
             <strong>Posts programmés</strong>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {scheduledPosts.map((p) => (
-              <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ margin: "0 0 4px", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.post_text.slice(0, 120)}{p.post_text.length > 120 ? "…" : ""}</p>
-                  <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
-                    {new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
-                    {" — "}
-                    <span style={{ color: p.status === "published" ? "var(--success, #38a169)" : p.status === "failed" ? "var(--error, #e53e3e)" : p.status === "cancelled" ? "var(--muted)" : "var(--accent)" }}>
-                      {p.status === "pending" ? "En attente" : p.status === "published" ? "Publié ✓" : p.status === "failed" ? "Échec" : "Annulé"}
-                    </span>
-                  </p>
-                  {p.status === "failed" && p.error_message && <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--error, #e53e3e)" }}>{p.error_message}</p>}
-                </div>
-                {p.status === "pending" && (
-                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={editingPost === p.id || cancellingPost === p.id} onClick={() => openEditScheduled(p)}>
-                      <Pencil size={12} /> Modifier
-                    </button>
-                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={cancellingPost === p.id || editingPost === p.id} onClick={() => cancelScheduled(p.id)}>
-                      {cancellingPost === p.id ? <Loader2 size={12} className="spinning" /> : <Trash2 size={12} />}
-                    </button>
+            {scheduledPosts.map((p) => {
+              const statusLabel =
+                p.status === "published"
+                  ? "Publié ✓"
+                  : p.status === "failed"
+                    ? "Échec"
+                    : p.status === "cancelled" && p.slack_status === "declined"
+                      ? "Refusé Slack — annulé"
+                      : p.status === "cancelled"
+                        ? "Annulé"
+                        : p.slack_status === "validated"
+                          ? "Validé Slack — en attente"
+                          : "Validation Slack en attente";
+              const statusColor =
+                p.status === "published" || p.slack_status === "validated"
+                  ? "var(--success, #38a169)"
+                  : p.status === "failed"
+                    ? "var(--error, #e53e3e)"
+                    : p.status === "cancelled"
+                      ? "var(--muted)"
+                      : "var(--accent)";
+              return (
+                <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ margin: "0 0 4px", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.post_text.slice(0, 120)}{p.post_text.length > 120 ? "…" : ""}</p>
+                    <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+                      {new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
+                      {" — "}
+                      <span style={{ color: statusColor }}>{statusLabel}</span>
+                    </p>
+                    {p.status === "failed" && p.error_message && <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--error, #e53e3e)" }}>{p.error_message}</p>}
                   </div>
-                )}
-              </div>
-            ))}
+                  {p.status === "pending" && (
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                      <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={editingPost === p.id || cancellingPost === p.id} onClick={() => openEditScheduled(p)}>
+                        <Pencil size={12} /> Modifier
+                      </button>
+                      <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={cancellingPost === p.id || editingPost === p.id} onClick={() => cancelScheduled(p.id)}>
+                        {cancellingPost === p.id ? <Loader2 size={12} className="spinning" /> : <Trash2 size={12} />}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </section>
       )}
