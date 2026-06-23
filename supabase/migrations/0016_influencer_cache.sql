@@ -46,3 +46,9 @@ create index if not exists idx_cached_posts_cache_id
     on public.cached_posts (influencer_cache_id);
 create index if not exists idx_cached_posts_posted_at
     on public.cached_posts (influencer_cache_id, posted_at desc nulls last);
+
+-- RLS activée sans aucune policy : refuse anon/authenticated (clé publique du front),
+-- le service-role (pipeline d'analyse) bypasse la RLS. Sans ça, ces tables de `public`
+-- seraient lisibles/écrivables par n'importe qui via PostgREST + la clé anon.
+alter table public.influencer_cache enable row level security;
+alter table public.cached_posts enable row level security;

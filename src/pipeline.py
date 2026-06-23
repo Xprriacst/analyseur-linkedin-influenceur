@@ -12,8 +12,7 @@ from src.usage import get_usage, reset_usage
 
 ProgressCallback = Callable[[float, str], None]
 
-# Seuils pour l'analyse incrémentale (ALE-109)
-CACHE_FRESH_DAYS = 7       # Cache considéré frais si < N jours (pour note de fraîcheur)
+# Seuil pour l'analyse incrémentale (ALE-109)
 RESYNTHESIS_THRESHOLD = 2  # Nb de nouveaux posts minimum pour refaire la synthèse LLM
 
 
@@ -127,12 +126,13 @@ def run_analysis(
     if not posts:
         raise RuntimeError("Aucun post exploitable. Profil privé ou URL incorrecte ?")
 
-    # Posts absents du cache = delta à classifier
-    cached_post_urls: set[str] = {
-        row["url"] for row in cached_post_rows if row.get("url")
-    }
+    # Posts à (re)classifier = ceux qui n'ont PAS encore de classification en cache.
+    # On se base sur les URLs réellement classifiées (cached_url_to_classif), pas sur
+    # la simple présence en cache : un post mis en cache sans classification (ex. run
+    # `with_llm=False`) doit être reclassifié, pas ignoré.
+    classified_urls: set[str] = set(cached_url_to_classif.keys())
     new_posts: list[dict] = (
-        [p for p in posts if p.get("url") and p["url"] not in cached_post_urls]
+        [p for p in posts if p.get("url") and p["url"] not in classified_urls]
         if cache_entry
         else list(posts)
     )
@@ -169,15 +169,6 @@ def run_analysis(
         if needs_synthesis:
             tick(0.85, "Generating strategic synthesis")
             synthesis = synthesize_strategy(stats, classifications, patterns["posts_enriched"])
-            # Note de fraîcheur si des anciens posts (métriques figées) sont inclus
-            n_old = len(cached_post_urls & {p.get("url") for p in posts if p.get("url")})
-            if cache_entry and n_old > 0:
-                note = (
-                    f"> *Note : métriques de {n_old} post(s) antérieur(s) "
-                    f"conservées telles qu'à leur 1ʳᵉ analyse (pas de re-scrape de l'engagement).*\n\n"
-                )
-                synthesis = dict(synthesis)
-                synthesis["positioning"] = note + synthesis.get("positioning", "")
         elif cached_synthesis:
             tick(0.85, "Synthèse existante réutilisée (delta < seuil de re-synthèse)")
             synthesis = cached_synthesis
@@ -189,21 +180,24 @@ def run_analysis(
         synthesis = empty_synthesis()
 
     # ── Mise à jour du cache global ───────────────────────────────────────── #
-    try:
-        save_synthesis = synthesis if with_llm else None
-        cache_id = _db.upsert_influencer_cache(handle, "linkedin", profile, synthesis=save_synthesis)
-        if cache_id:
-            posts_for_cache = [
-                {
-                    "post": p,
-                    "classification": url_to_classif.get(p.get("url")) if url_to_classif else None,
-                }
-                for p in posts
-                if p.get("url")
-            ]
-            _db.upsert_cached_posts(cache_id, posts_for_cache)
-    except Exception:
-        pass  # La persistance du cache ne doit jamais interrompre l'analyse
+    # On n'écrit le cache QUE si l'IA a tourné : la table cached_posts est insert-only,
+    # donc un post inséré sans classification (run with_llm=False) ne récupérerait jamais
+    # sa classification ensuite. On évite ainsi d'empoisonner le cache cross-user.
+    if with_llm:
+        try:
+            cache_id = _db.upsert_influencer_cache(handle, "linkedin", profile, synthesis=synthesis)
+            if cache_id:
+                posts_for_cache = [
+                    {
+                        "post": p,
+                        "classification": url_to_classif.get(p.get("url")) if url_to_classif else None,
+                    }
+                    for p in posts
+                    if p.get("url")
+                ]
+                _db.upsert_cached_posts(cache_id, posts_for_cache)
+        except Exception:
+            pass  # La persistance du cache ne doit jamais interrompre l'analyse
     # ──────────────────────────────────────────────────────────────────────── #
 
     usage = get_usage()
