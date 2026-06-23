@@ -502,6 +502,27 @@ def set_zernio_account(access_token: str, account_id: str | None) -> dict | None
     return resp.data[0] if resp.data else None
 
 
+def set_zernio_x_account(access_token: str, account_id: str | None) -> dict | None:
+    """Persist (or clear) the connected X (Twitter) account id for this user."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    row = {
+        "user_id": user["id"],
+        "zernio_x_account_id": account_id,
+        "zernio_x_connected_at": now if account_id else None,
+        "updated_at": now,
+    }
+    resp = (
+        db.table("user_editorial_profiles")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def get_user_ai_context(access_token: str | None) -> dict[str, Any] | None:
     """Compact profile context consumed by LLM prompts.
 

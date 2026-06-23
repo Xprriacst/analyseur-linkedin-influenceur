@@ -32,6 +32,17 @@ test("onglet Mon profil : contexte éditorial + pré-remplissage IA + sauvegarde
   await expect(page.getByRole("button", { name: /Pré-remplir/i })).toBeVisible();
 });
 
+test("onglet Mon profil : encart de publication X (Twitter) rendu", async ({ page }) => {
+  await gotoTab(page, "Mon profil");
+  // L'encart de cross-post X est présent (entre LinkedIn et Slack).
+  await expect(page.getByText(/Publier sur X \(Twitter\)/i)).toBeVisible();
+  // Selon l'état de connexion du compte de test : soit le bouton « Connecter X »,
+  // soit le pill « Connecté ». L'un des deux doit être visible, sans bandeau d'erreur.
+  const connectBtn = page.getByRole("button", { name: /Connecter X/i });
+  const connectedPill = page.locator(".status-pill.ok", { hasText: /Connecté/i });
+  await expect(connectBtn.or(connectedPill).first()).toBeVisible();
+});
+
 test("Contenu › Mes contenus : liste posts/idées sans erreur", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Mes contenus");
