@@ -931,15 +931,25 @@ function Sidebar({
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 
 }) {
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem("sidebar-collapsed") === "true"; } catch { return false; }
-  });
+  const [collapsed, setCollapsed] = useState(false);
+  const [collapsedPreferenceLoaded, setCollapsedPreferenceLoaded] = useState(false);
+
+  useEffect(() => {
+    try {
+      setCollapsed(localStorage.getItem("sidebar-collapsed") === "true");
+    } catch {
+      /* ignore */
+    } finally {
+      setCollapsedPreferenceLoaded(true);
+    }
+  }, []);
 
   useEffect(() => {
     const w = collapsed ? "64px" : "260px";
     document.documentElement.style.setProperty("--sidebar-w", w);
+    if (!collapsedPreferenceLoaded) return;
     try { localStorage.setItem("sidebar-collapsed", String(collapsed)); } catch {}
-  }, [collapsed]);
+  }, [collapsed, collapsedPreferenceLoaded]);
 
   return (
     <aside className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}>
@@ -4285,10 +4295,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("content");
-  const [platform, setPlatform] = useState<Platform>(() => {
-    if (typeof window === "undefined") return "linkedin";
-    return (localStorage.getItem("lkd_platform") as Platform) ?? "linkedin";
-  });
+  const [platform, setPlatform] = useState<Platform>("linkedin");
   const [analyzeTab, setAnalyzeTab] = useState<AnalyzeTab>("analyze");
   const [contentTab, setContentTab] = useState<ContentTab>("generator");
   // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
@@ -4307,6 +4314,17 @@ export default function Home() {
   const pendingAnonResultRef = useRef<Analysis | null>(null);
 
   const isAuthed = !!session;
+
+  useEffect(() => {
+    try {
+      const savedPlatform = localStorage.getItem("lkd_platform");
+      if (savedPlatform === "linkedin" || savedPlatform === "instagram") {
+        setPlatform(savedPlatform);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   function requireAuth(reason?: string, mode: AuthMode = "signup") {
     setAuthReason(reason || "");
@@ -4626,7 +4644,7 @@ export default function Home() {
           onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
           onPlatformChange={(p) => {
             setPlatform(p);
-            localStorage.setItem("lkd_platform", p);
+            try { localStorage.setItem("lkd_platform", p); } catch {}
           }}
           requireAuth={requireAuth}
         />
