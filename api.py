@@ -28,9 +28,9 @@ load_dotenv()
 
 app = FastAPI(title="LinkedIn Strategy Decoder API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+
+def _cors_origins() -> list[str]:
+    default_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:3001",
@@ -40,7 +40,19 @@ app.add_middleware(
         "https://courageous-strudel-2d8ba3.netlify.app",
         "https://lkd-outreach.netlify.app",
         "https://lkd-outreach-dev.netlify.app",
-    ],
+        "https://analyseur-linkedin-influenceur-api-dev.onrender.com",
+    ]
+    extra_origins = [
+        origin.strip()
+        for origin in os.getenv("CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    return list(dict.fromkeys(default_origins + extra_origins))
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

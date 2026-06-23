@@ -5,17 +5,27 @@
 | Env | Frontend (Netlify) | Backend (Render) | Branche git |
 |---|---|---|---|
 | **Prod** | `lkd-outreach.netlify.app` (ID `81f75c05`) | `analyseur-linkedin-influenceur-api.onrender.com` | `main` |
-| **Dev** | `lkd-outreach-dev.netlify.app` (ID `35a2cf5e`) | idem (même service Render) | `dev` |
+| **Dev** | `lkd-outreach-dev.netlify.app` (ID `35a2cf5e`) | `analyseur-linkedin-influenceur-api-dev.onrender.com` | `dev` |
 
-### Variables d'env Netlify (identiques sur les deux sites)
-- `BACKEND_URL` → URL Render (server-side, proxy Next.js)
-- `NEXT_PUBLIC_BACKEND_URL` → URL Render (client-side, appels directs)
+### Variables d'env Netlify
+- `BACKEND_URL` → URL Render de l'environnement (server-side, proxy Next.js)
+- `NEXT_PUBLIC_BACKEND_URL` → URL Render de l'environnement (client-side, appels directs)
 - `NEXT_PUBLIC_SUPABASE_URL` → `https://zcxaxwqkswuefzlzpgvi.supabase.co`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY` → clé anon Supabase
 
+Valeurs backend attendues :
+- Prod : `BACKEND_URL` / `NEXT_PUBLIC_BACKEND_URL` → `https://analyseur-linkedin-influenceur-api.onrender.com`
+- Dev : `BACKEND_URL` / `NEXT_PUBLIC_BACKEND_URL` → `https://analyseur-linkedin-influenceur-api-dev.onrender.com`
+
+### Variables d'env Render
+- Service prod : branche `main`, start command `uvicorn api:app --host 0.0.0.0 --port $PORT`
+- Service dev : branche `dev`, même start command, mêmes secrets que la prod (`ANTHROPIC_API_KEY`, `APIFY_*`, `ZERNIO_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, etc.)
+- `CORS_ORIGINS` optionnel : liste d'origines supplémentaires séparées par des virgules si le slug Render dev change.
+- Caveat : prod et dev partagent encore le même projet Supabase ; les tests dev peuvent donc écrire dans la même base.
+
 ### Règle de déploiement
 - Tout push sur `main` → déploiement auto sur prod
-- Tout push sur `dev` → déploiement auto sur dev (après liaison GitHub dans Netlify UI)
+- Tout push sur `dev` → déploiement auto sur Netlify dev + Render dev
 - Les URLs hardcodées ont été remplacées par ces vars dans `frontend/app/page.tsx`, `frontend/app/api/[...path]/route.ts` et `netlify.toml`
 
 ### Dev local
