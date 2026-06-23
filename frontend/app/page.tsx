@@ -97,6 +97,7 @@ type Variant = {
   predicted_lift: string;
   post: string;
 };
+type WebSearchNotice = { query: string; active: boolean };
 type SavedIdea = Idea & { id: string; created_at?: string };
 type SavedPost = {
   id: string;
@@ -1812,7 +1813,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [variants, setVariants] = useState<Variant[]>([]);
   const [topic, setTopic] = useState("");
   const [role, setRole] = useState("auto");
-  const [webSearch, setWebSearch] = useState(false);
+  const [webSearchNotice, setWebSearchNotice] = useState<WebSearchNotice | null>(null);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
   const linkedin = useLinkedIn(isAuthed);
@@ -1975,26 +1976,74 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
 
   async function generateFromTopic(t: string) {
     setError("");
+    setWebSearchNotice(null);
     setLoadingPosts(true);
     try {
       // Sujet optionnel : sans sujet, le backend choisit lui-même un angle (idée = post).
-      const body: { topic?: string; editorial_role?: string; web_search?: boolean; count?: number } = { count: variantCount };
+      const body: { topic?: string; editorial_role?: string; count?: number } = { count: variantCount };
       if (t.trim()) body.topic = t.trim();
       if (role !== "auto") body.editorial_role = role;
-      if (webSearch) body.web_search = true;
-      const res = await fetch(`${DIRECT_API_URL}/generate`, {
+      const res = await fetch(`${DIRECT_API_URL}/generate/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Échec de la génération de posts");
-      emitCredits(data.credits);
-      setEditedVariants({}); // éditions indexées par position : à purger sinon elles contaminent le nouveau batch
-      setVariants(data.variants || []);
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Échec de la génération de posts");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let doneReceived = false;
+      let streamError = "";
+
+      const handleGenerateSseEvent = (raw: string) => {
+        const lines = raw.split("\n");
+        let event = "message";
+        const dataLines: string[] = [];
+        for (const line of lines) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+        }
+        if (!dataLines.length) return;
+        const data = JSON.parse(dataLines.join("\n"));
+        if (event === "meta") {
+          emitCredits(data.credits);
+        } else if (event === "search") {
+          setWebSearchNotice({
+            query: data.query || "recherche web",
+            active: true,
+          });
+        } else if (event === "done") {
+          doneReceived = true;
+          emitCredits(data.credits);
+          setEditedVariants({}); // éditions indexées par position : à purger sinon elles contaminent le nouveau batch
+          setVariants(data.variants || []);
+          if (data.save_error) setError(`Posts générés, mais sauvegarde impossible : ${data.save_error}`);
+        } else if (event === "error") {
+          streamError = data.detail || "Échec de la génération de posts";
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() || "";
+        for (const chunk of chunks) {
+          if (chunk.trim()) handleGenerateSseEvent(chunk);
+        }
+      }
+      if (buffer.trim()) handleGenerateSseEvent(buffer);
+      if (streamError) throw new Error(streamError);
+      if (!doneReceived) throw new Error("Réponse interrompue avant la fin de la génération.");
     } catch (err: any) {
       setError(err.message);
     } finally {
+      setWebSearchNotice((prev) => prev ? { ...prev, active: false } : prev);
       setLoadingPosts(false);
     }
   }
@@ -2058,15 +2107,6 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 ? "Mix automatique : performance + méthodologie/autorité + relationnel/quotidien."
                 : "Les 3 variants utiliseront ce rôle."}
             </span>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", cursor: "pointer", marginTop: 6 }}>
-              <input
-                type="checkbox"
-                checked={webSearch}
-                onChange={(e) => setWebSearch(e.target.checked)}
-                style={{ accentColor: "var(--accent)", width: 14, height: 14 }}
-              />
-              Recherche web en temps réel
-            </label>
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)" }}>
               Variants :
               <select
@@ -2080,6 +2120,15 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               </select>
             </label>
           </div>
+          {loadingPosts && webSearchNotice?.active && (
+            <div className="web-search-status" role="status" aria-live="polite">
+              <span className="web-search-icon">🔎</span>
+              <span>
+                <strong>Je recherche sur le web…</strong>
+                <span>{webSearchNotice.query}</span>
+              </span>
+            </div>
+          )}
         </div>
       </div>
 

@@ -6,7 +6,7 @@ import os
 import random
 import re
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 
 from anthropic import Anthropic
 from pydantic import BaseModel, Field
@@ -73,12 +73,19 @@ def _web_search_enabled() -> bool:
     return os.environ.get("ENABLE_WEB_SEARCH", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _web_search_disabled() -> bool:
+    """Kill-switch explicite pour couper l'outil même quand un appel le demande."""
+    return os.environ.get("DISABLE_WEB_SEARCH", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _web_search_tools(enabled: bool | None = None) -> list[dict] | None:
     """Outil serveur de recherche web pour la génération, plafonné pour maîtriser le coût.
 
     Si `enabled` est fourni, il prime sur la variable d'env ENABLE_WEB_SEARCH.
     Renvoie None si désactivé."""
     active = enabled if enabled is not None else _web_search_enabled()
+    if _web_search_disabled():
+        active = False
     if not active:
         return None
     try:
@@ -130,13 +137,113 @@ def _track(resp) -> None:
         )
 
 
+def _get_attr(obj: Any, name: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _extract_web_search_query(block: Any, input_payload: Any = None) -> str | None:
+    block_type = _get_attr(block, "type", "")
+    block_name = _get_attr(block, "name", "")
+    if block_type not in {"server_tool_use", "tool_use"} and block_name != "web_search":
+        return None
+    payload = input_payload if input_payload is not None else _get_attr(block, "input", None)
+    if not isinstance(payload, dict):
+        return None
+    query = payload.get("query") or payload.get("search_query") or payload.get("q")
+    return str(query).strip() if query else None
+
+
+def _call_streaming(
+    system: str,
+    user: str,
+    max_tokens: int = 4096,
+    temperature: float = 0.2,
+    tools: list[dict] | None = None,
+    on_web_search: Callable[[dict[str, Any]], None] | None = None,
+) -> dict:
+    """Call Claude in streaming mode so server-side web-search starts can be reported."""
+    client = _client()
+    messages: list[dict] = [{"role": "user", "content": user}]
+    kwargs: dict[str, Any] = dict(
+        model=_model(),
+        max_tokens=max_tokens,
+        system=system,
+    )
+    if _accepts_temperature(kwargs["model"]):
+        kwargs["temperature"] = temperature
+    if tools:
+        kwargs["tools"] = tools
+
+    seen_queries: set[str] = set()
+    guard = 0
+    while True:
+        block_state: dict[int, dict[str, Any]] = {}
+        with client.messages.stream(messages=messages, **kwargs) as stream:
+            for event in stream:
+                event_type = _get_attr(event, "type", "")
+                index = _get_attr(event, "index", None)
+                if event_type == "content_block_start":
+                    block = _get_attr(event, "content_block")
+                    if isinstance(index, int):
+                        block_state[index] = {"block": block, "partial_json": ""}
+                    query = _extract_web_search_query(block)
+                    if query and query not in seen_queries and on_web_search:
+                        seen_queries.add(query)
+                        on_web_search({"query": query})
+                elif event_type == "content_block_delta" and isinstance(index, int):
+                    state = block_state.setdefault(index, {"block": None, "partial_json": ""})
+                    delta = _get_attr(event, "delta")
+                    partial = _get_attr(delta, "partial_json", "")
+                    if partial:
+                        state["partial_json"] += partial
+                elif event_type == "content_block_stop" and isinstance(index, int):
+                    state = block_state.get(index) or {}
+                    partial_json = state.get("partial_json") or ""
+                    if not partial_json:
+                        continue
+                    try:
+                        payload = json.loads(partial_json)
+                    except json.JSONDecodeError:
+                        continue
+                    query = _extract_web_search_query(state.get("block"), payload)
+                    if query and query not in seen_queries and on_web_search:
+                        seen_queries.add(query)
+                        on_web_search({"query": query})
+            resp = stream.get_final_message()
+
+        _track(resp)
+        if getattr(resp, "stop_reason", None) == "pause_turn" and guard < 5:
+            guard += 1
+            messages.append({"role": "assistant", "content": resp.content})
+            continue
+        break
+
+    text = "".join(
+        block.text for block in resp.content if getattr(block, "type", None) == "text"
+    )
+    return _extract_json(text)
+
+
 def _call(
     system: str,
     user: str,
     max_tokens: int = 4096,
     temperature: float = 0.2,
     tools: list[dict] | None = None,
+    on_web_search: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict:
+    if on_web_search:
+        return _call_streaming(
+            system,
+            user,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            on_web_search=on_web_search,
+        )
+
     client = _client()
     messages: list[dict] = [{"role": "user", "content": user}]
     kwargs: dict[str, Any] = dict(
@@ -632,6 +739,7 @@ def generate_posts(
     editorial_role: str | None = None,
     web_search: bool = False,
     count: int = 1,
+    on_web_search: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict]:
     """Generate LinkedIn post variants (default 1) covering editorial roles.
 
@@ -659,6 +767,16 @@ def generate_posts(
         f'Variant {i + 1} — rôle éditorial "{r}" ({ROLE_SPECS[r]["label"]}) :\n{ROLE_SPECS[r]["guidance"]}'
         for i, r in enumerate(roles)
     )
+    search_tools = _web_search_tools(True)
+    search_directive = (
+        " Tu peux lancer une recherche web autonome, mais uniquement si le sujet impose une donnée récente "
+        "ou vérifiable (actualité, événement en cours, chiffre de marché récent, réglementation, tendance datée). "
+        "N'utilise pas la recherche pour des conseils evergreen, des angles méthodologiques ou des posts d'opinion "
+        "qui peuvent être écrits avec le contexte fourni. Si tu recherches, formule une requête courte et précise, "
+        "puis intègre seulement les faits utiles et vérifiés."
+        if search_tools
+        else ""
+    )
 
     system = (
         "Tu es un expert en stratégie LinkedIn. "
@@ -667,6 +785,7 @@ def generate_posts(
         "Tu produis des STRUCTURES VARIÉES : tous les posts ne sont pas des posts viraux optimisés engagement. "
         "Chaque rôle éditorial a sa propre intention et sa propre forme — respecte-les strictement. "
         + _date_directive()
+        + search_directive
         + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
     topic_clean = (topic or "").strip()
@@ -713,7 +832,14 @@ Schéma JSON attendu (toutes les clés obligatoires) :
   ]
 }"""
     )
-    data = _call(system, user, max_tokens=6000, temperature=0.7, tools=_web_search_tools(web_search or None))
+    data = _call(
+        system,
+        user,
+        max_tokens=6000,
+        temperature=0.7,
+        tools=search_tools,
+        on_web_search=on_web_search,
+    )
     variants = data.get("variants", [])
 
     # Backfill : si le LLM omet editorial_role (compat), on le déduit de l'ordre demandé.
