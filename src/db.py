@@ -1640,6 +1640,38 @@ def cancel_scheduled_post(access_token: str, post_id: str) -> bool:
     return bool(resp.data)
 
 
+def update_scheduled_post(
+    access_token: str,
+    post_id: str,
+    *,
+    post_text: str | None = None,
+    scheduled_at_iso: str | None = None,
+) -> dict | None:
+    """Update a pending scheduled post owned by the authenticated user."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    payload: dict[str, Any] = {"updated_at": "now()"}
+    if post_text is not None:
+        payload["post_text"] = post_text
+    if scheduled_at_iso is not None:
+        payload["scheduled_at"] = scheduled_at_iso
+    if len(payload) == 1:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .update(payload)
+        .eq("id", post_id)
+        .eq("user_id", user["id"])
+        .eq("status", "pending")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def set_post_slack_pending(access_token: str, post_ids: list[str]) -> int:
     """Mark a batch of generated posts as 'pending' Slack validation. Returns count updated."""
     user = get_user(access_token)
