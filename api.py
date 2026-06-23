@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -410,6 +411,22 @@ class LinkedInScheduleRequest(BaseModel):
     scheduled_at: str = Field(..., description="ISO 8601 datetime (ex. 2026-06-22T09:00:00+02:00)")
 
 
+class LinkedInScheduledPostUpdateRequest(BaseModel):
+    post_text: str | None = Field(None, min_length=1, max_length=8000)
+    scheduled_at: str | None = Field(None, description="ISO 8601 datetime (ex. 2026-06-22T09:00:00+02:00)")
+
+
+def _validate_future_scheduled_at(scheduled_at: str) -> None:
+    try:
+        parsed = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format de date invalide. Utilise ISO 8601 (ex. 2026-06-22T09:00:00+02:00).")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="La date de programmation doit être dans le futur.")
+
+
 @app.post("/me/linkedin/schedule")
 def me_linkedin_schedule(
     payload: LinkedInScheduleRequest,
@@ -421,12 +438,7 @@ def me_linkedin_schedule(
     profile = db.get_editorial_profile(token) or {}
     if not profile.get("zernio_account_id"):
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
-    # Basic ISO 8601 validation (full parse done by Supabase as timestamptz)
-    from datetime import datetime
-    try:
-        datetime.fromisoformat(payload.scheduled_at.replace("Z", "+00:00"))
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Format de date invalide. Utilise ISO 8601 (ex. 2026-06-22T09:00:00+02:00).")
+    _validate_future_scheduled_at(payload.scheduled_at)
 
     row = db.create_scheduled_post(token, payload.content.strip(), payload.scheduled_at)
     if row is None:
@@ -536,6 +548,36 @@ def me_x_publish(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft}
+
+
+@app.patch("/me/linkedin/scheduled/{post_id}")
+def me_linkedin_scheduled_update(
+    post_id: str,
+    payload: LinkedInScheduledPostUpdateRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Edit a pending scheduled LinkedIn post."""
+    if payload.post_text is None and payload.scheduled_at is None:
+        raise HTTPException(status_code=400, detail="Indique au moins un champ à modifier.")
+
+    post_text: str | None = None
+    if payload.post_text is not None:
+        post_text = payload.post_text.strip()
+        if not post_text:
+            raise HTTPException(status_code=400, detail="Le texte du post ne peut pas être vide.")
+
+    if payload.scheduled_at is not None:
+        _validate_future_scheduled_at(payload.scheduled_at)
+
+    row = db.update_scheduled_post(
+        token,
+        post_id,
+        post_text=post_text,
+        scheduled_at_iso=payload.scheduled_at,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Post planifié introuvable ou non éditable.")
+    return {"ok": True, "scheduled_post": row}
 
 
 @app.get("/reports")

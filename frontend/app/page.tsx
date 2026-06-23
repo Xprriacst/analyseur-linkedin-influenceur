@@ -22,6 +22,7 @@ import {
   LogOut,
   Bookmark,
   MessageSquare,
+  Pencil,
   PenTool,
   PlusCircle,
   Trash2,
@@ -51,6 +52,17 @@ function emitCredits(balance: unknown) {
   if (typeof balance === "number" && typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("credits:update", { detail: balance }));
   }
+}
+
+function toDatetimeLocalValue(date: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function isoToDatetimeLocalValue(iso: string) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return toDatetimeLocalValue(date);
 }
 
 type Health = { ok: boolean; apify: boolean; anthropic: boolean; model: string };
@@ -108,6 +120,14 @@ type SavedPost = {
   post: string;
   created_at?: string;
   slack_status?: string | null;
+};
+type ScheduledPost = {
+  id: string;
+  post_text: string;
+  scheduled_at: string;
+  status: "pending" | "published" | "failed" | "cancelled" | string;
+  error_message?: string | null;
+  created_at?: string;
 };
 type ChatConversation = {
   id: string;
@@ -1922,9 +1942,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(9, 0, 0, 0);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const localIso = `${tomorrow.getFullYear()}-${pad(tomorrow.getMonth() + 1)}-${pad(tomorrow.getDate())}T${pad(tomorrow.getHours())}:${pad(tomorrow.getMinutes())}`;
-    setScheduleDate(localIso);
+    setScheduleDate(toDatetimeLocalValue(tomorrow));
     setScheduleError("");
     setScheduleModal({ index: i, text });
   }
@@ -3337,8 +3355,13 @@ function ProfileView({
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
-  const [scheduledPosts, setScheduledPosts] = useState<Array<{ id: string; post_text: string; scheduled_at: string; status: string; error_message?: string }>>([]);
+  const [scheduledPosts, setScheduledPosts] = useState<ScheduledPost[]>([]);
   const [cancellingPost, setCancellingPost] = useState<string | null>(null);
+  const [editingSchedule, setEditingSchedule] = useState<ScheduledPost | null>(null);
+  const [editScheduleText, setEditScheduleText] = useState("");
+  const [editScheduleDate, setEditScheduleDate] = useState("");
+  const [editingPost, setEditingPost] = useState<string | null>(null);
+  const [scheduleEditError, setScheduleEditError] = useState("");
 
   useEffect(() => {
     if (!isAuthed || !linkedin.status?.connected) return;
@@ -3362,6 +3385,50 @@ function ProfileView({
       if (res.ok) setScheduledPosts((prev) => prev.map((p) => p.id === postId ? { ...p, status: "cancelled" } : p));
     } catch (_) {} finally {
       setCancellingPost(null);
+    }
+  }
+
+  function openEditScheduled(post: ScheduledPost) {
+    if (post.status !== "pending") return;
+    setEditingSchedule(post);
+    setEditScheduleText(post.post_text);
+    setEditScheduleDate(isoToDatetimeLocalValue(post.scheduled_at));
+    setScheduleEditError("");
+  }
+
+  async function updateScheduled() {
+    if (!editingSchedule) return;
+    const trimmed = editScheduleText.trim();
+    if (!trimmed) {
+      setScheduleEditError("Le texte du post ne peut pas être vide.");
+      return;
+    }
+    const localDate = new Date(editScheduleDate);
+    if (Number.isNaN(localDate.getTime())) {
+      setScheduleEditError("Date invalide.");
+      return;
+    }
+    if (localDate <= new Date()) {
+      setScheduleEditError("La date doit être dans le futur.");
+      return;
+    }
+    setEditingPost(editingSchedule.id);
+    setScheduleEditError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${editingSchedule.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post_text: trimmed, scheduled_at: localDate.toISOString() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Modification impossible.");
+      const updated = data.scheduled_post as ScheduledPost;
+      setScheduledPosts((prev) => prev.map((p) => p.id === updated.id ? updated : p));
+      setEditingSchedule(null);
+    } catch (err: any) {
+      setScheduleEditError(err.message || "Modification impossible.");
+    } finally {
+      setEditingPost(null);
     }
   }
 
@@ -3614,14 +3681,64 @@ function ProfileView({
                   {p.status === "failed" && p.error_message && <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--error, #e53e3e)" }}>{p.error_message}</p>}
                 </div>
                 {p.status === "pending" && (
-                  <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px", flexShrink: 0 }} disabled={cancellingPost === p.id} onClick={() => cancelScheduled(p.id)}>
-                    {cancellingPost === p.id ? <Loader2 size={12} className="spinning" /> : <Trash2 size={12} />}
-                  </button>
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={editingPost === p.id || cancellingPost === p.id} onClick={() => openEditScheduled(p)}>
+                      <Pencil size={12} /> Modifier
+                    </button>
+                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={cancellingPost === p.id || editingPost === p.id} onClick={() => cancelScheduled(p.id)}>
+                      {cancellingPost === p.id ? <Loader2 size={12} className="spinning" /> : <Trash2 size={12} />}
+                    </button>
+                  </div>
                 )}
               </div>
             ))}
           </div>
         </section>
+      )}
+
+      {editingSchedule !== null && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Modifier le post programmé</h3>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+              Tant que le post est en attente, tu peux corriger son texte et sa date de publication.
+            </p>
+            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
+              Texte du post
+            </label>
+            <textarea
+              value={editScheduleText}
+              rows={8}
+              className="variant-text"
+              style={{ width: "100%", boxSizing: "border-box", marginBottom: 12 }}
+              onChange={(e) => setEditScheduleText(e.target.value)}
+            />
+            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
+              Date et heure de publication
+            </label>
+            <input
+              type="datetime-local"
+              value={editScheduleDate}
+              onChange={(e) => setEditScheduleDate(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 14, marginBottom: 12 }}
+            />
+            {scheduleEditError && <p style={{ color: "var(--error, #e53e3e)", fontSize: 13, marginBottom: 8 }}>{scheduleEditError}</p>}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="secondary-button" disabled={editingPost === editingSchedule.id} onClick={() => setEditingSchedule(null)}>
+                Annuler
+              </button>
+              <button className="primary-button" disabled={editingPost === editingSchedule.id || !editScheduleDate || !editScheduleText.trim()} onClick={updateScheduled}>
+                {editingPost === editingSchedule.id
+                  ? <><Loader2 size={14} className="spinning" /> Enregistrement…</>
+                  : <><Clock3 size={14} /> Enregistrer</>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
