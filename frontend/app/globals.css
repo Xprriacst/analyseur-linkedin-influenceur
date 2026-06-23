@@ -1799,3 +1799,16 @@ a { color: inherit; text-decoration: none; }
   border-radius: 6px;
 }
 .icon-button:hover { color: #ef4444; background: rgba(239,68,68,0.08); }
+
+.waking-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--warning);
+  margin-bottom: 16px;
+}

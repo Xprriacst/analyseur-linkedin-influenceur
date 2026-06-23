@@ -4277,6 +4277,7 @@ function ContentHub({
 
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
+  const [backendWaking, setBackendWaking] = useState(false);
   const [reports, setReports] = useState<Report[]>([]);
   const [reportsLoading, setReportsLoading] = useState(false);
   const [influencers, setInfluencers] = useState<InfluencerLibraryEntry[]>([]);
@@ -4445,7 +4446,11 @@ export default function Home() {
   }
 
   useEffect(() => {
-    fetch(`${API_URL}/health`).then((r) => r.json()).then(setHealth).catch(() => null);
+    const wakingTimer = setTimeout(() => setBackendWaking(true), 3000);
+    fetch(`${API_URL}/health`)
+      .then((r) => r.json())
+      .then((data) => { clearTimeout(wakingTimer); setBackendWaking(false); setHealth(data); })
+      .catch(() => { clearTimeout(wakingTimer); setBackendWaking(false); });
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
 
     // Home ne se démonte jamais : son state par-utilisateur doit être purgé à
@@ -4641,6 +4646,12 @@ export default function Home() {
           onSignOut={() => supabase.auth.signOut()}
         />
         <main className="main">
+          {backendWaking && (
+            <div className="waking-banner">
+              <Loader2 size={12} className="spinning" style={{ flexShrink: 0 }} />
+              <span>Réveil du serveur en cours… (plan free Render, patientez 30-60 s)</span>
+            </div>
+          )}
           {/* Agent IA, Profil et Tableau de bord sont indépendants du réseau */}
           {view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />
