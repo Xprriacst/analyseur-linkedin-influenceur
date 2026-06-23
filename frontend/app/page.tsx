@@ -946,10 +946,7 @@ function Sidebar({
     <aside className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}>
       <div className="logo">
         <div
-          className={`logo-mark${collapsed ? " logo-mark-toggle" : ""}`}
-          onClick={collapsed ? () => setCollapsed(false) : undefined}
-          role={collapsed ? "button" : undefined}
-          title={collapsed ? "Étendre la sidebar" : undefined}
+          className="logo-mark"
         >
           <Target size={18} strokeWidth={2.5} />
         </div>
