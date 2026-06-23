@@ -8,6 +8,7 @@ import {
   BarChart3,
   CheckCircle2,
   ChevronLeft,
+  ChevronRight,
   Clock3,
   Download,
   FileText,
@@ -958,15 +959,14 @@ function Sidebar({
             <span className="logo-sub">SaaS Premium</span>
           </div>
         )}
-        {!collapsed && (
-          <button
-            className="sidebar-collapse-btn"
-            onClick={() => setCollapsed(true)}
-            title="Réduire la sidebar"
-          >
-            <ChevronLeft size={14} />
-          </button>
-        )}
+        <button
+          className="sidebar-collapse-btn"
+          onClick={() => setCollapsed((value) => !value)}
+          title={collapsed ? "Étendre la sidebar" : "Réduire la sidebar"}
+          aria-label={collapsed ? "Étendre la sidebar" : "Réduire la sidebar"}
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+        </button>
       </div>
 
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
