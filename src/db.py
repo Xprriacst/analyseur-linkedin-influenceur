@@ -1708,3 +1708,145 @@ def update_scheduled_post_status(
     if error is not None:
         payload["error_message"] = error[:500]
     admin.table("scheduled_posts").update(payload).eq("id", post_id).execute()
+
+
+# ── ALE-109 : Analyse incrémentale — cache global cross-user ─────────────── #
+
+def get_influencer_from_cache(handle: str, platform: str = "linkedin") -> dict | None:
+    """Retourne l'entrée de cache globale pour un influenceur (service-role).
+
+    Utilisé par le pipeline pour détecter les posts déjà classifiés et éviter
+    de rappeler le LLM. Retourne None si Supabase ou la service-role key ne sont
+    pas configurés, ou si l'influenceur n'a jamais été analysé.
+    """
+    if not admin_enabled():
+        return None
+    try:
+        resp = (
+            admin_client()
+            .table("influencer_cache")
+            .select("*")
+            .eq("handle", handle)
+            .eq("platform", platform)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception:
+        return None
+
+
+def get_cached_posts_for_influencer(cache_id: str) -> list[dict]:
+    """Charge tous les posts (avec classifications LLM) depuis le cache global."""
+    if not admin_enabled():
+        return []
+    try:
+        resp = (
+            admin_client()
+            .table("cached_posts")
+            .select("*")
+            .eq("influencer_cache_id", cache_id)
+            .order("posted_at", desc=True)
+            .execute()
+        )
+        return resp.data or []
+    except Exception:
+        return []
+
+
+def upsert_influencer_cache(
+    handle: str,
+    platform: str,
+    profile: dict,
+    synthesis: dict | None = None,
+) -> str | None:
+    """Crée ou met à jour le cache global d'un influenceur. Retourne le cache id.
+
+    La synthesis est stockée pour être réutilisée si le delta de nouveaux posts
+    est insuffisant pour justifier une re-synthèse (ALE-109).
+    """
+    if not admin_enabled():
+        return None
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        row: dict[str, Any] = {
+            "handle": handle,
+            "platform": platform,
+            "name": profile.get("name"),
+            "headline": profile.get("headline"),
+            "follower_count": int(profile.get("follower_count", 0) or 0),
+            "profile_url": profile.get("profile_url"),
+            "raw_profile": _json_safe(profile),
+            "last_analyzed_at": now,
+        }
+        if synthesis is not None:
+            row["synthesis"] = _json_safe(synthesis)
+        resp = (
+            admin_client()
+            .table("influencer_cache")
+            .upsert(row, on_conflict="handle,platform")
+            .select("id")
+            .execute()
+        )
+        return resp.data[0]["id"] if resp.data else None
+    except Exception:
+        return None
+
+
+def upsert_cached_posts(cache_id: str, posts_with_classifs: list[dict]) -> None:
+    """Insère les nouveaux posts dans le cache global (les existants sont préservés).
+
+    `posts_with_classifs` : liste de {"post": post_dict, "classification": classif | None}.
+    Les métriques (likes/comments/reposts) des posts déjà présents en cache ne sont
+    PAS mises à jour — conformément à la décision ALE-109 ("métriques figées").
+    La clé de déduplication est (influencer_cache_id, url).
+    """
+    if not admin_enabled() or not posts_with_classifs:
+        return
+    try:
+        admin = admin_client()
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        existing_resp = (
+            admin.table("cached_posts")
+            .select("url")
+            .eq("influencer_cache_id", cache_id)
+            .execute()
+        )
+        existing_urls = {r["url"] for r in (existing_resp.data or []) if r.get("url")}
+
+        new_rows = []
+        for item in posts_with_classifs:
+            post = item.get("post", {})
+            url = post.get("url")
+            if not url or url in existing_urls:
+                continue
+            classif = item.get("classification")
+            date = post.get("date")
+            row: dict[str, Any] = {
+                "influencer_cache_id": cache_id,
+                "url": url,
+                "text": post.get("text"),
+                "posted_at": date.isoformat() if hasattr(date, "isoformat") else date,
+                "format": post.get("format"),
+                "likes": int(post.get("likes", 0) or 0),
+                "comments": int(post.get("comments", 0) or 0),
+                "reposts": int(post.get("reposts", 0) or 0),
+                "engagement": int(post.get("engagement", 0) or 0),
+                "length_chars": int(post.get("length_chars", 0) or 0),
+                "length_words": int(post.get("length_words", 0) or 0),
+            }
+            if classif:
+                row.update({
+                    "stage": classif.get("stage"),
+                    "hook_type": classif.get("hook_type"),
+                    "topic": classif.get("topic"),
+                    "angle": classif.get("angle"),
+                    "classified_at": now,
+                })
+            new_rows.append(row)
+
+        if new_rows:
+            admin.table("cached_posts").insert(new_rows).execute()
+    except Exception:
+        pass  # La persistance du cache ne doit jamais bloquer l'analyse
