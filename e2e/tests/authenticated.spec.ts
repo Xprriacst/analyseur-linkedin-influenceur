@@ -60,8 +60,8 @@ test("Contenu › Mes contenus : liste posts/idées sans erreur", async ({ page 
 test("Contenu › Générateur de posts : formulaires rendus", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Générateur de posts");
-  await expect(page.getByRole("heading", { name: /Idées de posts/i })).toBeVisible();
-  await expect(page.getByRole("heading", { name: /Générer des posts/i })).toBeVisible();
+  // Sections idées + posts fusionnées en un seul bloc « Générer des idées de posts » (idée = post).
+  await expect(page.getByRole("heading", { name: /Générer des idées de posts/i })).toBeVisible();
   await expect(page.getByPlaceholder(/Sujet du post/i)).toBeVisible();
 });
 
