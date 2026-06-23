@@ -1701,6 +1701,51 @@ function useLinkedIn(isAuthed: boolean) {
   return { status, busy, error, connect };
 }
 
+type XStatus = {
+  configured: boolean;
+  connected: boolean;
+  account_id?: string | null;
+  connected_at?: string | null;
+};
+
+/** Statut de connexion X (Twitter) via Zernio + lancement du flux OAuth. */
+function useTwitter(isAuthed: boolean) {
+  const [status, setStatus] = useState<XStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) { setStatus(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/x/status`, { headers: await authHeaders() });
+        if (res.ok) setStatus(await res.json());
+      } catch { /* ignore */ }
+    })();
+  }, [isAuthed]);
+
+  async function connect() {
+    setError("");
+    setBusy(true);
+    try {
+      const redirect = `${window.location.origin}${window.location.pathname}?x=connected`;
+      const res = await fetch(`${DIRECT_API_URL}/me/x/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ redirect_url: redirect }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion X impossible");
+      window.location.href = data.auth_url;
+    } catch (err: any) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  return { status, busy, error, connect };
+}
+
 type SlackStatus = {
   connected: boolean;
   configured: boolean;
@@ -1771,13 +1816,17 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
   const linkedin = useLinkedIn(isAuthed);
+  const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
   const [slackSent, setSlackSent] = useState<Record<number, boolean>>({});
   const [slackSending, setSlackSending] = useState<Record<number, boolean>>({});
   const [publishing, setPublishing] = useState<number | null>(null);
   const [published, setPublished] = useState<number | null>(null);
   const [drafted, setDrafted] = useState<number | null>(null);
+  const [publishingX, setPublishingX] = useState<number | null>(null);
+  const [publishedX, setPublishedX] = useState<number | null>(null);
   const [confirmIndex, setConfirmIndex] = useState<number | null>(null);
+  const [confirmXIndex, setConfirmXIndex] = useState<number | null>(null);
   const [publishError, setPublishError] = useState("");
   const [variantImages, setVariantImages] = useState<Record<number, string>>({});
   const [generatingImage, setGeneratingImage] = useState<number | null>(null);
@@ -1830,6 +1879,36 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       setPublishError(err.message);
     } finally {
       setPublishing(null);
+    }
+  }
+
+  function publishVariantX(i: number, text: string) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour publier sur X."); return; }
+    if (!twitter.status?.connected) {
+      setPublishError("Connecte d'abord ton compte X dans l'onglet Profil.");
+      return;
+    }
+    setConfirmXIndex(i);
+  }
+
+  async function doPublishX(i: number, text: string) {
+    setPublishError("");
+    setPublishedX(null);
+    setPublishingX(i);
+    setConfirmXIndex(null);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/x/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, draft: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication sur X impossible");
+      setPublishedX(i);
+    } catch (err: any) {
+      setPublishError(err.message);
+    } finally {
+      setPublishingX(null);
     }
   }
 
@@ -2097,12 +2176,26 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                       {slackSent[i] ? "Sur Slack ✓" : "Envoyer sur Slack"}
                     </button>
                   )}
+                  {twitter.status?.connected && (
+                    <button
+                      className="secondary-button"
+                      disabled={publishingX === i}
+                      title="Publier maintenant sur X (Twitter)"
+                      onClick={() => publishVariantX(i, editedVariants[i] ?? v.post)}
+                    >
+                      {publishingX === i ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
+                      {publishingX === i ? "Publication…" : publishedX === i ? "Publié ✓" : "Publier sur X"}
+                    </button>
+                  )}
                 </div>
                 {published === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
                 )}
                 {drafted === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré dans LinkedIn ✓</p>
+                )}
+                {publishedX === i && (
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur X ✓</p>
                 )}
                 {scheduledIndices[i] && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post programmé ✓ — visible dans l&apos;onglet Profil.</p>
@@ -2157,6 +2250,42 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 {publishing !== null
                   ? <><Loader2 size={14} className="spinning" /> Publication…</>
                   : <><Linkedin size={14} /> Confirmer la publication</>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmXIndex !== null && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Publier ce post sur X ?</h3>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+              Le post sera publié <strong>immédiatement</strong> sur ton compte X (Twitter).
+            </p>
+            <textarea
+              readOnly
+              value={editedVariants[confirmXIndex] ?? variants[confirmXIndex]?.post ?? ""}
+              rows={8}
+              className="variant-text"
+              style={{ width: "100%", boxSizing: "border-box", marginBottom: 16 }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="secondary-button" onClick={() => setConfirmXIndex(null)}>
+                Annuler
+              </button>
+              <button
+                className="primary-button"
+                disabled={publishingX !== null}
+                onClick={() => doPublishX(confirmXIndex, editedVariants[confirmXIndex] ?? variants[confirmXIndex]?.post ?? "")}
+              >
+                {publishingX !== null
+                  ? <><Loader2 size={14} className="spinning" /> Publication…</>
+                  : <><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> Confirmer la publication</>
                 }
               </button>
             </div>
@@ -3206,6 +3335,7 @@ function ProfileView({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [draftInfo, setDraftInfo] = useState("");
   const linkedin = useLinkedIn(isAuthed);
+  const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
   const [scheduledPosts, setScheduledPosts] = useState<Array<{ id: string; post_text: string; scheduled_at: string; status: string; error_message?: string }>>([]);
   const [cancellingPost, setCancellingPost] = useState<string | null>(null);
@@ -3493,6 +3623,29 @@ function ProfileView({
           </div>
         </section>
       )}
+
+      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0 }}><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+          <div>
+            <strong>Publier sur X (Twitter)</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              {twitter.status?.connected
+                ? "Compte X connecté — publie tes posts directement sur X en un clic."
+                : "Connecte ton compte X pour cross-poster tes posts générés sur X (Twitter)."}
+            </p>
+          </div>
+        </div>
+        {twitter.status?.connected ? (
+          <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+        ) : (
+          <button className="primary-button" onClick={twitter.connect} disabled={twitter.busy}>
+            {twitter.busy ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
+            {twitter.busy ? "Redirection…" : "Connecter X"}
+          </button>
+        )}
+      </section>
+      {twitter.error ? <div className="error" style={{ marginBottom: 12 }}>{twitter.error}</div> : null}
 
       <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -4345,6 +4498,22 @@ export default function Home() {
         await fetch(`${DIRECT_API_URL}/me/linkedin/refresh`, { method: "POST", headers: await authHeaders() });
       } catch { /* ignore */ }
       params.delete("linkedin");
+      const qs = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+      setView("profile");
+    })();
+  }, [isAuthed]);
+
+  // Retour du flux OAuth X (Zernio) : même logique que LinkedIn.
+  useEffect(() => {
+    if (!isAuthed) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("x") !== "connected") return;
+    (async () => {
+      try {
+        await fetch(`${DIRECT_API_URL}/me/x/refresh`, { method: "POST", headers: await authHeaders() });
+      } catch { /* ignore */ }
+      params.delete("x");
       const qs = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
       setView("profile");
