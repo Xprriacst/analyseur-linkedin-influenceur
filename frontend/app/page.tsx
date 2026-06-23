@@ -2481,13 +2481,49 @@ function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAut
 
 type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string };
 type IdeaSeed = { id: string; text: string; used_at?: string | null; created_at?: string };
+type DailyIdeaCard = Pick<Idea, "title" | "hook" | "hook_type" | "funnel" | "angle" | "why_it_works" | "estimated_lift">;
+
+function parseDailyIdeaMarkdown(markdown: string): DailyIdeaCard {
+  const lines = markdown.split(/\r?\n/).map((line) => line.trim());
+  const title = lines.find((line) => line.startsWith("## "))?.replace(/^##\s+/, "").trim() || "Idée du jour";
+  const hook = lines.find((line) => line.startsWith("**Accroche :**"))
+    ?.replace(/^\*\*Accroche :\*\*\s*/, "")
+    .trim() || "";
+  const why = lines.find((line) => line.startsWith("**Pourquoi ça marche :**"))
+    ?.replace(/^\*\*Pourquoi ça marche :\*\*\s*/, "")
+    .trim() || "";
+  const metaLine = [...lines].reverse().find((line) => line.includes("hook _") || /\b(TOFU|MOFU|BOFU)\b/.test(line)) || "";
+  const hookType = metaLine.match(/hook _([^_]+)_/)?.[1]?.trim() || "other";
+  const funnel = metaLine.match(/\b(TOFU|MOFU|BOFU)\b/)?.[1] || "TOFU";
+  const estimatedLift = metaLine.split("·").map((part) => part.trim()).find((part) => part.startsWith("+")) || "";
+  const angleLines = lines.filter((line) =>
+    line &&
+    !line.startsWith("## ") &&
+    !line.startsWith("**Accroche :**") &&
+    !line.startsWith("**Pourquoi ça marche :**") &&
+    !line.startsWith("_Inspirée") &&
+    line !== metaLine
+  );
+
+  return {
+    title,
+    hook,
+    hook_type: hookType,
+    funnel,
+    angle: angleLines.join(" "),
+    why_it_works: why,
+    estimated_lift: estimatedLift,
+  };
+}
 
 function DailyIdeasView({
   isAuthed,
   requireAuth,
+  onReuse,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string) => void;
+  onReuse: (topic: string) => void;
 }) {
   const [ideas, setIdeas] = useState<DailyIdea[]>([]);
   const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
@@ -2658,13 +2694,49 @@ function DailyIdeasView({
           )}
         </div>
       ) : (
-        <div className="daily-history" style={{ marginBottom: 20 }}>
-          {ideas.map((it, idx) => (
-            <details key={it.id} className="card daily-history-item" open={idx === 0}>
-              <summary>{fmtDate(it.idea_date)}{idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}</summary>
-              <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{it.idea_markdown}</ReactMarkdown></div>
-            </details>
-          ))}
+        <div className="ideas-grid daily-ideas-grid">
+          {ideas.map((it, idx) => {
+            const idea = parseDailyIdeaMarkdown(it.idea_markdown);
+            return (
+              <div
+                className="idea-card daily-idea-card"
+                key={it.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => onReuse(idea.title)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onReuse(idea.title);
+                  }
+                }}
+              >
+                <div className="idea-header">
+                  <span className="idea-funnel">{idea.funnel}</span>
+                  <span className="badge">{idea.hook_type}</span>
+                  {idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}
+                  {idea.estimated_lift && <span className="idea-lift">{idea.estimated_lift}</span>}
+                </div>
+                <h3 className="idea-title">{idea.title}</h3>
+                {idea.hook && <p className="idea-hook">"{idea.hook}"</p>}
+                {idea.angle && <p className="idea-angle">{idea.angle}</p>}
+                {idea.why_it_works && <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>}
+                <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8 }}>
+                  <span style={{ fontSize: 12, color: "var(--muted)", textTransform: "capitalize" }}>{fmtDate(it.idea_date)}</span>
+                  <button
+                    className="primary-button"
+                    style={{ fontSize: 12, minHeight: 30, padding: "0 10px", marginLeft: "auto" }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onReuse(idea.title);
+                    }}
+                  >
+                    <Sparkles size={12} /> Générer ce post
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -4266,7 +4338,7 @@ function ContentHub({
         ))}
       </div>
 
-      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} />}
+      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />}
       {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} />}
       {tab === "library" && (
         <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
