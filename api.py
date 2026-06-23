@@ -455,6 +455,89 @@ def me_linkedin_scheduled_cancel(
     return {"ok": True}
 
 
+# ── ALE-108 : Publication X (Twitter) via Zernio ──────────────────────────────
+
+class XConnectRequest(BaseModel):
+    redirect_url: str | None = None
+
+
+class XPublishRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=8000)
+    draft: bool = False
+
+
+def _x_status(token: str) -> dict[str, Any]:
+    profile = db.get_editorial_profile(token) or {}
+    return {
+        "configured": zernio.enabled(),
+        "connected": bool(profile.get("zernio_x_account_id")),
+        "account_id": profile.get("zernio_x_account_id"),
+        "profile_id": profile.get("zernio_profile_id"),
+        "connected_at": profile.get("zernio_x_connected_at"),
+    }
+
+
+@app.get("/me/x/status")
+def me_x_status(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Whether the user has an X (Twitter) account connected through Zernio."""
+    return _x_status(token)
+
+
+@app.post("/me/x/connect")
+def me_x_connect(
+    payload: XConnectRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Return an X OAuth URL the user opens to authorize publishing."""
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    try:
+        profile_id = _ensure_zernio_profile(token)
+        auth_url = zernio.get_connect_url(profile_id, redirect_url=payload.redirect_url, platform="x")
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"auth_url": auth_url}
+
+
+@app.post("/me/x/refresh")
+def me_x_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Re-read the connected X account from Zernio (call after OAuth return)."""
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    profile_id = profile.get("zernio_profile_id")
+    if not profile_id:
+        return _x_status(token)
+    try:
+        account_id = zernio.find_account_id(profile_id, platform="x")
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.set_zernio_x_account(token, account_id)
+    return _x_status(token)
+
+
+@app.post("/me/x/publish")
+def me_x_publish(
+    payload: XPublishRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Publish a post immediately on the user's connected X (Twitter) account."""
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    account_id = profile.get("zernio_x_account_id")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="Aucun compte X connecté. Connecte-le d'abord dans l'onglet Profil.")
+    try:
+        result = zernio.create_post(
+            payload.content.strip(), account_id, publish_now=True, is_draft=payload.draft, platform="x"
+        )
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    post = result.get("post") or result
+    return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft}
+
+
 @app.get("/reports")
 def reports(
     limit: int = 3,
