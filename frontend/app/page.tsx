@@ -108,6 +108,8 @@ type SavedPost = {
   post: string;
   created_at?: string;
   slack_status?: string | null;
+  image_data?: string | null;
+  image_prompt?: string | null;
 };
 type ChatConversation = {
   id: string;
@@ -1874,14 +1876,14 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     }
   }
 
-  async function generateImage(i: number, postText: string) {
+  async function generateImage(i: number, postText: string, postId?: string) {
     setImageError("");
     setGeneratingImage(i);
     try {
       const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_text: postText }),
+        body: JSON.stringify({ post_text: postText, ...(postId ? { post_id: postId } : {}) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération d'image");
@@ -2070,7 +2072,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   <button
                     className="secondary-button"
                     disabled={generatingImage === i}
-                    onClick={() => generateImage(i, editedVariants[i] ?? v.post)}
+                    onClick={() => generateImage(i, editedVariants[i] ?? v.post, v.id)}
                   >
                     {generatingImage === i ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
                     {generatingImage === i ? "Génération…" : variantImages[i] ? "Régénérer l'image" : "Générer une image"}
@@ -2849,6 +2851,19 @@ function LibraryView({
                 </div>
                 {publishError && publishingPost === null && publishedPost === null && (
                   <div className="error" style={{ marginTop: 6, fontSize: 13 }}>{publishError}</div>
+                )}
+                {p.image_data && (
+                  <div style={{ marginTop: 12 }}>
+                    <img src={p.image_data} alt="Image générée" style={{ width: "100%", maxWidth: 400, borderRadius: 8, display: "block" }} />
+                    <a
+                      href={p.image_data}
+                      download={`post-image-${p.id}.png`}
+                      className="secondary-button"
+                      style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, textDecoration: "none" }}
+                    >
+                      <Download size={14} /> Télécharger
+                    </a>
+                  </div>
                 )}
               </div>
             ))}

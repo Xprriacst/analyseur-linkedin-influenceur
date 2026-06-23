@@ -802,6 +802,7 @@ class GenerateRequest(BaseModel):
 
 class GenerateImageRequest(BaseModel):
     post_text: str = Field(..., min_length=10)
+    post_id: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -1286,6 +1287,8 @@ def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends
         result = generate_post_image(payload.post_text)
         if isinstance(result, dict):
             result["credits"] = credits
+            if token and payload.post_id and result.get("image_data"):
+                db.save_post_image(token, payload.post_id, result["image_data"], result.get("prompt_used", ""))
         return result
     except HTTPException:
         raise

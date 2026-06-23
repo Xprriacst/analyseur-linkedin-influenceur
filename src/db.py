@@ -578,6 +578,24 @@ def save_generated_posts(
     return resp.data if resp.data else variants
 
 
+def save_post_image(access_token: str, post_id: str, image_data: str, image_prompt: str) -> bool:
+    """Persist image_data (base64 PNG) and image_prompt on a generated_posts row. Returns True on success."""
+    if not supabase_enabled():
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"image_data": image_data, "image_prompt": image_prompt})
+        .eq("user_id", user["id"])
+        .eq("id", post_id)
+        .execute()
+    )
+    return bool(resp.data)
+
+
 def list_generated_ideas(access_token: str, limit: int = 100) -> list[dict]:
     """List the user's saved post ideas, newest first."""
     if not supabase_enabled():
