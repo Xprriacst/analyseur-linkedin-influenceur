@@ -879,6 +879,8 @@ class IdeasRequest(BaseModel):
 class GenerateRequest(BaseModel):
     topic: Optional[str] = Field(default=None)
     editorial_role: Optional[str] = Field(default=None)
+    # Deprecated client hint kept for backward compatibility. Post generation now
+    # exposes web search as an autonomous server-side tool; the model decides.
     web_search: bool = Field(default=False)
     count: int = Field(default=1, ge=1, le=3)
 
@@ -926,6 +928,16 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
 @app.post("/generate")
 def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
     """Generate optimized post variants for a given topic."""
+    web_searches: list[dict[str, Any]] = []
+    response = _generate_posts_response(payload, token, on_web_search=web_searches.append)
+    response["web_search"] = {
+        "used": bool(web_searches),
+        "queries": web_searches,
+    }
+    return response
+
+
+def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) -> dict[str, Any]:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
@@ -946,22 +958,105 @@ def generate(payload: GenerateRequest, token: Optional[str] = Depends(optional_t
     user_context = db.get_user_ai_context(token)
     role = (payload.editorial_role or "").strip() or None
     topic = (payload.topic or "").strip()
-    variants = generate_posts(
-        topic,
-        top_posts,
-        benchmark,
-        user_context=user_context,
-        editorial_role=role,
-        web_search=payload.web_search,
-        count=payload.count,
-    )
+    return {
+        "top_posts": top_posts,
+        "benchmark": benchmark,
+        "user_context": user_context,
+        "role": role,
+        "topic": topic,
+        "credits": credits,
+    }
+
+
+def _save_generated_variants(token: Optional[str], topic: str, variants: list[dict]) -> tuple[list[dict], str | None]:
     save_error: str | None = None
     if token:
         try:
             variants = db.save_generated_posts(token, topic, variants)
         except Exception as exc:
             save_error = str(exc)
-    return {"variants": variants, "save_error": save_error, "credits": credits}
+    return variants, save_error
+
+
+def _generate_posts_response(
+    payload: GenerateRequest,
+    token: Optional[str],
+    on_web_search=None,
+) -> dict[str, Any]:
+    context = _prepare_generate_context(payload, token)
+    variants = generate_posts(
+        context["topic"],
+        context["top_posts"],
+        context["benchmark"],
+        user_context=context["user_context"],
+        editorial_role=context["role"],
+        count=payload.count,
+        on_web_search=on_web_search,
+    )
+    variants, save_error = _save_generated_variants(token, context["topic"], variants)
+    return {"variants": variants, "save_error": save_error, "credits": context["credits"]}
+
+
+@app.post("/generate/stream")
+def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(optional_token)) -> StreamingResponse:
+    """Generate posts as SSE and report autonomous web-search starts live."""
+    context = _prepare_generate_context(payload, token)
+
+    def stream_response():
+        import queue
+        import threading
+
+        events: queue.Queue[tuple[str, dict[str, Any]] | None] = queue.Queue()
+        web_searches: list[dict[str, Any]] = []
+
+        def on_web_search(event: dict[str, Any]) -> None:
+            web_searches.append(event)
+            events.put(("search", event))
+
+        def worker() -> None:
+            try:
+                variants = generate_posts(
+                    context["topic"],
+                    context["top_posts"],
+                    context["benchmark"],
+                    user_context=context["user_context"],
+                    editorial_role=context["role"],
+                    count=payload.count,
+                    on_web_search=on_web_search,
+                )
+                variants, save_error = _save_generated_variants(token, context["topic"], variants)
+                events.put(("done", {
+                    "variants": variants,
+                    "save_error": save_error,
+                    "credits": context["credits"],
+                    "web_search": {
+                        "used": bool(web_searches),
+                        "queries": web_searches,
+                    },
+                }))
+            except Exception as exc:
+                events.put(("error", {"detail": str(exc)}))
+            finally:
+                events.put(None)
+
+        yield _sse("meta", {"credits": context["credits"]})
+        threading.Thread(target=worker, daemon=True).start()
+
+        while True:
+            item = events.get()
+            if item is None:
+                break
+            event, data = item
+            yield _sse(event, data)
+
+    return StreamingResponse(
+        stream_response(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/me/generated-ideas")
