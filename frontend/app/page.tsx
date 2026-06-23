@@ -111,6 +111,12 @@ type Variant = {
   post: string;
 };
 type WebSearchNotice = { query: string; active: boolean };
+type LinkedInImageAttachment = {
+  id: string;
+  url: string;
+  filename?: string;
+  source: "upload" | "generated";
+};
 type SavedIdea = Idea & { id: string; created_at?: string };
 type SavedPost = {
   id: string;
@@ -1850,13 +1856,13 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [confirmIndex, setConfirmIndex] = useState<number | null>(null);
   const [confirmXIndex, setConfirmXIndex] = useState<number | null>(null);
   const [publishError, setPublishError] = useState("");
-  const [variantImages, setVariantImages] = useState<Record<number, string>>({});
+  const [variantImages, setVariantImages] = useState<Record<number, LinkedInImageAttachment[]>>({});
   const [generatingImage, setGeneratingImage] = useState<number | null>(null);
   const [imageError, setImageError] = useState("");
   const [editedVariants, setEditedVariants] = useState<Record<number, string>>({});
   const [copiedVariant, setCopiedVariant] = useState<number | null>(null);
   const [variantCount, setVariantCount] = useState(1);
-  const [scheduleModal, setScheduleModal] = useState<{ index: number; text: string } | null>(null);
+  const [scheduleModal, setScheduleModal] = useState<{ index: number; text: string; images: LinkedInImageAttachment[] } | null>(null);
   const [scheduleDate, setScheduleDate] = useState("");
   const [scheduling, setScheduling] = useState(false);
   const [scheduledIndices, setScheduledIndices] = useState<Record<number, boolean>>({});
@@ -1869,6 +1875,13 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     void generateFromTopic(seed.topic);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed?.nonce]);
+
+  function imagePayloadForVariant(i: number) {
+    return (variantImages[i] || []).map((image) => ({
+      ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
+      filename: image.filename,
+    }));
+  }
 
   function publishVariant(i: number, text: string, draft: boolean = false) {
     if (!isAuthed) { requireAuth("Connecte-toi pour publier sur LinkedIn."); return; }
@@ -1893,7 +1906,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft }),
+        body: JSON.stringify({ content: text, draft, images: imagePayloadForVariant(i) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon impossible" : "Publication impossible"));
@@ -1953,7 +1966,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     tomorrow.setHours(9, 0, 0, 0);
     setScheduleDate(toDatetimeLocalValue(tomorrow));
     setScheduleError("");
-    setScheduleModal({ index: i, text });
+    setScheduleModal({ index: i, text, images: variantImages[i] || [] });
   }
 
   async function doSchedule() {
@@ -1967,7 +1980,14 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: scheduleModal.text, scheduled_at: localDate.toISOString() }),
+        body: JSON.stringify({
+          content: scheduleModal.text,
+          scheduled_at: localDate.toISOString(),
+          images: scheduleModal.images.map((image) => ({
+            ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
+            filename: image.filename,
+          })),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Planification impossible.");
@@ -1992,12 +2012,60 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération d'image");
       emitCredits(data.credits);
-      setVariantImages((prev) => ({ ...prev, [i]: data.image_data }));
+      const attachment: LinkedInImageAttachment = {
+        id: `generated-${Date.now()}`,
+        url: data.image_data,
+        filename: `image-generee-${i + 1}.png`,
+        source: "generated",
+      };
+      setVariantImages((prev) => ({
+        ...prev,
+        [i]: [...(prev[i] || []), attachment],
+      }));
     } catch (err: any) {
       setImageError(err.message);
     } finally {
       setGeneratingImage(null);
     }
+  }
+
+  function addUploadedImages(i: number, files: FileList | null) {
+    if (!files?.length) return;
+    setImageError("");
+    const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length !== files.length) {
+      setImageError("Seuls les fichiers image sont acceptés.");
+    }
+    for (const file of imageFiles) {
+      if (file.size > 8 * 1024 * 1024) {
+        setImageError("LinkedIn limite chaque image à 8 Mo.");
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : "";
+        if (!result) return;
+        const attachment: LinkedInImageAttachment = {
+          id: `upload-${Date.now()}-${file.name}`,
+          url: result,
+          filename: file.name,
+          source: "upload",
+        };
+        setVariantImages((prev) => ({
+          ...prev,
+          [i]: [...(prev[i] || []), attachment].slice(0, 20),
+        }));
+      };
+      reader.onerror = () => setImageError(`Lecture impossible pour ${file.name}.`);
+      reader.readAsDataURL(file);
+    }
+  }
+
+  function removeVariantImage(i: number, imageId: string) {
+    setVariantImages((prev) => ({
+      ...prev,
+      [i]: (prev[i] || []).filter((image) => image.id !== imageId),
+    }));
   }
 
   async function generateFromTopic(t: string) {
@@ -2046,6 +2114,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
           doneReceived = true;
           emitCredits(data.credits);
           setEditedVariants({}); // éditions indexées par position : à purger sinon elles contaminent le nouveau batch
+          setVariantImages({});
           setVariants(data.variants || []);
           if (data.save_error) setError(`Posts générés, mais sauvegarde impossible : ${data.save_error}`);
         } else if (event === "error") {
@@ -2235,8 +2304,22 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     onClick={() => generateImage(i, editedVariants[i] ?? v.post)}
                   >
                     {generatingImage === i ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
-                    {generatingImage === i ? "Génération…" : variantImages[i] ? "Régénérer l'image" : "Générer une image"}
+                    {generatingImage === i ? "Génération…" : (variantImages[i] || []).length ? "Ajouter une image IA" : "Générer une image"}
                   </button>
+                  <label className="secondary-button" style={{ cursor: "pointer" }}>
+                    <PlusCircle size={14} />
+                    Joindre des images
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+                      multiple
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        addUploadedImages(i, e.currentTarget.files);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
                   {slack.status?.connected && v.id && (
                     <button
                       className="secondary-button"
@@ -2283,17 +2366,35 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 {scheduledIndices[i] && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post programmé ✓ — visible dans l&apos;onglet Profil.</p>
                 )}
-                {variantImages[i] && (
+                {(variantImages[i] || []).length > 0 && (
                   <div style={{ marginTop: 12 }}>
-                    <img src={variantImages[i]} alt="Image générée" style={{ width: "100%", maxWidth: 400, borderRadius: 8, display: "block" }} />
-                    <a
-                      href={variantImages[i]}
-                      download={`post-image-${i + 1}.png`}
-                      className="secondary-button"
-                      style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, textDecoration: "none" }}
-                    >
-                      <Download size={14} /> Télécharger
-                    </a>
+                    <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                      {(variantImages[i] || []).length} image{(variantImages[i] || []).length > 1 ? "s" : ""} jointe{(variantImages[i] || []).length > 1 ? "s" : ""} au post LinkedIn.
+                    </p>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
+                      {(variantImages[i] || []).map((image, imageIndex) => (
+                        <div key={image.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
+                          <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                            <a
+                              href={image.url}
+                              download={image.filename || `post-image-${i + 1}-${imageIndex + 1}.png`}
+                              className="secondary-button"
+                              style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}
+                            >
+                              <Download size={12} /> Télécharger
+                            </a>
+                            <button
+                              className="secondary-button"
+                              style={{ minHeight: 28, padding: "0 8px", fontSize: 12 }}
+                              onClick={() => removeVariantImage(i, image.id)}
+                            >
+                              <Trash2 size={12} /> Retirer
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -2321,6 +2422,23 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               className="variant-text"
               style={{ width: "100%", boxSizing: "border-box", marginBottom: 16 }}
             />
+            {(variantImages[confirmIndex] || []).length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                  {(variantImages[confirmIndex] || []).length} image{(variantImages[confirmIndex] || []).length > 1 ? "s" : ""} {(variantImages[confirmIndex] || []).length > 1 ? "seront jointes" : "sera jointe"}.
+                </p>
+                <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
+                  {(variantImages[confirmIndex] || []).map((image, idx) => (
+                    <img
+                      key={image.id}
+                      src={image.url}
+                      alt={`Image jointe ${idx + 1}`}
+                      style={{ width: 86, height: 86, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button className="secondary-button" onClick={() => setConfirmIndex(null)}>
                 Annuler
@@ -2393,6 +2511,23 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               className="variant-text"
               style={{ width: "100%", boxSizing: "border-box", marginBottom: 12 }}
             />
+            {scheduleModal.images.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                  {scheduleModal.images.length} image{scheduleModal.images.length > 1 ? "s" : ""} {scheduleModal.images.length > 1 ? "seront conservées" : "sera conservée"} pour la publication programmée.
+                </p>
+                <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
+                  {scheduleModal.images.map((image, idx) => (
+                    <img
+                      key={image.id}
+                      src={image.url}
+                      alt={`Image programmée ${idx + 1}`}
+                      style={{ width: 74, height: 74, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
             <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
               Date et heure de publication
             </label>
