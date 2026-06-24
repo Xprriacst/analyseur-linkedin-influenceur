@@ -9,7 +9,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import db, slack as slack_client, zernio
@@ -46,6 +46,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Renvoyer une réponse JSON 500 *qui repasse par le CORSMiddleware*.
+
+    Sans ça, une exception non gérée est interceptée par le ServerErrorMiddleware
+    de Starlette (en dehors du CORSMiddleware) : la 500 sort sans en-tête CORS, et
+    le navigateur affiche « Failed to fetch » au lieu du vrai message. Les
+    `HTTPException` gardent leur handler dédié (non concernées ici).
+    """
+    import logging
+    import traceback
+
+    logging.error("Unhandled error on %s %s: %s", request.method, request.url.path, exc)
+    traceback.print_exc()
+    return JSONResponse(status_code=500, content={"detail": "Erreur interne du serveur."})
 
 
 def _bearer_token(authorization: Optional[str]) -> Optional[str]:
