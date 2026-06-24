@@ -66,6 +66,17 @@ Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netli
 
 ## Changelog
 
+### 2026-06-24 (ALE-125 : split backend Render dev/prod — symétrie avec Netlify)
+- **Objectif** : rétablir la symétrie dev/prod. Avant, 2 sites Netlify (`main`→prod, `dev`→dev) mais **un seul** service Render (sur `main`) → toute modif backend devait être mergée dans `main` pour être testable en ligne (= test en prod). Désormais : `Netlify dev (dev) → Render dev (dev)`.
+- **Infra créée (via MCP, le 2026-06-24)** :
+  - Nouveau web service Render **`analyseur-linkedin-influenceur-api-dev`** (`srv-d8u1cn5ckfvc73bad8sg`, branche `dev`, plan **free**, région Oregon, même build/start command que la prod). URL : `https://analyseur-linkedin-influenceur-api-dev.onrender.com`. Auto-deploy sur push `dev`.
+  - Site Netlify **dev** (`lkd-outreach-dev`, `35a2cf5e`) : `BACKEND_URL` + `NEXT_PUBLIC_BACKEND_URL` repointés du backend prod vers le backend **dev** (tous contextes). Le site prod (`lkd-outreach`, `81f75c05`) reste sur le backend prod.
+- **Secrets recopiés sur le service dev** : `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `APIFY_TOKEN`, `APIFY_ACTOR`, `APIFY_PROFILE_ACTOR`, `POSTS_LIMIT`, `ZERNIO_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY` (valeurs depuis `.env` local + clé anon Supabase).
+- ⚠️ **Secrets RESTANT à ajouter à la main** sur le service dev (non lisibles via MCP — à copier depuis le dashboard Render prod ou à fournir) : `SUPABASE_SERVICE_ROLE_KEY` (admin/cron), `OPENAI_API_KEY` (génération d'image), `SLACK_CLIENT_ID`/`SLACK_CLIENT_SECRET`/`SLACK_SIGNING_SECRET` (intégration Slack), `APIFY_IG_PROFILE_ACTOR`/`APIFY_IG_REEL_ACTOR` (analyse Instagram). Le web service **boote et fonctionne** sans (analyse LinkedIn + génération + persistance OK) ; seules ces features restent dégradées tant que les secrets ne sont pas ajoutés.
+- **Code** : CORS rendu configurable dans `api.py` (`_cors_origins()` + var optionnelle `CORS_ORIGINS`, l'URL du service dev ajoutée aux origines par défaut). Docs (CLAUDE.md tableau d'env + README) mises à jour.
+- **Caveat connu (hors scope ALE-125)** : prod et dev partagent encore le **même projet Supabase** → les tests sur dev écrivent dans la même base que la prod. Isolation complète = niveau 2 (2ᵉ projet Supabase), à faire plus tard si la pollution devient un vrai problème.
+- ⚠️ **Note** : les **cron jobs** Render (`analyseur-linkedin-scheduler`, `analyseur-daily-ideas`) restent sur `main` (prod uniquement) — non dupliqués sur dev (volontaire).
+
 ### 2026-06-21 (job queue : annulation par item + récupération des séries figées)
 - **Incident** : une analyse a figé un item à `running` (profil `louisgraffeuil`), « Annuler » ne nettoyait rien → spinner « Analyse en cours » éternel. Cause : le thread de traitement a été tué (redémarrage Render) **pile au lancement** (service redémarré à 12:54:58, item `running` à 12:54:53), et l'annulation ne touchait que la série, jamais les items.
 - **Bugs corrigés** (4) :
