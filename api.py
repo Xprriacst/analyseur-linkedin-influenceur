@@ -1869,6 +1869,14 @@ def cancel_job_item(
     return db.get_job(token, job_id)
 
 
+@app.delete("/jobs/{job_id}/items/{item_id}")
+def delete_job_item(
+    job_id: str, item_id: str, token: str = Depends(require_token)
+) -> dict[str, bool]:
+    """Supprime une analyse d'une série : la ligne + son rapport lié (ALE-131)."""
+    return {"deleted": db.delete_job_item(token, item_id)}
+
+
 @app.post("/analyses/persist")
 def persist_analysis(
     result: dict[str, Any],
