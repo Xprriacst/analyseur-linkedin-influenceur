@@ -231,7 +231,7 @@ function InstagramIcon({ size = 14 }: { size?: number }) {
 }
 
 /** Sous-onglets de la vue « Analyser » (analyse, influenceurs, dashboard fusionnés). */
-type AnalyzeTab = "analyze" | "influencers" | "dashboard";
+type AnalyzeTab = "analyze" | "influencers";
 
 /** Sous-onglets de la vue « Contenu » (idée du jour, générateur, mes contenus fusionnés). */
 type ContentTab = "daily" | "generator" | "library";
@@ -4700,7 +4700,8 @@ function InfluencersView({
 
 /**
  * Vue « Analyser » fusionnée : barre de sous-onglets qui regroupe l'ancien
- * onglet Analyser (séries), Mes influenceurs et Dashboard global.
+ * onglet Analyser (séries) et Mes influenceurs. Le Dashboard global (ALE-132)
+ * est désormais affiché sous la liste des influenceurs (plus de sous-onglet dédié).
  */
 function AnalyzeHub({
   tab,
@@ -4732,7 +4733,6 @@ function AnalyzeHub({
   const subTabs: { key: AnalyzeTab; label: string; icon: React.ReactNode }[] = [
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
     { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} /> },
-    { key: "dashboard", label: "Dashboard", icon: <TrendingUp size={14} /> },
   ];
 
   return (
@@ -4763,15 +4763,21 @@ function AnalyzeHub({
         />
       )}
       {tab === "influencers" && (
-        <InfluencersView
-          entries={influencers}
-          loading={influencersLoading}
-          isAuthed={isAuthed}
-          requireAuth={requireAuth}
-          onOpenReport={onOpenLibraryReport}
-        />
+        <>
+          <InfluencersView
+            entries={influencers}
+            loading={influencersLoading}
+            isAuthed={isAuthed}
+            requireAuth={requireAuth}
+            onOpenReport={onOpenLibraryReport}
+          />
+          {isAuthed && (
+            <div style={{ marginTop: 32, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
+              <GlobalDashboard />
+            </div>
+          )}
+        </>
       )}
-      {tab === "dashboard" && <GlobalDashboard />}
     </div>
   );
 }
