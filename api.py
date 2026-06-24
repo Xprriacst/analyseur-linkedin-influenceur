@@ -1171,8 +1171,8 @@ def me_generated_posts(
     limit: int = 100,
     token: str = Depends(require_token),
 ) -> list[dict[str, Any]]:
-    """List the authenticated user's saved generated posts."""
-    return db.list_generated_posts(token, limit=max(1, min(limit, 500)))
+    """List the authenticated user's saved generated posts (ALE-135 : seulement les `saved`)."""
+    return db.list_generated_posts(token, limit=max(1, min(limit, 500)), saved_only=True)
 
 
 @app.delete("/me/generated-ideas/{idea_id}")
@@ -1188,13 +1188,16 @@ def delete_me_generated_post(post_id: str, token: str = Depends(require_token)) 
 
 
 class UpdatePostRequest(BaseModel):
-    post: str = Field(..., min_length=1, max_length=50000)
+    post: str | None = Field(default=None, min_length=1, max_length=50000)
+    saved: bool | None = None
 
 
 @app.put("/me/generated-posts/{post_id}")
 def update_me_generated_post(post_id: str, payload: UpdatePostRequest, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Update the text of a saved post."""
-    updated = db.update_generated_post(token, post_id, payload.post)
+    """Update a saved post's text and/or its `saved` flag (ALE-134)."""
+    if payload.post is None and payload.saved is None:
+        raise HTTPException(status_code=400, detail="Rien à mettre à jour (post ou saved requis).")
+    updated = db.update_generated_post(token, post_id, payload.post, payload.saved)
     if not updated:
         raise HTTPException(status_code=404, detail="Post introuvable ou non autorisé.")
     return updated

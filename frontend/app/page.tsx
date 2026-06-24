@@ -8,11 +8,13 @@ import {
   BarChart3,
   CheckCircle2,
   ChevronLeft,
+  ChevronRight,
   Clock3,
   Copy,
   Download,
   FileText,
   Image as ImageIcon,
+  ImagePlus,
   Lightbulb,
   Link2,
   Linkedin,
@@ -962,24 +964,31 @@ function Sidebar({
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 
 }) {
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem("sidebar-collapsed") === "true"; } catch { return false; }
-  });
+  const [collapsed, setCollapsed] = useState(false);
+  const [collapsedPreferenceLoaded, setCollapsedPreferenceLoaded] = useState(false);
+
+  useEffect(() => {
+    try {
+      setCollapsed(localStorage.getItem("sidebar-collapsed") === "true");
+    } catch {
+      /* ignore */
+    } finally {
+      setCollapsedPreferenceLoaded(true);
+    }
+  }, []);
 
   useEffect(() => {
     const w = collapsed ? "64px" : "260px";
     document.documentElement.style.setProperty("--sidebar-w", w);
+    if (!collapsedPreferenceLoaded) return;
     try { localStorage.setItem("sidebar-collapsed", String(collapsed)); } catch {}
-  }, [collapsed]);
+  }, [collapsed, collapsedPreferenceLoaded]);
 
   return (
     <aside className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}>
       <div className="logo">
         <div
-          className={`logo-mark${collapsed ? " logo-mark-toggle" : ""}`}
-          onClick={collapsed ? () => setCollapsed(false) : undefined}
-          role={collapsed ? "button" : undefined}
-          title={collapsed ? "Étendre la sidebar" : undefined}
+          className="logo-mark"
         >
           <Target size={18} strokeWidth={2.5} />
         </div>
@@ -989,15 +998,14 @@ function Sidebar({
             <span className="logo-sub">SaaS Premium</span>
           </div>
         )}
-        {!collapsed && (
-          <button
-            className="sidebar-collapse-btn"
-            onClick={() => setCollapsed(true)}
-            title="Réduire la sidebar"
-          >
-            <ChevronLeft size={14} />
-          </button>
-        )}
+        <button
+          className="sidebar-collapse-btn"
+          onClick={() => setCollapsed((value) => !value)}
+          title={collapsed ? "Étendre la sidebar" : "Réduire la sidebar"}
+          aria-label={collapsed ? "Étendre la sidebar" : "Réduire la sidebar"}
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+        </button>
       </div>
 
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
@@ -1854,6 +1862,8 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [publishing, setPublishing] = useState<number | null>(null);
   const [published, setPublished] = useState<number | null>(null);
   const [drafted, setDrafted] = useState<number | null>(null);
+  const [savingVariant, setSavingVariant] = useState<number | null>(null);
+  const [savedVariant, setSavedVariant] = useState<number | null>(null);
   const [publishingX, setPublishingX] = useState<number | null>(null);
   const [publishedX, setPublishedX] = useState<number | null>(null);
   const [confirmIndex, setConfirmIndex] = useState<number | null>(null);
@@ -1884,6 +1894,26 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
       filename: image.filename,
     }));
+  }
+
+  // ALE-134 : marque explicitement un post comme « sauvegardé » (persiste aussi
+  // le texte édité). Seuls les posts sauvegardés apparaissent dans « Mes contenus ».
+  async function saveVariant(i: number, text: string, id?: string) {
+    if (!id) return;
+    setSavingVariant(i);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post: text, saved: true }),
+      });
+      if (res.ok) {
+        setSavedVariant(i);
+        setTimeout(() => setSavedVariant((s) => (s === i ? null : s)), 1500);
+      }
+    } finally {
+      setSavingVariant(null);
+    }
   }
 
   function publishVariant(i: number, text: string, draft: boolean = false) {
@@ -2287,15 +2317,17 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     {publishing === i && published !== i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
                     {publishing === i && published !== i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
                   </button>
-                  <button
-                    className="secondary-button"
-                    disabled={publishing === i}
-                    title={linkedin.status?.connected ? "Enregistrer comme brouillon dans Zernio" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => publishVariant(i, editedVariants[i] ?? v.post, true)}
-                  >
-                    {publishing === i && drafted !== i ? <Loader2 size={14} className="spinning" /> : <FileText size={14} />}
-                    {drafted === i ? "Brouillon ✓" : "Enregistrer en brouillon"}
-                  </button>
+                  {v.id && (
+                    <button
+                      className="secondary-button"
+                      disabled={savingVariant === i}
+                      title="Sauvegarder ce post dans « Mes contenus »"
+                      onClick={() => saveVariant(i, editedVariants[i] ?? v.post, v.id)}
+                    >
+                      {savingVariant === i ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />}
+                      {savedVariant === i ? "Sauvegardé ✓" : "Sauvegarder"}
+                    </button>
+                  )}
                   <button
                     className="secondary-button"
                     disabled={publishing === i || scheduling || !!scheduledIndices[i]}
@@ -2320,7 +2352,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     {generatingImage === i ? "Génération…" : (variantImages[i] || []).length ? "Ajouter une image IA" : "Générer une image"}
                   </button>
                   <label className="secondary-button" style={{ cursor: "pointer" }}>
-                    <PlusCircle size={14} />
+                    <ImagePlus size={14} />
                     Joindre des images
                     <input
                       type="file"
@@ -2369,9 +2401,6 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 </div>
                 {published === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
-                )}
-                {drafted === i && (
-                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré dans Zernio ✓</p>
                 )}
                 {publishedX === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur X ✓</p>
@@ -3024,9 +3053,7 @@ function LibraryView({
   requireAuth: (reason?: string) => void;
   onReuse: (topic: string) => void;
 }) {
-  const [tab, setTab] = useState<"posts" | "ideas">("posts");
   const [posts, setPosts] = useState<SavedPost[]>([]);
-  const [ideas, setIdeas] = useState<SavedIdea[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
@@ -3067,7 +3094,6 @@ function LibraryView({
     }
   }
 
-  const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
   const roleLabels: Record<string, string> = {
     performance: "Performance", methodologie: "Méthodologie", autorite: "Autorité",
     story: "Story", quotidien: "Quotidien", opinion: "Opinion", relationnel: "Relationnel",
@@ -3084,16 +3110,10 @@ function LibraryView({
     setError("");
     try {
       const headers = await authHeaders();
-      const [pRes, iRes] = await Promise.all([
-        fetch(`${DIRECT_API_URL}/me/generated-posts`, { headers }),
-        fetch(`${DIRECT_API_URL}/me/generated-ideas`, { headers }),
-      ]);
+      const pRes = await fetch(`${DIRECT_API_URL}/me/generated-posts`, { headers });
       const pData = await pRes.json();
-      const iData = await iRes.json();
       if (!pRes.ok) throw new Error(pData.detail || "Chargement des posts impossible");
-      if (!iRes.ok) throw new Error(iData.detail || "Chargement des idées impossible");
       setPosts(Array.isArray(pData) ? pData : []);
-      setIdeas(Array.isArray(iData) ? iData : []);
     } catch (err: any) {
       setError(err.message || "Chargement impossible");
     } finally {
@@ -3103,7 +3123,7 @@ function LibraryView({
 
   useEffect(() => {
     if (isAuthed) void loadAll();
-    else { setPosts([]); setIdeas([]); }
+    else { setPosts([]); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
@@ -3120,20 +3140,13 @@ function LibraryView({
     } catch { void loadAll(); }
   }
 
-  async function deleteIdea(id: string) {
-    setIdeas((prev) => prev.filter((i) => i.id !== id));
-    try {
-      await fetch(`${DIRECT_API_URL}/me/generated-ideas/${id}`, { method: "DELETE", headers: await authHeaders() });
-    } catch { void loadAll(); }
-  }
-
   if (!isAuthed) {
     return (
       <div className="card" style={{ textAlign: "center", padding: 40 }}>
         <Bookmark size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
         <h2 style={{ margin: "0 0 8px" }}>Mes contenus</h2>
         <p style={{ color: "var(--muted)", marginBottom: 16 }}>
-          Connecte-toi pour retrouver les posts et idées générés et les réutiliser.
+          Connecte-toi pour retrouver les posts que tu as sauvegardés et les réutiliser.
         </p>
         <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour retrouver tes contenus générés.")}>
           <Sparkles size={14} /> Créer un compte gratuit
@@ -3147,7 +3160,7 @@ function LibraryView({
       <div className="section-header">
         <div>
           <h2 className="section-title"><Bookmark size={20} /> Mes contenus sauvegardés</h2>
-          <p className="section-desc">Tes posts et idées générés sont enregistrés automatiquement. Relis-les, copie-les ou réutilise-les.</p>
+          <p className="section-desc">Retrouve les posts que tu as sauvegardés depuis le générateur. Relis-les, copie-les ou réutilise-les.</p>
         </div>
         <button className="secondary-button" onClick={loadAll} disabled={loading}>
           {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
@@ -3155,23 +3168,14 @@ function LibraryView({
         </button>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <button className={tab === "posts" ? "primary-button" : "secondary-button"} onClick={() => setTab("posts")}>
-          <PenTool size={14} /> Posts ({posts.length})
-        </button>
-        <button className={tab === "ideas" ? "primary-button" : "secondary-button"} onClick={() => setTab("ideas")}>
-          <Lightbulb size={14} /> Idées ({ideas.length})
-        </button>
-      </div>
+      {error &&<div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
-
-      {loading && posts.length === 0 && ideas.length === 0 ? (
+      {loading && posts.length === 0 ? (
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
           <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
           <p style={{ color: "var(--muted)" }}>Chargement de tes contenus…</p>
         </div>
-      ) : tab === "posts" ? (
+      ) : (
         posts.length === 0 ? (
           <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
             Aucun post sauvegardé pour l'instant. Génère des posts dans l'onglet « Générateur de posts ».
@@ -3294,72 +3298,6 @@ function LibraryView({
             ))}
           </div>
         )
-      ) : ideas.length === 0 ? (
-        <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
-          Aucune idée sauvegardée pour l'instant. Génère des idées dans l'onglet « Générateur de posts ».
-        </div>
-      ) : (
-        <div className="ideas-grid">
-          {ideas.map((idea) => (
-            <div className="idea-card" key={idea.id}>
-              <div className="idea-header">
-                <span className="idea-funnel" style={{ borderColor: funnelColors[idea.funnel] || "var(--border)", color: funnelColors[idea.funnel] || "var(--muted)" }}>
-                  {idea.funnel}
-                </span>
-                <span className="badge">{idea.hook_type}</span>
-                <span className="idea-lift">{idea.estimated_lift}</span>
-              </div>
-              <h3 className="idea-title">{idea.title}</h3>
-              <p className="idea-hook">"{idea.hook}"</p>
-              <p className="idea-angle">{idea.angle}</p>
-              {idea.why_it_works && <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>}
-              <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8 }}>
-                <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtDate(idea.created_at)}</span>
-                <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    className="compact-copy-button"
-                    aria-label={copied === idea.id ? "Accroche copiée" : "Copier l'accroche"}
-                    title={copied === idea.id ? "Copié ✓" : "Copier l'accroche"}
-                    onClick={() => copy(idea.hook, idea.id)}
-                  >
-                    {copied === idea.id ? <CheckCircle2 size={14} /> : <Copy size={14} />}
-                  </button>
-                  {slack.status?.connected && (
-                    <button
-                      className="secondary-button"
-                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                      disabled={!!slackSending[idea.id] || !!slackSent[idea.id]}
-                      onClick={async () => {
-                        setSlackSending((p) => ({ ...p, [idea.id]: true }));
-                        try {
-                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-ideas`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ idea_ids: [idea.id] }),
-                          });
-                          setSlackSent((p) => ({ ...p, [idea.id]: true }));
-                          setIdeas((prev) => prev.map((i) => i.id === idea.id ? { ...i, slack_status: "pending" } : i));
-                        } finally {
-                          setSlackSending((p) => ({ ...p, [idea.id]: false }));
-                        }
-                      }}
-                    >
-                      {slackSending[idea.id] ? <Loader2 size={12} className="spinning" /> : null}
-                      {slackSent[idea.id] || idea.slack_status === "pending" ? "Sur Slack ✓" : "Valider sur Slack"}
-                    </button>
-                  )}
-                  <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => onReuse(idea.title)}>
-                    <Sparkles size={12} /> Générer ce post
-                  </button>
-                  <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => deleteIdea(idea.id)}>
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
       )}
     </div>
   );
@@ -4721,10 +4659,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("content");
-  const [platform, setPlatform] = useState<Platform>(() => {
-    if (typeof window === "undefined") return "linkedin";
-    return (localStorage.getItem("lkd_platform") as Platform) ?? "linkedin";
-  });
+  const [platform, setPlatform] = useState<Platform>("linkedin");
   const [analyzeTab, setAnalyzeTab] = useState<AnalyzeTab>("analyze");
   const [contentTab, setContentTab] = useState<ContentTab>("generator");
   // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
@@ -4743,6 +4678,17 @@ export default function Home() {
   const pendingAnonResultRef = useRef<Analysis | null>(null);
 
   const isAuthed = !!session;
+
+  useEffect(() => {
+    try {
+      const savedPlatform = localStorage.getItem("lkd_platform");
+      if (savedPlatform === "linkedin" || savedPlatform === "instagram") {
+        setPlatform(savedPlatform);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   function requireAuth(reason?: string, mode: AuthMode = "signup") {
     setAuthReason(reason || "");
@@ -5062,7 +5008,7 @@ export default function Home() {
           onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
           onPlatformChange={(p) => {
             setPlatform(p);
-            localStorage.setItem("lkd_platform", p);
+            try { localStorage.setItem("lkd_platform", p); } catch {}
           }}
           requireAuth={requireAuth}
         />

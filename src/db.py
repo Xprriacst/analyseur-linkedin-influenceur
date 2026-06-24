@@ -592,6 +592,10 @@ def save_generated_posts(
             "strategy": variant.get("strategy"),
             "predicted_lift": variant.get("predicted_lift"),
             "post": variant.get("post") or "",
+            # ALE-134 : auto-sauvegarde = brouillon non « sauvegardé ». L'id reste
+            # dispo (Slack/X), mais le post n'apparaît dans « Mes contenus » qu'après
+            # un clic explicite sur « Sauvegarder » (passe saved → true).
+            "saved": False,
         }
         for variant in variants
         if variant.get("post")
@@ -621,22 +625,28 @@ def list_generated_ideas(access_token: str, limit: int = 100) -> list[dict]:
     return resp.data or []
 
 
-def list_generated_posts(access_token: str, limit: int = 100) -> list[dict]:
-    """List the user's saved generated posts, newest first."""
+def list_generated_posts(
+    access_token: str, limit: int = 100, saved_only: bool = False
+) -> list[dict]:
+    """List the user's generated posts, newest first.
+
+    With ``saved_only=True``, only posts explicitly marked ``saved`` are returned
+    (ALE-135 : « Mes contenus » n'affiche que les posts sauvegardés).
+    """
     if not supabase_enabled():
         return []
     user = get_user(access_token)
     if not user:
         return []
     db = client_for_token(access_token)
-    resp = (
+    query = (
         db.table("generated_posts")
         .select("*")
         .eq("user_id", user["id"])
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
     )
+    if saved_only:
+        query = query.eq("saved", True)
+    resp = query.order("created_at", desc=True).limit(limit).execute()
     return resp.data or []
 
 
@@ -672,15 +682,31 @@ def delete_generated_post(access_token: str, post_id: str) -> bool:
     return bool(resp.data)
 
 
-def update_generated_post(access_token: str, post_id: str, new_post: str) -> dict | None:
-    """Update the text of a saved post. Returns the updated row or None."""
+def update_generated_post(
+    access_token: str,
+    post_id: str,
+    new_post: str | None = None,
+    saved: bool | None = None,
+) -> dict | None:
+    """Update a saved post's text and/or its `saved` flag (ALE-134).
+
+    Both fields are optional; only the provided ones are written. Returns the
+    updated row or None.
+    """
     user = get_user(access_token)
     if not user:
+        return None
+    updates: dict = {}
+    if new_post is not None:
+        updates["post"] = new_post
+    if saved is not None:
+        updates["saved"] = saved
+    if not updates:
         return None
     db = client_for_token(access_token)
     resp = (
         db.table("generated_posts")
-        .update({"post": new_post})
+        .update(updates)
         .eq("user_id", user["id"])
         .eq("id", post_id)
         .execute()
