@@ -16,7 +16,7 @@ import sys
 
 from src import db
 from src.benchmark import build_benchmark, enrich_influencers
-from src.llm import generate_ideas
+from src.llm import generate_posts
 
 
 def _render_idea_markdown(idea: dict, seed_text: str | None) -> str:
@@ -61,22 +61,27 @@ def _generate_for_user(user_id: str, today: str) -> bool:
     seed = db.pop_unused_seed(user_id)
     seed_text = seed["text"] if seed else None
 
-    ideas = generate_ideas(
+    # ALE-136 : on génère un VRAI post complet (postable), plus un simple concept.
+    posts = generate_posts(
+        seed_text,
         top_posts,
         benchmark,
-        count=1,
         user_context=context,
-        seed_topic=seed_text,
+        count=1,
     )
-    if not ideas:
+    if not posts:
         print(f"  · {user_id}: génération vide, skip")
         return False
 
-    markdown = _render_idea_markdown(ideas[0], seed_text)
-    db.insert_daily_idea(user_id, markdown, today, seed_id=seed["id"] if seed else None)
+    post = posts[0]
+    # idea_markdown = texte du post (rétro-compat des consommateurs existants).
+    markdown = post.get("post") or ""
+    db.insert_daily_idea(
+        user_id, markdown, today, seed_id=seed["id"] if seed else None, post=post
+    )
     if seed:
         db.mark_seed_used(seed["id"])
-    print(f"  ✓ {user_id}: idée générée" + (" (seed)" if seed else " (benchmark)"))
+    print(f"  ✓ {user_id}: post du jour généré" + (" (seed)" if seed else " (benchmark)"))
     return True
 
 

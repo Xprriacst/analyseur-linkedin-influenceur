@@ -606,6 +606,39 @@ def save_generated_posts(
     return resp.data if resp.data else variants
 
 
+def create_saved_post(
+    access_token: str,
+    post_text: str,
+    topic: str | None = None,
+    editorial_role: str | None = None,
+    hook_type: str | None = None,
+    strategy: str | None = None,
+    predicted_lift: str | None = None,
+) -> dict | None:
+    """Create a single explicitly-saved generated post (ALE-136 : sauvegarder le post du jour)."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .insert({
+            "user_id": user["id"],
+            "topic": topic or None,
+            "editorial_role": editorial_role,
+            "hook_type": hook_type,
+            "strategy": strategy,
+            "predicted_lift": predicted_lift,
+            "post": post_text,
+            "saved": True,
+        })
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def list_generated_ideas(access_token: str, limit: int = 100) -> list[dict]:
     """List the user's saved post ideas, newest first."""
     if not supabase_enabled():
@@ -1435,7 +1468,9 @@ def mark_seed_used(seed_id: str) -> None:
     admin_client().table("idea_seeds").update({"used_at": now}).eq("id", seed_id).execute()
 
 
-def replace_daily_idea(access_token: str, idea_markdown: str, idea_date: str) -> dict | None:
+def replace_daily_idea(
+    access_token: str, idea_markdown: str, idea_date: str, post: dict | None = None
+) -> dict | None:
     """Upsert the daily idea for today — replaces an existing one (on-demand regen).
 
     `daily_ideas` is client read-only (migration 0007 : seul le service-role
@@ -1443,6 +1478,8 @@ def replace_daily_idea(access_token: str, idea_markdown: str, idea_date: str) ->
     token user déclenche une RLS violation 42501 → 500. On écrit donc avec le
     client service-role, mais strictement scoppé à la ligne de l'utilisateur
     authentifié (`user_id` issu du token vérifié).
+
+    ALE-136 : `post` (variant `generate_posts`) rend l'idée du jour postable.
     """
     user = get_user(access_token)
     if not user or not supabase_enabled() or not admin_enabled():
@@ -1453,6 +1490,14 @@ def replace_daily_idea(access_token: str, idea_markdown: str, idea_date: str) ->
         "idea_markdown": idea_markdown,
         "idea_date": idea_date,
     }
+    if post:
+        row.update({
+            "post_text": post.get("post"),
+            "editorial_role": post.get("editorial_role"),
+            "hook_type": post.get("hook_type"),
+            "strategy": post.get("strategy"),
+            "predicted_lift": post.get("predicted_lift"),
+        })
     resp = (
         db.table("daily_ideas")
         .upsert(row, on_conflict="user_id,idea_date")
@@ -1506,9 +1551,17 @@ def daily_idea_exists(user_id: str, idea_date: str) -> bool:
 
 
 def insert_daily_idea(
-    user_id: str, idea_markdown: str, idea_date: str, seed_id: str | None = None
+    user_id: str,
+    idea_markdown: str,
+    idea_date: str,
+    seed_id: str | None = None,
+    post: dict | None = None,
 ) -> dict | None:
-    """Persist a generated daily idea (service-role). Ignores conflicts on (user, date)."""
+    """Persist a generated daily idea (service-role). Ignores conflicts on (user, date).
+
+    ALE-136 : `post` (dict d'un variant `generate_posts`) rend l'idée du jour
+    postable — on stocke son texte + métadonnées en plus du markdown.
+    """
     if not admin_enabled():
         return None
     db = admin_client()
@@ -1518,6 +1571,14 @@ def insert_daily_idea(
         "idea_date": idea_date,
         "seed_id": seed_id,
     }
+    if post:
+        row.update({
+            "post_text": post.get("post"),
+            "editorial_role": post.get("editorial_role"),
+            "hook_type": post.get("hook_type"),
+            "strategy": post.get("strategy"),
+            "predicted_lift": post.get("predicted_lift"),
+        })
     resp = (
         db.table("daily_ideas")
         .upsert(row, on_conflict="user_id,idea_date", ignore_duplicates=True)

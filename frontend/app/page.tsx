@@ -2758,7 +2758,7 @@ function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAut
 
 // ── Fin ALE-69 ────────────────────────────────────────────────────────────────
 
-type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string };
+type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null };
 type IdeaSeed = { id: string; text: string; used_at?: string | null; created_at?: string };
 type DailyIdeaCard = Pick<Idea, "title" | "hook" | "hook_type" | "funnel" | "angle" | "why_it_works" | "estimated_lift">;
 
@@ -2812,6 +2812,116 @@ function DailyIdeasView({
   const [regenerating, setRegenerating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
+
+  // ALE-136 : le post du jour est postable (copier / sauvegarder / publier / programmer).
+  const linkedin = useLinkedIn(isAuthed);
+  const [editedPost, setEditedPost] = useState<Record<string, string>>({});
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [confirmPublishId, setConfirmPublishId] = useState<string | null>(null);
+  const [publishingId, setPublishingId] = useState<string | null>(null);
+  const [publishedId, setPublishedId] = useState<string | null>(null);
+  const [scheduleForId, setScheduleForId] = useState<string | null>(null);
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [schedulingId, setSchedulingId] = useState<string | null>(null);
+  const [scheduledId, setScheduledId] = useState<string | null>(null);
+  const [postError, setPostError] = useState("");
+
+  const postTextOf = (it: DailyIdea) => editedPost[it.id] ?? it.post_text ?? "";
+
+  function copyPost(it: DailyIdea) {
+    navigator.clipboard.writeText(postTextOf(it));
+    setCopiedId(it.id);
+    setTimeout(() => setCopiedId((c) => (c === it.id ? null : c)), 1500);
+  }
+
+  async function savePost(it: DailyIdea) {
+    setPostError("");
+    setSavingId(it.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          post: postTextOf(it),
+          topic: "Idée du jour",
+          editorial_role: it.editorial_role,
+          hook_type: it.hook_type,
+          strategy: it.strategy,
+          predicted_lift: it.predicted_lift,
+        }),
+      });
+      if (res.ok) {
+        setSavedId(it.id);
+        setTimeout(() => setSavedId((s) => (s === it.id ? null : s)), 1500);
+      }
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function publishPost(it: DailyIdea) {
+    setConfirmPublishId(null);
+    if (!linkedin.status?.connected) {
+      setPostError("Connecte ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    setPostError("");
+    setPublishingId(it.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: postTextOf(it), draft: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication impossible");
+      setPublishedId(it.id);
+      setTimeout(() => setPublishedId((s) => (s === it.id ? null : s)), 3000);
+    } catch (err: any) {
+      setPostError(err.message);
+    } finally {
+      setPublishingId(null);
+    }
+  }
+
+  function openSchedule(it: DailyIdea) {
+    if (!linkedin.status?.connected) {
+      setPostError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    setScheduleDate(toDatetimeLocalValue(tomorrow));
+    setPostError("");
+    setScheduleForId(it.id);
+  }
+
+  async function schedulePost(it: DailyIdea) {
+    setPostError("");
+    setSchedulingId(it.id);
+    try {
+      const localDate = new Date(scheduleDate);
+      if (isNaN(localDate.getTime())) throw new Error("Date invalide.");
+      if (localDate <= new Date()) throw new Error("La date doit être dans le futur.");
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: postTextOf(it), scheduled_at: localDate.toISOString(), validate_via_slack: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Programmation impossible.");
+      setScheduledId(it.id);
+      setScheduleForId(null);
+      setTimeout(() => setScheduledId((s) => (s === it.id ? null : s)), 3000);
+    } catch (err: any) {
+      setPostError(err.message);
+    } finally {
+      setSchedulingId(null);
+    }
+  }
 
   const fmtDate = (s?: string) => {
     if (!s) return "";
@@ -2973,51 +3083,96 @@ function DailyIdeasView({
           )}
         </div>
       ) : (
-        <div className="ideas-grid daily-ideas-grid">
+        <div className="daily-ideas-lines">
           {ideas.map((it, idx) => {
-            const idea = parseDailyIdeaMarkdown(it.idea_markdown);
+            const isPost = !!it.post_text;
+            const idea = isPost ? null : parseDailyIdeaMarkdown(it.idea_markdown);
+            const lineTitle = isPost ? (it.strategy || (it.post_text || "").split("\n")[0].slice(0, 80)) : idea!.title;
+            const lift = isPost ? it.predicted_lift : idea!.estimated_lift;
             return (
-              <div
-                className="idea-card daily-idea-card"
-                key={it.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => onReuse(idea.title)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    onReuse(idea.title);
-                  }
-                }}
-              >
-                <div className="idea-header">
-                  <span className="idea-funnel">{idea.funnel}</span>
-                  <span className="badge">{idea.hook_type}</span>
+              <details className="card daily-idea-line" key={it.id} open={idx === 0}>
+                <summary>
+                  <span className="daily-line-date">{fmtDate(it.idea_date)}</span>
                   {idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}
-                  {idea.estimated_lift && <span className="idea-lift">{idea.estimated_lift}</span>}
+                  <span className="daily-line-title">{lineTitle}</span>
+                  {lift && <span className="idea-lift">{lift}</span>}
+                </summary>
+                <div className="daily-line-body">
+                  {isPost ? (
+                    <>
+                      <textarea
+                        className="variant-text"
+                        rows={10}
+                        value={postTextOf(it)}
+                        onChange={(e) => setEditedPost((p) => ({ ...p, [it.id]: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box" }}
+                      />
+                      <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                        <button className="secondary-button" onClick={() => copyPost(it)}>
+                          {copiedId === it.id ? <CheckCircle2 size={14} /> : <Copy size={14} />} {copiedId === it.id ? "Copié ✓" : "Copier"}
+                        </button>
+                        <button className="secondary-button" disabled={savingId === it.id} onClick={() => savePost(it)}>
+                          {savingId === it.id ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />} {savedId === it.id ? "Sauvegardé ✓" : "Sauvegarder"}
+                        </button>
+                        <button
+                          className="secondary-button"
+                          disabled={publishingId === it.id}
+                          title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                          onClick={() => setConfirmPublishId(it.id)}
+                        >
+                          {publishingId === it.id ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />} {publishedId === it.id ? "Publié ✓" : "Publier"}
+                        </button>
+                        <button className="secondary-button" onClick={() => openSchedule(it)}>
+                          <Clock3 size={14} /> {scheduledId === it.id ? "Programmé ✓" : "Programmer"}
+                        </button>
+                      </div>
+                      {confirmPublishId === it.id && (
+                        <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
+                          <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => publishPost(it)}>Confirmer</button>
+                          <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmPublishId(null)}>Annuler</button>
+                        </div>
+                      )}
+                      {scheduleForId === it.id && (
+                        <div className="idea-footer" style={{ gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+                          <input
+                            type="datetime-local"
+                            value={scheduleDate}
+                            onChange={(e) => setScheduleDate(e.target.value)}
+                            style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)" }}
+                          />
+                          <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} disabled={schedulingId === it.id || !scheduleDate} onClick={() => schedulePost(it)}>
+                            {schedulingId === it.id ? <Loader2 size={12} className="spinning" /> : <Clock3 size={12} />} Programmer sur LinkedIn
+                          </button>
+                          <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setScheduleForId(null)}>Annuler</button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {idea!.hook && <p className="idea-hook">"{idea!.hook}"</p>}
+                      {idea!.angle && <p className="idea-angle">{idea!.angle}</p>}
+                      {idea!.why_it_works && <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea!.why_it_works}</p>}
+                      <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                        {idea!.funnel && <span className="idea-funnel">{idea!.funnel}</span>}
+                        {idea!.hook_type && <span className="badge">{idea!.hook_type}</span>}
+                        <button
+                          className="primary-button"
+                          style={{ fontSize: 12, minHeight: 30, padding: "0 10px", marginLeft: "auto" }}
+                          onClick={() => onReuse(idea!.title)}
+                        >
+                          <Sparkles size={12} /> Générer ce post
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
-                <h3 className="idea-title">{idea.title}</h3>
-                {idea.hook && <p className="idea-hook">"{idea.hook}"</p>}
-                {idea.angle && <p className="idea-angle">{idea.angle}</p>}
-                {idea.why_it_works && <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>}
-                <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8 }}>
-                  <span style={{ fontSize: 12, color: "var(--muted)", textTransform: "capitalize" }}>{fmtDate(it.idea_date)}</span>
-                  <button
-                    className="primary-button"
-                    style={{ fontSize: 12, minHeight: 30, padding: "0 10px", marginLeft: "auto" }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onReuse(idea.title);
-                    }}
-                  >
-                    <Sparkles size={12} /> Générer ce post
-                  </button>
-                </div>
-              </div>
+              </details>
             );
           })}
         </div>
       )}
+      {postError && <div className="error" style={{ marginTop: 8 }}>{postError}</div>}
 
       <div className="card daily-reservoir" style={{ marginTop: 24 }}>
         <div className="daily-reservoir-head">
