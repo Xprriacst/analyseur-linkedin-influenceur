@@ -1194,6 +1194,34 @@ def me_generated_posts(
     return db.list_generated_posts(token, limit=max(1, min(limit, 500)), saved_only=True)
 
 
+class CreatePostRequest(BaseModel):
+    post: str = Field(..., min_length=1, max_length=50000)
+    topic: str | None = None
+    editorial_role: str | None = None
+    hook_type: str | None = None
+    strategy: str | None = None
+    predicted_lift: str | None = None
+
+
+@app.post("/me/generated-posts")
+def create_me_generated_post(
+    payload: CreatePostRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Create an explicitly-saved post (ALE-136 : sauvegarder le post du jour)."""
+    row = db.create_saved_post(
+        token,
+        payload.post,
+        topic=payload.topic,
+        editorial_role=payload.editorial_role,
+        hook_type=payload.hook_type,
+        strategy=payload.strategy,
+        predicted_lift=payload.predicted_lift,
+    )
+    if not row:
+        raise HTTPException(status_code=500, detail="Sauvegarde impossible.")
+    return row
+
+
 @app.delete("/me/generated-ideas/{idea_id}")
 def delete_me_generated_idea(idea_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
     """Delete one of the authenticated user's saved ideas."""
@@ -1311,18 +1339,20 @@ def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]
     import datetime as _dt
     today = _dt.date.today().isoformat()
 
-    ideas = generate_ideas(top_posts, benchmark, count=1, user_context=user_context, seed_topic=seed_text)
-    if not ideas:
-        raise HTTPException(status_code=500, detail="La génération n'a produit aucune idée.")
+    # ALE-136 : régénérer produit un VRAI post (postable), comme le cron.
+    posts = generate_posts(seed_text, top_posts, benchmark, user_context=user_context, count=1)
+    if not posts:
+        raise HTTPException(status_code=500, detail="La génération n'a produit aucun post.")
 
-    markdown = _render_idea_markdown(ideas[0], seed_text)
-    idea_row = db.replace_daily_idea(token, markdown, today)
+    post = posts[0]
+    markdown = post.get("post") or ""
+    idea_row = db.replace_daily_idea(token, markdown, today, post=post)
 
     if seed:
         db.mark_seed_used_by_token(token, seed["id"])
 
     return {
-        "idea": idea_row or {"idea_markdown": markdown, "idea_date": today},
+        "idea": idea_row or {"idea_markdown": markdown, "idea_date": today, "post_text": markdown},
         "credits": balance,
     }
 
