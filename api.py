@@ -1171,8 +1171,8 @@ def me_generated_posts(
     limit: int = 100,
     token: str = Depends(require_token),
 ) -> list[dict[str, Any]]:
-    """List the authenticated user's saved generated posts."""
-    return db.list_generated_posts(token, limit=max(1, min(limit, 500)))
+    """List the authenticated user's saved generated posts (ALE-135 : seulement les `saved`)."""
+    return db.list_generated_posts(token, limit=max(1, min(limit, 500)), saved_only=True)
 
 
 @app.delete("/me/generated-ideas/{idea_id}")

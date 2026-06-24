@@ -625,22 +625,28 @@ def list_generated_ideas(access_token: str, limit: int = 100) -> list[dict]:
     return resp.data or []
 
 
-def list_generated_posts(access_token: str, limit: int = 100) -> list[dict]:
-    """List the user's saved generated posts, newest first."""
+def list_generated_posts(
+    access_token: str, limit: int = 100, saved_only: bool = False
+) -> list[dict]:
+    """List the user's generated posts, newest first.
+
+    With ``saved_only=True``, only posts explicitly marked ``saved`` are returned
+    (ALE-135 : « Mes contenus » n'affiche que les posts sauvegardés).
+    """
     if not supabase_enabled():
         return []
     user = get_user(access_token)
     if not user:
         return []
     db = client_for_token(access_token)
-    resp = (
+    query = (
         db.table("generated_posts")
         .select("*")
         .eq("user_id", user["id"])
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
     )
+    if saved_only:
+        query = query.eq("saved", True)
+    resp = query.order("created_at", desc=True).limit(limit).execute()
     return resp.data or []
 
 
