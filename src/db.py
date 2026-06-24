@@ -1054,6 +1054,46 @@ def cancel_pending_items(access_token: str, job_id: str) -> None:
     )
 
 
+def delete_job_item(access_token: str, item_id: str) -> bool:
+    """Supprime une analyse depuis la liste des séries (ALE-131).
+
+    Retire la ligne (`analysis_job_items`) ET le rapport d'analyse lié
+    (`analyses`) s'il existe, scoppé à l'utilisateur (RLS). Retourne True si la
+    ligne a été supprimée.
+    """
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    row = (
+        db.table("analysis_job_items")
+        .select("analysis_id")
+        .eq("user_id", user["id"])
+        .eq("id", item_id)
+        .limit(1)
+        .execute()
+    )
+    if not row.data:
+        return False
+    analysis_id = row.data[0].get("analysis_id")
+    if analysis_id:
+        (
+            db.table("analyses")
+            .delete()
+            .eq("user_id", user["id"])
+            .eq("id", analysis_id)
+            .execute()
+        )
+    resp = (
+        db.table("analysis_job_items")
+        .delete()
+        .eq("user_id", user["id"])
+        .eq("id", item_id)
+        .execute()
+    )
+    return bool(resp.data)
+
+
 # Une série dont rien n'a bougé depuis ce délai est considérée morte (thread tué
 # par un redémarrage Render, ou figé) → ses items non terminés sont soldés.
 JOB_STALE_MINUTES = 15
