@@ -308,6 +308,101 @@ def update_post_message(
     )
 
 
+def send_scheduled_post_for_validation(
+    bot_token: str,
+    channel_id: str,
+    scheduled_post: dict,
+) -> str:
+    """Post a scheduled LinkedIn post to Slack with validation buttons."""
+    post_id = scheduled_post.get("id", "")
+    text = scheduled_post.get("post_text") or ""
+    scheduled_at = scheduled_post.get("scheduled_at") or ""
+    preview = text[:300] + ("…" if len(text) > 300 else "")
+
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Post LinkedIn programmé*\n"
+                    f"*Publication prévue* : `{scheduled_at}`\n"
+                    f"> {preview}"
+                ),
+            },
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": "validate_scheduled_post",
+                    "value": post_id,
+                    "text": {"type": "plain_text", "text": "✅ Valider la programmation", "emoji": True},
+                    "style": "primary",
+                },
+                {
+                    "type": "button",
+                    "action_id": "decline_scheduled_post",
+                    "value": post_id,
+                    "text": {"type": "plain_text", "text": "❌ Refuser", "emoji": True},
+                    "style": "danger",
+                },
+            ],
+        },
+    ]
+
+    data = _api_call(
+        "chat.postMessage",
+        bot_token,
+        channel=channel_id,
+        text="Validation d'un post LinkedIn programmé",
+        blocks=blocks,
+    )
+    return data["ts"]
+
+
+def update_scheduled_post_message(
+    bot_token: str,
+    channel_id: str,
+    ts: str,
+    scheduled_post: dict,
+    status: str,
+) -> None:
+    """Replace scheduled-post validation buttons with the final Slack status."""
+    text = scheduled_post.get("post_text") or ""
+    scheduled_at = scheduled_post.get("scheduled_at") or ""
+    preview = text[:300] + ("…" if len(text) > 300 else "")
+    badge = (
+        "✅ Validé — publication maintenue"
+        if status == "validated"
+        else "❌ Refusé — programmation annulée"
+    )
+
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Post LinkedIn programmé*\n"
+                    f"*Publication prévue* : `{scheduled_at}`\n"
+                    f"> {preview}\n"
+                    f"{badge}"
+                ),
+            },
+        }
+    ]
+    _api_call(
+        "chat.update",
+        bot_token,
+        channel=channel_id,
+        ts=ts,
+        text="Validation d'un post LinkedIn programmé",
+        blocks=blocks,
+    )
+
+
 def verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
     """Verify a Slack request signature to prevent webhook spoofing.
 

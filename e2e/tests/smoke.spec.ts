@@ -16,4 +16,16 @@ test.describe("Landing publique", () => {
     await expect(page.getByPlaceholder("toi@exemple.com")).toBeVisible();
     await expect(page.getByPlaceholder("••••••••")).toBeVisible();
   });
+
+  test("la sidebar repliée affiche un bouton pour la rouvrir", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Réduire la sidebar" }).click();
+
+    await expect(page.locator(".sidebar")).toHaveClass(/sidebar-collapsed/);
+    await expect(page.getByRole("button", { name: "Étendre la sidebar" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Étendre la sidebar" }).click();
+    await expect(page.locator(".sidebar")).not.toHaveClass(/sidebar-collapsed/);
+    await expect(page.getByRole("button", { name: "Réduire la sidebar" })).toBeVisible();
+  });
 });

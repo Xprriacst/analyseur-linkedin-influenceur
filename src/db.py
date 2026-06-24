@@ -70,8 +70,11 @@ def admin_client() -> "Client":
     """Service-role client that BYPASSES RLS.
 
     Reserved for server-side jobs without a user session (e.g. the daily-idea
-    cron). Must never be reachable from an HTTP endpoint — it would expose every
-    user's data. Endpoints keep using `client_for_token`.
+    cron). Endpoints use `client_for_token` by default so RLS scopes the data.
+    The only HTTP exception is a write to a client-read-only table that only the
+    service-role may write (e.g. `daily_ideas`, cf. `replace_daily_idea`) : it is
+    safe *only* because the row is strictly scoped to the verified token's
+    `user_id`. Never use it to read/return data without such scoping.
     """
     return create_client(_url(), _service_key())  # type: ignore[arg-type]
 
@@ -589,6 +592,10 @@ def save_generated_posts(
             "strategy": variant.get("strategy"),
             "predicted_lift": variant.get("predicted_lift"),
             "post": variant.get("post") or "",
+            # ALE-134 : auto-sauvegarde = brouillon non « sauvegardé ». L'id reste
+            # dispo (Slack/X), mais le post n'apparaît dans « Mes contenus » qu'après
+            # un clic explicite sur « Sauvegarder » (passe saved → true).
+            "saved": False,
         }
         for variant in variants
         if variant.get("post")
@@ -597,6 +604,39 @@ def save_generated_posts(
         return variants
     resp = db.table("generated_posts").insert(rows).execute()
     return resp.data if resp.data else variants
+
+
+def create_saved_post(
+    access_token: str,
+    post_text: str,
+    topic: str | None = None,
+    editorial_role: str | None = None,
+    hook_type: str | None = None,
+    strategy: str | None = None,
+    predicted_lift: str | None = None,
+) -> dict | None:
+    """Create a single explicitly-saved generated post (ALE-136 : sauvegarder le post du jour)."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .insert({
+            "user_id": user["id"],
+            "topic": topic or None,
+            "editorial_role": editorial_role,
+            "hook_type": hook_type,
+            "strategy": strategy,
+            "predicted_lift": predicted_lift,
+            "post": post_text,
+            "saved": True,
+        })
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
 
 
 def list_generated_ideas(access_token: str, limit: int = 100) -> list[dict]:
@@ -618,22 +658,28 @@ def list_generated_ideas(access_token: str, limit: int = 100) -> list[dict]:
     return resp.data or []
 
 
-def list_generated_posts(access_token: str, limit: int = 100) -> list[dict]:
-    """List the user's saved generated posts, newest first."""
+def list_generated_posts(
+    access_token: str, limit: int = 100, saved_only: bool = False
+) -> list[dict]:
+    """List the user's generated posts, newest first.
+
+    With ``saved_only=True``, only posts explicitly marked ``saved`` are returned
+    (ALE-135 : « Mes contenus » n'affiche que les posts sauvegardés).
+    """
     if not supabase_enabled():
         return []
     user = get_user(access_token)
     if not user:
         return []
     db = client_for_token(access_token)
-    resp = (
+    query = (
         db.table("generated_posts")
         .select("*")
         .eq("user_id", user["id"])
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
     )
+    if saved_only:
+        query = query.eq("saved", True)
+    resp = query.order("created_at", desc=True).limit(limit).execute()
     return resp.data or []
 
 
@@ -669,15 +715,31 @@ def delete_generated_post(access_token: str, post_id: str) -> bool:
     return bool(resp.data)
 
 
-def update_generated_post(access_token: str, post_id: str, new_post: str) -> dict | None:
-    """Update the text of a saved post. Returns the updated row or None."""
+def update_generated_post(
+    access_token: str,
+    post_id: str,
+    new_post: str | None = None,
+    saved: bool | None = None,
+) -> dict | None:
+    """Update a saved post's text and/or its `saved` flag (ALE-134).
+
+    Both fields are optional; only the provided ones are written. Returns the
+    updated row or None.
+    """
     user = get_user(access_token)
     if not user:
+        return None
+    updates: dict = {}
+    if new_post is not None:
+        updates["post"] = new_post
+    if saved is not None:
+        updates["saved"] = saved
+    if not updates:
         return None
     db = client_for_token(access_token)
     resp = (
         db.table("generated_posts")
-        .update({"post": new_post})
+        .update(updates)
         .eq("user_id", user["id"])
         .eq("id", post_id)
         .execute()
@@ -1025,6 +1087,46 @@ def cancel_pending_items(access_token: str, job_id: str) -> None:
     )
 
 
+def delete_job_item(access_token: str, item_id: str) -> bool:
+    """Supprime une analyse depuis la liste des séries (ALE-131).
+
+    Retire la ligne (`analysis_job_items`) ET le rapport d'analyse lié
+    (`analyses`) s'il existe, scoppé à l'utilisateur (RLS). Retourne True si la
+    ligne a été supprimée.
+    """
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    row = (
+        db.table("analysis_job_items")
+        .select("analysis_id")
+        .eq("user_id", user["id"])
+        .eq("id", item_id)
+        .limit(1)
+        .execute()
+    )
+    if not row.data:
+        return False
+    analysis_id = row.data[0].get("analysis_id")
+    if analysis_id:
+        (
+            db.table("analyses")
+            .delete()
+            .eq("user_id", user["id"])
+            .eq("id", analysis_id)
+            .execute()
+        )
+    resp = (
+        db.table("analysis_job_items")
+        .delete()
+        .eq("user_id", user["id"])
+        .eq("id", item_id)
+        .execute()
+    )
+    return bool(resp.data)
+
+
 # Une série dont rien n'a bougé depuis ce délai est considérée morte (thread tué
 # par un redémarrage Render, ou figé) → ses items non terminés sont soldés.
 JOB_STALE_MINUTES = 15
@@ -1366,17 +1468,36 @@ def mark_seed_used(seed_id: str) -> None:
     admin_client().table("idea_seeds").update({"used_at": now}).eq("id", seed_id).execute()
 
 
-def replace_daily_idea(access_token: str, idea_markdown: str, idea_date: str) -> dict | None:
-    """Upsert the daily idea for today — replaces an existing one (on-demand regen)."""
+def replace_daily_idea(
+    access_token: str, idea_markdown: str, idea_date: str, post: dict | None = None
+) -> dict | None:
+    """Upsert the daily idea for today — replaces an existing one (on-demand regen).
+
+    `daily_ideas` is client read-only (migration 0007 : seul le service-role
+    écrit, la RLS `authenticated` n'autorise que le SELECT). Un upsert via le
+    token user déclenche une RLS violation 42501 → 500. On écrit donc avec le
+    client service-role, mais strictement scoppé à la ligne de l'utilisateur
+    authentifié (`user_id` issu du token vérifié).
+
+    ALE-136 : `post` (variant `generate_posts`) rend l'idée du jour postable.
+    """
     user = get_user(access_token)
-    if not user or not supabase_enabled():
+    if not user or not supabase_enabled() or not admin_enabled():
         return None
-    db = client_for_token(access_token)
+    db = admin_client()
     row = {
         "user_id": user["id"],
         "idea_markdown": idea_markdown,
         "idea_date": idea_date,
     }
+    if post:
+        row.update({
+            "post_text": post.get("post"),
+            "editorial_role": post.get("editorial_role"),
+            "hook_type": post.get("hook_type"),
+            "strategy": post.get("strategy"),
+            "predicted_lift": post.get("predicted_lift"),
+        })
     resp = (
         db.table("daily_ideas")
         .upsert(row, on_conflict="user_id,idea_date")
@@ -1430,9 +1551,17 @@ def daily_idea_exists(user_id: str, idea_date: str) -> bool:
 
 
 def insert_daily_idea(
-    user_id: str, idea_markdown: str, idea_date: str, seed_id: str | None = None
+    user_id: str,
+    idea_markdown: str,
+    idea_date: str,
+    seed_id: str | None = None,
+    post: dict | None = None,
 ) -> dict | None:
-    """Persist a generated daily idea (service-role). Ignores conflicts on (user, date)."""
+    """Persist a generated daily idea (service-role). Ignores conflicts on (user, date).
+
+    ALE-136 : `post` (dict d'un variant `generate_posts`) rend l'idée du jour
+    postable — on stocke son texte + métadonnées en plus du markdown.
+    """
     if not admin_enabled():
         return None
     db = admin_client()
@@ -1442,6 +1571,14 @@ def insert_daily_idea(
         "idea_date": idea_date,
         "seed_id": seed_id,
     }
+    if post:
+        row.update({
+            "post_text": post.get("post"),
+            "editorial_role": post.get("editorial_role"),
+            "hook_type": post.get("hook_type"),
+            "strategy": post.get("strategy"),
+            "predicted_lift": post.get("predicted_lift"),
+        })
     resp = (
         db.table("daily_ideas")
         .upsert(row, on_conflict="user_id,idea_date", ignore_duplicates=True)
@@ -1577,8 +1714,20 @@ def set_idea_slack_pending(access_token: str, idea_ids: list[str]) -> int:
 
 # ── ALE-96 : Posts LinkedIn planifiés ─────────────────────────────────────────
 
-def create_scheduled_post(access_token: str, post_text: str, scheduled_at_iso: str) -> dict | None:
-    """Store a scheduled LinkedIn post for later publication by the cron."""
+def create_scheduled_post(
+    access_token: str,
+    post_text: str,
+    scheduled_at_iso: str,
+    media_items: list[dict[str, Any]] | None = None,
+    require_slack: bool = True,
+) -> dict | None:
+    """Store a scheduled LinkedIn post (with optional images).
+
+    `require_slack=True` (défaut) → `slack_status='pending'` : le post attend une
+    validation Slack avant que le cron ne le publie (ALE-120).
+    `require_slack=False` → `slack_status='validated'` : programmation directe,
+    publiée à l'échéance sans validation (ALE-137, option A).
+    """
     if not supabase_enabled():
         return None
     user = get_user(access_token)
@@ -1587,7 +1736,13 @@ def create_scheduled_post(access_token: str, post_text: str, scheduled_at_iso: s
     db = client_for_token(access_token)
     resp = (
         db.table("scheduled_posts")
-        .insert({"user_id": user["id"], "post_text": post_text, "scheduled_at": scheduled_at_iso})
+        .insert({
+            "user_id": user["id"],
+            "post_text": post_text,
+            "scheduled_at": scheduled_at_iso,
+            "media_items": media_items or [],
+            "slack_status": "pending" if require_slack else "validated",
+        })
         .execute()
     )
     return resp.data[0] if resp.data else None
@@ -1617,7 +1772,7 @@ def list_scheduled_posts(access_token: str, limit: int = 50) -> list[dict]:
     db = client_for_token(access_token)
     resp = (
         db.table("scheduled_posts")
-        .select("id, post_text, scheduled_at, status, zernio_post_id, error_message, created_at")
+        .select("id, post_text, scheduled_at, status, slack_status, slack_message_ts, zernio_post_id, error_message, media_items, created_at")
         .order("scheduled_at", desc=False)
         .limit(max(1, min(limit, 200)))
         .execute()
@@ -1638,6 +1793,76 @@ def cancel_scheduled_post(access_token: str, post_id: str) -> bool:
         .execute()
     )
     return bool(resp.data)
+
+
+def update_scheduled_post(
+    access_token: str,
+    post_id: str,
+    *,
+    post_text: str | None = None,
+    scheduled_at_iso: str | None = None,
+) -> dict | None:
+    """Update a pending scheduled post owned by the authenticated user."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    payload: dict[str, Any] = {"updated_at": "now()"}
+    if post_text is not None:
+        payload["post_text"] = post_text
+    if scheduled_at_iso is not None:
+        payload["scheduled_at"] = scheduled_at_iso
+    if len(payload) == 1:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .update(payload)
+        .eq("id", post_id)
+        .eq("user_id", user["id"])
+        .eq("status", "pending")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def mark_scheduled_post_slack_error(access_token: str, post_id: str, error: str) -> bool:
+    """Mark the caller's scheduled post as failed when Slack validation cannot be sent."""
+    if not supabase_enabled():
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .update({
+            "status": "failed",
+            "error_message": error[:500],
+            "updated_at": "now()",
+        })
+        .eq("id", post_id)
+        .eq("status", "pending")
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def set_scheduled_post_slack_message(access_token: str, post_id: str, message_ts: str) -> dict | None:
+    """Persist the Slack message timestamp for a scheduled post."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .update({
+            "slack_status": "pending",
+            "slack_message_ts": message_ts,
+            "updated_at": "now()",
+        })
+        .eq("id", post_id)
+        .eq("status", "pending")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
 
 
 def set_post_slack_pending(access_token: str, post_ids: list[str]) -> int:
@@ -1671,6 +1896,45 @@ def update_post_slack_status(post_id: str, user_id: str, status: str) -> bool:
     return bool(resp.data)
 
 
+def get_scheduled_post_for_user(post_id: str, user_id: str) -> dict | None:
+    """Fetch a scheduled post by id/user with service-role access."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("scheduled_posts")
+        .select("id, user_id, post_text, scheduled_at, status, slack_status")
+        .eq("id", post_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_scheduled_post_slack_status(post_id: str, user_id: str, status: str) -> bool:
+    """Apply Slack validation result to a scheduled post.
+
+    Validation keeps the schedule pending for the cron. Decline cancels the
+    schedule immediately so a due cron run can never publish it.
+    """
+    if not admin_enabled():
+        return False
+    payload: dict[str, Any] = {"slack_status": status, "updated_at": "now()"}
+    if status == "declined":
+        payload["status"] = "cancelled"
+        payload["error_message"] = "Publication annulée après refus Slack."
+    resp = (
+        admin_client()
+        .table("scheduled_posts")
+        .update(payload)
+        .eq("id", post_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return bool(resp.data)
+
+
 def get_due_scheduled_posts() -> list[dict]:
     """Return pending posts whose scheduled_at <= now() (service-role, for cron).
 
@@ -1684,8 +1948,9 @@ def get_due_scheduled_posts() -> list[dict]:
     admin = admin_client()
     resp = (
         admin.table("scheduled_posts")
-        .select("id, user_id, post_text")
+        .select("id, user_id, post_text, media_items")
         .eq("status", "pending")
+        .eq("slack_status", "validated")
         .lte("scheduled_at", "now()")
         .limit(100)
         .execute()
@@ -1706,6 +1971,7 @@ def get_due_scheduled_posts() -> list[dict]:
             "id": p["id"],
             "user_id": p["user_id"],
             "post_text": p["post_text"],
+            "media_items": p.get("media_items") or [],
             "zernio_account_id": account_by_user.get(p["user_id"]),
         }
         for p in posts

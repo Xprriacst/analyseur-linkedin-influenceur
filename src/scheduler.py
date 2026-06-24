@@ -26,7 +26,7 @@ def run() -> None:
         return
 
     due = db.get_due_scheduled_posts()
-    logger.info(f"Scheduler : {len(due)} post(s) à publier.")
+    logger.info(f"Scheduler : {len(due)} post(s) validé(s) sur Slack à publier.")
 
     for post in due:
         post_id = post["id"]
@@ -41,7 +41,13 @@ def run() -> None:
             continue
 
         try:
-            result = zernio.create_post(post["post_text"], account_id, publish_now=True)
+            media_items = zernio.prepare_image_media_items(post.get("media_items") or [])
+            result = zernio.create_post(
+                post["post_text"],
+                account_id,
+                publish_now=True,
+                media_items=media_items,
+            )
             z_post = result.get("post") or result
             db.update_scheduled_post_status(
                 post_id, "published", zernio_post_id=z_post.get("_id")

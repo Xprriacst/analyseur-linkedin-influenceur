@@ -8,10 +8,13 @@ import {
   BarChart3,
   CheckCircle2,
   ChevronLeft,
+  ChevronRight,
   Clock3,
+  Copy,
   Download,
   FileText,
   Image as ImageIcon,
+  ImagePlus,
   Lightbulb,
   Link2,
   Linkedin,
@@ -22,6 +25,7 @@ import {
   LogOut,
   Bookmark,
   MessageSquare,
+  Pencil,
   PenTool,
   PlusCircle,
   Trash2,
@@ -51,6 +55,17 @@ function emitCredits(balance: unknown) {
   if (typeof balance === "number" && typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("credits:update", { detail: balance }));
   }
+}
+
+function toDatetimeLocalValue(date: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function isoToDatetimeLocalValue(iso: string) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return toDatetimeLocalValue(date);
 }
 
 type Health = { ok: boolean; apify: boolean; anthropic: boolean; model: string };
@@ -97,6 +112,13 @@ type Variant = {
   predicted_lift: string;
   post: string;
 };
+type WebSearchNotice = { query: string; active: boolean };
+type LinkedInImageAttachment = {
+  id: string;
+  url: string;
+  filename?: string;
+  source: "upload" | "generated";
+};
 type SavedIdea = Idea & { id: string; created_at?: string };
 type SavedPost = {
   id: string;
@@ -108,6 +130,17 @@ type SavedPost = {
   post: string;
   created_at?: string;
   slack_status?: string | null;
+};
+type ScheduledPost = {
+  id: string;
+  post_text: string;
+  scheduled_at: string;
+  status: "pending" | "published" | "failed" | "cancelled" | string;
+  slack_status?: string | null;
+  slack_message_ts?: string | null;
+  media_items?: LinkedInImageAttachment[] | null;
+  error_message?: string | null;
+  created_at?: string;
 };
 type ChatConversation = {
   id: string;
@@ -368,7 +401,7 @@ function jobIsCancelled(j: Job): boolean {
   return j.status === "cancelled";
 }
 
-function ItemRow({ item, onOpen, opening, onCancel, cancelling }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean; onCancel: (i: JobItem) => void; cancelling: boolean }) {
+function ItemRow({ item, onOpen, opening, onCancel, cancelling, onDelete, deleting }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean; onCancel: (i: JobItem) => void; cancelling: boolean; onDelete?: (i: JobItem) => void; deleting?: boolean }) {
   const clickable = item.status === "done" && !!item.analysis_id;
   const cancellable = item.status === "pending" || item.status === "running";
   return (
@@ -410,6 +443,17 @@ function ItemRow({ item, onOpen, opening, onCancel, cancelling }: { item: JobIte
         >
           {cancelling ? <Loader2 size={11} className="spinning" /> : "Annuler"}
         </button>
+      ) : onDelete ? (
+        <button
+          type="button"
+          className="ghost-button"
+          style={{ fontSize: 11, padding: "2px 6px", color: "var(--muted)" }}
+          disabled={deleting}
+          onClick={(e) => { e.stopPropagation(); onDelete(item); }}
+          title="Supprimer cette analyse"
+        >
+          {deleting ? <Loader2 size={11} className="spinning" /> : <Trash2 size={13} />}
+        </button>
       ) : null}
     </div>
   );
@@ -433,6 +477,7 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
 
   // ALE-114 : la Veille LinkedIn ne doit afficher que les séries LinkedIn
   // (les jobs sans `platform` = anciens jobs = LinkedIn).
@@ -497,6 +542,21 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
     }
   }
 
+  async function deleteItem(job: Job, item: JobItem) {
+    setDeletingItemId(item.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${job.id}/items/${item.id}`, {
+        method: "DELETE",
+        headers: await authHeaders(),
+      });
+      if (res.ok) onJobUpdated({ ...job, items: job.items.filter((it) => it.id !== item.id) });
+    } catch {
+      /* ignore */
+    } finally {
+      setDeletingItemId(null);
+    }
+  }
+
   async function openItem(item: JobItem) {
     if (!item.analysis_id) return;
     setOpeningId(item.id);
@@ -552,14 +612,6 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
             <span>Posts à analyser : <b>{limit}</b></span>
             <input type="range" min="10" max="50" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
           </label>
-          <label className="control" onClick={() => setUseCache(!useCache)} style={{ cursor: "pointer" }}>
-            <span>Utiliser le cache</span>
-            <button className={`switch ${useCache ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setUseCache(!useCache); }} />
-          </label>
-          <label className="control" onClick={() => setRunLlm(!runLlm)} style={{ cursor: "pointer" }}>
-            <span>Synthèse Claude</span>
-            <button className={`switch ${runLlm ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setRunLlm(!runLlm); }} />
-          </label>
         </div>
       </div>
 
@@ -613,6 +665,8 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
                       opening={openingId === item.id}
                       onCancel={(it) => cancelItem(job.id, it.id)}
                       cancelling={cancellingItemId === item.id}
+                      onDelete={(it) => deleteItem(job, it)}
+                      deleting={deletingItemId === item.id}
                     />
                   ))}
                 </div>
@@ -645,6 +699,7 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
 
   // Filter to only Instagram jobs
   const igJobs = jobs.filter((j) => j.platform === "instagram");
@@ -690,6 +745,14 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
       const data = await res.json();
       if (res.ok && data?.id) onJobUpdated(data as Job);
     } catch { /* polling will sync */ } finally { setCancellingItemId(null); }
+  }
+
+  async function deleteItem(job: Job, item: JobItem) {
+    setDeletingItemId(item.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${job.id}/items/${item.id}`, { method: "DELETE", headers: await authHeaders() });
+      if (res.ok) onJobUpdated({ ...job, items: job.items.filter((it) => it.id !== item.id) });
+    } catch { /* ignore */ } finally { setDeletingItemId(null); }
   }
 
   async function openItem(item: JobItem) {
@@ -746,14 +809,6 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
             <span>Reels à analyser : <b>{limit}</b></span>
             <input type="range" min="10" max="50" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
           </label>
-          <label className="control" onClick={() => setUseCache(!useCache)} style={{ cursor: "pointer" }}>
-            <span>Utiliser le cache</span>
-            <button className={`switch ${useCache ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setUseCache(!useCache); }} />
-          </label>
-          <label className="control" onClick={() => setRunLlm(!runLlm)} style={{ cursor: "pointer" }}>
-            <span>Synthèse Claude</span>
-            <button className={`switch ${runLlm ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setRunLlm(!runLlm); }} />
-          </label>
         </div>
       </div>
 
@@ -806,6 +861,8 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
                       opening={openingId === item.id}
                       onCancel={(it) => cancelItem(job.id, it.id)}
                       cancelling={cancellingItemId === item.id}
+                      onDelete={(it) => deleteItem(job, it)}
+                      deleting={deletingItemId === item.id}
                     />
                   ))}
                 </div>
@@ -931,24 +988,31 @@ function Sidebar({
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 
 }) {
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem("sidebar-collapsed") === "true"; } catch { return false; }
-  });
+  const [collapsed, setCollapsed] = useState(false);
+  const [collapsedPreferenceLoaded, setCollapsedPreferenceLoaded] = useState(false);
+
+  useEffect(() => {
+    try {
+      setCollapsed(localStorage.getItem("sidebar-collapsed") === "true");
+    } catch {
+      /* ignore */
+    } finally {
+      setCollapsedPreferenceLoaded(true);
+    }
+  }, []);
 
   useEffect(() => {
     const w = collapsed ? "64px" : "260px";
     document.documentElement.style.setProperty("--sidebar-w", w);
+    if (!collapsedPreferenceLoaded) return;
     try { localStorage.setItem("sidebar-collapsed", String(collapsed)); } catch {}
-  }, [collapsed]);
+  }, [collapsed, collapsedPreferenceLoaded]);
 
   return (
     <aside className={`sidebar${collapsed ? " sidebar-collapsed" : ""}`}>
       <div className="logo">
         <div
-          className={`logo-mark${collapsed ? " logo-mark-toggle" : ""}`}
-          onClick={collapsed ? () => setCollapsed(false) : undefined}
-          role={collapsed ? "button" : undefined}
-          title={collapsed ? "Étendre la sidebar" : undefined}
+          className="logo-mark"
         >
           <Target size={18} strokeWidth={2.5} />
         </div>
@@ -958,15 +1022,14 @@ function Sidebar({
             <span className="logo-sub">SaaS Premium</span>
           </div>
         )}
-        {!collapsed && (
-          <button
-            className="sidebar-collapse-btn"
-            onClick={() => setCollapsed(true)}
-            title="Réduire la sidebar"
-          >
-            <ChevronLeft size={14} />
-          </button>
-        )}
+        <button
+          className="sidebar-collapse-btn"
+          onClick={() => setCollapsed((value) => !value)}
+          title={collapsed ? "Étendre la sidebar" : "Réduire la sidebar"}
+          aria-label={collapsed ? "Étendre la sidebar" : "Réduire la sidebar"}
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+        </button>
       </div>
 
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
@@ -1425,14 +1488,6 @@ function Landing({ onSubmit, loading, error, onBatch }: {
               <span>Posts à analyser : <b>{limit}</b></span>
               <input type="range" min="10" max="50" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
             </label>
-            <label className="control" onClick={() => setUseCache(!useCache)} style={{ cursor: "pointer" }}>
-              <span>Utiliser le cache</span>
-              <button className={`switch ${useCache ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setUseCache(!useCache); }} />
-            </label>
-            <label className="control" onClick={() => setRunLlm(!runLlm)} style={{ cursor: "pointer" }}>
-              <span>Synthèse Claude</span>
-              <button className={`switch ${runLlm ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setRunLlm(!runLlm); }} />
-            </label>
           </div>
         </div>
 
@@ -1812,7 +1867,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [variants, setVariants] = useState<Variant[]>([]);
   const [topic, setTopic] = useState("");
   const [role, setRole] = useState("auto");
-  const [webSearch, setWebSearch] = useState(false);
+  const [webSearchNotice, setWebSearchNotice] = useState<WebSearchNotice | null>(null);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
   const linkedin = useLinkedIn(isAuthed);
@@ -1823,17 +1878,20 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [publishing, setPublishing] = useState<number | null>(null);
   const [published, setPublished] = useState<number | null>(null);
   const [drafted, setDrafted] = useState<number | null>(null);
+  const [savingVariant, setSavingVariant] = useState<number | null>(null);
+  const [savedVariant, setSavedVariant] = useState<number | null>(null);
   const [publishingX, setPublishingX] = useState<number | null>(null);
   const [publishedX, setPublishedX] = useState<number | null>(null);
   const [confirmIndex, setConfirmIndex] = useState<number | null>(null);
   const [confirmXIndex, setConfirmXIndex] = useState<number | null>(null);
   const [publishError, setPublishError] = useState("");
-  const [variantImages, setVariantImages] = useState<Record<number, string>>({});
+  const [variantImages, setVariantImages] = useState<Record<number, LinkedInImageAttachment[]>>({});
   const [generatingImage, setGeneratingImage] = useState<number | null>(null);
   const [imageError, setImageError] = useState("");
   const [editedVariants, setEditedVariants] = useState<Record<number, string>>({});
+  const [copiedVariant, setCopiedVariant] = useState<number | null>(null);
   const [variantCount, setVariantCount] = useState(1);
-  const [scheduleModal, setScheduleModal] = useState<{ index: number; text: string } | null>(null);
+  const [scheduleModal, setScheduleModal] = useState<{ index: number; text: string; images: LinkedInImageAttachment[] } | null>(null);
   const [scheduleDate, setScheduleDate] = useState("");
   const [scheduling, setScheduling] = useState(false);
   const [scheduledIndices, setScheduledIndices] = useState<Record<number, boolean>>({});
@@ -1846,6 +1904,33 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     void generateFromTopic(seed.topic);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed?.nonce]);
+
+  function imagePayloadForVariant(i: number) {
+    return (variantImages[i] || []).map((image) => ({
+      ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
+      filename: image.filename,
+    }));
+  }
+
+  // ALE-134 : marque explicitement un post comme « sauvegardé » (persiste aussi
+  // le texte édité). Seuls les posts sauvegardés apparaissent dans « Mes contenus ».
+  async function saveVariant(i: number, text: string, id?: string) {
+    if (!id) return;
+    setSavingVariant(i);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post: text, saved: true }),
+      });
+      if (res.ok) {
+        setSavedVariant(i);
+        setTimeout(() => setSavedVariant((s) => (s === i ? null : s)), 1500);
+      }
+    } finally {
+      setSavingVariant(null);
+    }
+  }
 
   function publishVariant(i: number, text: string, draft: boolean = false) {
     if (!isAuthed) { requireAuth("Connecte-toi pour publier sur LinkedIn."); return; }
@@ -1870,7 +1955,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft }),
+        body: JSON.stringify({ content: text, draft, images: imagePayloadForVariant(i) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon impossible" : "Publication impossible"));
@@ -1912,6 +1997,12 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     }
   }
 
+  function copyVariant(i: number, text: string) {
+    void navigator.clipboard.writeText(text);
+    setCopiedVariant(i);
+    setTimeout(() => setCopiedVariant((current) => (current === i ? null : current)), 1500);
+  }
+
   function openScheduleModal(i: number, text: string) {
     if (!isAuthed) { requireAuth("Connecte-toi pour programmer une publication LinkedIn."); return; }
     if (!linkedin.status?.connected) {
@@ -1922,14 +2013,12 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(9, 0, 0, 0);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const localIso = `${tomorrow.getFullYear()}-${pad(tomorrow.getMonth() + 1)}-${pad(tomorrow.getDate())}T${pad(tomorrow.getHours())}:${pad(tomorrow.getMinutes())}`;
-    setScheduleDate(localIso);
+    setScheduleDate(toDatetimeLocalValue(tomorrow));
     setScheduleError("");
-    setScheduleModal({ index: i, text });
+    setScheduleModal({ index: i, text, images: variantImages[i] || [] });
   }
 
-  async function doSchedule() {
+  async function doSchedule(validateViaSlack: boolean) {
     if (!scheduleModal) return;
     setScheduleError("");
     setScheduling(true);
@@ -1940,7 +2029,15 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: scheduleModal.text, scheduled_at: localDate.toISOString() }),
+        body: JSON.stringify({
+          content: scheduleModal.text,
+          scheduled_at: localDate.toISOString(),
+          validate_via_slack: validateViaSlack,
+          images: scheduleModal.images.map((image) => ({
+            ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
+            filename: image.filename,
+          })),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Planification impossible.");
@@ -1965,7 +2062,16 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la génération d'image");
       emitCredits(data.credits);
-      setVariantImages((prev) => ({ ...prev, [i]: data.image_data }));
+      const attachment: LinkedInImageAttachment = {
+        id: `generated-${Date.now()}`,
+        url: data.image_data,
+        filename: `image-generee-${i + 1}.png`,
+        source: "generated",
+      };
+      setVariantImages((prev) => ({
+        ...prev,
+        [i]: [...(prev[i] || []), attachment],
+      }));
     } catch (err: any) {
       setImageError(err.message);
     } finally {
@@ -1973,28 +2079,116 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     }
   }
 
+  function addUploadedImages(i: number, files: FileList | null) {
+    if (!files?.length) return;
+    setImageError("");
+    const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length !== files.length) {
+      setImageError("Seuls les fichiers image sont acceptés.");
+    }
+    for (const file of imageFiles) {
+      if (file.size > 8 * 1024 * 1024) {
+        setImageError("LinkedIn limite chaque image à 8 Mo.");
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : "";
+        if (!result) return;
+        const attachment: LinkedInImageAttachment = {
+          id: `upload-${Date.now()}-${file.name}`,
+          url: result,
+          filename: file.name,
+          source: "upload",
+        };
+        setVariantImages((prev) => ({
+          ...prev,
+          [i]: [...(prev[i] || []), attachment].slice(0, 20),
+        }));
+      };
+      reader.onerror = () => setImageError(`Lecture impossible pour ${file.name}.`);
+      reader.readAsDataURL(file);
+    }
+  }
+
+  function removeVariantImage(i: number, imageId: string) {
+    setVariantImages((prev) => ({
+      ...prev,
+      [i]: (prev[i] || []).filter((image) => image.id !== imageId),
+    }));
+  }
+
   async function generateFromTopic(t: string) {
     setError("");
+    setWebSearchNotice(null);
     setLoadingPosts(true);
     try {
       // Sujet optionnel : sans sujet, le backend choisit lui-même un angle (idée = post).
-      const body: { topic?: string; editorial_role?: string; web_search?: boolean; count?: number } = { count: variantCount };
+      const body: { topic?: string; editorial_role?: string; count?: number } = { count: variantCount };
       if (t.trim()) body.topic = t.trim();
       if (role !== "auto") body.editorial_role = role;
-      if (webSearch) body.web_search = true;
-      const res = await fetch(`${DIRECT_API_URL}/generate`, {
+      const res = await fetch(`${DIRECT_API_URL}/generate/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Échec de la génération de posts");
-      emitCredits(data.credits);
-      setEditedVariants({}); // éditions indexées par position : à purger sinon elles contaminent le nouveau batch
-      setVariants(data.variants || []);
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Échec de la génération de posts");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let doneReceived = false;
+      let streamError = "";
+
+      const handleGenerateSseEvent = (raw: string) => {
+        const lines = raw.split("\n");
+        let event = "message";
+        const dataLines: string[] = [];
+        for (const line of lines) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+        }
+        if (!dataLines.length) return;
+        const data = JSON.parse(dataLines.join("\n"));
+        if (event === "meta") {
+          emitCredits(data.credits);
+        } else if (event === "search") {
+          setWebSearchNotice({
+            query: data.query || "recherche web",
+            active: true,
+          });
+        } else if (event === "done") {
+          doneReceived = true;
+          emitCredits(data.credits);
+          setEditedVariants({}); // éditions indexées par position : à purger sinon elles contaminent le nouveau batch
+          setVariantImages({});
+          setVariants(data.variants || []);
+          if (data.save_error) setError(`Posts générés, mais sauvegarde impossible : ${data.save_error}`);
+        } else if (event === "error") {
+          streamError = data.detail || "Échec de la génération de posts";
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() || "";
+        for (const chunk of chunks) {
+          if (chunk.trim()) handleGenerateSseEvent(chunk);
+        }
+      }
+      if (buffer.trim()) handleGenerateSseEvent(buffer);
+      if (streamError) throw new Error(streamError);
+      if (!doneReceived) throw new Error("Réponse interrompue avant la fin de la génération.");
     } catch (err: any) {
       setError(err.message);
     } finally {
+      setWebSearchNotice((prev) => prev ? { ...prev, active: false } : prev);
       setLoadingPosts(false);
     }
   }
@@ -2058,15 +2252,6 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 ? "Mix automatique : performance + méthodologie/autorité + relationnel/quotidien."
                 : "Les 3 variants utiliseront ce rôle."}
             </span>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", cursor: "pointer", marginTop: 6 }}>
-              <input
-                type="checkbox"
-                checked={webSearch}
-                onChange={(e) => setWebSearch(e.target.checked)}
-                style={{ accentColor: "var(--accent)", width: 14, height: 14 }}
-              />
-              Recherche web en temps réel
-            </label>
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)" }}>
               Variants :
               <select
@@ -2080,6 +2265,15 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               </select>
             </label>
           </div>
+          {loadingPosts && webSearchNotice?.active && (
+            <div className="web-search-status" role="status" aria-live="polite">
+              <span className="web-search-icon">🔎</span>
+              <span>
+                <strong>Je recherche sur le web…</strong>
+                <span>{webSearchNotice.query}</span>
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -2101,12 +2295,23 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   <span className="idea-lift">{v.predicted_lift}</span>
                 </div>
                 <p className="variant-strategy">{v.strategy}</p>
-                <textarea
-                  className="variant-text"
-                  value={editedVariants[i] ?? v.post}
-                  rows={14}
-                  onChange={(e) => setEditedVariants((prev) => ({ ...prev, [i]: e.target.value }))}
-                />
+                <div className="variant-text-wrap">
+                  <textarea
+                    className="variant-text"
+                    value={editedVariants[i] ?? v.post}
+                    rows={14}
+                    onChange={(e) => setEditedVariants((prev) => ({ ...prev, [i]: e.target.value }))}
+                  />
+                  <button
+                    type="button"
+                    className="variant-copy-button"
+                    aria-label={copiedVariant === i ? "Post copié" : "Copier le post"}
+                    title={copiedVariant === i ? "Copié ✓" : "Copier le post"}
+                    onClick={() => copyVariant(i, editedVariants[i] ?? v.post)}
+                  >
+                    {copiedVariant === i ? <CheckCircle2 size={16} /> : <Copy size={16} />}
+                  </button>
+                </div>
                 {editedVariants[i] !== undefined && editedVariants[i] !== v.post && (
                   <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
                     <span style={{ fontSize: 12, color: "var(--muted)" }}>✏️ Modifié</span>
@@ -2116,9 +2321,6 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button className="secondary-button" onClick={() => navigator.clipboard.writeText(editedVariants[i] ?? v.post)}>
-                    Copier le post
-                  </button>
                   <button
                     className="primary-button"
                     disabled={publishing === i}
@@ -2128,19 +2330,25 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     {publishing === i && published !== i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
                     {publishing === i && published !== i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
                   </button>
+                  {v.id && (
+                    <button
+                      className="secondary-button"
+                      disabled={savingVariant === i}
+                      title="Sauvegarder ce post dans « Mes contenus »"
+                      onClick={() => saveVariant(i, editedVariants[i] ?? v.post, v.id)}
+                    >
+                      {savingVariant === i ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />}
+                      {savedVariant === i ? "Sauvegardé ✓" : "Sauvegarder"}
+                    </button>
+                  )}
                   <button
                     className="secondary-button"
-                    disabled={publishing === i}
-                    title={linkedin.status?.connected ? "Enregistrer comme brouillon dans LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => publishVariant(i, editedVariants[i] ?? v.post, true)}
-                  >
-                    {publishing === i && drafted !== i ? <Loader2 size={14} className="spinning" /> : <FileText size={14} />}
-                    {drafted === i ? "Brouillon ✓" : "Enregistrer en brouillon"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    disabled={publishing === i || scheduling}
-                    title={linkedin.status?.connected ? "Programmer la publication à une date/heure choisie" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                    disabled={publishing === i || scheduling || !!scheduledIndices[i]}
+                    title={
+                      linkedin.status?.connected
+                        ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+                        : "Connecte ton compte LinkedIn dans l'onglet Profil"
+                    }
                     onClick={() => openScheduleModal(i, editedVariants[i] ?? v.post)}
                   >
                     <Clock3 size={14} />
@@ -2152,8 +2360,22 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     onClick={() => generateImage(i, editedVariants[i] ?? v.post)}
                   >
                     {generatingImage === i ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
-                    {generatingImage === i ? "Génération…" : variantImages[i] ? "Régénérer l'image" : "Générer une image"}
+                    {generatingImage === i ? "Génération…" : (variantImages[i] || []).length ? "Ajouter une image IA" : "Générer une image"}
                   </button>
+                  <label className="secondary-button" style={{ cursor: "pointer" }}>
+                    <ImagePlus size={14} />
+                    Joindre des images
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+                      multiple
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        addUploadedImages(i, e.currentTarget.files);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
                   {slack.status?.connected && v.id && (
                     <button
                       className="secondary-button"
@@ -2191,26 +2413,41 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 {published === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
                 )}
-                {drafted === i && (
-                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré dans LinkedIn ✓</p>
-                )}
                 {publishedX === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur X ✓</p>
                 )}
                 {scheduledIndices[i] && (
-                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post programmé ✓ — visible dans l&apos;onglet Profil.</p>
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post programmé ✓ — demande de validation envoyée sur Slack.</p>
                 )}
-                {variantImages[i] && (
+                {(variantImages[i] || []).length > 0 && (
                   <div style={{ marginTop: 12 }}>
-                    <img src={variantImages[i]} alt="Image générée" style={{ width: "100%", maxWidth: 400, borderRadius: 8, display: "block" }} />
-                    <a
-                      href={variantImages[i]}
-                      download={`post-image-${i + 1}.png`}
-                      className="secondary-button"
-                      style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, textDecoration: "none" }}
-                    >
-                      <Download size={14} /> Télécharger
-                    </a>
+                    <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                      {(variantImages[i] || []).length} image{(variantImages[i] || []).length > 1 ? "s" : ""} jointe{(variantImages[i] || []).length > 1 ? "s" : ""} au post LinkedIn.
+                    </p>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
+                      {(variantImages[i] || []).map((image, imageIndex) => (
+                        <div key={image.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
+                          <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                            <a
+                              href={image.url}
+                              download={image.filename || `post-image-${i + 1}-${imageIndex + 1}.png`}
+                              className="secondary-button"
+                              style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}
+                            >
+                              <Download size={12} /> Télécharger
+                            </a>
+                            <button
+                              className="secondary-button"
+                              style={{ minHeight: 28, padding: "0 8px", fontSize: 12 }}
+                              onClick={() => removeVariantImage(i, image.id)}
+                            >
+                              <Trash2 size={12} /> Retirer
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -2238,6 +2475,23 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               className="variant-text"
               style={{ width: "100%", boxSizing: "border-box", marginBottom: 16 }}
             />
+            {(variantImages[confirmIndex] || []).length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                  {(variantImages[confirmIndex] || []).length} image{(variantImages[confirmIndex] || []).length > 1 ? "s" : ""} {(variantImages[confirmIndex] || []).length > 1 ? "seront jointes" : "sera jointe"}.
+                </p>
+                <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
+                  {(variantImages[confirmIndex] || []).map((image, idx) => (
+                    <img
+                      key={image.id}
+                      src={image.url}
+                      alt={`Image jointe ${idx + 1}`}
+                      style={{ width: 86, height: 86, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button className="secondary-button" onClick={() => setConfirmIndex(null)}>
                 Annuler
@@ -2301,7 +2555,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
           <div className="card" style={{ maxWidth: 520, width: "100%", padding: 24 }}>
             <h3 style={{ marginTop: 0, marginBottom: 8 }}>Programmer ce post</h3>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-              Le post sera publié automatiquement sur LinkedIn à la date et l&apos;heure choisies.
+              Choisis la date/heure, puis programme directement sur LinkedIn, ou demande d&apos;abord une validation Slack — dans ce cas le post n&apos;est publié à l&apos;heure choisie que s&apos;il est validé sur Slack.
             </p>
             <textarea
               readOnly
@@ -2310,6 +2564,23 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               className="variant-text"
               style={{ width: "100%", boxSizing: "border-box", marginBottom: 12 }}
             />
+            {scheduleModal.images.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                  {scheduleModal.images.length} image{scheduleModal.images.length > 1 ? "s" : ""} {scheduleModal.images.length > 1 ? "seront conservées" : "sera conservée"} pour la publication programmée.
+                </p>
+                <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
+                  {scheduleModal.images.map((image, idx) => (
+                    <img
+                      key={image.id}
+                      src={image.url}
+                      alt={`Image programmée ${idx + 1}`}
+                      style={{ width: 74, height: 74, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
             <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
               Date et heure de publication
             </label>
@@ -2320,12 +2591,20 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 14, marginBottom: 12 }}
             />
             {scheduleError && <p style={{ color: "var(--error, #e53e3e)", fontSize: 13, marginBottom: 8 }}>{scheduleError}</p>}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
               <button className="secondary-button" onClick={() => setScheduleModal(null)}>
                 Annuler
               </button>
-              <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={doSchedule}>
-                {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Confirmer</>}
+              <button
+                className="secondary-button"
+                disabled={scheduling || !scheduleDate || !slack.status?.connected}
+                title={slack.status?.connected ? "Envoyer une demande de validation Slack avant publication" : "Connecte Slack dans l'onglet Profil pour valider"}
+                onClick={() => doSchedule(true)}
+              >
+                {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Valider via Slack
+              </button>
+              <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={() => doSchedule(false)}>
+                {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Programmer sur LinkedIn</>}
               </button>
             </div>
           </div>
@@ -2479,15 +2758,51 @@ function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAut
 
 // ── Fin ALE-69 ────────────────────────────────────────────────────────────────
 
-type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string };
+type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null };
 type IdeaSeed = { id: string; text: string; used_at?: string | null; created_at?: string };
+type DailyIdeaCard = Pick<Idea, "title" | "hook" | "hook_type" | "funnel" | "angle" | "why_it_works" | "estimated_lift">;
+
+function parseDailyIdeaMarkdown(markdown: string): DailyIdeaCard {
+  const lines = markdown.split(/\r?\n/).map((line) => line.trim());
+  const title = lines.find((line) => line.startsWith("## "))?.replace(/^##\s+/, "").trim() || "Idée du jour";
+  const hook = lines.find((line) => line.startsWith("**Accroche :**"))
+    ?.replace(/^\*\*Accroche :\*\*\s*/, "")
+    .trim() || "";
+  const why = lines.find((line) => line.startsWith("**Pourquoi ça marche :**"))
+    ?.replace(/^\*\*Pourquoi ça marche :\*\*\s*/, "")
+    .trim() || "";
+  const metaLine = [...lines].reverse().find((line) => line.includes("hook _") || /\b(TOFU|MOFU|BOFU)\b/.test(line)) || "";
+  const hookType = metaLine.match(/hook _([^_]+)_/)?.[1]?.trim() || "other";
+  const funnel = metaLine.match(/\b(TOFU|MOFU|BOFU)\b/)?.[1] || "TOFU";
+  const estimatedLift = metaLine.split("·").map((part) => part.trim()).find((part) => part.startsWith("+")) || "";
+  const angleLines = lines.filter((line) =>
+    line &&
+    !line.startsWith("## ") &&
+    !line.startsWith("**Accroche :**") &&
+    !line.startsWith("**Pourquoi ça marche :**") &&
+    !line.startsWith("_Inspirée") &&
+    line !== metaLine
+  );
+
+  return {
+    title,
+    hook,
+    hook_type: hookType,
+    funnel,
+    angle: angleLines.join(" "),
+    why_it_works: why,
+    estimated_lift: estimatedLift,
+  };
+}
 
 function DailyIdeasView({
   isAuthed,
   requireAuth,
+  onReuse,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string) => void;
+  onReuse: (topic: string) => void;
 }) {
   const [ideas, setIdeas] = useState<DailyIdea[]>([]);
   const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
@@ -2497,6 +2812,116 @@ function DailyIdeasView({
   const [regenerating, setRegenerating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
+
+  // ALE-136 : le post du jour est postable (copier / sauvegarder / publier / programmer).
+  const linkedin = useLinkedIn(isAuthed);
+  const [editedPost, setEditedPost] = useState<Record<string, string>>({});
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [confirmPublishId, setConfirmPublishId] = useState<string | null>(null);
+  const [publishingId, setPublishingId] = useState<string | null>(null);
+  const [publishedId, setPublishedId] = useState<string | null>(null);
+  const [scheduleForId, setScheduleForId] = useState<string | null>(null);
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [schedulingId, setSchedulingId] = useState<string | null>(null);
+  const [scheduledId, setScheduledId] = useState<string | null>(null);
+  const [postError, setPostError] = useState("");
+
+  const postTextOf = (it: DailyIdea) => editedPost[it.id] ?? it.post_text ?? "";
+
+  function copyPost(it: DailyIdea) {
+    navigator.clipboard.writeText(postTextOf(it));
+    setCopiedId(it.id);
+    setTimeout(() => setCopiedId((c) => (c === it.id ? null : c)), 1500);
+  }
+
+  async function savePost(it: DailyIdea) {
+    setPostError("");
+    setSavingId(it.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          post: postTextOf(it),
+          topic: "Idée du jour",
+          editorial_role: it.editorial_role,
+          hook_type: it.hook_type,
+          strategy: it.strategy,
+          predicted_lift: it.predicted_lift,
+        }),
+      });
+      if (res.ok) {
+        setSavedId(it.id);
+        setTimeout(() => setSavedId((s) => (s === it.id ? null : s)), 1500);
+      }
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function publishPost(it: DailyIdea) {
+    setConfirmPublishId(null);
+    if (!linkedin.status?.connected) {
+      setPostError("Connecte ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    setPostError("");
+    setPublishingId(it.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: postTextOf(it), draft: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication impossible");
+      setPublishedId(it.id);
+      setTimeout(() => setPublishedId((s) => (s === it.id ? null : s)), 3000);
+    } catch (err: any) {
+      setPostError(err.message);
+    } finally {
+      setPublishingId(null);
+    }
+  }
+
+  function openSchedule(it: DailyIdea) {
+    if (!linkedin.status?.connected) {
+      setPostError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    setScheduleDate(toDatetimeLocalValue(tomorrow));
+    setPostError("");
+    setScheduleForId(it.id);
+  }
+
+  async function schedulePost(it: DailyIdea) {
+    setPostError("");
+    setSchedulingId(it.id);
+    try {
+      const localDate = new Date(scheduleDate);
+      if (isNaN(localDate.getTime())) throw new Error("Date invalide.");
+      if (localDate <= new Date()) throw new Error("La date doit être dans le futur.");
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: postTextOf(it), scheduled_at: localDate.toISOString(), validate_via_slack: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Programmation impossible.");
+      setScheduledId(it.id);
+      setScheduleForId(null);
+      setTimeout(() => setScheduledId((s) => (s === it.id ? null : s)), 3000);
+    } catch (err: any) {
+      setPostError(err.message);
+    } finally {
+      setSchedulingId(null);
+    }
+  }
 
   const fmtDate = (s?: string) => {
     if (!s) return "";
@@ -2658,15 +3083,96 @@ function DailyIdeasView({
           )}
         </div>
       ) : (
-        <div className="daily-history" style={{ marginBottom: 20 }}>
-          {ideas.map((it, idx) => (
-            <details key={it.id} className="card daily-history-item" open={idx === 0}>
-              <summary>{fmtDate(it.idea_date)}{idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}</summary>
-              <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{it.idea_markdown}</ReactMarkdown></div>
-            </details>
-          ))}
+        <div className="daily-ideas-lines">
+          {ideas.map((it, idx) => {
+            const isPost = !!it.post_text;
+            const idea = isPost ? null : parseDailyIdeaMarkdown(it.idea_markdown);
+            const lineTitle = isPost ? (it.strategy || (it.post_text || "").split("\n")[0].slice(0, 80)) : idea!.title;
+            const lift = isPost ? it.predicted_lift : idea!.estimated_lift;
+            return (
+              <details className="card daily-idea-line" key={it.id} open={idx === 0}>
+                <summary>
+                  <span className="daily-line-date">{fmtDate(it.idea_date)}</span>
+                  {idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}
+                  <span className="daily-line-title">{lineTitle}</span>
+                  {lift && <span className="idea-lift">{lift}</span>}
+                </summary>
+                <div className="daily-line-body">
+                  {isPost ? (
+                    <>
+                      <textarea
+                        className="variant-text"
+                        rows={10}
+                        value={postTextOf(it)}
+                        onChange={(e) => setEditedPost((p) => ({ ...p, [it.id]: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box" }}
+                      />
+                      <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                        <button className="secondary-button" onClick={() => copyPost(it)}>
+                          {copiedId === it.id ? <CheckCircle2 size={14} /> : <Copy size={14} />} {copiedId === it.id ? "Copié ✓" : "Copier"}
+                        </button>
+                        <button className="secondary-button" disabled={savingId === it.id} onClick={() => savePost(it)}>
+                          {savingId === it.id ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />} {savedId === it.id ? "Sauvegardé ✓" : "Sauvegarder"}
+                        </button>
+                        <button
+                          className="secondary-button"
+                          disabled={publishingId === it.id}
+                          title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                          onClick={() => setConfirmPublishId(it.id)}
+                        >
+                          {publishingId === it.id ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />} {publishedId === it.id ? "Publié ✓" : "Publier"}
+                        </button>
+                        <button className="secondary-button" onClick={() => openSchedule(it)}>
+                          <Clock3 size={14} /> {scheduledId === it.id ? "Programmé ✓" : "Programmer"}
+                        </button>
+                      </div>
+                      {confirmPublishId === it.id && (
+                        <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
+                          <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => publishPost(it)}>Confirmer</button>
+                          <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmPublishId(null)}>Annuler</button>
+                        </div>
+                      )}
+                      {scheduleForId === it.id && (
+                        <div className="idea-footer" style={{ gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+                          <input
+                            type="datetime-local"
+                            value={scheduleDate}
+                            onChange={(e) => setScheduleDate(e.target.value)}
+                            style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)" }}
+                          />
+                          <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} disabled={schedulingId === it.id || !scheduleDate} onClick={() => schedulePost(it)}>
+                            {schedulingId === it.id ? <Loader2 size={12} className="spinning" /> : <Clock3 size={12} />} Programmer sur LinkedIn
+                          </button>
+                          <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setScheduleForId(null)}>Annuler</button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {idea!.hook && <p className="idea-hook">"{idea!.hook}"</p>}
+                      {idea!.angle && <p className="idea-angle">{idea!.angle}</p>}
+                      {idea!.why_it_works && <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea!.why_it_works}</p>}
+                      <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                        {idea!.funnel && <span className="idea-funnel">{idea!.funnel}</span>}
+                        {idea!.hook_type && <span className="badge">{idea!.hook_type}</span>}
+                        <button
+                          className="primary-button"
+                          style={{ fontSize: 12, minHeight: 30, padding: "0 10px", marginLeft: "auto" }}
+                          onClick={() => onReuse(idea!.title)}
+                        >
+                          <Sparkles size={12} /> Générer ce post
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </details>
+            );
+          })}
         </div>
       )}
+      {postError && <div className="error" style={{ marginTop: 8 }}>{postError}</div>}
 
       <div className="card daily-reservoir" style={{ marginTop: 24 }}>
         <div className="daily-reservoir-head">
@@ -2721,9 +3227,7 @@ function LibraryView({
   requireAuth: (reason?: string) => void;
   onReuse: (topic: string) => void;
 }) {
-  const [tab, setTab] = useState<"posts" | "ideas">("posts");
   const [posts, setPosts] = useState<SavedPost[]>([]);
-  const [ideas, setIdeas] = useState<SavedIdea[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
@@ -2764,7 +3268,6 @@ function LibraryView({
     }
   }
 
-  const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
   const roleLabels: Record<string, string> = {
     performance: "Performance", methodologie: "Méthodologie", autorite: "Autorité",
     story: "Story", quotidien: "Quotidien", opinion: "Opinion", relationnel: "Relationnel",
@@ -2781,16 +3284,10 @@ function LibraryView({
     setError("");
     try {
       const headers = await authHeaders();
-      const [pRes, iRes] = await Promise.all([
-        fetch(`${DIRECT_API_URL}/me/generated-posts`, { headers }),
-        fetch(`${DIRECT_API_URL}/me/generated-ideas`, { headers }),
-      ]);
+      const pRes = await fetch(`${DIRECT_API_URL}/me/generated-posts`, { headers });
       const pData = await pRes.json();
-      const iData = await iRes.json();
       if (!pRes.ok) throw new Error(pData.detail || "Chargement des posts impossible");
-      if (!iRes.ok) throw new Error(iData.detail || "Chargement des idées impossible");
       setPosts(Array.isArray(pData) ? pData : []);
-      setIdeas(Array.isArray(iData) ? iData : []);
     } catch (err: any) {
       setError(err.message || "Chargement impossible");
     } finally {
@@ -2800,7 +3297,7 @@ function LibraryView({
 
   useEffect(() => {
     if (isAuthed) void loadAll();
-    else { setPosts([]); setIdeas([]); }
+    else { setPosts([]); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
@@ -2817,20 +3314,13 @@ function LibraryView({
     } catch { void loadAll(); }
   }
 
-  async function deleteIdea(id: string) {
-    setIdeas((prev) => prev.filter((i) => i.id !== id));
-    try {
-      await fetch(`${DIRECT_API_URL}/me/generated-ideas/${id}`, { method: "DELETE", headers: await authHeaders() });
-    } catch { void loadAll(); }
-  }
-
   if (!isAuthed) {
     return (
       <div className="card" style={{ textAlign: "center", padding: 40 }}>
         <Bookmark size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
         <h2 style={{ margin: "0 0 8px" }}>Mes contenus</h2>
         <p style={{ color: "var(--muted)", marginBottom: 16 }}>
-          Connecte-toi pour retrouver les posts et idées générés et les réutiliser.
+          Connecte-toi pour retrouver les posts que tu as sauvegardés et les réutiliser.
         </p>
         <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour retrouver tes contenus générés.")}>
           <Sparkles size={14} /> Créer un compte gratuit
@@ -2844,7 +3334,7 @@ function LibraryView({
       <div className="section-header">
         <div>
           <h2 className="section-title"><Bookmark size={20} /> Mes contenus sauvegardés</h2>
-          <p className="section-desc">Tes posts et idées générés sont enregistrés automatiquement. Relis-les, copie-les ou réutilise-les.</p>
+          <p className="section-desc">Retrouve les posts que tu as sauvegardés depuis le générateur. Relis-les, copie-les ou réutilise-les.</p>
         </div>
         <button className="secondary-button" onClick={loadAll} disabled={loading}>
           {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
@@ -2852,23 +3342,14 @@ function LibraryView({
         </button>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <button className={tab === "posts" ? "primary-button" : "secondary-button"} onClick={() => setTab("posts")}>
-          <PenTool size={14} /> Posts ({posts.length})
-        </button>
-        <button className={tab === "ideas" ? "primary-button" : "secondary-button"} onClick={() => setTab("ideas")}>
-          <Lightbulb size={14} /> Idées ({ideas.length})
-        </button>
-      </div>
+      {error &&<div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
-
-      {loading && posts.length === 0 && ideas.length === 0 ? (
+      {loading && posts.length === 0 ? (
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
           <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
           <p style={{ color: "var(--muted)" }}>Chargement de tes contenus…</p>
         </div>
-      ) : tab === "posts" ? (
+      ) : (
         posts.length === 0 ? (
           <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
             Aucun post sauvegardé pour l'instant. Génère des posts dans l'onglet « Générateur de posts ».
@@ -2889,12 +3370,23 @@ function LibraryView({
                   <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--muted)" }}>{fmtDate(p.created_at)}</span>
                 </div>
                 {p.topic && <p className="variant-strategy"><strong>Sujet :</strong> {p.topic}</p>}
-                <textarea
-                  className="variant-text"
-                  value={editedPosts[p.id] ?? p.post}
-                  rows={12}
-                  onChange={(e) => setEditedPosts((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                />
+                <div className="variant-text-wrap">
+                  <textarea
+                    className="variant-text"
+                    value={editedPosts[p.id] ?? p.post}
+                    rows={12}
+                    onChange={(e) => setEditedPosts((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                  />
+                  <button
+                    type="button"
+                    className="variant-copy-button"
+                    aria-label={copied === p.id ? "Post copié" : "Copier le post"}
+                    title={copied === p.id ? "Copié ✓" : "Copier le post"}
+                    onClick={() => copy(editedPosts[p.id] ?? p.post, p.id)}
+                  >
+                    {copied === p.id ? <CheckCircle2 size={16} /> : <Copy size={16} />}
+                  </button>
+                </div>
                 {editedPosts[p.id] !== undefined && editedPosts[p.id] !== p.post && (
                   <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 12, color: "var(--muted)" }}>✏️ Modifié</span>
@@ -2931,9 +3423,6 @@ function LibraryView({
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button className="secondary-button" onClick={() => copy(editedPosts[p.id] ?? p.post, p.id)}>
-                    {copied === p.id ? "Copié ✓" : "Copier le post"}
-                  </button>
                   {p.topic && (
                     <button className="secondary-button" onClick={() => onReuse(p.topic!)}>
                       <Sparkles size={14} /> Régénérer sur ce sujet
@@ -2983,66 +3472,6 @@ function LibraryView({
             ))}
           </div>
         )
-      ) : ideas.length === 0 ? (
-        <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
-          Aucune idée sauvegardée pour l'instant. Génère des idées dans l'onglet « Générateur de posts ».
-        </div>
-      ) : (
-        <div className="ideas-grid">
-          {ideas.map((idea) => (
-            <div className="idea-card" key={idea.id}>
-              <div className="idea-header">
-                <span className="idea-funnel" style={{ borderColor: funnelColors[idea.funnel] || "var(--border)", color: funnelColors[idea.funnel] || "var(--muted)" }}>
-                  {idea.funnel}
-                </span>
-                <span className="badge">{idea.hook_type}</span>
-                <span className="idea-lift">{idea.estimated_lift}</span>
-              </div>
-              <h3 className="idea-title">{idea.title}</h3>
-              <p className="idea-hook">"{idea.hook}"</p>
-              <p className="idea-angle">{idea.angle}</p>
-              {idea.why_it_works && <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>}
-              <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8 }}>
-                <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtDate(idea.created_at)}</span>
-                <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
-                  <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => copy(idea.hook, idea.id)}>
-                    {copied === idea.id ? "Copié ✓" : "Copier l'accroche"}
-                  </button>
-                  {slack.status?.connected && (
-                    <button
-                      className="secondary-button"
-                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                      disabled={!!slackSending[idea.id] || !!slackSent[idea.id]}
-                      onClick={async () => {
-                        setSlackSending((p) => ({ ...p, [idea.id]: true }));
-                        try {
-                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-ideas`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ idea_ids: [idea.id] }),
-                          });
-                          setSlackSent((p) => ({ ...p, [idea.id]: true }));
-                          setIdeas((prev) => prev.map((i) => i.id === idea.id ? { ...i, slack_status: "pending" } : i));
-                        } finally {
-                          setSlackSending((p) => ({ ...p, [idea.id]: false }));
-                        }
-                      }}
-                    >
-                      {slackSending[idea.id] ? <Loader2 size={12} className="spinning" /> : null}
-                      {slackSent[idea.id] || idea.slack_status === "pending" ? "Sur Slack ✓" : "Valider sur Slack"}
-                    </button>
-                  )}
-                  <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => onReuse(idea.title)}>
-                    <Sparkles size={12} /> Générer ce post
-                  </button>
-                  <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => deleteIdea(idea.id)}>
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
       )}
     </div>
   );
@@ -3337,8 +3766,13 @@ function ProfileView({
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
-  const [scheduledPosts, setScheduledPosts] = useState<Array<{ id: string; post_text: string; scheduled_at: string; status: string; error_message?: string }>>([]);
+  const [scheduledPosts, setScheduledPosts] = useState<ScheduledPost[]>([]);
   const [cancellingPost, setCancellingPost] = useState<string | null>(null);
+  const [editingSchedule, setEditingSchedule] = useState<ScheduledPost | null>(null);
+  const [editScheduleText, setEditScheduleText] = useState("");
+  const [editScheduleDate, setEditScheduleDate] = useState("");
+  const [editingPost, setEditingPost] = useState<string | null>(null);
+  const [scheduleEditError, setScheduleEditError] = useState("");
 
   useEffect(() => {
     if (!isAuthed || !linkedin.status?.connected) return;
@@ -3362,6 +3796,50 @@ function ProfileView({
       if (res.ok) setScheduledPosts((prev) => prev.map((p) => p.id === postId ? { ...p, status: "cancelled" } : p));
     } catch (_) {} finally {
       setCancellingPost(null);
+    }
+  }
+
+  function openEditScheduled(post: ScheduledPost) {
+    if (post.status !== "pending") return;
+    setEditingSchedule(post);
+    setEditScheduleText(post.post_text);
+    setEditScheduleDate(isoToDatetimeLocalValue(post.scheduled_at));
+    setScheduleEditError("");
+  }
+
+  async function updateScheduled() {
+    if (!editingSchedule) return;
+    const trimmed = editScheduleText.trim();
+    if (!trimmed) {
+      setScheduleEditError("Le texte du post ne peut pas être vide.");
+      return;
+    }
+    const localDate = new Date(editScheduleDate);
+    if (Number.isNaN(localDate.getTime())) {
+      setScheduleEditError("Date invalide.");
+      return;
+    }
+    if (localDate <= new Date()) {
+      setScheduleEditError("La date doit être dans le futur.");
+      return;
+    }
+    setEditingPost(editingSchedule.id);
+    setScheduleEditError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${editingSchedule.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post_text: trimmed, scheduled_at: localDate.toISOString() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Modification impossible.");
+      const updated = data.scheduled_post as ScheduledPost;
+      setScheduledPosts((prev) => prev.map((p) => p.id === updated.id ? updated : p));
+      setEditingSchedule(null);
+    } catch (err: any) {
+      setScheduleEditError(err.message || "Modification impossible.");
+    } finally {
+      setEditingPost(null);
     }
   }
 
@@ -3600,28 +4078,98 @@ function ProfileView({
             <strong>Posts programmés</strong>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {scheduledPosts.map((p) => (
-              <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ margin: "0 0 4px", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.post_text.slice(0, 120)}{p.post_text.length > 120 ? "…" : ""}</p>
-                  <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
-                    {new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
-                    {" — "}
-                    <span style={{ color: p.status === "published" ? "var(--success, #38a169)" : p.status === "failed" ? "var(--error, #e53e3e)" : p.status === "cancelled" ? "var(--muted)" : "var(--accent)" }}>
-                      {p.status === "pending" ? "En attente" : p.status === "published" ? "Publié ✓" : p.status === "failed" ? "Échec" : "Annulé"}
-                    </span>
-                  </p>
-                  {p.status === "failed" && p.error_message && <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--error, #e53e3e)" }}>{p.error_message}</p>}
+            {scheduledPosts.map((p) => {
+              const statusLabel =
+                p.status === "published"
+                  ? "Publié ✓"
+                  : p.status === "failed"
+                    ? "Échec"
+                    : p.status === "cancelled" && p.slack_status === "declined"
+                      ? "Refusé Slack — annulé"
+                      : p.status === "cancelled"
+                        ? "Annulé"
+                        : p.slack_status === "validated"
+                          ? "Validé Slack — en attente"
+                          : "Validation Slack en attente";
+              const statusColor =
+                p.status === "published" || p.slack_status === "validated"
+                  ? "var(--success, #38a169)"
+                  : p.status === "failed"
+                    ? "var(--error, #e53e3e)"
+                    : p.status === "cancelled"
+                      ? "var(--muted)"
+                      : "var(--accent)";
+              return (
+                <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ margin: "0 0 4px", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.post_text.slice(0, 120)}{p.post_text.length > 120 ? "…" : ""}</p>
+                    <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+                      {new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
+                      {" — "}
+                      <span style={{ color: statusColor }}>{statusLabel}</span>
+                    </p>
+                    {p.status === "failed" && p.error_message && <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--error, #e53e3e)" }}>{p.error_message}</p>}
+                  </div>
+                  {p.status === "pending" && (
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                      <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={editingPost === p.id || cancellingPost === p.id} onClick={() => openEditScheduled(p)}>
+                        <Pencil size={12} /> Modifier
+                      </button>
+                      <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={cancellingPost === p.id || editingPost === p.id} onClick={() => cancelScheduled(p.id)}>
+                        {cancellingPost === p.id ? <Loader2 size={12} className="spinning" /> : <Trash2 size={12} />}
+                      </button>
+                    </div>
+                  )}
                 </div>
-                {p.status === "pending" && (
-                  <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px", flexShrink: 0 }} disabled={cancellingPost === p.id} onClick={() => cancelScheduled(p.id)}>
-                    {cancellingPost === p.id ? <Loader2 size={12} className="spinning" /> : <Trash2 size={12} />}
-                  </button>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
+      )}
+
+      {editingSchedule !== null && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Modifier le post programmé</h3>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+              Tant que le post est en attente, tu peux corriger son texte et sa date de publication.
+            </p>
+            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
+              Texte du post
+            </label>
+            <textarea
+              value={editScheduleText}
+              rows={8}
+              className="variant-text"
+              style={{ width: "100%", boxSizing: "border-box", marginBottom: 12 }}
+              onChange={(e) => setEditScheduleText(e.target.value)}
+            />
+            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
+              Date et heure de publication
+            </label>
+            <input
+              type="datetime-local"
+              value={editScheduleDate}
+              onChange={(e) => setEditScheduleDate(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 14, marginBottom: 12 }}
+            />
+            {scheduleEditError && <p style={{ color: "var(--error, #e53e3e)", fontSize: 13, marginBottom: 8 }}>{scheduleEditError}</p>}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="secondary-button" disabled={editingPost === editingSchedule.id} onClick={() => setEditingSchedule(null)}>
+                Annuler
+              </button>
+              <button className="primary-button" disabled={editingPost === editingSchedule.id || !editScheduleDate || !editScheduleText.trim()} onClick={updateScheduled}>
+                {editingPost === editingSchedule.id
+                  ? <><Loader2 size={14} className="spinning" /> Enregistrement…</>
+                  : <><Clock3 size={14} /> Enregistrer</>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -4266,7 +4814,7 @@ function ContentHub({
         ))}
       </div>
 
-      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} />}
+      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />}
       {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} />}
       {tab === "library" && (
         <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
@@ -4285,10 +4833,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("content");
-  const [platform, setPlatform] = useState<Platform>(() => {
-    if (typeof window === "undefined") return "linkedin";
-    return (localStorage.getItem("lkd_platform") as Platform) ?? "linkedin";
-  });
+  const [platform, setPlatform] = useState<Platform>("linkedin");
   const [analyzeTab, setAnalyzeTab] = useState<AnalyzeTab>("analyze");
   const [contentTab, setContentTab] = useState<ContentTab>("generator");
   // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
@@ -4307,6 +4852,17 @@ export default function Home() {
   const pendingAnonResultRef = useRef<Analysis | null>(null);
 
   const isAuthed = !!session;
+
+  useEffect(() => {
+    try {
+      const savedPlatform = localStorage.getItem("lkd_platform");
+      if (savedPlatform === "linkedin" || savedPlatform === "instagram") {
+        setPlatform(savedPlatform);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   function requireAuth(reason?: string, mode: AuthMode = "signup") {
     setAuthReason(reason || "");
@@ -4626,7 +5182,7 @@ export default function Home() {
           onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
           onPlatformChange={(p) => {
             setPlatform(p);
-            localStorage.setItem("lkd_platform", p);
+            try { localStorage.setItem("lkd_platform", p); } catch {}
           }}
           requireAuth={requireAuth}
         />
