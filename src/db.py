@@ -1367,11 +1367,18 @@ def mark_seed_used(seed_id: str) -> None:
 
 
 def replace_daily_idea(access_token: str, idea_markdown: str, idea_date: str) -> dict | None:
-    """Upsert the daily idea for today — replaces an existing one (on-demand regen)."""
+    """Upsert the daily idea for today — replaces an existing one (on-demand regen).
+
+    `daily_ideas` is client read-only (migration 0007 : seul le service-role
+    écrit, la RLS `authenticated` n'autorise que le SELECT). Un upsert via le
+    token user déclenche une RLS violation 42501 → 500. On écrit donc avec le
+    client service-role, mais strictement scoppé à la ligne de l'utilisateur
+    authentifié (`user_id` issu du token vérifié).
+    """
     user = get_user(access_token)
-    if not user or not supabase_enabled():
+    if not user or not supabase_enabled() or not admin_enabled():
         return None
-    db = client_for_token(access_token)
+    db = admin_client()
     row = {
         "user_id": user["id"],
         "idea_markdown": idea_markdown,
