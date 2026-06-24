@@ -215,7 +215,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "assistant", "content", "progress"] as const;
+const mainViews = ["analyze", "profile", "assistant", "content", "progress", "leads"] as const;
 type MainView = typeof mainViews[number];
 
 type Platform = "linkedin" | "instagram";
@@ -1133,6 +1133,26 @@ function Sidebar({
                   </button>
                 );
               })()}
+              {(() => {
+                const locked = !isAuthed;
+                return (
+                  <button
+                    className={`nav-item ${view === "leads" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                    title={collapsed ? "Leads" : undefined}
+                    onClick={() => {
+                      if (locked) {
+                        requireAuth("Crée un compte gratuit pour débloquer la détection de leads.");
+                        return;
+                      }
+                      onNavigate("leads");
+                    }}
+                  >
+                    <Users size={14} />
+                    {!collapsed && <span>Leads</span>}
+                    {locked ? <Lock size={12} className="lock-ico" /> : null}
+                  </button>
+                );
+              })()}
             </div>
           </section>
         );
@@ -1390,6 +1410,7 @@ function TopHeader({
     assistant: "Agent IA",
     content: "Contenu",
     progress: "Tableau de bord",
+    leads: "Détection de leads",
   };
 
   return (
@@ -3212,6 +3233,274 @@ function DailyIdeasView({
               </li>
             ))}
           </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Lead finder : commentateurs d'un post → leads ─────────────────────────────
+
+type Lead = {
+  id?: string;
+  name: string | null;
+  headline: string | null;
+  profile_url: string | null;
+  comment_text: string | null;
+  commented_at: string | null;
+  reaction_count: number;
+};
+
+type LeadSearch = {
+  id: string | null;
+  post_url: string;
+  influencer_name?: string | null;
+  lead_count: number;
+  created_at?: string;
+  leads?: Lead[];
+};
+
+function LeadsView({
+  isAuthed,
+  requireAuth,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string) => void;
+}) {
+  const [postUrl, setPostUrl] = useState("");
+  const [maxItems, setMaxItems] = useState(50);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState("");
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [currentSearch, setCurrentSearch] = useState<LeadSearch | null>(null);
+  const [history, setHistory] = useState<LeadSearch[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const fmtDate = (s?: string | null) => {
+    if (!s) return "";
+    try { return new Date(s).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" }); }
+    catch { return ""; }
+  };
+
+  async function loadHistory() {
+    if (!isAuthed) return;
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-searches`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setHistory(Array.isArray(data) ? data : []);
+    } catch { /* silencieux */ } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAuthed) void loadHistory();
+    else { setHistory([]); setLeads([]); setCurrentSearch(null); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  async function runSearch() {
+    const url = postUrl.trim();
+    if (!url) { setError("Colle l'URL d'un post LinkedIn."); return; }
+    if (!url.includes("linkedin.com")) { setError("URL de post LinkedIn invalide."); return; }
+    setError("");
+    setSearching(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-searches`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post_url: url, max_items: maxItems }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Recherche de leads impossible");
+      setLeads(Array.isArray(data.leads) ? data.leads : []);
+      setCurrentSearch(data);
+      void loadHistory();
+    } catch (err: any) {
+      setError(err.message || "Recherche impossible");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function openSearch(id: string) {
+    setError("");
+    setSearching(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-searches/${id}`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Chargement impossible");
+      setLeads(Array.isArray(data.leads) ? data.leads : []);
+      setCurrentSearch(data);
+    } catch (err: any) {
+      setError(err.message || "Chargement impossible");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function deleteSearch(id: string) {
+    setHistory((prev) => prev.filter((h) => h.id !== id));
+    if (currentSearch?.id === id) { setCurrentSearch(null); setLeads([]); }
+    try {
+      await fetch(`${DIRECT_API_URL}/me/lead-searches/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void loadHistory(); }
+  }
+
+  async function downloadCsv(id: string) {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-searches/${id}/export.csv`, { headers: await authHeaders() });
+      if (!res.ok) throw new Error();
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = `leads-${id}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      setError("Export CSV impossible.");
+    }
+  }
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Users size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Détection de leads</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Identifie les personnes qui ont commenté un post LinkedIn — des prospects engagés, prêts à contacter.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour débloquer la détection de leads.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><Users size={20} /> Détection de leads</h2>
+          <p className="section-desc">Colle l'URL d'un post LinkedIn : on récupère les personnes qui l'ont commenté (signal d'intention chaud) → ta liste de prospects, exportable en CSV.</p>
+        </div>
+        <button className="secondary-button" onClick={loadHistory} disabled={historyLoading}>
+          {historyLoading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+          Rafraîchir
+        </button>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <label htmlFor="lead-post-url" style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>URL du post LinkedIn</label>
+        <input
+          id="lead-post-url"
+          type="text"
+          placeholder="https://www.linkedin.com/feed/update/urn:li:activity:…"
+          value={postUrl}
+          onChange={(e) => setPostUrl(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void runSearch(); }}
+          style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)", fontSize: 14, marginBottom: 12 }}
+        />
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <label htmlFor="lead-max" style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>Commentaires max</label>
+            <input
+              id="lead-max"
+              type="number"
+              min={1}
+              max={500}
+              value={maxItems}
+              onChange={(e) => setMaxItems(Math.max(1, Math.min(500, Number(e.target.value) || 1)))}
+              style={{ width: 120, boxSizing: "border-box", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)", fontSize: 14 }}
+            />
+          </div>
+          <button className="primary-button" onClick={runSearch} disabled={searching}>
+            {searching ? <Loader2 size={14} className="spinning" /> : <Users size={14} />}
+            Trouver les leads
+          </button>
+        </div>
+        <p style={{ color: "var(--muted)", fontSize: 12, margin: "10px 0 0" }}>
+          Coût : 5 crédits par recherche. Scrape sans cookies, aucune connexion LinkedIn requise.
+        </p>
+      </div>
+
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {currentSearch && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="section-header" style={{ marginBottom: 12 }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: 15 }}>{leads.length} lead{leads.length !== 1 ? "s" : ""} trouvé{leads.length !== 1 ? "s" : ""}</h3>
+              <p className="section-desc" style={{ margin: "2px 0 0", wordBreak: "break-all" }}>{currentSearch.post_url}</p>
+            </div>
+            {currentSearch.id && (
+              <button className="secondary-button" onClick={() => downloadCsv(currentSearch.id as string)}>
+                <ListChecks size={14} /> Export CSV
+              </button>
+            )}
+          </div>
+          {leads.length === 0 ? (
+            <p style={{ color: "var(--muted)", margin: 0 }}>Aucun commentateur récupéré sur ce post.</p>
+          ) : (
+            <div className="markdown" style={{ overflowX: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Personne</th>
+                    <th>Poste</th>
+                    <th>Commentaire</th>
+                    <th style={{ textAlign: "right" }}>Likes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {leads.map((lead, i) => (
+                    <tr key={lead.id || lead.profile_url || i}>
+                      <td>
+                        {lead.profile_url ? (
+                          <a href={lead.profile_url} target="_blank" rel="noreferrer">{lead.name || "Profil"}</a>
+                        ) : (lead.name || "—")}
+                      </td>
+                      <td style={{ color: "var(--muted)", fontSize: 13 }}>{lead.headline || "—"}</td>
+                      <td style={{ fontSize: 13 }}>{lead.comment_text || "—"}</td>
+                      <td style={{ textAlign: "right" }}>{lead.reaction_count || 0}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div>
+        <h3 style={{ fontSize: 14, color: "var(--muted)", margin: "0 0 8px" }}>Recherches récentes</h3>
+        {history.length === 0 ? (
+          <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>Aucune recherche pour l'instant.</p>
+        ) : (
+          <div className="variants-list">
+            {history.map((h) => (
+              <div className="variant-card" key={h.id ?? h.post_url} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <button
+                  type="button"
+                  onClick={() => h.id && openSearch(h.id)}
+                  style={{ background: "none", border: "none", textAlign: "left", cursor: "pointer", flex: 1, minWidth: 0, padding: 0, color: "inherit" }}
+                >
+                  <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.post_url}</div>
+                  <div style={{ color: "var(--muted)", fontSize: 12 }}>{h.lead_count} lead{h.lead_count !== 1 ? "s" : ""} · {fmtDate(h.created_at)}</div>
+                </button>
+                {h.id && (
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button className="icon-button" title="Export CSV" onClick={() => downloadCsv(h.id as string)}><ListChecks size={14} /></button>
+                    <button className="icon-button" title="Supprimer" onClick={() => deleteSearch(h.id as string)}><Trash2 size={14} /></button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </div>
@@ -5202,6 +5491,8 @@ export default function Home() {
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : view === "progress" ? (
             <ProgressView isAuthed={isAuthed} requireAuth={requireAuth} />
+          ) : view === "leads" ? (
+            <LeadsView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : view === "profile" ? (
             <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : platform === "instagram" ? (

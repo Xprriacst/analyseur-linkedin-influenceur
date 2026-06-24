@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import json
+import csv
+import io
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -13,6 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import db, slack as slack_client, zernio
+from src import lead_finder
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -1971,3 +1974,108 @@ def instagram_hooks(
         pass
     hooks = select_hooks(user_context, count=max(1, min(payload.count, 20)), topic=payload.topic)
     return {"hooks": hooks}
+
+
+# ── Lead finder : détection de signaux d'intention ────────────────────────────
+
+class LeadSearchRequest(BaseModel):
+    post_url: str = Field(..., min_length=8, max_length=1000)
+    max_items: int = Field(default=50, ge=1, le=lead_finder.MAX_ITEMS_CAP)
+    influencer_name: str | None = Field(default=None, max_length=200)
+
+
+@app.post("/me/lead-searches")
+def create_lead_search(
+    payload: LeadSearchRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Trouve les commentateurs d'un post LinkedIn → leads, et les persiste."""
+    if not lead_finder.commenters_actor_available():
+        raise HTTPException(status_code=400, detail="APIFY_TOKEN manquant dans .env")
+
+    post_url = payload.post_url.strip()
+    if "linkedin.com" not in post_url:
+        raise HTTPException(status_code=400, detail="URL de post LinkedIn invalide.")
+
+    ok, balance = db.debit_credits(token, "find_leads")
+    if not ok:
+        cost = db.CREDIT_COSTS["find_leads"]
+        raise HTTPException(
+            status_code=402,
+            detail=f"Crédits insuffisants (solde : {balance}). Recherche de leads = {cost} crédit(s).",
+        )
+
+    try:
+        leads = lead_finder.fetch_post_commenters(post_url, max_items=payload.max_items)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Scraping des commentaires échoué : {exc}") from exc
+
+    search = db.create_lead_search(
+        token,
+        post_url,
+        leads,
+        influencer_name=(payload.influencer_name or "").strip() or None,
+        max_items=payload.max_items,
+    )
+    if search is None:
+        # Supabase indisponible : on renvoie quand même les leads (non persistés).
+        return {
+            "id": None,
+            "post_url": post_url,
+            "lead_count": len(leads),
+            "leads": leads,
+            "credits": balance,
+            "persisted": False,
+        }
+    search["credits"] = balance
+    search["persisted"] = True
+    return search
+
+
+@app.get("/me/lead-searches")
+def list_lead_searches(
+    limit: int = 50, token: str = Depends(require_token)
+) -> list[dict[str, Any]]:
+    """Liste les recherches de leads de l'utilisateur (récentes d'abord, sans leads)."""
+    return db.list_lead_searches(token, limit=max(1, min(limit, 200)))
+
+
+@app.get("/me/lead-searches/{search_id}")
+def get_lead_search(search_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Détail d'une recherche + ses leads."""
+    search = db.get_lead_search(token, search_id)
+    if not search:
+        raise HTTPException(status_code=404, detail="Recherche introuvable ou non autorisée.")
+    return search
+
+
+@app.delete("/me/lead-searches/{search_id}")
+def delete_lead_search(search_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Supprime une recherche de leads (et ses leads, en cascade)."""
+    return {"deleted": db.delete_lead_search(token, search_id)}
+
+
+@app.get("/me/lead-searches/{search_id}/export.csv")
+def export_lead_search_csv(search_id: str, token: str = Depends(require_token)) -> StreamingResponse:
+    """Exporte les leads d'une recherche au format CSV."""
+    search = db.get_lead_search(token, search_id)
+    if not search:
+        raise HTTPException(status_code=404, detail="Recherche introuvable ou non autorisée.")
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["nom", "poste", "url_profil", "commentaire", "date", "likes_commentaire"])
+    for lead in search.get("leads", []):
+        writer.writerow([
+            lead.get("name") or "",
+            lead.get("headline") or "",
+            lead.get("profile_url") or "",
+            (lead.get("comment_text") or "").replace("\n", " ").strip(),
+            lead.get("commented_at") or "",
+            lead.get("reaction_count") or 0,
+        ])
+    buffer.seek(0)
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="leads-{search_id}.csv"'},
+    )

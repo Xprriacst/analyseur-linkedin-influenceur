@@ -755,6 +755,7 @@ CREDIT_COSTS: dict[str, int] = {
     "analyze_job": 20,     # par influenceur
     "chat": 2,             # par message
     "generate_image": 5,
+    "find_leads": 5,       # par recherche de leads (commentateurs d'un post)
 }
 
 
@@ -2137,3 +2138,139 @@ def upsert_cached_posts(cache_id: str, posts_with_classifs: list[dict]) -> None:
             admin.table("cached_posts").insert(new_rows).execute()
     except Exception:
         pass  # La persistance du cache ne doit jamais bloquer l'analyse
+
+
+# ── Lead finder (détection de signaux d'intention) ────────────────────────────
+
+def create_lead_search(
+    access_token: str,
+    post_url: str,
+    leads: list[dict[str, Any]],
+    influencer_name: str | None = None,
+    max_items: int = 50,
+    source: str = "post_comments",
+) -> dict | None:
+    """Persiste une recherche de leads + ses résultats. Retourne la recherche avec ses leads.
+
+    Une recherche (`lead_searches`) regroupe les leads (`leads`) trouvés sur un
+    post. Tout est scopé par l'utilisateur (RLS via le JWT).
+    """
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    search_resp = (
+        db.table("lead_searches")
+        .insert({
+            "user_id": user["id"],
+            "source": source,
+            "post_url": post_url,
+            "influencer_name": influencer_name,
+            "max_items": max_items,
+            "lead_count": len(leads),
+        })
+        .execute()
+    )
+    if not search_resp.data:
+        return None
+    search = search_resp.data[0]
+
+    rows = [
+        {
+            "search_id": search["id"],
+            "user_id": user["id"],
+            "name": lead.get("name"),
+            "headline": lead.get("headline"),
+            "profile_url": lead.get("profile_url"),
+            "comment_text": lead.get("comment_text"),
+            "commented_at": lead.get("commented_at"),
+            "reaction_count": int(lead.get("reaction_count", 0) or 0),
+        }
+        for lead in leads
+    ]
+    if rows:
+        db.table("leads").insert(rows).execute()
+
+    search["leads"] = get_leads(access_token, search["id"])
+    return search
+
+
+def list_lead_searches(access_token: str, limit: int = 50) -> list[dict]:
+    """Liste les recherches de leads de l'utilisateur (récentes d'abord, sans leads)."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("lead_searches")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_leads(access_token: str, search_id: str) -> list[dict]:
+    """Retourne les leads d'une recherche (les plus engageants d'abord)."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("leads")
+        .select("*")
+        .eq("user_id", user["id"])
+        .eq("search_id", search_id)
+        .order("reaction_count", desc=True)
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_lead_search(access_token: str, search_id: str) -> dict | None:
+    """Retourne une recherche + ses leads, ou None si introuvable/non autorisée."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("lead_searches")
+        .select("*")
+        .eq("user_id", user["id"])
+        .eq("id", search_id)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        return None
+    search = resp.data[0]
+    search["leads"] = get_leads(access_token, search_id)
+    return search
+
+
+def delete_lead_search(access_token: str, search_id: str) -> bool:
+    """Supprime une recherche (et ses leads, via cascade). Retourne True si supprimée."""
+    if not supabase_enabled():
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("lead_searches")
+        .delete()
+        .eq("user_id", user["id"])
+        .eq("id", search_id)
+        .execute()
+    )
+    return bool(resp.data)

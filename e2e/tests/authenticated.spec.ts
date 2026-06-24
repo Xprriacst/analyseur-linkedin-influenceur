@@ -71,6 +71,16 @@ test("onglet Agent IA : interface chat rendue", async ({ page }) => {
   await expect(page.locator(".nav-item.active", { hasText: "Agent IA" })).toBeVisible();
 });
 
+test("onglet Leads : formulaire de détection rendu sans erreur", async ({ page }) => {
+  await gotoTab(page, "Leads");
+  // Titre de section + champ de saisie de l'URL du post (lecture seule, aucune recherche lancée).
+  await expect(page.getByRole("heading", { name: /Détection de leads/i })).toBeVisible();
+  await expect(page.getByPlaceholder(/linkedin\.com\/feed\/update/i)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Trouver les leads/i })).toBeVisible();
+  // L'historique se charge sans bandeau d'erreur (GET /me/lead-searches).
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
 test("Contenu › Idée du jour : idée + réservoir + opt-in sans erreur", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Idée du jour");

@@ -5,7 +5,7 @@ test.describe("Landing publique", () => {
   test("la page se charge avec le titre et la navigation", async ({ page }) => {
     await page.goto("/");
     await expect(page).toHaveTitle(/Cibl/i);
-    for (const label of ["Contenu", "Veille", "Agent IA", "Mon profil"]) {
+    for (const label of ["Contenu", "Veille", "Agent IA", "Leads", "Mon profil"]) {
       await expect(page.locator(".nav-item", { hasText: label })).toBeVisible();
     }
   });
