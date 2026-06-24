@@ -14,6 +14,7 @@ import {
   Download,
   FileText,
   Image as ImageIcon,
+  ImagePlus,
   Lightbulb,
   Link2,
   Linkedin,
@@ -1861,6 +1862,8 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [publishing, setPublishing] = useState<number | null>(null);
   const [published, setPublished] = useState<number | null>(null);
   const [drafted, setDrafted] = useState<number | null>(null);
+  const [savingVariant, setSavingVariant] = useState<number | null>(null);
+  const [savedVariant, setSavedVariant] = useState<number | null>(null);
   const [publishingX, setPublishingX] = useState<number | null>(null);
   const [publishedX, setPublishedX] = useState<number | null>(null);
   const [confirmIndex, setConfirmIndex] = useState<number | null>(null);
@@ -1891,6 +1894,26 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
       filename: image.filename,
     }));
+  }
+
+  // ALE-134 : marque explicitement un post comme « sauvegardé » (persiste aussi
+  // le texte édité). Seuls les posts sauvegardés apparaissent dans « Mes contenus ».
+  async function saveVariant(i: number, text: string, id?: string) {
+    if (!id) return;
+    setSavingVariant(i);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post: text, saved: true }),
+      });
+      if (res.ok) {
+        setSavedVariant(i);
+        setTimeout(() => setSavedVariant((s) => (s === i ? null : s)), 1500);
+      }
+    } finally {
+      setSavingVariant(null);
+    }
   }
 
   function publishVariant(i: number, text: string, draft: boolean = false) {
@@ -2294,15 +2317,17 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     {publishing === i && published !== i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
                     {publishing === i && published !== i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
                   </button>
-                  <button
-                    className="secondary-button"
-                    disabled={publishing === i}
-                    title={linkedin.status?.connected ? "Enregistrer comme brouillon dans Zernio" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => publishVariant(i, editedVariants[i] ?? v.post, true)}
-                  >
-                    {publishing === i && drafted !== i ? <Loader2 size={14} className="spinning" /> : <FileText size={14} />}
-                    {drafted === i ? "Brouillon ✓" : "Enregistrer en brouillon"}
-                  </button>
+                  {v.id && (
+                    <button
+                      className="secondary-button"
+                      disabled={savingVariant === i}
+                      title="Sauvegarder ce post dans « Mes contenus »"
+                      onClick={() => saveVariant(i, editedVariants[i] ?? v.post, v.id)}
+                    >
+                      {savingVariant === i ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />}
+                      {savedVariant === i ? "Sauvegardé ✓" : "Sauvegarder"}
+                    </button>
+                  )}
                   <button
                     className="secondary-button"
                     disabled={publishing === i || scheduling || !!scheduledIndices[i]}
@@ -2327,7 +2352,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     {generatingImage === i ? "Génération…" : (variantImages[i] || []).length ? "Ajouter une image IA" : "Générer une image"}
                   </button>
                   <label className="secondary-button" style={{ cursor: "pointer" }}>
-                    <PlusCircle size={14} />
+                    <ImagePlus size={14} />
                     Joindre des images
                     <input
                       type="file"
@@ -2376,9 +2401,6 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 </div>
                 {published === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
-                )}
-                {drafted === i && (
-                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré dans Zernio ✓</p>
                 )}
                 {publishedX === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur X ✓</p>
