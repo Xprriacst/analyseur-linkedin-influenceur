@@ -2973,47 +2973,34 @@ function DailyIdeasView({
           )}
         </div>
       ) : (
-        <div className="ideas-grid daily-ideas-grid">
+        <div className="daily-ideas-lines">
           {ideas.map((it, idx) => {
             const idea = parseDailyIdeaMarkdown(it.idea_markdown);
             return (
-              <div
-                className="idea-card daily-idea-card"
-                key={it.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => onReuse(idea.title)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    onReuse(idea.title);
-                  }
-                }}
-              >
-                <div className="idea-header">
-                  <span className="idea-funnel">{idea.funnel}</span>
-                  <span className="badge">{idea.hook_type}</span>
+              <details className="card daily-idea-line" key={it.id} open={idx === 0}>
+                <summary>
+                  <span className="daily-line-date">{fmtDate(it.idea_date)}</span>
                   {idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}
+                  <span className="daily-line-title">{idea.title}</span>
                   {idea.estimated_lift && <span className="idea-lift">{idea.estimated_lift}</span>}
+                </summary>
+                <div className="daily-line-body">
+                  {idea.hook && <p className="idea-hook">"{idea.hook}"</p>}
+                  {idea.angle && <p className="idea-angle">{idea.angle}</p>}
+                  {idea.why_it_works && <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>}
+                  <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                    {idea.funnel && <span className="idea-funnel">{idea.funnel}</span>}
+                    {idea.hook_type && <span className="badge">{idea.hook_type}</span>}
+                    <button
+                      className="primary-button"
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px", marginLeft: "auto" }}
+                      onClick={() => onReuse(idea.title)}
+                    >
+                      <Sparkles size={12} /> Générer ce post
+                    </button>
+                  </div>
                 </div>
-                <h3 className="idea-title">{idea.title}</h3>
-                {idea.hook && <p className="idea-hook">"{idea.hook}"</p>}
-                {idea.angle && <p className="idea-angle">{idea.angle}</p>}
-                {idea.why_it_works && <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>}
-                <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8 }}>
-                  <span style={{ fontSize: 12, color: "var(--muted)", textTransform: "capitalize" }}>{fmtDate(it.idea_date)}</span>
-                  <button
-                    className="primary-button"
-                    style={{ fontSize: 12, minHeight: 30, padding: "0 10px", marginLeft: "auto" }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onReuse(idea.title);
-                    }}
-                  >
-                    <Sparkles size={12} /> Générer ce post
-                  </button>
-                </div>
-              </div>
+              </details>
             );
           })}
         </div>
