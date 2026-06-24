@@ -444,6 +444,9 @@ class LinkedInScheduleRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=8000)
     scheduled_at: str = Field(..., description="ISO 8601 datetime (ex. 2026-06-22T09:00:00+02:00)")
     images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
+    # ALE-137 : True = passer par une validation Slack avant publication ;
+    # False = programmation directe (publiée à l'échéance sans validation).
+    validate_via_slack: bool = True
 
 
 class LinkedInScheduledPostUpdateRequest(BaseModel):
@@ -474,6 +477,22 @@ def me_linkedin_schedule(
     if not profile.get("zernio_account_id"):
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
     _validate_future_scheduled_at(payload.scheduled_at)
+
+    # ALE-137 — Option A : programmation directe, publiée à l'échéance sans
+    # validation Slack (le post naît `validated` pour que le cron le publie).
+    if not payload.validate_via_slack:
+        row = db.create_scheduled_post(
+            token,
+            payload.content.strip(),
+            payload.scheduled_at,
+            media_items=_image_payload(payload.images),
+            require_slack=False,
+        )
+        if row is None:
+            raise HTTPException(status_code=500, detail="Impossible d'enregistrer le post planifié.")
+        return {"ok": True, "scheduled_post": row}
+
+    # Option B : validation Slack avant publication (comportement existant).
     slack_row = db.get_slack_integration(token)
     if not slack_row:
         raise HTTPException(status_code=400, detail="Connecte Slack dans ton profil pour valider les posts programmés.")

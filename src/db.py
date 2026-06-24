@@ -1658,8 +1658,15 @@ def create_scheduled_post(
     post_text: str,
     scheduled_at_iso: str,
     media_items: list[dict[str, Any]] | None = None,
+    require_slack: bool = True,
 ) -> dict | None:
-    """Store a scheduled LinkedIn post (with optional images) pending Slack validation."""
+    """Store a scheduled LinkedIn post (with optional images).
+
+    `require_slack=True` (défaut) → `slack_status='pending'` : le post attend une
+    validation Slack avant que le cron ne le publie (ALE-120).
+    `require_slack=False` → `slack_status='validated'` : programmation directe,
+    publiée à l'échéance sans validation (ALE-137, option A).
+    """
     if not supabase_enabled():
         return None
     user = get_user(access_token)
@@ -1673,7 +1680,7 @@ def create_scheduled_post(
             "post_text": post_text,
             "scheduled_at": scheduled_at_iso,
             "media_items": media_items or [],
-            "slack_status": "pending",
+            "slack_status": "pending" if require_slack else "validated",
         })
         .execute()
     )

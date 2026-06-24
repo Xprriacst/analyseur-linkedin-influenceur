@@ -2009,10 +2009,6 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
       setScheduleError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
       return;
     }
-    if (!slack.status?.connected) {
-      setScheduleError("Connecte Slack dans l'onglet Profil pour valider les posts programmés.");
-      return;
-    }
     // Prefill to tomorrow 9:00 local time
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
@@ -2022,7 +2018,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     setScheduleModal({ index: i, text, images: variantImages[i] || [] });
   }
 
-  async function doSchedule() {
+  async function doSchedule(validateViaSlack: boolean) {
     if (!scheduleModal) return;
     setScheduleError("");
     setScheduling(true);
@@ -2036,6 +2032,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
         body: JSON.stringify({
           content: scheduleModal.text,
           scheduled_at: localDate.toISOString(),
+          validate_via_slack: validateViaSlack,
           images: scheduleModal.images.map((image) => ({
             ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
             filename: image.filename,
@@ -2348,11 +2345,9 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                     className="secondary-button"
                     disabled={publishing === i || scheduling || !!scheduledIndices[i]}
                     title={
-                      !linkedin.status?.connected
-                        ? "Connecte ton compte LinkedIn dans l'onglet Profil"
-                        : !slack.status?.connected
-                          ? "Connecte Slack dans l'onglet Profil pour valider la programmation"
-                          : "Programmer la publication avec validation Slack"
+                      linkedin.status?.connected
+                        ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+                        : "Connecte ton compte LinkedIn dans l'onglet Profil"
                     }
                     onClick={() => openScheduleModal(i, editedVariants[i] ?? v.post)}
                   >
@@ -2560,7 +2555,7 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
           <div className="card" style={{ maxWidth: 520, width: "100%", padding: 24 }}>
             <h3 style={{ marginTop: 0, marginBottom: 8 }}>Programmer ce post</h3>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-              Une demande de validation Slack sera envoyée maintenant. Le post ne sera publié à l&apos;heure choisie que s&apos;il est validé sur Slack.
+              Choisis la date/heure, puis programme directement sur LinkedIn, ou demande d&apos;abord une validation Slack — dans ce cas le post n&apos;est publié à l&apos;heure choisie que s&apos;il est validé sur Slack.
             </p>
             <textarea
               readOnly
@@ -2596,12 +2591,20 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 14, marginBottom: 12 }}
             />
             {scheduleError && <p style={{ color: "var(--error, #e53e3e)", fontSize: 13, marginBottom: 8 }}>{scheduleError}</p>}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
               <button className="secondary-button" onClick={() => setScheduleModal(null)}>
                 Annuler
               </button>
-              <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={doSchedule}>
-                {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Confirmer et envoyer sur Slack</>}
+              <button
+                className="secondary-button"
+                disabled={scheduling || !scheduleDate || !slack.status?.connected}
+                title={slack.status?.connected ? "Envoyer une demande de validation Slack avant publication" : "Connecte Slack dans l'onglet Profil pour valider"}
+                onClick={() => doSchedule(true)}
+              >
+                {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Valider via Slack
+              </button>
+              <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={() => doSchedule(false)}>
+                {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Programmer sur LinkedIn</>}
               </button>
             </div>
           </div>
