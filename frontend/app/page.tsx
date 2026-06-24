@@ -3031,9 +3031,7 @@ function LibraryView({
   requireAuth: (reason?: string) => void;
   onReuse: (topic: string) => void;
 }) {
-  const [tab, setTab] = useState<"posts" | "ideas">("posts");
   const [posts, setPosts] = useState<SavedPost[]>([]);
-  const [ideas, setIdeas] = useState<SavedIdea[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
@@ -3074,7 +3072,6 @@ function LibraryView({
     }
   }
 
-  const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
   const roleLabels: Record<string, string> = {
     performance: "Performance", methodologie: "Méthodologie", autorite: "Autorité",
     story: "Story", quotidien: "Quotidien", opinion: "Opinion", relationnel: "Relationnel",
@@ -3091,16 +3088,10 @@ function LibraryView({
     setError("");
     try {
       const headers = await authHeaders();
-      const [pRes, iRes] = await Promise.all([
-        fetch(`${DIRECT_API_URL}/me/generated-posts`, { headers }),
-        fetch(`${DIRECT_API_URL}/me/generated-ideas`, { headers }),
-      ]);
+      const pRes = await fetch(`${DIRECT_API_URL}/me/generated-posts`, { headers });
       const pData = await pRes.json();
-      const iData = await iRes.json();
       if (!pRes.ok) throw new Error(pData.detail || "Chargement des posts impossible");
-      if (!iRes.ok) throw new Error(iData.detail || "Chargement des idées impossible");
       setPosts(Array.isArray(pData) ? pData : []);
-      setIdeas(Array.isArray(iData) ? iData : []);
     } catch (err: any) {
       setError(err.message || "Chargement impossible");
     } finally {
@@ -3110,7 +3101,7 @@ function LibraryView({
 
   useEffect(() => {
     if (isAuthed) void loadAll();
-    else { setPosts([]); setIdeas([]); }
+    else { setPosts([]); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
@@ -3127,20 +3118,13 @@ function LibraryView({
     } catch { void loadAll(); }
   }
 
-  async function deleteIdea(id: string) {
-    setIdeas((prev) => prev.filter((i) => i.id !== id));
-    try {
-      await fetch(`${DIRECT_API_URL}/me/generated-ideas/${id}`, { method: "DELETE", headers: await authHeaders() });
-    } catch { void loadAll(); }
-  }
-
   if (!isAuthed) {
     return (
       <div className="card" style={{ textAlign: "center", padding: 40 }}>
         <Bookmark size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
         <h2 style={{ margin: "0 0 8px" }}>Mes contenus</h2>
         <p style={{ color: "var(--muted)", marginBottom: 16 }}>
-          Connecte-toi pour retrouver les posts et idées générés et les réutiliser.
+          Connecte-toi pour retrouver les posts que tu as sauvegardés et les réutiliser.
         </p>
         <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour retrouver tes contenus générés.")}>
           <Sparkles size={14} /> Créer un compte gratuit
@@ -3154,7 +3138,7 @@ function LibraryView({
       <div className="section-header">
         <div>
           <h2 className="section-title"><Bookmark size={20} /> Mes contenus sauvegardés</h2>
-          <p className="section-desc">Tes posts et idées générés sont enregistrés automatiquement. Relis-les, copie-les ou réutilise-les.</p>
+          <p className="section-desc">Retrouve les posts que tu as sauvegardés depuis le générateur. Relis-les, copie-les ou réutilise-les.</p>
         </div>
         <button className="secondary-button" onClick={loadAll} disabled={loading}>
           {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
@@ -3162,23 +3146,14 @@ function LibraryView({
         </button>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <button className={tab === "posts" ? "primary-button" : "secondary-button"} onClick={() => setTab("posts")}>
-          <PenTool size={14} /> Posts ({posts.length})
-        </button>
-        <button className={tab === "ideas" ? "primary-button" : "secondary-button"} onClick={() => setTab("ideas")}>
-          <Lightbulb size={14} /> Idées ({ideas.length})
-        </button>
-      </div>
+      {error &&<div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
-
-      {loading && posts.length === 0 && ideas.length === 0 ? (
+      {loading && posts.length === 0 ? (
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
           <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
           <p style={{ color: "var(--muted)" }}>Chargement de tes contenus…</p>
         </div>
-      ) : tab === "posts" ? (
+      ) : (
         posts.length === 0 ? (
           <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
             Aucun post sauvegardé pour l'instant. Génère des posts dans l'onglet « Générateur de posts ».
@@ -3301,72 +3276,6 @@ function LibraryView({
             ))}
           </div>
         )
-      ) : ideas.length === 0 ? (
-        <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
-          Aucune idée sauvegardée pour l'instant. Génère des idées dans l'onglet « Générateur de posts ».
-        </div>
-      ) : (
-        <div className="ideas-grid">
-          {ideas.map((idea) => (
-            <div className="idea-card" key={idea.id}>
-              <div className="idea-header">
-                <span className="idea-funnel" style={{ borderColor: funnelColors[idea.funnel] || "var(--border)", color: funnelColors[idea.funnel] || "var(--muted)" }}>
-                  {idea.funnel}
-                </span>
-                <span className="badge">{idea.hook_type}</span>
-                <span className="idea-lift">{idea.estimated_lift}</span>
-              </div>
-              <h3 className="idea-title">{idea.title}</h3>
-              <p className="idea-hook">"{idea.hook}"</p>
-              <p className="idea-angle">{idea.angle}</p>
-              {idea.why_it_works && <p className="idea-why"><strong>Pourquoi ça marche :</strong> {idea.why_it_works}</p>}
-              <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8 }}>
-                <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtDate(idea.created_at)}</span>
-                <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    className="compact-copy-button"
-                    aria-label={copied === idea.id ? "Accroche copiée" : "Copier l'accroche"}
-                    title={copied === idea.id ? "Copié ✓" : "Copier l'accroche"}
-                    onClick={() => copy(idea.hook, idea.id)}
-                  >
-                    {copied === idea.id ? <CheckCircle2 size={14} /> : <Copy size={14} />}
-                  </button>
-                  {slack.status?.connected && (
-                    <button
-                      className="secondary-button"
-                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                      disabled={!!slackSending[idea.id] || !!slackSent[idea.id]}
-                      onClick={async () => {
-                        setSlackSending((p) => ({ ...p, [idea.id]: true }));
-                        try {
-                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-ideas`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ idea_ids: [idea.id] }),
-                          });
-                          setSlackSent((p) => ({ ...p, [idea.id]: true }));
-                          setIdeas((prev) => prev.map((i) => i.id === idea.id ? { ...i, slack_status: "pending" } : i));
-                        } finally {
-                          setSlackSending((p) => ({ ...p, [idea.id]: false }));
-                        }
-                      }}
-                    >
-                      {slackSending[idea.id] ? <Loader2 size={12} className="spinning" /> : null}
-                      {slackSent[idea.id] || idea.slack_status === "pending" ? "Sur Slack ✓" : "Valider sur Slack"}
-                    </button>
-                  )}
-                  <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => onReuse(idea.title)}>
-                    <Sparkles size={12} /> Générer ce post
-                  </button>
-                  <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => deleteIdea(idea.id)}>
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
       )}
     </div>
   );
