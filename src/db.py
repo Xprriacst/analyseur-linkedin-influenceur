@@ -70,8 +70,11 @@ def admin_client() -> "Client":
     """Service-role client that BYPASSES RLS.
 
     Reserved for server-side jobs without a user session (e.g. the daily-idea
-    cron). Must never be reachable from an HTTP endpoint — it would expose every
-    user's data. Endpoints keep using `client_for_token`.
+    cron). Endpoints use `client_for_token` by default so RLS scopes the data.
+    The only HTTP exception is a write to a client-read-only table that only the
+    service-role may write (e.g. `daily_ideas`, cf. `replace_daily_idea`) : it is
+    safe *only* because the row is strictly scoped to the verified token's
+    `user_id`. Never use it to read/return data without such scoping.
     """
     return create_client(_url(), _service_key())  # type: ignore[arg-type]
 
@@ -1367,11 +1370,18 @@ def mark_seed_used(seed_id: str) -> None:
 
 
 def replace_daily_idea(access_token: str, idea_markdown: str, idea_date: str) -> dict | None:
-    """Upsert the daily idea for today — replaces an existing one (on-demand regen)."""
+    """Upsert the daily idea for today — replaces an existing one (on-demand regen).
+
+    `daily_ideas` is client read-only (migration 0007 : seul le service-role
+    écrit, la RLS `authenticated` n'autorise que le SELECT). Un upsert via le
+    token user déclenche une RLS violation 42501 → 500. On écrit donc avec le
+    client service-role, mais strictement scoppé à la ligne de l'utilisateur
+    authentifié (`user_id` issu du token vérifié).
+    """
     user = get_user(access_token)
-    if not user or not supabase_enabled():
+    if not user or not supabase_enabled() or not admin_enabled():
         return None
-    db = client_for_token(access_token)
+    db = admin_client()
     row = {
         "user_id": user["id"],
         "idea_markdown": idea_markdown,
