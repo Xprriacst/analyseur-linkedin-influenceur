@@ -70,8 +70,11 @@ def admin_client() -> "Client":
     """Service-role client that BYPASSES RLS.
 
     Reserved for server-side jobs without a user session (e.g. the daily-idea
-    cron). Must never be reachable from an HTTP endpoint — it would expose every
-    user's data. Endpoints keep using `client_for_token`.
+    cron). Endpoints use `client_for_token` by default so RLS scopes the data.
+    The only HTTP exception is a write to a client-read-only table that only the
+    service-role may write (e.g. `daily_ideas`, cf. `replace_daily_idea`) : it is
+    safe *only* because the row is strictly scoped to the verified token's
+    `user_id`. Never use it to read/return data without such scoping.
     """
     return create_client(_url(), _service_key())  # type: ignore[arg-type]
 
