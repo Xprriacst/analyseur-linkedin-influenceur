@@ -401,7 +401,7 @@ function jobIsCancelled(j: Job): boolean {
   return j.status === "cancelled";
 }
 
-function ItemRow({ item, onOpen, opening, onCancel, cancelling }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean; onCancel: (i: JobItem) => void; cancelling: boolean }) {
+function ItemRow({ item, onOpen, opening, onCancel, cancelling, onDelete, deleting }: { item: JobItem; onOpen: (i: JobItem) => void; opening: boolean; onCancel: (i: JobItem) => void; cancelling: boolean; onDelete?: (i: JobItem) => void; deleting?: boolean }) {
   const clickable = item.status === "done" && !!item.analysis_id;
   const cancellable = item.status === "pending" || item.status === "running";
   return (
@@ -443,6 +443,17 @@ function ItemRow({ item, onOpen, opening, onCancel, cancelling }: { item: JobIte
         >
           {cancelling ? <Loader2 size={11} className="spinning" /> : "Annuler"}
         </button>
+      ) : onDelete ? (
+        <button
+          type="button"
+          className="ghost-button"
+          style={{ fontSize: 11, padding: "2px 6px", color: "var(--muted)" }}
+          disabled={deleting}
+          onClick={(e) => { e.stopPropagation(); onDelete(item); }}
+          title="Supprimer cette analyse"
+        >
+          {deleting ? <Loader2 size={11} className="spinning" /> : <Trash2 size={13} />}
+        </button>
       ) : null}
     </div>
   );
@@ -466,6 +477,7 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
 
   // ALE-114 : la Veille LinkedIn ne doit afficher que les séries LinkedIn
   // (les jobs sans `platform` = anciens jobs = LinkedIn).
@@ -530,6 +542,21 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
     }
   }
 
+  async function deleteItem(job: Job, item: JobItem) {
+    setDeletingItemId(item.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${job.id}/items/${item.id}`, {
+        method: "DELETE",
+        headers: await authHeaders(),
+      });
+      if (res.ok) onJobUpdated({ ...job, items: job.items.filter((it) => it.id !== item.id) });
+    } catch {
+      /* ignore */
+    } finally {
+      setDeletingItemId(null);
+    }
+  }
+
   async function openItem(item: JobItem) {
     if (!item.analysis_id) return;
     setOpeningId(item.id);
@@ -585,14 +612,6 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
             <span>Posts à analyser : <b>{limit}</b></span>
             <input type="range" min="10" max="50" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
           </label>
-          <label className="control" onClick={() => setUseCache(!useCache)} style={{ cursor: "pointer" }}>
-            <span>Utiliser le cache</span>
-            <button className={`switch ${useCache ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setUseCache(!useCache); }} />
-          </label>
-          <label className="control" onClick={() => setRunLlm(!runLlm)} style={{ cursor: "pointer" }}>
-            <span>Synthèse Claude</span>
-            <button className={`switch ${runLlm ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setRunLlm(!runLlm); }} />
-          </label>
         </div>
       </div>
 
@@ -646,6 +665,8 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
                       opening={openingId === item.id}
                       onCancel={(it) => cancelItem(job.id, it.id)}
                       cancelling={cancellingItemId === item.id}
+                      onDelete={(it) => deleteItem(job, it)}
+                      deleting={deletingItemId === item.id}
                     />
                   ))}
                 </div>
@@ -678,6 +699,7 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
 
   // Filter to only Instagram jobs
   const igJobs = jobs.filter((j) => j.platform === "instagram");
@@ -723,6 +745,14 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
       const data = await res.json();
       if (res.ok && data?.id) onJobUpdated(data as Job);
     } catch { /* polling will sync */ } finally { setCancellingItemId(null); }
+  }
+
+  async function deleteItem(job: Job, item: JobItem) {
+    setDeletingItemId(item.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/jobs/${job.id}/items/${item.id}`, { method: "DELETE", headers: await authHeaders() });
+      if (res.ok) onJobUpdated({ ...job, items: job.items.filter((it) => it.id !== item.id) });
+    } catch { /* ignore */ } finally { setDeletingItemId(null); }
   }
 
   async function openItem(item: JobItem) {
@@ -779,14 +809,6 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
             <span>Reels à analyser : <b>{limit}</b></span>
             <input type="range" min="10" max="50" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
           </label>
-          <label className="control" onClick={() => setUseCache(!useCache)} style={{ cursor: "pointer" }}>
-            <span>Utiliser le cache</span>
-            <button className={`switch ${useCache ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setUseCache(!useCache); }} />
-          </label>
-          <label className="control" onClick={() => setRunLlm(!runLlm)} style={{ cursor: "pointer" }}>
-            <span>Synthèse Claude</span>
-            <button className={`switch ${runLlm ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setRunLlm(!runLlm); }} />
-          </label>
         </div>
       </div>
 
@@ -839,6 +861,8 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
                       opening={openingId === item.id}
                       onCancel={(it) => cancelItem(job.id, it.id)}
                       cancelling={cancellingItemId === item.id}
+                      onDelete={(it) => deleteItem(job, it)}
+                      deleting={deletingItemId === item.id}
                     />
                   ))}
                 </div>
@@ -1463,14 +1487,6 @@ function Landing({ onSubmit, loading, error, onBatch }: {
             <label className="control">
               <span>Posts à analyser : <b>{limit}</b></span>
               <input type="range" min="10" max="50" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
-            </label>
-            <label className="control" onClick={() => setUseCache(!useCache)} style={{ cursor: "pointer" }}>
-              <span>Utiliser le cache</span>
-              <button className={`switch ${useCache ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setUseCache(!useCache); }} />
-            </label>
-            <label className="control" onClick={() => setRunLlm(!runLlm)} style={{ cursor: "pointer" }}>
-              <span>Synthèse Claude</span>
-              <button className={`switch ${runLlm ? "on" : ""}`} onClick={(e) => { e.preventDefault(); setRunLlm(!runLlm); }} />
             </label>
           </div>
         </div>
