@@ -215,7 +215,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "assistant", "content", "progress"] as const;
+const mainViews = ["analyze", "profile", "assistant", "content"] as const;
 type MainView = typeof mainViews[number];
 
 type Platform = "linkedin" | "instagram";
@@ -1113,26 +1113,6 @@ function Sidebar({
                   </button>
                 );
               })()}
-              {(() => {
-                const locked = !isAuthed;
-                return (
-                  <button
-                    className={`nav-item ${view === "progress" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
-                    title={collapsed ? "Tableau de bord" : undefined}
-                    onClick={() => {
-                      if (locked) {
-                        requireAuth("Crée un compte gratuit pour accéder au tableau de bord.");
-                        return;
-                      }
-                      onNavigate("progress");
-                    }}
-                  >
-                    <Activity size={14} />
-                    {!collapsed && <span>Tableau de bord</span>}
-                    {locked ? <Lock size={12} className="lock-ico" /> : null}
-                  </button>
-                );
-              })()}
             </div>
           </section>
         );
@@ -1389,7 +1369,6 @@ function TopHeader({
     profile: "Mon profil éditorial",
     assistant: "Agent IA",
     content: "Contenu",
-    progress: "Tableau de bord",
   };
 
   return (
@@ -3754,6 +3733,7 @@ function ProfileView({
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 }) {
+  const [profileTab, setProfileTab] = useState<"dashboard" | "context">("dashboard");
   const [profile, setProfile] = useState<EditorialProfile>(EMPTY_EDITORIAL_PROFILE);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -4032,6 +4012,26 @@ function ProfileView({
 
   return (
     <div>
+      <div className="tabs">
+        <button
+          className={`tab ${profileTab === "dashboard" ? "active" : ""}`}
+          onClick={() => setProfileTab("dashboard")}
+          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+        >
+          <Activity size={14} /> Tableau de bord
+        </button>
+        <button
+          className={`tab ${profileTab === "context" ? "active" : ""}`}
+          onClick={() => setProfileTab("context")}
+          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+        >
+          <UserRound size={14} /> Contexte éditorial
+        </button>
+      </div>
+      {profileTab === "dashboard" ? (
+        <ProgressView isAuthed={isAuthed} requireAuth={requireAuth} />
+      ) : (
+      <>
       <div className="section-header">
         <div>
           <h2 className="section-title"><UserRound size={20} /> Contexte éditorial</h2>
@@ -4308,6 +4308,8 @@ function ProfileView({
             </div>
           </details>
         </div>
+      )}
+      </>
       )}
     </div>
   );
@@ -5179,11 +5181,9 @@ export default function Home() {
           onSignOut={() => supabase.auth.signOut()}
         />
         <main className="main">
-          {/* Agent IA, Profil et Tableau de bord sont indépendants du réseau */}
+          {/* Agent IA et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />
-          ) : view === "progress" ? (
-            <ProgressView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : view === "profile" ? (
             <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : platform === "instagram" ? (
