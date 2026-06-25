@@ -29,6 +29,21 @@ OAUTH_URL = "https://slack.com/oauth/v2/authorize"
 BOT_SCOPES = "chat:write,im:write"
 USER_SCOPES = "identity.basic"
 
+# A Slack section block text field accepts up to 3000 chars; LinkedIn posts cap
+# at 3000 too. Keep a margin for the "> " quote prefixes added per line.
+_MAX_QUOTE_LEN = 2900
+
+
+def _quote_full_text(text: str) -> str:
+    """Render a post as a Slack mrkdwn block quote, full text (capped at the
+    block-size limit so Slack never rejects the message)."""
+    text = text or ""
+    truncated = len(text) > _MAX_QUOTE_LEN
+    if truncated:
+        text = text[:_MAX_QUOTE_LEN].rstrip() + "…"
+    # Prefix every line so multi-paragraph posts render as one quote block.
+    return "\n".join("> " + line for line in text.split("\n"))
+
 
 class SlackError(RuntimeError):
     """Raised when Slack returns an error or is not configured."""
@@ -317,7 +332,7 @@ def send_scheduled_post_for_validation(
     post_id = scheduled_post.get("id", "")
     text = scheduled_post.get("post_text") or ""
     scheduled_at = scheduled_post.get("scheduled_at") or ""
-    preview = text[:300] + ("…" if len(text) > 300 else "")
+    preview = _quote_full_text(text)
 
     blocks: list[dict] = [
         {
@@ -326,10 +341,13 @@ def send_scheduled_post_for_validation(
                 "type": "mrkdwn",
                 "text": (
                     "*Post LinkedIn programmé*\n"
-                    f"*Publication prévue* : `{scheduled_at}`\n"
-                    f"> {preview}"
+                    f"*Publication prévue* : `{scheduled_at}`"
                 ),
             },
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": preview},
         },
         {
             "type": "actions",
@@ -372,7 +390,7 @@ def update_scheduled_post_message(
     """Replace scheduled-post validation buttons with the final Slack status."""
     text = scheduled_post.get("post_text") or ""
     scheduled_at = scheduled_post.get("scheduled_at") or ""
-    preview = text[:300] + ("…" if len(text) > 300 else "")
+    preview = _quote_full_text(text)
     badge = (
         "✅ Validé — publication maintenue"
         if status == "validated"
@@ -386,12 +404,18 @@ def update_scheduled_post_message(
                 "type": "mrkdwn",
                 "text": (
                     "*Post LinkedIn programmé*\n"
-                    f"*Publication prévue* : `{scheduled_at}`\n"
-                    f"> {preview}\n"
-                    f"{badge}"
+                    f"*Publication prévue* : `{scheduled_at}`"
                 ),
             },
-        }
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": preview},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": badge},
+        },
     ]
     _api_call(
         "chat.update",
