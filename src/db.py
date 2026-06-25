@@ -221,28 +221,31 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
     return {"influencer_id": influencer_id, "analysis_id": analysis_id}
 
 
-def get_user_corpus(access_token: str) -> list[dict]:
-    """Load the user's full corpus (influencers + their posts) from Supabase.
+def get_user_corpus(access_token: str, platform: str | None = None) -> list[dict]:
+    """Load the user's corpus (influencers + their posts) from Supabase.
 
-    Returns a list of {"handle", "profile", "posts"} dicts shaped like the
-    normalized pipeline output, so stats/patterns can be recomputed on top.
+    Returns a list of {"handle", "platform", "profile", "posts"} dicts shaped
+    like the normalized pipeline output. Pass platform="linkedin" or
+    platform="instagram" to restrict to one network; None loads all.
     """
     user = get_user(access_token)
     if not user:
         return []
-    return _corpus_from_client(client_for_token(access_token), user["id"])
+    return _corpus_from_client(client_for_token(access_token), user["id"], platform=platform)
 
 
-def _corpus_from_client(db: "Client", user_id: str) -> list[dict]:
+def _corpus_from_client(db: "Client", user_id: str, platform: str | None = None) -> list[dict]:
     """Shared corpus loader, usable with a user JWT client or the admin client."""
     # Filtre user_id explicite en plus de RLS (défense en profondeur).
-    inf_resp = (
+    q = (
         db.table("influencers")
         .select("*")
         .eq("user_id", user_id)
         .order("updated_at", desc=True)
-        .execute()
     )
+    if platform is not None:
+        q = q.eq("platform", platform)
+    inf_resp = q.execute()
     influencers = inf_resp.data or []
     if not influencers:
         return []
@@ -281,7 +284,12 @@ def _corpus_from_client(db: "Client", user_id: str) -> list[dict]:
             "headline": inf.get("headline"),
             "follower_count": inf.get("follower_count", 0),
         }
-        corpus.append({"handle": inf["handle"], "profile": profile, "posts": posts})
+        corpus.append({
+            "handle": inf["handle"],
+            "platform": inf.get("platform", "linkedin"),
+            "profile": profile,
+            "posts": posts,
+        })
     return corpus
 
 
@@ -1413,11 +1421,11 @@ def list_daily_idea_users() -> list[str]:
     return [r["user_id"] for r in (resp.data or []) if r.get("user_id")]
 
 
-def get_corpus_for_user(user_id: str) -> list[dict]:
+def get_corpus_for_user(user_id: str, platform: str | None = None) -> list[dict]:
     """Admin-side corpus loader for the cron (no user JWT available)."""
     if not admin_enabled():
         return []
-    return _corpus_from_client(admin_client(), user_id)
+    return _corpus_from_client(admin_client(), user_id, platform=platform)
 
 
 def get_ai_context_for_user(user_id: str) -> dict[str, Any] | None:

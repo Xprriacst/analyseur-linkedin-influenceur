@@ -736,16 +736,16 @@ def _enrich_influencers(corpus: list[dict]) -> list[dict]:
     return enrich_influencers(corpus)
 
 
-def _get_influencers(token: Optional[str]) -> list[dict]:
+def _get_influencers(token: Optional[str], platform: str | None = None) -> list[dict]:
     """Per-user data source: Supabase when configured, disk cache otherwise.
 
-    When Supabase is enabled the endpoints become multi-user: a valid session
-    is required and only the caller's data is returned (RLS-scoped).
+    Pass platform="linkedin" or platform="instagram" to restrict the corpus
+    to one network (None = all platforms, used for dashboards).
     """
     if db.supabase_enabled():
         if not token or not db.get_user(token):
             raise HTTPException(status_code=401, detail="Authentification requise.")
-        return _enrich_influencers(db.get_user_corpus(token))
+        return _enrich_influencers(db.get_user_corpus(token, platform=platform))
     return _load_cached_influencers()
 
 
@@ -1029,7 +1029,7 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _get_influencers(token)
+    influencers = _get_influencers(token, platform="linkedin")
     if not influencers:
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
@@ -1070,7 +1070,7 @@ def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) ->
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _get_influencers(token)
+    influencers = _get_influencers(token, platform="linkedin")
     if not influencers:
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
@@ -1333,7 +1333,7 @@ def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _get_influencers(token)
+    influencers = _get_influencers(token, platform="linkedin")
     if not influencers:
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
@@ -1685,7 +1685,7 @@ def chat(payload: ChatRequest, token: str = Depends(require_token)) -> Streaming
         raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Message = {db.CREDIT_COSTS['chat']} crédit(s).")
     credits_balance = balance
 
-    influencers = _get_influencers(token)
+    influencers = _get_influencers(token, platform="linkedin")
     if not influencers:
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 

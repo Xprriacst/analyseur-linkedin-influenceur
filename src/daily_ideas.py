@@ -50,7 +50,7 @@ def _generate_for_user(user_id: str, today: str) -> bool:
         print(f"  · {user_id}: idée déjà présente pour {today}, skip")
         return False
 
-    corpus = db.get_corpus_for_user(user_id)
+    corpus = db.get_corpus_for_user(user_id, platform="linkedin")
     influencers = enrich_influencers(corpus)
     if not influencers:
         print(f"  · {user_id}: aucun corpus analysé, skip")
