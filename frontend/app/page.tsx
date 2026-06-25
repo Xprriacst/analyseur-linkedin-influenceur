@@ -4316,10 +4316,7 @@ function ProfileView({
 function GlobalDashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [growth, setGrowth] = useState<GrowthRow[]>([]);
-  const [aiAnalysis, setAiAnalysis] = useState<string>("");
-  const [loadingAi, setLoadingAi] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [aiError, setAiError] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -4334,21 +4331,6 @@ function GlobalDashboard() {
         .catch(() => null);
     })();
   }, []);
-
-  async function runAiAnalysis() {
-    setAiError("");
-    setLoadingAi(true);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/dashboard/ai-analysis`, { method: "POST", headers: await authHeaders() });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.detail || "Échec de l'analyse IA");
-      setAiAnalysis(d.markdown || "");
-    } catch (err: any) {
-      setAiError(err.message);
-    } finally {
-      setLoadingAi(false);
-    }
-  }
 
   if (loading) return <div className="hero"><div className="hero-content"><p>Chargement du dashboard en cours…</p></div></div>;
   if (!data || data.influencer_count === 0) {
@@ -4499,26 +4481,20 @@ function GlobalDashboard() {
         </div>
       )}
 
-      {/* AI Strategic Analysis */}
-      <div className="card" style={{ marginTop: 16 }}>
+      {/* AI Strategic Analysis — temporairement désactivée (données en cours d'amélioration) */}
+      <div className="card" style={{ marginTop: 16, opacity: 0.55 }}>
         <div className="section-header" style={{ marginBottom: 12 }}>
           <div>
             <h3 style={{ margin: 0 }}>🧠 Analyse stratégique IA</h3>
             <p style={{ fontSize: 13, color: "var(--muted)", margin: "4px 0 0" }}>
-              Claude analyse les données comparatives et produit des recommandations stratégiques actionnables.
+              Bientôt disponible — fonctionnalité en cours d'amélioration.
             </p>
           </div>
-          <button className="primary-button" onClick={runAiAnalysis} disabled={loadingAi}>
-            {loadingAi ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
-            {loadingAi ? "Analyse en cours…" : "Lancer l'analyse IA"}
+          <button className="primary-button" disabled aria-disabled title="Bientôt disponible">
+            <Sparkles size={14} />
+            Bientôt disponible
           </button>
         </div>
-        {aiError && <div className="error">{aiError}</div>}
-        {aiAnalysis && (
-          <div className="markdown" style={{ borderTop: "1px solid var(--border)", paddingTop: 16 }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{aiAnalysis}</ReactMarkdown>
-          </div>
-        )}
       </div>
     </div>
   );
