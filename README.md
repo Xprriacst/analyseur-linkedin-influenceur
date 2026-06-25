@@ -119,41 +119,49 @@ Frontend (Next.js / Netlify) — optionnel, valeurs publiques par défaut dans `
 - Si un JWT valide est présent, le backend **persiste l'analyse en BDD** (best-effort, n'échoue jamais l'analyse). Sinon, comportement fichier inchangé.
 - Endpoints utilisateur : `GET /me/influencers`, `GET /me/analyses`, `GET /me/analyses/{id}` (auth requise).
 
-## Déploiement production
+## Déploiement
 
 ### URLs
 
+| Env | Frontend Netlify | Backend Render | Health backend | Branche |
+|---|---|---|---|---|
+| Prod | https://lkd-outreach.netlify.app | https://analyseur-linkedin-influenceur-api.onrender.com | https://analyseur-linkedin-influenceur-api.onrender.com/health | `main` |
+| Dev | https://lkd-outreach-dev.netlify.app | https://analyseur-linkedin-influenceur-api-dev.onrender.com | https://analyseur-linkedin-influenceur-api-dev.onrender.com/health | `dev` |
+
 | Service | URL |
 |---|---|
-| Frontend Netlify | https://lkd-outreach.netlify.app |
-| Backend Render | https://analyseur-linkedin-influenceur-api.onrender.com |
-| Health backend | https://analyseur-linkedin-influenceur-api.onrender.com/health |
 | GitHub | https://github.com/Xprriacst/analyseur-linkedin-influenceur |
 
 ### Comptes et services
 
 | Plateforme | Compte / workspace | Service |
 |---|---|---|
-| Render | `Alex's workspace` — `contact.polaris.ia@gmail.com` | `analyseur-linkedin-influenceur-api` |
-| Netlify | `Xprriacst’s team` | `courageous-strudel-2d8ba3` |
+| Render | `Alex's workspace` — `contact.polaris.ia@gmail.com` | prod : `analyseur-linkedin-influenceur-api`, dev : `analyseur-linkedin-influenceur-api-dev` |
+| Netlify | `Xprriacst’s team` | prod : `lkd-outreach`, dev : `lkd-outreach-dev` |
 
 ### Render backend
 
-Service Render :
+Service Render prod :
 
 ```txt
 https://dashboard.render.com/web/srv-d8gn0n7lk1mc73f2pcf0
 ```
 
+Service Render dev :
+
+```txt
+https://analyseur-linkedin-influenceur-api-dev.onrender.com
+```
+
 Configuration :
 
-| Champ | Valeur |
-|---|---|
-| Runtime | Python |
-| Build command | `pip install -r requirements.txt` |
-| Start command | `uvicorn api:app --host 0.0.0.0 --port $PORT` |
-| Branch | `main` |
-| Auto deploy | Activé |
+| Champ | Prod | Dev |
+|---|---|---|
+| Runtime | Python | Python |
+| Build command | `pip install -r requirements.txt` | `pip install -r requirements.txt` |
+| Start command | `uvicorn api:app --host 0.0.0.0 --port $PORT` | `uvicorn api:app --host 0.0.0.0 --port $PORT` |
+| Branch | `main` | `dev` |
+| Auto deploy | Activé | Activé |
 
 Variables d'environnement Render requises :
 
@@ -162,11 +170,17 @@ Variables d'environnement Render requises :
 | `APIFY_TOKEN` | Token Apify utilisé par le scraper |
 | `ANTHROPIC_API_KEY` | Clé Anthropic utilisée par la synthèse/génération |
 | `ANTHROPIC_MODEL` | Modèle Claude, actuellement `claude-sonnet-4-6` |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Projet Supabase partagé entre prod et dev |
+| `ZERNIO_API_KEY` | Publication LinkedIn |
+| `CORS_ORIGINS` | Optionnel, origines supplémentaires séparées par des virgules |
+
+Le service dev reprend les mêmes secrets que la prod. La base Supabase reste partagée pour l'instant, donc les tests dev peuvent écrire dans les mêmes tables que la prod.
 
 Vérification attendue :
 
 ```bash
 curl https://analyseur-linkedin-influenceur-api.onrender.com/health
+curl https://analyseur-linkedin-influenceur-api-dev.onrender.com/health
 ```
 
 Réponse attendue :
@@ -182,24 +196,33 @@ Réponse attendue :
 
 ### Netlify frontend
 
-Site Netlify :
+Sites Netlify :
 
-```txt
-https://app.netlify.com/projects/courageous-strudel-2d8ba3
-```
+| Env | Site | ID |
+|---|---|---|
+| Prod | `lkd-outreach.netlify.app` | `81f75c05` |
+| Dev | `lkd-outreach-dev.netlify.app` | `35a2cf5e` |
 
-Variable d'environnement Netlify requise en production :
+Variables d'environnement Netlify requises :
 
-| Var | Valeur |
-|---|---|
-| `NEXT_PUBLIC_API_URL` | `https://analyseur-linkedin-influenceur-api.onrender.com` |
+| Env | `BACKEND_URL` | `NEXT_PUBLIC_BACKEND_URL` |
+|---|---|---|
+| Prod | `https://analyseur-linkedin-influenceur-api.onrender.com` | `https://analyseur-linkedin-influenceur-api.onrender.com` |
+| Dev | `https://analyseur-linkedin-influenceur-api-dev.onrender.com` | `https://analyseur-linkedin-influenceur-api-dev.onrender.com` |
 
-Le frontend Next.js lit cette variable dans `frontend/app/page.tsx`. Si elle manque au build Netlify, le frontend retombe sur `http://localhost:8000`.
+Le proxy Next.js lit `BACKEND_URL` dans `frontend/app/api/[...path]/route.ts`.
+Les appels directs client lisent `NEXT_PUBLIC_BACKEND_URL` dans `frontend/app/page.tsx`.
 
-Commande CLI utilisée pour définir la variable :
+Commandes CLI indicatives :
 
 ```bash
-netlify env:set NEXT_PUBLIC_API_URL https://analyseur-linkedin-influenceur-api.onrender.com --context production
+# Site Netlify prod lie a l'environnement local
+netlify env:set BACKEND_URL https://analyseur-linkedin-influenceur-api.onrender.com --context production
+netlify env:set NEXT_PUBLIC_BACKEND_URL https://analyseur-linkedin-influenceur-api.onrender.com --context production
+
+# Site Netlify dev lie a l'environnement local
+netlify env:set BACKEND_URL https://analyseur-linkedin-influenceur-api-dev.onrender.com --context production
+netlify env:set NEXT_PUBLIC_BACKEND_URL https://analyseur-linkedin-influenceur-api-dev.onrender.com --context production
 ```
 
 Après modification d'une variable `NEXT_PUBLIC_*`, redéployer Netlify :
@@ -212,15 +235,20 @@ Vérification du bundle publié :
 
 ```bash
 curl -sS https://lkd-outreach.netlify.app/_next/static/chunks/app/<page-chunk>.js | grep "analyseur-linkedin-influenceur-api.onrender.com"
+curl -sS https://lkd-outreach-dev.netlify.app/_next/static/chunks/app/<page-chunk>.js | grep "analyseur-linkedin-influenceur-api-dev.onrender.com"
 ```
 
 ### CORS
 
-Le backend FastAPI autorise explicitement le frontend Netlify dans `api.py` :
+Le backend FastAPI autorise explicitement les origines frontend Netlify et le service Render dev dans `api.py` :
 
 ```txt
 https://lkd-outreach.netlify.app
+https://lkd-outreach-dev.netlify.app
+https://analyseur-linkedin-influenceur-api-dev.onrender.com
 ```
+
+`CORS_ORIGINS` permet d'ajouter des origines sans modifier le code si le slug Render ou Netlify change.
 
 ## Structure
 
