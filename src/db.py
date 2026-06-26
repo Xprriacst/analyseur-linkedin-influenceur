@@ -1184,6 +1184,141 @@ def reconcile_stale_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
     return jobs
 
 
+# ---------------------------------------------------------------------------
+# File d'attente de génération de posts (ALE-141)
+# ---------------------------------------------------------------------------
+# Une génération = une requête unique (un sujet → N variants), stockée dans une
+# seule table `generation_jobs`. Le résultat (variants) est écrit en jsonb une
+# fois terminé. L'état vit en base : l'utilisateur peut quitter la page et
+# revenir, le résultat est conservé.
+
+_GENERATION_JOB_COLS = (
+    "id,status,topic,editorial_role,web_search,count,result,error,created_at,updated_at"
+)
+
+
+def create_generation_job(
+    access_token: str,
+    topic: str | None,
+    editorial_role: str | None,
+    web_search: bool,
+    count: int,
+) -> dict | None:
+    """Crée un job de génération `queued`. Retourne la ligne créée."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generation_jobs")
+        .insert({
+            "user_id": user["id"],
+            "status": "queued",
+            "topic": topic or None,
+            "editorial_role": editorial_role or None,
+            "web_search": bool(web_search),
+            "count": count,
+        })
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_generation_job(access_token: str, job_id: str) -> dict | None:
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("generation_jobs")
+        .select(_GENERATION_JOB_COLS)
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0] if r.data else None
+
+
+def list_generation_jobs(access_token: str, limit: int = 20) -> list[dict]:
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    r = (
+        db.table("generation_jobs")
+        .select(_GENERATION_JOB_COLS)
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return reconcile_stale_generation_jobs(access_token, r.data or [])
+
+
+def get_generation_job_status(access_token: str, job_id: str) -> str | None:
+    """Statut seul (lecture légère, pour la vérif d'annulation du thread)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("generation_jobs")
+        .select("status")
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0]["status"] if r.data else None
+
+
+def update_generation_job(access_token: str, job_id: str, **fields: Any) -> None:
+    db = client_for_token(access_token)
+    fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db.table("generation_jobs").update(fields).eq("id", job_id).execute()
+
+
+def cancel_generation_job(access_token: str, job_id: str) -> dict | None:
+    """Annule un job de génération s'il est encore `queued`/`running`.
+
+    L'`in_("status", …)` garantit qu'on n'écrase jamais un job déjà terminé.
+    """
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    (
+        db.table("generation_jobs")
+        .update({"status": "cancelled", "updated_at": now})
+        .eq("id", job_id)
+        .in_("status", ["queued", "running"])
+        .execute()
+    )
+    return get_generation_job(access_token, job_id)
+
+
+def reconcile_stale_generation_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
+    """Solde les jobs de génération orphelins (thread mort/figé) — appelé au listing.
+
+    Même logique que `reconcile_stale_jobs` : un job `queued`/`running` sans update
+    depuis `JOB_STALE_MINUTES` est passé en `error`. Idempotent. Mute en place.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(minutes=JOB_STALE_MINUTES)
+    for job in jobs:
+        if job.get("status") not in ("queued", "running"):
+            continue
+        job_ts = _parse_ts(job.get("updated_at"))
+        if job_ts is None or job_ts > cutoff:
+            continue
+        update_generation_job(
+            access_token, job["id"], status="error",
+            error="Génération interrompue (délai dépassé).",
+        )
+        job["status"] = "error"
+        job["error"] = "Génération interrompue (délai dépassé)."
+    return jobs
+
+
 def get_analysis(access_token: str, analysis_id: str) -> dict | None:
     user = get_user(access_token)
     if not user:
