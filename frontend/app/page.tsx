@@ -1101,7 +1101,7 @@ function Sidebar({
                 return (
                   <button
                     className={`nav-item ${view === "assistant" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
-                    title={collapsed ? "Agent IA" : undefined}
+                    title={collapsed ? "Agent IA — bientôt disponible" : undefined}
                     onClick={() => {
                       if (locked) {
                         requireAuth("Crée un compte gratuit pour débloquer l'Agent IA.");
@@ -1112,6 +1112,7 @@ function Sidebar({
                   >
                     <MessageSquare size={14} />
                     {!collapsed && <span>Agent IA</span>}
+                    {!collapsed && <span className="nav-soon-badge">bientôt</span>}
                     {locked ? <Lock size={12} className="lock-ico" /> : null}
                   </button>
                 );
@@ -3641,54 +3642,44 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
       </aside>
 
       <section className="assistant-panel card">
-        <div className="section-header">
+        <div className="assistant-standby-banner">
+          <Sparkles size={16} />
           <div>
-            <h2 className="section-title"><MessageSquare size={20} /> Assistant LinkedIn</h2>
-            <p className="section-desc">Itère sur tes idées et brouillons avec mémoire, contexte client et benchmark influenceurs.</p>
+            <strong>Bientôt disponible — assistant en cours d&apos;amélioration</strong>
+            <p>L&apos;Agent IA sera disponible prochainement avec la génération, publication et programmation directement depuis le chat.</p>
           </div>
-          {loadingHistory ? <Loader2 size={16} className="spinning" /> : null}
         </div>
+        <div style={{ opacity: 0.45, pointerEvents: "none", userSelect: "none" }}>
+          <div className="section-header">
+            <div>
+              <h2 className="section-title"><MessageSquare size={20} /> Assistant LinkedIn</h2>
+              <p className="section-desc">Itère sur tes idées et brouillons avec mémoire, contexte client et benchmark influenceurs.</p>
+            </div>
+          </div>
 
-        {error && <div className="error">{error}</div>}
-
-        <div className="assistant-messages">
-          {!messages.length ? (
+          <div className="assistant-messages">
             <div className="assistant-welcome">
               <Sparkles size={22} />
               <h3>Demande une idée, un angle ou une réécriture.</h3>
-              <p>Exemple : "Écris un post opinion sur les erreurs d'automatisation LinkedIn pour des dirigeants B2B."</p>
+              <p>Exemple : &quot;Écris un post opinion sur les erreurs d&apos;automatisation LinkedIn pour des dirigeants B2B.&quot;</p>
             </div>
-          ) : messages.map((message, i) => (
-            <div key={`${message.id || i}-${message.role}`} className={`assistant-message ${message.role}`}>
-              <div className="assistant-message-role">
-                {message.role === "user" ? "Toi" : "Assistant"}
-              </div>
-              <div className="assistant-message-content">
-                {message.role === "assistant"
-                  ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || (streaming ? "..." : "")}</ReactMarkdown>
-                  : <p>{message.content}</p>}
-              </div>
-            </div>
-          ))}
-          <div ref={endRef} />
-        </div>
+          </div>
 
-        <div className="assistant-composer">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Écris ta demande : idée, brouillon à améliorer, angle, ton..."
-            rows={3}
-            onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") sendMessage();
-            }}
-          />
-          <button className="primary-button" disabled={streaming || !input.trim()} onClick={() => sendMessage()}>
-            {streaming ? <Loader2 size={14} className="spinning" /> : <Send size={14} />}
-            {streaming ? "Réponse..." : "Envoyer"}
-          </button>
+          <div className="assistant-composer">
+            <textarea
+              value=""
+              onChange={() => {}}
+              placeholder="Écris ta demande : idée, brouillon à améliorer, angle, ton..."
+              rows={3}
+              disabled
+            />
+            <button className="primary-button" disabled>
+              <Send size={14} />
+              Envoyer
+            </button>
+          </div>
+          <p className="role-picker-hint" style={{ marginTop: 8 }}>Astuce : Cmd/Ctrl + Entrée pour envoyer.</p>
         </div>
-        <p className="role-picker-hint" style={{ marginTop: 8 }}>Astuce : Cmd/Ctrl + Entrée pour envoyer.</p>
       </section>
     </div>
   );
