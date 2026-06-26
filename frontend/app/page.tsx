@@ -1018,7 +1018,10 @@ function Sidebar({
         </div>
         {!collapsed && (
           <div className="logo-text">
-            Cibl
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              Cibl
+              <span className="beta-badge">Bêta</span>
+            </span>
             <span className="logo-sub">SaaS Premium</span>
           </div>
         )}
