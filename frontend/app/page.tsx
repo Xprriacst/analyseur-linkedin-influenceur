@@ -1846,9 +1846,13 @@ function useSlack(isAuthed: boolean) {
   return { status, busy, error, connect, disconnect, refresh };
 }
 
+// Cache module-level : survit aux changements d'onglet dans la même session (ALE-145).
+// Réinitialisé à chaque refresh de page.
+const _genCache: { variants: Variant[]; topic: string } = { variants: [], topic: "" };
+
 function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null }) {
-  const [variants, setVariants] = useState<Variant[]>([]);
-  const [topic, setTopic] = useState("");
+  const [variants, setVariants] = useState<Variant[]>(_genCache.variants);
+  const [topic, setTopic] = useState(_genCache.topic);
   const [role, setRole] = useState("auto");
   const [webSearchNotice, setWebSearchNotice] = useState<WebSearchNotice | null>(null);
   const [loadingPosts, setLoadingPosts] = useState(false);
@@ -1887,6 +1891,11 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     void generateFromTopic(seed.topic);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed?.nonce]);
+
+  // ALE-145 : synchronise le cache module-level à chaque changement de variants/topic,
+  // pour les restaurer si le composant est démonté puis remonté (changement d'onglet).
+  useEffect(() => { _genCache.variants = variants; }, [variants]);
+  useEffect(() => { _genCache.topic = topic; }, [topic]);
 
   function imagePayloadForVariant(i: number) {
     return (variantImages[i] || []).map((image) => ({
@@ -5000,6 +5009,9 @@ export default function Home() {
       setResult(null);
       setLoadedReport(null);
       setJobs([]);
+      // ALE-145 : purge le cache générateur quand l'utilisateur change (anti fuite cross-user).
+      _genCache.variants = [];
+      _genCache.topic = "";
       setError("");
       setView("content");
       if (uid) setTimeout(() => { loadReports(); loadJobs(); loadInfluencerLibrary(); }, 0);
