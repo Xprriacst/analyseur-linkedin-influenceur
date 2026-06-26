@@ -2335,11 +2335,12 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   </button>
                   <button
                     className="secondary-button"
-                    disabled={generatingImage === i}
-                    onClick={() => generateImage(i, editedVariants[i] ?? v.post)}
+                    disabled
+                    aria-disabled
+                    title="Génération d'image temporairement désactivée — correction en cours"
                   >
-                    {generatingImage === i ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
-                    {generatingImage === i ? "Génération…" : (variantImages[i] || []).length ? "Ajouter une image IA" : "Générer une image"}
+                    <ImageIcon size={14} />
+                    Image IA — bientôt
                   </button>
                   <label className="secondary-button" style={{ cursor: "pointer" }}>
                     <ImagePlus size={14} />
@@ -3645,6 +3646,13 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
       </aside>
 
       <section className="assistant-panel card">
+        <div className="assistant-info-banner" role="status">
+          <MessageSquare size={16} />
+          <div>
+            <strong>Mode conversationnel uniquement</strong>
+            <p>Pose des questions, demande des idées ou des réécritures. L&apos;assistant ne peut pas encore publier, programmer ou sauvegarder depuis le chat.</p>
+          </div>
+        </div>
         <div className="section-header">
           <div>
             <h2 className="section-title"><MessageSquare size={20} /> Assistant LinkedIn</h2>
