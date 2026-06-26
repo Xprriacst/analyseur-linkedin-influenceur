@@ -323,6 +323,35 @@ def update_post_message(
     )
 
 
+def _scheduled_post_actions_block(post_id: str) -> dict:
+    """Validate / edit / decline buttons for a scheduled-post Slack message."""
+    return {
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "action_id": "validate_scheduled_post",
+                "value": post_id,
+                "text": {"type": "plain_text", "text": "✅ Valider la programmation", "emoji": True},
+                "style": "primary",
+            },
+            {
+                "type": "button",
+                "action_id": "edit_scheduled_post",
+                "value": post_id,
+                "text": {"type": "plain_text", "text": "✏️ Modifier", "emoji": True},
+            },
+            {
+                "type": "button",
+                "action_id": "decline_scheduled_post",
+                "value": post_id,
+                "text": {"type": "plain_text", "text": "❌ Refuser", "emoji": True},
+                "style": "danger",
+            },
+        ],
+    }
+
+
 def send_scheduled_post_for_validation(
     bot_token: str,
     channel_id: str,
@@ -349,25 +378,7 @@ def send_scheduled_post_for_validation(
             "type": "section",
             "text": {"type": "mrkdwn", "text": preview},
         },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "action_id": "validate_scheduled_post",
-                    "value": post_id,
-                    "text": {"type": "plain_text", "text": "✅ Valider la programmation", "emoji": True},
-                    "style": "primary",
-                },
-                {
-                    "type": "button",
-                    "action_id": "decline_scheduled_post",
-                    "value": post_id,
-                    "text": {"type": "plain_text", "text": "❌ Refuser", "emoji": True},
-                    "style": "danger",
-                },
-            ],
-        },
+        _scheduled_post_actions_block(post_id),
     ]
 
     data = _api_call(
@@ -380,6 +391,13 @@ def send_scheduled_post_for_validation(
     return data["ts"]
 
 
+_SCHEDULED_BADGES = {
+    "validated": "✅ Validé — publication maintenue",
+    "declined": "❌ Refusé — programmation annulée",
+    "edited": "✏️ Modifié — à re-valider",
+}
+
+
 def update_scheduled_post_message(
     bot_token: str,
     channel_id: str,
@@ -387,15 +405,17 @@ def update_scheduled_post_message(
     scheduled_post: dict,
     status: str,
 ) -> None:
-    """Replace scheduled-post validation buttons with the final Slack status."""
+    """Refresh a scheduled-post Slack message after a validate/decline/edit action.
+
+    `validated` / `declined` are terminal → buttons are replaced by a status badge.
+    `edited` keeps the validate/edit/decline buttons so the user can re-validate the
+    new content (ALE-149).
+    """
+    post_id = scheduled_post.get("id", "")
     text = scheduled_post.get("post_text") or ""
     scheduled_at = scheduled_post.get("scheduled_at") or ""
     preview = _quote_full_text(text)
-    badge = (
-        "✅ Validé — publication maintenue"
-        if status == "validated"
-        else "❌ Refusé — programmation annulée"
-    )
+    badge = _SCHEDULED_BADGES.get(status, "")
 
     blocks: list[dict] = [
         {
@@ -412,11 +432,13 @@ def update_scheduled_post_message(
             "type": "section",
             "text": {"type": "mrkdwn", "text": preview},
         },
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": badge},
-        },
     ]
+    if badge:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": badge}})
+    # Non-terminal states (edited) keep the action buttons for re-validation.
+    if status not in ("validated", "declined"):
+        blocks.append(_scheduled_post_actions_block(post_id))
+
     _api_call(
         "chat.update",
         bot_token,
@@ -425,6 +447,52 @@ def update_scheduled_post_message(
         text="Validation d'un post LinkedIn programmé",
         blocks=blocks,
     )
+
+
+def open_post_edit_modal(
+    bot_token: str,
+    trigger_id: str,
+    scheduled_post: dict,
+    channel_id: str,
+    message_ts: str,
+) -> None:
+    """Open a Slack modal to edit a scheduled post's text (ALE-149).
+
+    The modal carries the post id + the originating message coordinates in
+    `private_metadata` so the `view_submission` handler can persist the edit and
+    refresh the original message. Must be called within ~3 s of the button click
+    (the `trigger_id` expires quickly).
+    """
+    post_id = scheduled_post.get("id", "")
+    text = scheduled_post.get("post_text") or ""
+    metadata = json.dumps({
+        "post_id": post_id,
+        "channel_id": channel_id,
+        "message_ts": message_ts,
+    })
+    view = {
+        "type": "modal",
+        "callback_id": "edit_scheduled_post_modal",
+        "private_metadata": metadata,
+        "title": {"type": "plain_text", "text": "Modifier le post"},
+        "submit": {"type": "plain_text", "text": "Enregistrer"},
+        "close": {"type": "plain_text", "text": "Annuler"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "post_text_block",
+                "label": {"type": "plain_text", "text": "Texte du post LinkedIn"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "post_text_input",
+                    "multiline": True,
+                    "max_length": 3000,
+                    "initial_value": text[:3000],
+                },
+            },
+        ],
+    }
+    _api_call("views.open", bot_token, trigger_id=trigger_id, view=view)
 
 
 def verify_signature(body: bytes, timestamp: str, signature: str) -> bool:

@@ -1937,6 +1937,31 @@ def update_scheduled_post_slack_status(post_id: str, user_id: str, status: str) 
     return bool(resp.data)
 
 
+def update_scheduled_post_text_admin(post_id: str, user_id: str, text: str) -> dict | None:
+    """Edit a scheduled post's text from Slack (service-role, no JWT in webhook).
+
+    Resets `slack_status` to 'pending' so an edited post must be re-validated
+    before the cron publishes it (ALE-149/ALE-130). Only touches posts still
+    pending publication; returns the updated row, or None if not editable.
+    """
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("scheduled_posts")
+        .update({
+            "post_text": text,
+            "slack_status": "pending",
+            "updated_at": "now()",
+        })
+        .eq("id", post_id)
+        .eq("user_id", user_id)
+        .eq("status", "pending")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def get_due_scheduled_posts() -> list[dict]:
     """Return pending posts whose scheduled_at <= now() (service-role, for cron).
 
