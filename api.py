@@ -16,7 +16,7 @@ from src import db, slack as slack_client, zernio
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
-from src.jobs import start_job_thread
+from src.jobs import start_job_thread, start_generation_job_thread
 from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
@@ -1186,6 +1186,61 @@ def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(opt
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/generate/jobs")
+def create_generation_job(payload: GenerateRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Lance une génération de posts en arrière-plan (file d'attente — ALE-141).
+
+    Non bloquant : on débite les crédits, on crée le job et on lance le thread,
+    puis on rend la main immédiatement. Le frontend récupère le résultat via
+    GET /generate/jobs/{id}. L'utilisateur peut quitter la page entre-temps.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    influencers = _get_influencers(token)
+    if not influencers:
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
+
+    # Débit après les préconditions : un user sans influenceur ne perd pas de crédits.
+    ok, balance = db.debit_credits(token, "generate_post", payload.count)
+    if not ok:
+        cost = db.CREDIT_COSTS["generate_post"] * payload.count
+        raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} post(s) = {cost} crédit(s).")
+
+    role = (payload.editorial_role or "").strip() or None
+    topic = (payload.topic or "").strip() or None
+    job = db.create_generation_job(token, topic, role, payload.web_search, payload.count)
+    if not job:
+        raise HTTPException(status_code=500, detail="Création du job de génération impossible.")
+    start_generation_job_thread(token, job["id"])
+    job["credits"] = balance
+    return job
+
+
+@app.get("/generate/jobs")
+def list_generation_jobs(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """Liste les jobs de génération de l'utilisateur (plus récents d'abord)."""
+    return db.list_generation_jobs(token)
+
+
+@app.get("/generate/jobs/{job_id}")
+def get_generation_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Récupère un job de génération (pour le polling du frontend)."""
+    job = db.get_generation_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job de génération introuvable.")
+    return job
+
+
+@app.post("/generate/jobs/{job_id}/cancel")
+def cancel_generation_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Annule un job de génération encore en attente/en cours."""
+    job = db.cancel_generation_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job de génération introuvable.")
+    return job
 
 
 @app.get("/me/generated-ideas")
