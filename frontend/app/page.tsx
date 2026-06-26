@@ -2335,12 +2335,11 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   </button>
                   <button
                     className="secondary-button"
-                    disabled
-                    aria-disabled
-                    title="Génération d'image temporairement désactivée — correction en cours"
+                    disabled={generatingImage === i}
+                    onClick={() => generateImage(i, editedVariants[i] ?? v.post)}
                   >
-                    <ImageIcon size={14} />
-                    Image IA — bientôt
+                    {generatingImage === i ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
+                    {generatingImage === i ? "Génération…" : (variantImages[i] || []).length ? "Ajouter une image IA" : "Générer une image"}
                   </button>
                   <label className="secondary-button" style={{ cursor: "pointer" }}>
                     <ImagePlus size={14} />
@@ -3467,13 +3466,6 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
   const [error, setError] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  const quickActions = [
-    "Donne-moi 5 idées de posts adaptées à mon profil.",
-    "Propose un angle performance sur : ",
-    "Transforme ce brouillon en post LinkedIn percutant : ",
-    "Améliore le hook et la structure de ce post : ",
-  ];
-
   async function loadMessages(conversationId: string) {
     setLoadingHistory(true);
     setError("");
@@ -3646,27 +3638,12 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
       </aside>
 
       <section className="assistant-panel card">
-        <div className="assistant-info-banner" role="status">
-          <MessageSquare size={16} />
-          <div>
-            <strong>Mode conversationnel uniquement</strong>
-            <p>Pose des questions, demande des idées ou des réécritures. L&apos;assistant ne peut pas encore publier, programmer ou sauvegarder depuis le chat.</p>
-          </div>
-        </div>
         <div className="section-header">
           <div>
             <h2 className="section-title"><MessageSquare size={20} /> Assistant LinkedIn</h2>
             <p className="section-desc">Itère sur tes idées et brouillons avec mémoire, contexte client et benchmark influenceurs.</p>
           </div>
           {loadingHistory ? <Loader2 size={16} className="spinning" /> : null}
-        </div>
-
-        <div className="assistant-quick-actions">
-          {quickActions.map((action) => (
-            <button key={action} className="secondary-button" onClick={() => setInput(action)}>
-              {action}
-            </button>
-          ))}
         </div>
 
         {error && <div className="error">{error}</div>}
