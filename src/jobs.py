@@ -168,3 +168,93 @@ def start_job_thread(access_token: str, job_id: str) -> None:
         target=process_job, args=(access_token, job_id), daemon=True
     )
     thread.start()
+
+
+# ---------------------------------------------------------------------------
+# File d'attente de génération de posts (ALE-141)
+# ---------------------------------------------------------------------------
+# Rend la génération non bloquante : l'utilisateur lance puis quitte la page, le
+# résultat (variants) apparaît plus tard. Le débit de crédits et les préconditions
+# sont faits en amont (côté API, synchrones) ; ce thread ne fait que le calcul LLM.
+#
+# Pas de verrou global ici : contrairement aux analyses (rate limit Apify), les
+# générations peuvent tourner en parallèle. Un timeout borne quand même la durée
+# pour qu'un appel Anthropic figé ne laisse pas un job `running` éternellement.
+
+GENERATION_TIMEOUT_S = 300
+
+
+def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, count):
+    """Exécute `generate_posts` avec un timeout dur (thread jetable abandonné si figé)."""
+    from src.llm import generate_posts
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(
+        generate_posts,
+        topic,
+        top_posts,
+        benchmark,
+        user_context=user_context,
+        editorial_role=role,
+        count=count,
+    )
+    try:
+        return fut.result(timeout=GENERATION_TIMEOUT_S)
+    finally:
+        ex.shutdown(wait=False)
+
+
+def process_generation_job(access_token: str, job_id: str) -> None:
+    """Génère les posts d'un job en arrière-plan et persiste le résultat.
+
+    Idempotent quant à l'annulation : si le job a été annulé (statut `cancelled`)
+    avant ou pendant le calcul, on n'écrit jamais `done` par-dessus.
+    """
+    from src.benchmark import build_benchmark, enrich_influencers
+
+    job = db.get_generation_job(access_token, job_id)
+    if not job:
+        return
+    if db.get_generation_job_status(access_token, job_id) == "cancelled":
+        return
+
+    db.update_generation_job(access_token, job_id, status="running")
+    try:
+        influencers = enrich_influencers(db.get_user_corpus(access_token))
+        top_posts, benchmark = build_benchmark(influencers)
+        user_context = db.get_user_ai_context(access_token)
+        role = (job.get("editorial_role") or "").strip() or None
+        topic = (job.get("topic") or "").strip()
+        count = int(job.get("count") or 1)
+
+        variants = _generate_posts_guarded(
+            topic, top_posts, benchmark, user_context, role, count
+        )
+
+        # Annulé pendant le calcul ? On respecte l'annulation.
+        if db.get_generation_job_status(access_token, job_id) == "cancelled":
+            return
+
+        save_error: str | None = None
+        try:
+            variants = db.save_generated_posts(access_token, topic, variants)
+        except Exception as exc:  # noqa: BLE001 — la sauvegarde est best-effort
+            save_error = str(exc)
+
+        db.update_generation_job(
+            access_token, job_id, status="done",
+            result={"variants": variants, "save_error": save_error},
+        )
+    except Exception as exc:  # noqa: BLE001 — on isole l'échec d'un job
+        if db.get_generation_job_status(access_token, job_id) == "cancelled":
+            return
+        db.update_generation_job(
+            access_token, job_id, status="error", error=str(exc)[:500]
+        )
+
+
+def start_generation_job_thread(access_token: str, job_id: str) -> None:
+    """Lance la génération d'un job dans un thread de fond (non bloquant)."""
+    thread = threading.Thread(
+        target=process_generation_job, args=(access_token, job_id), daemon=True
+    )
+    thread.start()

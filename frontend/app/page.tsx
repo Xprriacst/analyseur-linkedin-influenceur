@@ -112,7 +112,6 @@ type Variant = {
   predicted_lift: string;
   post: string;
 };
-type WebSearchNotice = { query: string; active: boolean };
 type LinkedInImageAttachment = {
   id: string;
   url: string;
@@ -345,6 +344,26 @@ type Job = {
   updated_at: string;
   items: JobItem[];
 };
+
+// ALE-141 : un job de génération de posts (file d'attente). Une ligne = une
+// requête (un sujet → N variants). Le résultat vit en base : on peut quitter la
+// page et revenir, les variants réapparaissent.
+type GenerationJob = {
+  id: string;
+  status: JobStatus;
+  topic: string | null;
+  editorial_role: string | null;
+  web_search: boolean;
+  count: number;
+  result: { variants?: Variant[]; save_error?: string | null } | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function generationJobIsActive(j: GenerationJob): boolean {
+  return j.status === "queued" || j.status === "running";
+}
 
 const ITEM_STATUS_LABELS: Record<ItemStatus, string> = {
   pending: "En attente",
@@ -1847,14 +1866,20 @@ function useSlack(isAuthed: boolean) {
 }
 
 // Cache module-level : survit aux changements d'onglet dans la même session (ALE-145).
-// Réinitialisé à chaque refresh de page.
-const _genCache: { variants: Variant[]; topic: string } = { variants: [], topic: "" };
+// Réinitialisé à chaque refresh de page. `appliedJobId` (ALE-141) mémorise le
+// dernier job de génération dont on a injecté le résultat, pour qu'un nouveau
+// batch terminé pendant qu'on était sur un autre onglet s'affiche bien au retour
+// (un simple ref serait réinitialisé au remontage du composant).
+const _genCache: { variants: Variant[]; topic: string; appliedJobId: string | null } = {
+  variants: [],
+  topic: "",
+  appliedJobId: null,
+};
 
-function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null }) {
+function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void }) {
   const [variants, setVariants] = useState<Variant[]>(_genCache.variants);
   const [topic, setTopic] = useState(_genCache.topic);
   const [role, setRole] = useState("auto");
-  const [webSearchNotice, setWebSearchNotice] = useState<WebSearchNotice | null>(null);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
   const linkedin = useLinkedIn(isAuthed);
@@ -1896,6 +1921,35 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   // pour les restaurer si le composant est démonté puis remonté (changement d'onglet).
   useEffect(() => { _genCache.variants = variants; }, [variants]);
   useEffect(() => { _genCache.topic = topic; }, [topic]);
+
+  // ALE-141 : la génération tourne en file d'attente côté serveur (jobs portés par
+  // Home). On surveille le job le plus récent : tant qu'il est actif, on affiche
+  // « génération en cours » ; dès qu'il est `done`, on injecte ses variants (ils
+  // survivent ainsi au changement d'onglet ET au refresh, car persistés en base).
+  const latestGenJob = generationJobs[0] ?? null;
+  const genJobActive = !!latestGenJob && generationJobIsActive(latestGenJob);
+
+  useEffect(() => {
+    const job = latestGenJob;
+    if (!job || generationJobIsActive(job)) return;
+    // Le job le plus récent est terminé : on injecte son résultat une seule fois
+    // (suivi via `_genCache.appliedJobId`, persistant au-delà des remontages, pour
+    // qu'un batch terminé pendant qu'on était sur un autre onglet s'affiche au retour).
+    if (_genCache.appliedJobId === job.id) return;
+    _genCache.appliedJobId = job.id;
+    if (job.status === "done") {
+      setEditedVariants({});
+      setVariantImages({});
+      setVariants(job.result?.variants || []);
+      if (job.topic) setTopic(job.topic);
+      setError(job.result?.save_error ? `Posts générés, mais sauvegarde impossible : ${job.result.save_error}` : "");
+    } else if (job.status === "error") {
+      setError(job.error || "Échec de la génération de posts");
+    } else if (job.status === "cancelled") {
+      setError("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestGenJob?.id, latestGenJob?.status]);
 
   function imagePayloadForVariant(i: number) {
     return (variantImages[i] || []).map((image) => ({
@@ -2110,77 +2164,30 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
     }));
   }
 
+  // ALE-141 : lance une génération en file d'attente (non bloquant). On crée le
+  // job côté serveur puis on rend la main : le travail tourne en arrière-plan,
+  // l'utilisateur peut quitter la page. Le résultat est récupéré par le polling
+  // de Home (latestGenJob) et injecté par l'effet ci-dessus.
   async function generateFromTopic(t: string) {
     setError("");
-    setWebSearchNotice(null);
     setLoadingPosts(true);
     try {
       // Sujet optionnel : sans sujet, le backend choisit lui-même un angle (idée = post).
       const body: { topic?: string; editorial_role?: string; count?: number } = { count: variantCount };
       if (t.trim()) body.topic = t.trim();
       if (role !== "auto") body.editorial_role = role;
-      const res = await fetch(`${DIRECT_API_URL}/generate/stream`, {
+      const res = await fetch(`${DIRECT_API_URL}/generate/jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify(body),
       });
-      if (!res.ok || !res.body) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || "Échec de la génération de posts");
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let doneReceived = false;
-      let streamError = "";
-
-      const handleGenerateSseEvent = (raw: string) => {
-        const lines = raw.split("\n");
-        let event = "message";
-        const dataLines: string[] = [];
-        for (const line of lines) {
-          if (line.startsWith("event:")) event = line.slice(6).trim();
-          if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
-        }
-        if (!dataLines.length) return;
-        const data = JSON.parse(dataLines.join("\n"));
-        if (event === "meta") {
-          emitCredits(data.credits);
-        } else if (event === "search") {
-          setWebSearchNotice({
-            query: data.query || "recherche web",
-            active: true,
-          });
-        } else if (event === "done") {
-          doneReceived = true;
-          emitCredits(data.credits);
-          setEditedVariants({}); // éditions indexées par position : à purger sinon elles contaminent le nouveau batch
-          setVariantImages({});
-          setVariants(data.variants || []);
-          if (data.save_error) setError(`Posts générés, mais sauvegarde impossible : ${data.save_error}`);
-        } else if (event === "error") {
-          streamError = data.detail || "Échec de la génération de posts";
-        }
-      };
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const chunks = buffer.split("\n\n");
-        buffer = chunks.pop() || "";
-        for (const chunk of chunks) {
-          if (chunk.trim()) handleGenerateSseEvent(chunk);
-        }
-      }
-      if (buffer.trim()) handleGenerateSseEvent(buffer);
-      if (streamError) throw new Error(streamError);
-      if (!doneReceived) throw new Error("Réponse interrompue avant la fin de la génération.");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Échec du lancement de la génération");
+      if (typeof data.credits === "number") emitCredits(data.credits);
+      onGenerationJobCreated(data as GenerationJob);
     } catch (err: any) {
       setError(err.message);
     } finally {
-      setWebSearchNotice((prev) => prev ? { ...prev, active: false } : prev);
       setLoadingPosts(false);
     }
   }
@@ -2222,11 +2229,11 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               placeholder="Sujet du post (optionnel) : ex. les 5 erreurs avec Claude AI…"
-              onKeyDown={(e) => e.key === "Enter" && generateFromTopic(topic)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !(loadingPosts || genJobActive)) generateFromTopic(topic); }}
             />
-            <button className="primary-button" disabled={loadingPosts} onClick={() => generateFromTopic(topic)}>
-              {loadingPosts ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
-              Générer
+            <button className="primary-button" disabled={loadingPosts || genJobActive} onClick={() => generateFromTopic(topic)}>
+              {(loadingPosts || genJobActive) ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
+              {genJobActive ? "Génération en cours…" : "Générer"}
             </button>
           </div>
           <div className="role-picker">
@@ -2257,12 +2264,12 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
               </select>
             </label>
           </div>
-          {loadingPosts && webSearchNotice?.active && (
+          {genJobActive && (
             <div className="web-search-status" role="status" aria-live="polite">
-              <span className="web-search-icon">🔎</span>
+              <Loader2 size={16} className="spinning" />
               <span>
-                <strong>Je recherche sur le web…</strong>
-                <span>{webSearchNotice.query}</span>
+                <strong>Génération en cours…</strong>
+                <span>Tu peux quitter cette page — le résultat apparaîtra ici une fois prêt.</span>
               </span>
             </div>
           )}
@@ -4757,6 +4764,8 @@ function ContentHub({
   onReuse,
   isAuthed,
   requireAuth,
+  generationJobs,
+  onGenerationJobCreated,
 }: {
   tab: ContentTab;
   onTab: (t: ContentTab) => void;
@@ -4764,6 +4773,8 @@ function ContentHub({
   onReuse: (topic: string) => void;
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
+  generationJobs: GenerationJob[];
+  onGenerationJobCreated: (job: GenerationJob) => void;
 }) {
   const subTabs: { key: ContentTab; label: string; icon: React.ReactNode }[] = [
     { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} /> },
@@ -4788,7 +4799,7 @@ function ContentHub({
       </div>
 
       {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />}
-      {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} />}
+      {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} />}
       {tab === "library" && (
         <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
       )}
@@ -4814,6 +4825,9 @@ export default function Home() {
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
+  // ALE-141 : jobs de génération de posts (file d'attente, vit dans Home pour que
+  // le polling continue quand on change d'onglet / quitte le générateur).
+  const [generationJobs, setGenerationJobs] = useState<GenerationJob[]>([]);
   const [session, setSession] = useState<Session | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authReason, setAuthReason] = useState("");
@@ -4892,6 +4906,21 @@ export default function Home() {
     setJobs((prev) => prev.map((j) => (j.id === job.id ? job : j)));
   }
 
+  // ALE-141 : génération de posts en file d'attente.
+  async function loadGenerationJobs() {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate/jobs`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data)) setGenerationJobs(data);
+    } catch { /* ignore */ }
+  }
+
+  function onGenerationJobCreated(job: GenerationJob) {
+    setGenerationJobs((prev) => [job, ...prev]);
+  }
+
+  const anyGenerationJobActive = generationJobs.some(generationJobIsActive);
+
   const activeJob = jobs.find(jobIsActive) ?? null;
   const anyJobActive = !!activeJob;
   // ALE-114 : badge de progression par réseau (un job Instagram ne doit pas
@@ -4952,6 +4981,20 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, anyJobActive]);
 
+  // ALE-141 : premier chargement des jobs de génération + polling tant qu'un tourne.
+  useEffect(() => {
+    if (!isAuthed) { setGenerationJobs([]); return; }
+    loadGenerationJobs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.access_token]);
+
+  useEffect(() => {
+    if (!isAuthed || !anyGenerationJobActive) return;
+    const t = setInterval(loadGenerationJobs, 3000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, anyGenerationJobActive]);
+
   useEffect(() => {
     if (prevJobActiveRef.current && !anyJobActive && isAuthed) {
       loadReports();
@@ -5009,12 +5052,14 @@ export default function Home() {
       setResult(null);
       setLoadedReport(null);
       setJobs([]);
+      setGenerationJobs([]);
       // ALE-145 : purge le cache générateur quand l'utilisateur change (anti fuite cross-user).
       _genCache.variants = [];
       _genCache.topic = "";
+      _genCache.appliedJobId = null;
       setError("");
       setView("content");
-      if (uid) setTimeout(() => { loadReports(); loadJobs(); loadInfluencerLibrary(); }, 0);
+      if (uid) setTimeout(() => { loadReports(); loadJobs(); loadInfluencerLibrary(); loadGenerationJobs(); }, 0);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -5243,6 +5288,8 @@ export default function Home() {
                   seed={generatorSeed}
                   isAuthed={isAuthed}
                   requireAuth={requireAuth}
+                  generationJobs={generationJobs}
+                  onGenerationJobCreated={onGenerationJobCreated}
                   onReuse={(topic) => {
                     setGeneratorSeed({ topic, nonce: Date.now() });
                     setContentTab("generator");
