@@ -2744,6 +2744,7 @@ function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAut
 
 type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null };
 type IdeaSeed = { id: string; text: string; used_at?: string | null; created_at?: string };
+type IdeaLine = { id?: string; line: string; source_type?: string; source_ref?: string; source_url?: string };
 type DailyIdeaCard = Pick<Idea, "title" | "hook" | "hook_type" | "funnel" | "angle" | "why_it_works" | "estimated_lift">;
 
 function parseDailyIdeaMarkdown(markdown: string): DailyIdeaCard {
@@ -2796,6 +2797,32 @@ function DailyIdeasView({
   const [regenerating, setRegenerating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
+
+  // ALE-143 : lot d'idées « une ligne »
+  const [ideaBatch, setIdeaBatch] = useState<IdeaLine[]>([]);
+  const [generatingBatch, setGeneratingBatch] = useState(false);
+  const [batchWebSearch, setBatchWebSearch] = useState(false);
+  const [batchError, setBatchError] = useState("");
+  const [copiedLineId, setCopiedLineId] = useState<string | null>(null);
+
+  async function generateIdeaBatch() {
+    if (!isAuthed) { requireAuth("Connecte-toi pour générer des idées."); return; }
+    setGeneratingBatch(true); setBatchError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/ideas`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ count: 15, web_search: batchWebSearch }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Génération impossible");
+      setIdeaBatch(Array.isArray(data.ideas) ? data.ideas : []);
+    } catch (err: any) {
+      setBatchError(err.message || "Erreur lors de la génération");
+    } finally {
+      setGeneratingBatch(false);
+    }
+  }
 
   // ALE-136 : le post du jour est postable (copier / sauvegarder / publier / programmer).
   const linkedin = useLinkedIn(isAuthed);
@@ -3030,7 +3057,68 @@ function DailyIdeasView({
 
   return (
     <div>
-      <div className="section-header">
+      {/* ALE-143 : bloc « Générer des idées » — lot de one-liners scannables */}
+      <section className="card ideas-batch-section">
+        <div className="ideas-batch-header">
+          <div>
+            <h3 style={{ margin: "0 0 4px" }}>💡 Générer des idées</h3>
+            <p className="section-desc" style={{ margin: 0 }}>
+              Un lot de 15 idées en une ligne, ancrées dans tes vrais posts performants. 3 crédits/lot.
+            </p>
+          </div>
+          <div className="ideas-batch-actions">
+            <label className="ideas-web-toggle">
+              <input type="checkbox" checked={batchWebSearch} onChange={(e) => setBatchWebSearch(e.target.checked)} />
+              <span>Chercher sur le web</span>
+            </label>
+            <button className="primary-button" onClick={generateIdeaBatch} disabled={generatingBatch}>
+              {generatingBatch ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
+              {generatingBatch ? "Génération…" : "Générer"}
+            </button>
+          </div>
+        </div>
+        {batchError && <div className="error" style={{ marginTop: 8 }}>{batchError}</div>}
+        {ideaBatch.length > 0 && (
+          <ul className="ideas-batch-list">
+            {ideaBatch.map((idea, i) => (
+              <li key={idea.id ?? i} className="idea-line-item">
+                <span className="idea-line-text">{idea.line}</span>
+                {idea.source_ref && (
+                  <span className="idea-line-source">
+                    {idea.source_url ? (
+                      <a href={idea.source_url} target="_blank" rel="noopener noreferrer">{idea.source_ref}</a>
+                    ) : (
+                      idea.source_ref
+                    )}
+                  </span>
+                )}
+                <div className="idea-line-actions">
+                  <button
+                    className="secondary-button"
+                    style={{ fontSize: 12, minHeight: 28, padding: "0 8px" }}
+                    onClick={() => {
+                      navigator.clipboard.writeText(idea.line);
+                      setCopiedLineId(String(idea.id ?? i));
+                      setTimeout(() => setCopiedLineId((c) => c === String(idea.id ?? i) ? null : c), 1500);
+                    }}
+                  >
+                    {copiedLineId === String(idea.id ?? i) ? <CheckCircle2 size={12} /> : <Copy size={12} />}
+                  </button>
+                  <button
+                    className="primary-button"
+                    style={{ fontSize: 12, minHeight: 28, padding: "0 8px" }}
+                    onClick={() => onReuse(idea.line)}
+                  >
+                    <Sparkles size={12} /> Développer
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <div className="section-header" style={{ marginTop: 24 }}>
         <div>
           <h2 className="section-title"><Sparkles size={20} /> Idée du jour</h2>
           <p className="section-desc">Chaque matin, une idée de post est générée à partir de ton benchmark d'influenceurs et de ton réservoir d'idées.</p>
