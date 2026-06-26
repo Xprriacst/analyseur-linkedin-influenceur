@@ -5428,7 +5428,13 @@ export default function Home() {
           onSignUp={() => requireAuth(undefined, "signup")}
           onSignOut={() => supabase.auth.signOut()}
         />
-        <main className="main">
+        {/* Anti-fuite cross-user : `key` sur l'id utilisateur → tout le sous-arbre
+            de contenu (DailyIdeasView, LibraryView, Generator…) est remonté à neuf
+            quand on change de compte. Sans ça, leurs états locaux par-utilisateur
+            (idées générées, posts sauvegardés…) survivent à un changement de session
+            (ex. inscription d'un nouveau compte sans logout : `isAuthed` reste true,
+            les useEffect keyés sur [isAuthed] ne se relancent pas). */}
+        <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />
