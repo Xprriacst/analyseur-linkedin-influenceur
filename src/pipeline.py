@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from typing import Callable
 
 from src.llm import classify_posts, synthesize_strategy
@@ -12,8 +13,9 @@ from src.usage import get_usage, reset_usage
 
 ProgressCallback = Callable[[float, str], None]
 
-# Seuil pour l'analyse incrémentale (ALE-109)
-RESYNTHESIS_THRESHOLD = 2  # Nb de nouveaux posts minimum pour refaire la synthèse LLM
+# Seuils pour l'analyse incrémentale (ALE-109)
+RESYNTHESIS_THRESHOLD = 2   # Nb de nouveaux posts minimum pour refaire la synthèse LLM
+CACHE_FRESH_HOURS = 6.0     # En dessous : on réutilise les données Supabase sans appeler Apify
 
 
 def empty_synthesis() -> dict:
@@ -54,6 +56,36 @@ def _build_url_classif_map(
                     "angle": c.get("angle", ""),
                 }
     return url_to_classif
+
+
+def _reconstruct_posts_from_cache(rows: list[dict], limit: int) -> list[dict]:
+    """Reconstruit la liste de posts normalisés depuis les lignes de cached_posts.
+
+    Les champs stockés (url, text, date, format, métriques) suffisent pour
+    compute_stats et analyze_patterns. Appelé uniquement quand le cache est frais.
+    """
+    posts: list[dict] = []
+    for row in rows[:limit]:
+        date = None
+        raw_posted = row.get("posted_at")
+        if raw_posted:
+            try:
+                date = datetime.datetime.fromisoformat(raw_posted.replace("Z", "+00:00"))
+            except Exception:
+                pass
+        posts.append({
+            "url": row.get("url"),
+            "text": row.get("text") or "",
+            "date": date,
+            "format": row.get("format") or "text",
+            "likes": int(row.get("likes") or 0),
+            "comments": int(row.get("comments") or 0),
+            "reposts": int(row.get("reposts") or 0),
+            "engagement": int(row.get("engagement") or 0),
+            "length_chars": int(row.get("length_chars") or 0),
+            "length_words": int(row.get("length_words") or 0),
+        })
+    return posts
 
 
 def _reconstruct_classifications(
@@ -116,15 +148,45 @@ def run_analysis(
             cached_url_to_classif = {}
     # ──────────────────────────────────────────────────────────────────────── #
 
-    tick(0.05, "Scraping profile")
-    raw_profile = fetch_profile(url, use_cache=not no_cache)
-    profile = normalize_profile(raw_profile)
+    # ── Fast-path : cache frais → bypass Apify (ALE-109 critères 1 & 2) ─────── #
+    # Si un cache Supabase récent existe (< CACHE_FRESH_HOURS), on utilise les
+    # données déjà stockées au lieu d'appeler Apify. new_posts sera alors [] →
+    # aucune classification LLM → aucune re-synthèse → coût ≈ 0.
+    _cache_is_fresh = False
+    _cache_age_hours: float = 0.0
 
-    tick(0.25, f"Fetching last {limit} posts")
-    raw = fetch_posts(url, limit=limit, use_cache=not no_cache)
-    posts = normalize_posts(raw)
-    if not posts:
-        raise RuntimeError("Aucun post exploitable. Profil privé ou URL incorrecte ?")
+    if not no_cache and cache_entry and cached_post_rows:
+        last_analyzed = cache_entry.get("last_analyzed_at")
+        if last_analyzed:
+            try:
+                la = datetime.datetime.fromisoformat(last_analyzed.replace("Z", "+00:00"))
+                _cache_age_hours = (
+                    datetime.datetime.now(datetime.timezone.utc) - la
+                ).total_seconds() / 3600
+                _cache_is_fresh = _cache_age_hours < CACHE_FRESH_HOURS
+            except Exception:
+                pass
+
+    if _cache_is_fresh:
+        # raw_profile dans influencer_cache est le profil déjà normalisé
+        profile = cache_entry.get("raw_profile") or {}
+        posts = _reconstruct_posts_from_cache(cached_post_rows, limit)
+        tick(0.05, f"Cache frais ({_cache_age_hours:.0f}h < {CACHE_FRESH_HOURS:.0f}h) — profil Supabase")
+        tick(0.25, f"{len(posts)} posts depuis Supabase (Apify non appelé)")
+        if not posts:
+            _cache_is_fresh = False  # Fallback si cache vidé entre-temps
+
+    if not _cache_is_fresh:
+        tick(0.05, "Scraping profile")
+        raw_profile = fetch_profile(url, use_cache=not no_cache)
+        profile = normalize_profile(raw_profile)
+
+        tick(0.25, f"Fetching last {limit} posts")
+        raw = fetch_posts(url, limit=limit, use_cache=not no_cache)
+        posts = normalize_posts(raw)
+        if not posts:
+            raise RuntimeError("Aucun post exploitable. Profil privé ou URL incorrecte ?")
+    # ──────────────────────────────────────────────────────────────────────────── #
 
     # Posts à (re)classifier = ceux qui n'ont PAS encore de classification en cache.
     # On se base sur les URLs réellement classifiées (cached_url_to_classif), pas sur
