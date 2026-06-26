@@ -2339,11 +2339,12 @@ function Generator({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   </button>
                   <button
                     className="secondary-button"
-                    disabled={generatingImage === i}
-                    onClick={() => generateImage(i, editedVariants[i] ?? v.post)}
+                    disabled
+                    aria-disabled
+                    title="Génération d'image en cours d'amélioration — bientôt disponible"
                   >
-                    {generatingImage === i ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
-                    {generatingImage === i ? "Génération…" : (variantImages[i] || []).length ? "Ajouter une image IA" : "Générer une image"}
+                    <ImageIcon size={14} />
+                    Image IA — bientôt
                   </button>
                   <label className="secondary-button" style={{ cursor: "pointer" }}>
                     <ImagePlus size={14} />
