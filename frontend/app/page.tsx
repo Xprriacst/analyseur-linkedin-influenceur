@@ -2760,6 +2760,7 @@ function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAut
 
 type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null };
 type IdeaSeed = { id: string; text: string; used_at?: string | null; created_at?: string };
+type IdeaLine = { id?: string; line: string; source_type?: string; source_ref?: string; source_url?: string };
 type DailyIdeaCard = Pick<Idea, "title" | "hook" | "hook_type" | "funnel" | "angle" | "why_it_works" | "estimated_lift">;
 
 function parseDailyIdeaMarkdown(markdown: string): DailyIdeaCard {
@@ -2812,6 +2813,32 @@ function DailyIdeasView({
   const [regenerating, setRegenerating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
+
+  // ALE-143 : lot d'idées « une ligne »
+  const [ideaBatch, setIdeaBatch] = useState<IdeaLine[]>([]);
+  const [generatingBatch, setGeneratingBatch] = useState(false);
+  const [batchWebSearch, setBatchWebSearch] = useState(false);
+  const [batchError, setBatchError] = useState("");
+  const [copiedLineId, setCopiedLineId] = useState<string | null>(null);
+
+  async function generateIdeaBatch() {
+    if (!isAuthed) { requireAuth("Connecte-toi pour générer des idées."); return; }
+    setGeneratingBatch(true); setBatchError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/ideas`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ count: 15, web_search: batchWebSearch }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Génération impossible");
+      setIdeaBatch(Array.isArray(data.ideas) ? data.ideas : []);
+    } catch (err: any) {
+      setBatchError(err.message || "Erreur lors de la génération");
+    } finally {
+      setGeneratingBatch(false);
+    }
+  }
 
   // ALE-136 : le post du jour est postable (copier / sauvegarder / publier / programmer).
   const linkedin = useLinkedIn(isAuthed);
@@ -3046,7 +3073,68 @@ function DailyIdeasView({
 
   return (
     <div>
-      <div className="section-header">
+      {/* ALE-143 : bloc « Générer des idées » — lot de one-liners scannables */}
+      <section className="card ideas-batch-section">
+        <div className="ideas-batch-header">
+          <div>
+            <h3 style={{ margin: "0 0 4px" }}>💡 Générer des idées</h3>
+            <p className="section-desc" style={{ margin: 0 }}>
+              Un lot de 15 idées en une ligne, ancrées dans tes vrais posts performants. 3 crédits/lot.
+            </p>
+          </div>
+          <div className="ideas-batch-actions">
+            <label className="ideas-web-toggle">
+              <input type="checkbox" checked={batchWebSearch} onChange={(e) => setBatchWebSearch(e.target.checked)} />
+              <span>Chercher sur le web</span>
+            </label>
+            <button className="primary-button" onClick={generateIdeaBatch} disabled={generatingBatch}>
+              {generatingBatch ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
+              {generatingBatch ? "Génération…" : "Générer"}
+            </button>
+          </div>
+        </div>
+        {batchError && <div className="error" style={{ marginTop: 8 }}>{batchError}</div>}
+        {ideaBatch.length > 0 && (
+          <ul className="ideas-batch-list">
+            {ideaBatch.map((idea, i) => (
+              <li key={idea.id ?? i} className="idea-line-item">
+                <span className="idea-line-text">{idea.line}</span>
+                {idea.source_ref && (
+                  <span className="idea-line-source">
+                    {idea.source_url ? (
+                      <a href={idea.source_url} target="_blank" rel="noopener noreferrer">{idea.source_ref}</a>
+                    ) : (
+                      idea.source_ref
+                    )}
+                  </span>
+                )}
+                <div className="idea-line-actions">
+                  <button
+                    className="secondary-button"
+                    style={{ fontSize: 12, minHeight: 28, padding: "0 8px" }}
+                    onClick={() => {
+                      navigator.clipboard.writeText(idea.line);
+                      setCopiedLineId(String(idea.id ?? i));
+                      setTimeout(() => setCopiedLineId((c) => c === String(idea.id ?? i) ? null : c), 1500);
+                    }}
+                  >
+                    {copiedLineId === String(idea.id ?? i) ? <CheckCircle2 size={12} /> : <Copy size={12} />}
+                  </button>
+                  <button
+                    className="primary-button"
+                    style={{ fontSize: 12, minHeight: 28, padding: "0 8px" }}
+                    onClick={() => onReuse(idea.line)}
+                  >
+                    <Sparkles size={12} /> Développer
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <div className="section-header" style={{ marginTop: 24 }}>
         <div>
           <h2 className="section-title"><Sparkles size={20} /> Idée du jour</h2>
           <p className="section-desc">Chaque matin, une idée de post est générée à partir de ton benchmark d'influenceurs et de ton réservoir d'idées.</p>
@@ -4807,6 +4895,111 @@ function ContentHub({
   );
 }
 
+function OnboardingScreen({ onDone }: { onDone: () => void }) {
+  const [aiInput, setAiInput] = useState("");
+  const [drafting, setDrafting] = useState(false);
+  const [error, setError] = useState("");
+  const [profilePreview, setProfilePreview] = useState<{
+    display_name?: string;
+    brand_name?: string;
+    business_description?: string;
+    industry?: string;
+  } | null>(null);
+
+  const inputKind: "linkedin" | "website" | "description" = (() => {
+    const v = aiInput.trim();
+    if (!v || /\s/.test(v)) return "description";
+    if (/linkedin\.com\/in\//i.test(v)) return "linkedin";
+    if (/^https?:\/\//i.test(v) || /^www\./i.test(v) || /^[\w-]+(\.[\w-]+)+(\/|$)/i.test(v)) return "website";
+    return "description";
+  })();
+
+  async function doPreFill() {
+    const trimmed = aiInput.trim();
+    if (!trimmed) { setError("Colle une URL LinkedIn, un site ou une description courte."); return; }
+    setDrafting(true); setError("");
+    try {
+      const isLinkedin = inputKind === "linkedin";
+      const isWebsite = inputKind === "website";
+      const res = await fetch(`${DIRECT_API_URL}/me/profile/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          activity_description: isLinkedin || isWebsite ? "" : trimmed,
+          linkedin_url: isLinkedin ? trimmed : "",
+          website_url: isWebsite ? trimmed : "",
+          use_apify_linkedin: isLinkedin,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Pré-remplissage impossible");
+      const merged = { ...(data.profile || {}) };
+      await fetch(`${DIRECT_API_URL}/me/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify(merged),
+      });
+      setProfilePreview(merged);
+    } catch (err: any) {
+      setError(err.message || "Pré-remplissage impossible");
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  return (
+    <div className="onboarding-overlay">
+      <div className="onboarding-card">
+        <div className="onboarding-header">
+          <Sparkles size={28} className="onboarding-icon" />
+          <h1>Bienvenue sur LKD Outreach</h1>
+          <p>Pour personnaliser tes recommandations, commençons par ton profil éditorial.</p>
+        </div>
+        {!profilePreview ? (
+          <div className="onboarding-step">
+            <span className="onboarding-label">
+              Colle ton profil LinkedIn, ton site web ou décris ton activité en quelques mots.
+            </span>
+            <div className="onboarding-input-row">
+              <input
+                className="onboarding-input"
+                value={aiInput}
+                onChange={(e) => setAiInput(e.target.value)}
+                placeholder="https://linkedin.com/in/ton-profil ou « J'aide les PME à… »"
+                onKeyDown={(e) => { if (e.key === "Enter" && !drafting) doPreFill(); }}
+                autoFocus
+              />
+              <button className="primary-button" onClick={doPreFill} disabled={drafting}>
+                {drafting ? <Loader2 size={15} className="spinning" /> : <Sparkles size={15} />}
+                {drafting ? "Analyse…" : "Pré-remplir"}
+              </button>
+            </div>
+            {error && <div className="error" style={{ marginTop: 4 }}>{error}</div>}
+            <button className="link-button onboarding-skip" onClick={onDone}>
+              Passer cette étape →
+            </button>
+          </div>
+        ) : (
+          <div className="onboarding-step">
+            <div className="onboarding-preview">
+              {profilePreview.display_name && <p><strong>Nom :</strong> {profilePreview.display_name}</p>}
+              {profilePreview.brand_name && <p><strong>Marque :</strong> {profilePreview.brand_name}</p>}
+              {profilePreview.industry && <p><strong>Secteur :</strong> {profilePreview.industry}</p>}
+              {profilePreview.business_description && (
+                <p><strong>Activité :</strong> {profilePreview.business_description}</p>
+              )}
+            </div>
+            <p className="onboarding-hint">Profil enregistré — tu pourras ajuster les détails dans « Mon profil ».</p>
+            <button className="primary-button" style={{ width: "100%" }} onClick={onDone}>
+              Valider et continuer →
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
@@ -4833,6 +5026,7 @@ export default function Home() {
   const [authReason, setAuthReason] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [credits, setCredits] = useState<number | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const userIdRef = useRef<string | null>(null);
   const prevJobActiveRef = useRef(false);
   // Analyse anonyme affichée mais pas encore sauvegardée : sauvée dès l'inscription.
@@ -5059,7 +5253,21 @@ export default function Home() {
       _genCache.appliedJobId = null;
       setError("");
       setView("content");
-      if (uid) setTimeout(() => { loadReports(); loadJobs(); loadInfluencerLibrary(); loadGenerationJobs(); }, 0);
+      setShowOnboarding(false);
+      if (uid) setTimeout(() => {
+        loadReports(); loadJobs(); loadInfluencerLibrary(); loadGenerationJobs();
+        // Affiche l'onboarding si le profil est vide (nouvel utilisateur).
+        (async () => {
+          try {
+            const res = await fetch(`${DIRECT_API_URL}/me/profile`, { headers: await authHeaders() });
+            if (res.ok) {
+              const p = await res.json();
+              const hasProfile = !!(p.display_name || p.brand_name || p.business_description);
+              if (!hasProfile) setShowOnboarding(true);
+            }
+          } catch { /* ignore */ }
+        })();
+      }, 0);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -5179,6 +5387,9 @@ export default function Home() {
 
   return (
     <>
+      {showOnboarding && isAuthed && (
+        <OnboardingScreen onDone={() => { setShowOnboarding(false); setView("content"); }} />
+      )}
       <div className="app-shell">
         <Sidebar
           health={health}
@@ -5217,7 +5428,13 @@ export default function Home() {
           onSignUp={() => requireAuth(undefined, "signup")}
           onSignOut={() => supabase.auth.signOut()}
         />
-        <main className="main">
+        {/* Anti-fuite cross-user : `key` sur l'id utilisateur → tout le sous-arbre
+            de contenu (DailyIdeasView, LibraryView, Generator…) est remonté à neuf
+            quand on change de compte. Sans ça, leurs états locaux par-utilisateur
+            (idées générées, posts sauvegardés…) survivent à un changement de session
+            (ex. inscription d'un nouveau compte sans logout : `isAuthed` reste true,
+            les useEffect keyés sur [isAuthed] ne se relancent pas). */}
+        <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />

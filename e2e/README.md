@@ -39,6 +39,24 @@ Pour tester la prod : `E2E_BASE_URL=https://lkd-outreach.netlify.app npx playwri
 Ce que l'auto ne couvre pas (génération réelle, publication, persistance après refresh) :
 voir **`MANUAL-CHECKLIST.md`**.
 
+## Isolation cross-compte (opt-in, génère)
+
+Projet `isolation` (`tests/cross-user-isolation.spec.ts`) : non-régression de la **fuite de
+données entre comptes** (PR #102). Connecte le compte A, génère un lot d'idées, bascule sur
+le compte B **dans le même onglet sans recharger**, et vérifie que B ne voit rien de A.
+
+⚠️ Ce test **génère réellement** (1 appel Anthropic, ~centimes) → exclu du smoke read-only.
+Lancer à la demande :
+
+```bash
+npx playwright test --project=isolation
+```
+
+Prérequis : 2 comptes de test (A = compte qa par défaut avec ≥1 influenceur analysé ;
+B = `qa.playwright.b@lkd-outreach.app` / `Lkd!Test2026`). Surcharges : `E2E_EMAIL_B` /
+`E2E_PASSWORD_B`. Les deux comptes doivent avoir un profil éditorial (sinon l'onboarding
+plein écran intercepte les clics).
+
 ## Pistes (opt-in, coûteux)
 
 Tests de **génération réelle** (idées, posts, analyse) non inclus car ils consomment des

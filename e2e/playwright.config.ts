@@ -33,12 +33,19 @@ export default defineConfig({
     },
     {
       name: "authenticated",
-      testIgnore: /smoke\.spec\.ts/,
+      testIgnore: [/smoke\.spec\.ts/, /cross-user-isolation\.spec\.ts/],
       dependencies: ["setup"],
       use: {
         ...devices["Desktop Chrome"],
         storageState: "playwright/.auth/user.json",
       },
+    },
+    {
+      // Isolation cross-compte : gère ses propres connexions (2 comptes), donc
+      // PAS de storageState pré-chargé. Non inclus dans le smoke (il génère).
+      name: "isolation",
+      testMatch: /cross-user-isolation\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"] },
     },
   ],
 });
