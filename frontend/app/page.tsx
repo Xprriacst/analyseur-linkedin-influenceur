@@ -4787,6 +4787,111 @@ function ContentHub({
   );
 }
 
+function OnboardingScreen({ onDone }: { onDone: () => void }) {
+  const [aiInput, setAiInput] = useState("");
+  const [drafting, setDrafting] = useState(false);
+  const [error, setError] = useState("");
+  const [profilePreview, setProfilePreview] = useState<{
+    display_name?: string;
+    brand_name?: string;
+    business_description?: string;
+    industry?: string;
+  } | null>(null);
+
+  const inputKind: "linkedin" | "website" | "description" = (() => {
+    const v = aiInput.trim();
+    if (!v || /\s/.test(v)) return "description";
+    if (/linkedin\.com\/in\//i.test(v)) return "linkedin";
+    if (/^https?:\/\//i.test(v) || /^www\./i.test(v) || /^[\w-]+(\.[\w-]+)+(\/|$)/i.test(v)) return "website";
+    return "description";
+  })();
+
+  async function doPreFill() {
+    const trimmed = aiInput.trim();
+    if (!trimmed) { setError("Colle une URL LinkedIn, un site ou une description courte."); return; }
+    setDrafting(true); setError("");
+    try {
+      const isLinkedin = inputKind === "linkedin";
+      const isWebsite = inputKind === "website";
+      const res = await fetch(`${DIRECT_API_URL}/me/profile/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          activity_description: isLinkedin || isWebsite ? "" : trimmed,
+          linkedin_url: isLinkedin ? trimmed : "",
+          website_url: isWebsite ? trimmed : "",
+          use_apify_linkedin: isLinkedin,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Pré-remplissage impossible");
+      const merged = { ...(data.profile || {}) };
+      await fetch(`${DIRECT_API_URL}/me/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify(merged),
+      });
+      setProfilePreview(merged);
+    } catch (err: any) {
+      setError(err.message || "Pré-remplissage impossible");
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  return (
+    <div className="onboarding-overlay">
+      <div className="onboarding-card">
+        <div className="onboarding-header">
+          <Sparkles size={28} className="onboarding-icon" />
+          <h1>Bienvenue sur LKD Outreach</h1>
+          <p>Pour personnaliser tes recommandations, commençons par ton profil éditorial.</p>
+        </div>
+        {!profilePreview ? (
+          <div className="onboarding-step">
+            <span className="onboarding-label">
+              Colle ton profil LinkedIn, ton site web ou décris ton activité en quelques mots.
+            </span>
+            <div className="onboarding-input-row">
+              <input
+                className="onboarding-input"
+                value={aiInput}
+                onChange={(e) => setAiInput(e.target.value)}
+                placeholder="https://linkedin.com/in/ton-profil ou « J'aide les PME à… »"
+                onKeyDown={(e) => { if (e.key === "Enter" && !drafting) doPreFill(); }}
+                autoFocus
+              />
+              <button className="primary-button" onClick={doPreFill} disabled={drafting}>
+                {drafting ? <Loader2 size={15} className="spinning" /> : <Sparkles size={15} />}
+                {drafting ? "Analyse…" : "Pré-remplir"}
+              </button>
+            </div>
+            {error && <div className="error" style={{ marginTop: 4 }}>{error}</div>}
+            <button className="link-button onboarding-skip" onClick={onDone}>
+              Passer cette étape →
+            </button>
+          </div>
+        ) : (
+          <div className="onboarding-step">
+            <div className="onboarding-preview">
+              {profilePreview.display_name && <p><strong>Nom :</strong> {profilePreview.display_name}</p>}
+              {profilePreview.brand_name && <p><strong>Marque :</strong> {profilePreview.brand_name}</p>}
+              {profilePreview.industry && <p><strong>Secteur :</strong> {profilePreview.industry}</p>}
+              {profilePreview.business_description && (
+                <p><strong>Activité :</strong> {profilePreview.business_description}</p>
+              )}
+            </div>
+            <p className="onboarding-hint">Profil enregistré — tu pourras ajuster les détails dans « Mon profil ».</p>
+            <button className="primary-button" style={{ width: "100%" }} onClick={onDone}>
+              Valider et continuer →
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
@@ -4810,6 +4915,7 @@ export default function Home() {
   const [authReason, setAuthReason] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [credits, setCredits] = useState<number | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const userIdRef = useRef<string | null>(null);
   const prevJobActiveRef = useRef(false);
   // Analyse anonyme affichée mais pas encore sauvegardée : sauvée dès l'inscription.
@@ -5002,7 +5108,21 @@ export default function Home() {
       setJobs([]);
       setError("");
       setView("content");
-      if (uid) setTimeout(() => { loadReports(); loadJobs(); loadInfluencerLibrary(); }, 0);
+      setShowOnboarding(false);
+      if (uid) setTimeout(() => {
+        loadReports(); loadJobs(); loadInfluencerLibrary();
+        // Affiche l'onboarding si le profil est vide (nouvel utilisateur).
+        (async () => {
+          try {
+            const res = await fetch(`${DIRECT_API_URL}/me/profile`, { headers: await authHeaders() });
+            if (res.ok) {
+              const p = await res.json();
+              const hasProfile = !!(p.display_name || p.brand_name || p.business_description);
+              if (!hasProfile) setShowOnboarding(true);
+            }
+          } catch { /* ignore */ }
+        })();
+      }, 0);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -5122,6 +5242,9 @@ export default function Home() {
 
   return (
     <>
+      {showOnboarding && isAuthed && (
+        <OnboardingScreen onDone={() => { setShowOnboarding(false); setView("content"); }} />
+      )}
       <div className="app-shell">
         <Sidebar
           health={health}
