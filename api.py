@@ -17,7 +17,7 @@ from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread
-from src.llm import generate_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream
+from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_posts, fetch_profile
@@ -1001,7 +1001,7 @@ def dashboard_ai_analysis(token: Optional[str] = Depends(optional_token)) -> dic
 
 
 class IdeasRequest(BaseModel):
-    count: int = Field(default=5, ge=1, le=10)
+    count: int = Field(default=15, ge=1, le=20)
     web_search: bool = Field(default=False)
 
 
@@ -1025,7 +1025,7 @@ class ChatRequest(BaseModel):
 
 @app.post("/ideas")
 def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
-    """Generate post ideas from the user's influencer insights."""
+    """Generate scannable one-liner post ideas anchored in real top posts (ALE-143)."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
@@ -1033,18 +1033,37 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
     if not influencers:
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
-    # Débit après toutes les préconditions : un user sans influenceur ne perd pas de crédits.
+    # Débit par lot (pas par idée) — après les préconditions.
     credits: int | None = None
     if token:
-        ok, balance = db.debit_credits(token, "generate_ideas", payload.count)
+        ok, balance = db.debit_credits(token, "generate_ideas", 1)
         if not ok:
-            cost = db.CREDIT_COSTS["generate_ideas"] * payload.count
-            raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} idée(s) = {cost} crédit(s).")
+            cost = db.CREDIT_COSTS["generate_ideas"]
+            raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Un lot d'idées = {cost} crédit(s).")
         credits = balance
 
-    top_posts, benchmark = _build_benchmark(influencers)
+    # Carburant A : vrais posts performants des influenceurs analysés
+    real_posts = db.get_top_real_posts(token) if token else []
+    _, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
-    ideas_list = generate_ideas(top_posts, benchmark, count=payload.count, user_context=user_context, web_search=payload.web_search)
+
+    # Anti-répétition : lignes des idées récentes
+    recent_idea_lines: list[str] = []
+    if token:
+        try:
+            recent = db.list_generated_ideas(token, limit=40)
+            recent_idea_lines = [r["line"] for r in recent if r.get("line")]
+        except Exception:
+            pass
+
+    ideas_list = generate_one_line_ideas(
+        real_posts=real_posts,
+        benchmark=benchmark,
+        count=payload.count,
+        user_context=user_context,
+        web_search=payload.web_search,
+        recent_idea_lines=recent_idea_lines or None,
+    )
     save_error: str | None = None
     if token:
         try:

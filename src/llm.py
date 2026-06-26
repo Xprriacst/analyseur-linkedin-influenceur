@@ -554,6 +554,72 @@ Schéma JSON attendu :
     return data.get("ideas", [])
 
 
+def generate_one_line_ideas(
+    real_posts: list[dict],
+    benchmark: dict,
+    count: int = 15,
+    user_context: dict | None = None,
+    web_search: bool = False,
+    recent_idea_lines: list[str] | None = None,
+    seed_topic: str | None = None,
+) -> list[dict]:
+    """Generate scannable one-liner post ideas anchored in real top posts.
+
+    Returns a list of {line, source_type, source_ref, source_url}.
+    """
+    context_text = _format_user_context(user_context)
+    posts_text = "\n".join(
+        f"- [{p.get('name', '?')} · {p.get('engagement', 0)} réactions]"
+        f" ({p.get('url', '')}) : {str(p.get('text', ''))[:200]}"
+        for p in real_posts[:40]
+    )
+    recent_text = (
+        "\n\nIdées récentes déjà proposées (ne pas répéter, pas de variation triviale) :\n"
+        + "\n".join(f"- {line}" for line in (recent_idea_lines or [])[:40])
+        if recent_idea_lines else ""
+    )
+    seed_directive = (
+        f"\n\nThème imposé à développer en priorité : « {seed_topic} ».\n"
+        if seed_topic else ""
+    )
+    system = (
+        "Tu es un stratège contenu LinkedIn. "
+        "Tu génères des idées de posts en une phrase, scannables, ancrées dans de vrais posts qui ont performé. "
+        "Chaque idée doit être actionnable, originale et dicter clairement l'angle à prendre. "
+        + _date_directive()
+        + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    user = (
+        f"Contexte client :\n{context_text}"
+        + seed_directive
+        + f"\n\nPosts réels les plus performants (source + engagement) :\n{posts_text}"
+        + recent_text
+        + f"""
+
+Génère exactement {count} idées de posts LinkedIn en une ligne.
+Règles :
+- Une idée = une phrase de 10-15 mots MAX qui dit quel angle prendre, pas un thème vague
+- Diversifie : hooks, angles, niveaux de funnel (attirer / éduquer / convertir), formats
+- Chaque idée doit être transposable au métier du client
+- Ancre chaque idée dans un post réel de la liste (source_type="influencer_post")
+  ou "pattern" si c'est une synthèse multi-posts (source_type="pattern")
+
+Schéma JSON attendu :
+{{
+  "ideas": [
+    {{
+      "line": "l'idée en une phrase (10-15 mots max)",
+      "source_type": "influencer_post | pattern",
+      "source_ref": "Nom Influenceur · X réactions (ou description du pattern)",
+      "source_url": "url du post source (vide si pattern)"
+    }}
+  ]
+}}"""
+    )
+    data = _call(system, user, max_tokens=2048, temperature=1.0, tools=_web_search_tools(web_search or None))
+    return data.get("ideas", [])
+
+
 def analyze_dashboard_strategy(influencers_data: list[dict], growth_data: list[dict] | None = None) -> str:
     """Generate a deep strategic AI analysis of the dashboard data."""
     system = (

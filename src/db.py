@@ -549,6 +549,53 @@ def get_user_ai_context(access_token: str | None) -> dict[str, Any] | None:
     return context
 
 
+def get_top_real_posts(access_token: str, limit: int = 40) -> list[dict]:
+    """Return the user's top-performing real posts (from analysed influencers).
+
+    Used to ground idea generation in actual content that worked.
+    """
+    if not supabase_enabled() or not access_token:
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    try:
+        inf_resp = (
+            db.table("influencers")
+            .select("id, name")
+            .eq("user_id", user["id"])
+            .eq("platform", "linkedin")
+            .execute()
+        )
+        influencer_ids = [r["id"] for r in (inf_resp.data or [])]
+        influencer_names: dict[str, str] = {r["id"]: r.get("name") or r["id"] for r in (inf_resp.data or [])}
+        if not influencer_ids:
+            return []
+        posts_resp = (
+            db.table("posts")
+            .select("text, likes, comments, url, influencer_id")
+            .in_("influencer_id", influencer_ids)
+            .order("likes", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        result = []
+        for row in posts_resp.data or []:
+            if not row.get("text"):
+                continue
+            engagement = (row.get("likes") or 0) + (row.get("comments") or 0)
+            result.append({
+                "name": influencer_names.get(row["influencer_id"], "?"),
+                "text": row["text"],
+                "url": row.get("url") or "",
+                "engagement": engagement,
+            })
+        return result
+    except Exception:
+        return []
+
+
 def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
     """Persist generated ideas for the authenticated user. Returns saved rows (with ids)."""
     if not ideas or not supabase_enabled():
@@ -568,6 +615,11 @@ def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
             "why_it_works": idea.get("why_it_works"),
             "difficulty": idea.get("difficulty"),
             "estimated_lift": idea.get("estimated_lift"),
+            # ALE-143 : nouvelles colonnes one-liner (nullable — rétro-compatible)
+            "line": idea.get("line"),
+            "source_type": idea.get("source_type"),
+            "source_ref": idea.get("source_ref"),
+            "source_url": idea.get("source_url"),
         }
         for idea in ideas
     ]
@@ -753,7 +805,7 @@ def update_generated_post(
 
 CREDIT_COSTS: dict[str, int] = {
     "generate_post": 5,    # par variant
-    "generate_ideas": 3,   # par idée
+    "generate_ideas": 3,   # par lot (ALE-143)
     "analyze_job": 20,     # par influenceur
     "chat": 2,             # par message
     "generate_image": 5,
