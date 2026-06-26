@@ -3466,13 +3466,6 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
   const [error, setError] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  const quickActions = [
-    "Donne-moi 5 idées de posts adaptées à mon profil.",
-    "Propose un angle performance sur : ",
-    "Transforme ce brouillon en post LinkedIn percutant : ",
-    "Améliore le hook et la structure de ce post : ",
-  ];
-
   async function loadMessages(conversationId: string) {
     setLoadingHistory(true);
     setError("");
@@ -3651,14 +3644,6 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
             <p className="section-desc">Itère sur tes idées et brouillons avec mémoire, contexte client et benchmark influenceurs.</p>
           </div>
           {loadingHistory ? <Loader2 size={16} className="spinning" /> : null}
-        </div>
-
-        <div className="assistant-quick-actions">
-          {quickActions.map((action) => (
-            <button key={action} className="secondary-button" onClick={() => setInput(action)}>
-              {action}
-            </button>
-          ))}
         </div>
 
         {error && <div className="error">{error}</div>}
