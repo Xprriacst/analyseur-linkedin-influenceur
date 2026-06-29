@@ -1143,7 +1143,7 @@ function Sidebar({
                 return (
                   <button
                     className={`nav-item ${view === "assistant" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
-                    title={collapsed ? "Agent IA — bientôt disponible" : undefined}
+                    title={collapsed ? "Agent IA" : undefined}
                     onClick={() => {
                       if (locked) {
                         requireAuth("Crée un compte gratuit pour débloquer l'Agent IA.");
@@ -1154,7 +1154,6 @@ function Sidebar({
                   >
                     <MessageSquare size={14} />
                     {!collapsed && <span>Agent IA</span>}
-                    {!collapsed && <span className="nav-soon-badge">bientôt</span>}
                     {locked ? <Lock size={12} className="lock-ico" /> : null}
                   </button>
                 );
@@ -1917,7 +1916,7 @@ const _genCache: { variants: Variant[]; topic: string; appliedJobId: string | nu
   appliedJobId: null,
 };
 
-function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void }) {
+function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated, onRework }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void; onRework?: (post: string) => void }) {
   const [variants, setVariants] = useState<Variant[]>(_genCache.variants);
   const [topic, setTopic] = useState(_genCache.topic);
   const [role, setRole] = useState("auto");
@@ -2447,6 +2446,15 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     >
                       {publishingX === i ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
                       {publishingX === i ? "Publication…" : publishedX === i ? "Publié ✓" : "Publier sur X"}
+                    </button>
+                  )}
+                  {onRework && (
+                    <button
+                      className="secondary-button"
+                      title="Ouvrir ce post dans l'Agent IA pour le retravailler"
+                      onClick={() => onRework(editedVariants[i] ?? v.post)}
+                    >
+                      <MessageSquare size={14} /> Retravailler avec l&apos;Agent IA
                     </button>
                   )}
                 </div>
@@ -3643,7 +3651,7 @@ function LibraryView({
   );
 }
 
-function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
+function Assistant({ isAuthed, requireAuth, seed }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { post: string; nonce: number } | null }) {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -3702,6 +3710,17 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
     loadConversations(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
+
+  // Démarre une nouvelle conversation quand un seed de post est fourni depuis le Générateur.
+  useEffect(() => {
+    if (!seed?.post || !isAuthed) return;
+    newConversation();
+    const seedText = `Voici un post que j'ai généré et que j'aimerais améliorer :\n\n---\n${seed.post}\n---`;
+    // setTimeout pour laisser newConversation() vider l'état avant d'envoyer.
+    const t = setTimeout(() => sendMessage(seedText), 50);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed?.nonce]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -3825,44 +3844,57 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
       </aside>
 
       <section className="assistant-panel card">
-        <div className="assistant-standby-banner">
-          <Sparkles size={16} />
+        <div className="section-header">
           <div>
-            <strong>Bientôt disponible — assistant en cours d&apos;amélioration</strong>
-            <p>L&apos;Agent IA sera disponible prochainement avec la génération, publication et programmation directement depuis le chat.</p>
+            <h2 className="section-title"><MessageSquare size={20} /> Assistant LinkedIn</h2>
+            <p className="section-desc">Itère sur tes idées et brouillons avec mémoire, contexte client et benchmark influenceurs.</p>
           </div>
         </div>
-        <div style={{ opacity: 0.45, pointerEvents: "none", userSelect: "none" }}>
-          <div className="section-header">
-            <div>
-              <h2 className="section-title"><MessageSquare size={20} /> Assistant LinkedIn</h2>
-              <p className="section-desc">Itère sur tes idées et brouillons avec mémoire, contexte client et benchmark influenceurs.</p>
-            </div>
-          </div>
 
-          <div className="assistant-messages">
+        <div className="assistant-messages">
+          {messages.length === 0 ? (
             <div className="assistant-welcome">
               <Sparkles size={22} />
               <h3>Demande une idée, un angle ou une réécriture.</h3>
               <p>Exemple : &quot;Écris un post opinion sur les erreurs d&apos;automatisation LinkedIn pour des dirigeants B2B.&quot;</p>
             </div>
-          </div>
-
-          <div className="assistant-composer">
-            <textarea
-              value=""
-              onChange={() => {}}
-              placeholder="Écris ta demande : idée, brouillon à améliorer, angle, ton..."
-              rows={3}
-              disabled
-            />
-            <button className="primary-button" disabled>
-              <Send size={14} />
-              Envoyer
-            </button>
-          </div>
-          <p className="role-picker-hint" style={{ marginTop: 8 }}>Astuce : Cmd/Ctrl + Entrée pour envoyer.</p>
+          ) : (
+            messages.map((m, idx) => (
+              <div key={idx} className={`assistant-message ${m.role === "user" ? "user" : "assistant"}`}>
+                {m.role === "assistant" ? (
+                  <div className="assistant-message-content">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || (streaming && idx === messages.length - 1 ? "…" : "")}</ReactMarkdown>
+                  </div>
+                ) : (
+                  <p className="assistant-message-content">{m.content}</p>
+                )}
+              </div>
+            ))
+          )}
+          {error && <div className="error" style={{ margin: "8px 0" }}>{error}</div>}
+          <div ref={endRef} />
         </div>
+
+        <div className="assistant-composer">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                e.preventDefault();
+                void sendMessage();
+              }
+            }}
+            placeholder="Écris ta demande : idée, brouillon à améliorer, angle, ton..."
+            rows={3}
+            disabled={streaming}
+          />
+          <button className="primary-button" disabled={streaming || !input.trim()} onClick={() => sendMessage()}>
+            {streaming ? <Loader2 size={14} className="spinning" /> : <Send size={14} />}
+            {streaming ? "…" : "Envoyer"}
+          </button>
+        </div>
+        <p className="role-picker-hint" style={{ marginTop: 8 }}>Astuce : Cmd/Ctrl + Entrée pour envoyer.</p>
       </section>
     </div>
   );
@@ -4928,6 +4960,7 @@ function ContentHub({
   onTab,
   seed,
   onReuse,
+  onRework,
   isAuthed,
   reservoirOnly = false,
   requireAuth,
@@ -4938,6 +4971,7 @@ function ContentHub({
   onTab: (t: ContentTab) => void;
   seed?: { topic: string; nonce: number } | null;
   onReuse: (topic: string) => void;
+  onRework?: (post: string) => void;
   isAuthed: boolean;
   reservoirOnly?: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
@@ -4976,7 +5010,7 @@ function ContentHub({
       </div>
 
       {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />}
-      {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} />}
+      {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} onRework={onRework} />}
       {tab === "library" && (
         <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
       )}
@@ -5104,6 +5138,8 @@ export default function Home() {
   const [contentTab, setContentTab] = useState<ContentTab>("generator");
   // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
   const [generatorSeed, setGeneratorSeed] = useState<{ topic: string; nonce: number } | null>(null);
+  // Post pré-rempli quand on "retravaille" un variant depuis le Générateur vers l'Agent IA.
+  const [assistantSeed, setAssistantSeed] = useState<{ post: string; nonce: number } | null>(null);
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
@@ -5556,7 +5592,7 @@ export default function Home() {
         <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "assistant" ? (
-            <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />
+            <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} />
           ) : view === "profile" ? (
             <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : platform === "instagram" ? (
@@ -5630,6 +5666,10 @@ export default function Home() {
                   onReuse={(topic) => {
                     setGeneratorSeed({ topic, nonce: Date.now() });
                     setContentTab("generator");
+                  }}
+                  onRework={(post) => {
+                    setAssistantSeed({ post, nonce: Date.now() });
+                    setView("assistant");
                   }}
                 />
               )}
