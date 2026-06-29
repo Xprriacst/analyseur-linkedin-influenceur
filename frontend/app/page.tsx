@@ -12,6 +12,7 @@ import {
   Clock3,
   Copy,
   Download,
+  Eye,
   FileText,
   Image as ImageIcon,
   ImagePlus,
@@ -985,7 +986,9 @@ function Sidebar({
   reportsLoading,
   view,
   isAuthed,
-  ideasOnly,
+  restricted,
+  ideasAccount,
+  onToggleView,
   jobBadges,
   credits,
   platform,
@@ -999,7 +1002,9 @@ function Sidebar({
   reportsLoading: boolean;
   view: MainView;
   isAuthed: boolean;
-  ideasOnly: boolean;
+  restricted: boolean;
+  ideasAccount: boolean;
+  onToggleView: () => void;
   jobBadges: { linkedin: { completed: number; total: number } | null; instagram: { completed: number; total: number } | null };
   credits: number | null;
   platform: Platform;
@@ -1056,8 +1061,8 @@ function Sidebar({
         </button>
       </div>
 
-      {/* Compte client restreint : navigation réduite à la seule page « idées de posts ». */}
-      {ideasOnly && (
+      {/* Vue client (compte ideas_only) : navigation réduite à la seule page « idées de posts ». */}
+      {restricted && (
         <section className="sidebar-section sidebar-nav-tree">
           <div className="nav-list">
             <button
@@ -1073,7 +1078,7 @@ function Sidebar({
       )}
 
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
-      {!ideasOnly && (() => {
+      {!restricted && (() => {
         const isNetworkView = view === "content" || view === "analyze";
         const networks: { key: Platform; label: string; icon: React.ReactNode }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
@@ -1159,7 +1164,7 @@ function Sidebar({
         );
       })()}
 
-      {!ideasOnly && (
+      {!restricted && (
       <section className="sidebar-section" style={{ marginTop: "auto" }}>
         {!collapsed && <p className="eyebrow"><Settings2 size={12} style={{ verticalAlign: "-2px", marginRight: 5 }} />Réglages</p>}
         <div className="nav-list" style={{ marginBottom: 10 }}>
@@ -1210,6 +1215,22 @@ function Sidebar({
           </div>
         )}
       </section>
+      )}
+
+      {/* Compte ideas_only : bascule entre la vue client (réservoir) et la vue complète (agence). */}
+      {ideasAccount && (
+        <section className="sidebar-section" style={{ marginTop: restricted ? "auto" : 0 }}>
+          <div className="nav-list">
+            <button
+              className={`nav-item${collapsed ? " nav-item-collapsed" : ""}`}
+              title={restricted ? "Passer en vue complète (agence)" : "Revenir à la vue client (idées)"}
+              onClick={onToggleView}
+            >
+              {restricted ? <Eye size={14} /> : <Lightbulb size={14} />}
+              {!collapsed && <span>{restricted ? "Vue complète (agence)" : "Vue client (idées)"}</span>}
+            </button>
+          </div>
+        </section>
       )}
     </aside>
   );
@@ -5084,16 +5105,32 @@ export default function Home() {
 
   const isAuthed = !!session;
   // Rôle « ideas_only » (posé dans app_metadata côté Supabase, non modifiable par
-  // l'utilisateur) : comptes clients restreints à la seule page « réservoir d'idées ».
-  const ideasOnly = ((session?.user?.app_metadata as Record<string, unknown> | undefined)?.role) === "ideas_only";
-
-  // Compte restreint : on verrouille la navigation sur la page idées (LinkedIn → Contenu → Idée du jour).
+  // l'utilisateur) : compte client partagé client ↔ agence qui DÉMARRE sur la page
+  // « idées de posts » mais peut basculer en vue complète pour le travail habituel.
+  const ideasAccount = ((session?.user?.app_metadata as Record<string, unknown> | undefined)?.role) === "ideas_only";
+  // Vue client (réservoir seul) active ? Persistée par navigateur : l'agence bascule
+  // une fois en vue complète, le client reste sur la vue idées de son côté.
+  const [clientView, setClientView] = useState(true);
   useEffect(() => {
-    if (!ideasOnly) return;
+    try { setClientView(localStorage.getItem("lkd_client_view") !== "full"); } catch { /* ignore */ }
+  }, []);
+  const restricted = ideasAccount && clientView;
+
+  function toggleClientView() {
+    setClientView((v) => {
+      const next = !v;
+      try { localStorage.setItem("lkd_client_view", next ? "ideas" : "full"); } catch { /* ignore */ }
+      return next;
+    });
+  }
+
+  // Vue client : navigation verrouillée sur la page idées (LinkedIn → Contenu → Idée du jour).
+  useEffect(() => {
+    if (!restricted) return;
     setView("content");
     setContentTab("daily");
     setPlatform("linkedin");
-  }, [ideasOnly]);
+  }, [restricted]);
 
   useEffect(() => {
     try {
@@ -5458,7 +5495,9 @@ export default function Home() {
           reportsLoading={reportsLoading}
           view={view}
           isAuthed={isAuthed}
-          ideasOnly={ideasOnly}
+          restricted={restricted}
+          ideasAccount={ideasAccount}
+          onToggleView={toggleClientView}
           jobBadges={{
             linkedin: activeLkJob ? { completed: activeLkJob.completed, total: activeLkJob.total } : null,
             instagram: activeIgJob ? { completed: activeIgJob.completed, total: activeIgJob.total } : null,
@@ -5566,7 +5605,7 @@ export default function Home() {
                   onTab={setContentTab}
                   seed={generatorSeed}
                   isAuthed={isAuthed}
-                  reservoirOnly={ideasOnly}
+                  reservoirOnly={restricted}
                   requireAuth={requireAuth}
                   generationJobs={generationJobs}
                   onGenerationJobCreated={onGenerationJobCreated}
