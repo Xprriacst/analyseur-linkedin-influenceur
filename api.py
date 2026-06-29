@@ -24,6 +24,7 @@ from src.scraper import fetch_posts, fetch_profile
 from src.stats import compute_stats
 from src.instagram_hooks import select_hooks
 from src.daily_ideas import _render_idea_markdown
+from src.listing import ListingError, build_listing_topic, fetch_listing_preview, is_listing_url
 
 load_dotenv()
 
@@ -1358,6 +1359,23 @@ class DailyIdeasEnabledRequest(BaseModel):
     enabled: bool
 
 
+class ListingPreviewRequest(BaseModel):
+    url: str = Field(..., min_length=8, max_length=2000)
+
+
+@app.post("/listing/preview")
+def listing_preview(payload: ListingPreviewRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """ALE-156 : lit une annonce immobilière (image + infos) depuis son URL.
+
+    Sert d'aperçu avant d'enregistrer le lien dans le réservoir : la cliente voit
+    la photo + les infos qu'on a su extraire, et sait si le site est lisible.
+    """
+    try:
+        return fetch_listing_preview(payload.url.strip())
+    except ListingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
 @app.get("/me/idea-seeds")
 def me_idea_seeds(token: str = Depends(require_token)) -> list[dict[str, Any]]:
     """List the user's idea reservoir."""
@@ -1425,6 +1443,17 @@ def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]
     import datetime as _dt
     today = _dt.date.today().isoformat()
 
+    # ALE-156 : seed = lien d'annonce → on ancre le post sur le bien + sa photo.
+    image_url = source_url = None
+    if seed_text and is_listing_url(seed_text):
+        try:
+            preview = fetch_listing_preview(seed_text, download_image=False)
+            seed_text = build_listing_topic(preview)
+            image_url = preview.get("image_url")
+            source_url = preview.get("source_url")
+        except ListingError:
+            seed_text = None  # échec propre : post benchmark sans image
+
     # ALE-136 : régénérer produit un VRAI post (postable), comme le cron.
     posts = generate_posts(seed_text, top_posts, benchmark, user_context=user_context, count=1)
     if not posts:
@@ -1432,7 +1461,9 @@ def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]
 
     post = posts[0]
     markdown = post.get("post") or ""
-    idea_row = db.replace_daily_idea(token, markdown, today, post=post)
+    idea_row = db.replace_daily_idea(
+        token, markdown, today, post=post, image_url=image_url, source_url=source_url
+    )
 
     if seed:
         db.mark_seed_used_by_token(token, seed["id"])
