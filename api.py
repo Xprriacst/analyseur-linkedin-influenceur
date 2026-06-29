@@ -424,6 +424,13 @@ def me_linkedin_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
     return _linkedin_status(token)
 
 
+@app.delete("/me/linkedin")
+def me_linkedin_disconnect(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Clear the user's connected LinkedIn account."""
+    db.set_zernio_account(token, None)
+    return _linkedin_status(token)
+
+
 @app.post("/me/linkedin/publish")
 def me_linkedin_publish(
     payload: LinkedInPublishRequest,
