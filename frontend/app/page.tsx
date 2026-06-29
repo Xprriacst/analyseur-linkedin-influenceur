@@ -2799,7 +2799,7 @@ function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAut
 
 // ── Fin ALE-69 ────────────────────────────────────────────────────────────────
 
-type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null };
+type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null; image_url?: string | null; source_url?: string | null };
 type IdeaSeed = { id: string; text: string; used_at?: string | null; created_at?: string };
 type IdeaLine = { id?: string; line: string; source_type?: string; source_ref?: string; source_url?: string };
 type DailyIdeaCard = Pick<Idea, "title" | "hook" | "hook_type" | "funnel" | "angle" | "why_it_works" | "estimated_lift">;
@@ -2943,7 +2943,11 @@ function DailyIdeasView({
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: postTextOf(it), draft: false }),
+        body: JSON.stringify({
+          content: postTextOf(it),
+          draft: false,
+          images: it.image_url ? [{ url: it.image_url }] : [],
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Publication impossible");
@@ -2979,7 +2983,7 @@ function DailyIdeasView({
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: postTextOf(it), scheduled_at: localDate.toISOString(), validate_via_slack: false }),
+        body: JSON.stringify({ content: postTextOf(it), scheduled_at: localDate.toISOString(), validate_via_slack: false, images: it.image_url ? [{ url: it.image_url }] : [] }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Programmation impossible.");
@@ -3242,6 +3246,20 @@ function DailyIdeasView({
                 <div className="daily-line-body">
                   {isPost ? (
                     <>
+                      {it.image_url && (
+                        <div className="daily-listing-image" style={{ marginBottom: 10 }}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={it.image_url}
+                            alt="Photo du bien"
+                            style={{ width: "100%", maxHeight: 220, objectFit: "cover", borderRadius: 8, display: "block" }}
+                          />
+                          <p className="section-desc" style={{ margin: "6px 0 0", fontSize: 12 }}>
+                            <Linkedin size={11} style={{ verticalAlign: "-1px" }} /> Photo de l'annonce — rattachée automatiquement à la publication
+                            {it.source_url && <> · <a href={it.source_url} target="_blank" rel="noreferrer">voir l'annonce</a></>}
+                          </p>
+                        </div>
+                      )}
                       <textarea
                         className="variant-text"
                         rows={10}
@@ -3322,7 +3340,7 @@ function DailyIdeasView({
         <div className="daily-reservoir-head">
           <div>
             <h3 className="daily-subtitle" style={{ margin: 0 }}><Lightbulb size={16} /> Mon réservoir d'idées</h3>
-            <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées : l'idée du jour piochera dedans en priorité.</p>
+            <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées, ou colle le <strong>lien d'une annonce</strong> : l'idée du jour piochera dedans en priorité. Un lien d'annonce génère un post avec la photo du bien.</p>
           </div>
           {!reservoirOnly && (
             <label className="daily-switch">
@@ -3340,7 +3358,7 @@ function DailyIdeasView({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
-            placeholder="Ex. Mon retour sur 6 mois de cold outreach…"
+            placeholder="Une idée de post, ou un lien d'annonce (https://…)"
             maxLength={2000}
           />
           <button className="primary-button" onClick={addSeed} disabled={adding || draft.trim().length < 3}>
@@ -3352,13 +3370,17 @@ function DailyIdeasView({
           <p style={{ color: "var(--muted)", margin: "12px 0 0", fontSize: 13 }}>Réservoir vide — l'idée du jour s'appuiera sur ton seul benchmark.</p>
         ) : (
           <ul className="daily-seed-list">
-            {seeds.map((s) => (
+            {seeds.map((s) => {
+              const isLink = /^https?:\/\/\S+$/i.test((s.text || "").trim());
+              return (
               <li key={s.id} className={s.used_at ? "used" : ""}>
-                <span>{s.text}</span>
+                <span>{isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}</span>
+                {isLink && !s.used_at ? <span className="daily-seed-tag">annonce</span> : null}
                 {s.used_at ? <span className="daily-seed-tag"><CheckCircle2 size={12} /> utilisée</span> : null}
                 <button className="icon-button" title="Supprimer" onClick={() => deleteSeed(s.id)}><Trash2 size={14} /></button>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </div>
