@@ -985,6 +985,7 @@ function Sidebar({
   reportsLoading,
   view,
   isAuthed,
+  ideasOnly,
   jobBadges,
   credits,
   platform,
@@ -998,6 +999,7 @@ function Sidebar({
   reportsLoading: boolean;
   view: MainView;
   isAuthed: boolean;
+  ideasOnly: boolean;
   jobBadges: { linkedin: { completed: number; total: number } | null; instagram: { completed: number; total: number } | null };
   credits: number | null;
   platform: Platform;
@@ -1054,8 +1056,24 @@ function Sidebar({
         </button>
       </div>
 
+      {/* Compte client restreint : navigation réduite à la seule page « idées de posts ». */}
+      {ideasOnly && (
+        <section className="sidebar-section sidebar-nav-tree">
+          <div className="nav-list">
+            <button
+              className={`nav-item active${collapsed ? " nav-item-collapsed" : ""}`}
+              title={collapsed ? "Mes idées de posts" : undefined}
+              onClick={() => onNavigate("content")}
+            >
+              <Sparkles size={14} />
+              {!collapsed && <span>Mes idées de posts</span>}
+            </button>
+          </div>
+        </section>
+      )}
+
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
-      {(() => {
+      {!ideasOnly && (() => {
         const isNetworkView = view === "content" || view === "analyze";
         const networks: { key: Platform; label: string; icon: React.ReactNode }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
@@ -1141,6 +1159,7 @@ function Sidebar({
         );
       })()}
 
+      {!ideasOnly && (
       <section className="sidebar-section" style={{ marginTop: "auto" }}>
         {!collapsed && <p className="eyebrow"><Settings2 size={12} style={{ verticalAlign: "-2px", marginRight: 5 }} />Réglages</p>}
         <div className="nav-list" style={{ marginBottom: 10 }}>
@@ -1191,6 +1210,7 @@ function Sidebar({
           </div>
         )}
       </section>
+      )}
     </aside>
   );
 }
@@ -2800,10 +2820,12 @@ function DailyIdeasView({
   isAuthed,
   requireAuth,
   onReuse,
+  reservoirOnly = false,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string) => void;
   onReuse: (topic: string) => void;
+  reservoirOnly?: boolean;
 }) {
   const [ideas, setIdeas] = useState<DailyIdea[]>([]);
   const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
@@ -2962,17 +2984,18 @@ function DailyIdeasView({
     setError("");
     try {
       const headers = await authHeaders();
-      const [dRes, sRes] = await Promise.all([
-        fetch(`${DIRECT_API_URL}/me/daily-ideas`, { headers }),
-        fetch(`${DIRECT_API_URL}/me/idea-seeds`, { headers }),
-      ]);
-      const dData = await dRes.json();
+      // Compte restreint : seul le réservoir est utile (pas de corpus → pas d'idée du jour).
+      const sRes = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, { headers });
       const sData = await sRes.json();
-      if (!dRes.ok) throw new Error(dData.detail || "Chargement des idées impossible");
       if (!sRes.ok) throw new Error(sData.detail || "Chargement du réservoir impossible");
-      setIdeas(Array.isArray(dData?.ideas) ? dData.ideas : []);
-      setEnabled(!!dData?.enabled);
       setSeeds(Array.isArray(sData) ? sData : []);
+      if (!reservoirOnly) {
+        const dRes = await fetch(`${DIRECT_API_URL}/me/daily-ideas`, { headers });
+        const dData = await dRes.json();
+        if (!dRes.ok) throw new Error(dData.detail || "Chargement des idées impossible");
+        setIdeas(Array.isArray(dData?.ideas) ? dData.ideas : []);
+        setEnabled(!!dData?.enabled);
+      }
     } catch (err: any) {
       setError(err.message || "Chargement impossible");
     } finally {
@@ -3073,6 +3096,16 @@ function DailyIdeasView({
 
   return (
     <div>
+      {reservoirOnly && (
+        <div className="section-header">
+          <div>
+            <h2 className="section-title"><Lightbulb size={20} /> Mes idées de posts</h2>
+            <p className="section-desc">Ajoute ici tes idées de posts : on s'en sert pour rédiger tes contenus.</p>
+          </div>
+        </div>
+      )}
+      {!reservoirOnly && (
+      <>
       {/* ALE-143 : bloc « Générer des idées » — lot de one-liners scannables */}
       <section className="card ideas-batch-section">
         <div className="ideas-batch-header">
@@ -3261,18 +3294,24 @@ function DailyIdeasView({
         </div>
       )}
       {postError && <div className="error" style={{ marginTop: 8 }}>{postError}</div>}
+      </>
+      )}
 
-      <div className="card daily-reservoir" style={{ marginTop: 24 }}>
+      <div className="card daily-reservoir" style={{ marginTop: reservoirOnly ? 0 : 24 }}>
         <div className="daily-reservoir-head">
           <div>
             <h3 className="daily-subtitle" style={{ margin: 0 }}><Lightbulb size={16} /> Mon réservoir d'idées</h3>
             <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées : l'idée du jour piochera dedans en priorité.</p>
           </div>
-          <label className="daily-switch">
-            <input type="checkbox" checked={enabled} onChange={toggleEnabled} />
-            <span>Recevoir une idée chaque matin</span>
-          </label>
+          {!reservoirOnly && (
+            <label className="daily-switch">
+              <input type="checkbox" checked={enabled} onChange={toggleEnabled} />
+              <span>Recevoir une idée chaque matin</span>
+            </label>
+          )}
         </div>
+
+        {reservoirOnly && error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
 
         <div className="daily-add">
           <input
@@ -4851,6 +4890,7 @@ function ContentHub({
   seed,
   onReuse,
   isAuthed,
+  reservoirOnly = false,
   requireAuth,
   generationJobs,
   onGenerationJobCreated,
@@ -4860,6 +4900,7 @@ function ContentHub({
   seed?: { topic: string; nonce: number } | null;
   onReuse: (topic: string) => void;
   isAuthed: boolean;
+  reservoirOnly?: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
   generationJobs: GenerationJob[];
   onGenerationJobCreated: (job: GenerationJob) => void;
@@ -4869,6 +4910,15 @@ function ContentHub({
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} /> },
     { key: "library", label: "Mes contenus", icon: <Bookmark size={14} /> },
   ];
+
+  // Compte client restreint : on ne montre que le réservoir d'idées, sans sous-onglets.
+  if (reservoirOnly) {
+    return (
+      <div>
+        <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} reservoirOnly />
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -5033,6 +5083,17 @@ export default function Home() {
   const pendingAnonResultRef = useRef<Analysis | null>(null);
 
   const isAuthed = !!session;
+  // Rôle « ideas_only » (posé dans app_metadata côté Supabase, non modifiable par
+  // l'utilisateur) : comptes clients restreints à la seule page « réservoir d'idées ».
+  const ideasOnly = ((session?.user?.app_metadata as Record<string, unknown> | undefined)?.role) === "ideas_only";
+
+  // Compte restreint : on verrouille la navigation sur la page idées (LinkedIn → Contenu → Idée du jour).
+  useEffect(() => {
+    if (!ideasOnly) return;
+    setView("content");
+    setContentTab("daily");
+    setPlatform("linkedin");
+  }, [ideasOnly]);
 
   useEffect(() => {
     try {
@@ -5397,6 +5458,7 @@ export default function Home() {
           reportsLoading={reportsLoading}
           view={view}
           isAuthed={isAuthed}
+          ideasOnly={ideasOnly}
           jobBadges={{
             linkedin: activeLkJob ? { completed: activeLkJob.completed, total: activeLkJob.total } : null,
             instagram: activeIgJob ? { completed: activeIgJob.completed, total: activeIgJob.total } : null,
@@ -5504,6 +5566,7 @@ export default function Home() {
                   onTab={setContentTab}
                   seed={generatorSeed}
                   isAuthed={isAuthed}
+                  reservoirOnly={ideasOnly}
                   requireAuth={requireAuth}
                   generationJobs={generationJobs}
                   onGenerationJobCreated={onGenerationJobCreated}
