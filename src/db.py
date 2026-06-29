@@ -1658,7 +1658,12 @@ def mark_seed_used(seed_id: str) -> None:
 
 
 def replace_daily_idea(
-    access_token: str, idea_markdown: str, idea_date: str, post: dict | None = None
+    access_token: str,
+    idea_markdown: str,
+    idea_date: str,
+    post: dict | None = None,
+    image_url: str | None = None,
+    source_url: str | None = None,
 ) -> dict | None:
     """Upsert the daily idea for today — replaces an existing one (on-demand regen).
 
@@ -1678,6 +1683,10 @@ def replace_daily_idea(
         "user_id": user["id"],
         "idea_markdown": idea_markdown,
         "idea_date": idea_date,
+        # remis à NULL si la régénération ne vient pas d'une annonce (évite de
+        # garder l'image d'un précédent post du jour basé sur un lien).
+        "image_url": image_url,
+        "source_url": source_url,
     }
     if post:
         row.update({
@@ -1745,11 +1754,15 @@ def insert_daily_idea(
     idea_date: str,
     seed_id: str | None = None,
     post: dict | None = None,
+    image_url: str | None = None,
+    source_url: str | None = None,
 ) -> dict | None:
     """Persist a generated daily idea (service-role). Ignores conflicts on (user, date).
 
     ALE-136 : `post` (dict d'un variant `generate_posts`) rend l'idée du jour
     postable — on stocke son texte + métadonnées en plus du markdown.
+    ALE-156 : `image_url`/`source_url` quand le post vient d'un lien d'annonce
+    immobilière (photo du bien rattachée à la publication).
     """
     if not admin_enabled():
         return None
@@ -1760,6 +1773,10 @@ def insert_daily_idea(
         "idea_date": idea_date,
         "seed_id": seed_id,
     }
+    if image_url:
+        row["image_url"] = image_url
+    if source_url:
+        row["source_url"] = source_url
     if post:
         row.update({
             "post_text": post.get("post"),

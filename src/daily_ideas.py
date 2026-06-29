@@ -16,6 +16,7 @@ import sys
 
 from src import db
 from src.benchmark import build_benchmark, enrich_influencers
+from src.listing import ListingError, build_listing_topic, fetch_listing_preview, is_listing_url
 from src.llm import generate_posts
 
 
@@ -61,6 +62,23 @@ def _generate_for_user(user_id: str, today: str) -> bool:
     seed = db.pop_unused_seed(user_id)
     seed_text = seed["text"] if seed else None
 
+    # ALE-156 : si la seed est un lien d'annonce immobilière, on lit l'annonce
+    # (image + infos du bien) et on ancre le post dessus, avec la photo rattachée.
+    image_url = source_url = None
+    origin = "seed" if seed else "benchmark"
+    if seed_text and is_listing_url(seed_text):
+        try:
+            preview = fetch_listing_preview(seed_text, download_image=False)
+            seed_text = build_listing_topic(preview)
+            image_url = preview.get("image_url")
+            source_url = preview.get("source_url")
+            origin = "annonce"
+        except ListingError as exc:
+            # Échec propre : on consomme quand même la seed pour ne pas bloquer la
+            # file, et on génère un post benchmark. Le lien défaillant est loggé.
+            print(f"  · {user_id}: annonce illisible ({exc}) → post benchmark", file=sys.stderr)
+            seed_text = None
+
     # ALE-136 : on génère un VRAI post complet (postable), plus un simple concept.
     posts = generate_posts(
         seed_text,
@@ -77,11 +95,17 @@ def _generate_for_user(user_id: str, today: str) -> bool:
     # idea_markdown = texte du post (rétro-compat des consommateurs existants).
     markdown = post.get("post") or ""
     db.insert_daily_idea(
-        user_id, markdown, today, seed_id=seed["id"] if seed else None, post=post
+        user_id,
+        markdown,
+        today,
+        seed_id=seed["id"] if seed else None,
+        post=post,
+        image_url=image_url,
+        source_url=source_url,
     )
     if seed:
         db.mark_seed_used(seed["id"])
-    print(f"  ✓ {user_id}: post du jour généré" + (" (seed)" if seed else " (benchmark)"))
+    print(f"  ✓ {user_id}: post du jour généré ({origin})")
     return True
 
 
