@@ -2332,7 +2332,6 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     </span>
                   )}
                   <span className="badge" style={{ borderColor: color, color }}>{v.hook_type}</span>
-                  <span className="idea-lift">{v.predicted_lift}</span>
                 </div>
                 <p className="variant-strategy">{v.strategy}</p>
                 <div className="variant-text-wrap">
@@ -3234,14 +3233,12 @@ function DailyIdeasView({
             const isPost = !!it.post_text;
             const idea = isPost ? null : parseDailyIdeaMarkdown(it.idea_markdown);
             const lineTitle = isPost ? (it.strategy || (it.post_text || "").split("\n")[0].slice(0, 80)) : idea!.title;
-            const lift = isPost ? it.predicted_lift : idea!.estimated_lift;
             return (
               <details className="card daily-idea-line" key={it.id} open={idx === 0}>
                 <summary>
                   <span className="daily-line-date">{fmtDate(it.idea_date)}</span>
                   {idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}
                   <span className="daily-line-title">{lineTitle}</span>
-                  {lift && <span className="idea-lift">{lift}</span>}
                 </summary>
                 <div className="daily-line-body">
                   {isPost ? (
@@ -3533,7 +3530,6 @@ function LibraryView({
                     <span className="badge role-badge">{roleLabels[p.editorial_role] || p.editorial_role}</span>
                   )}
                   {p.hook_type && <span className="badge">{p.hook_type}</span>}
-                  {p.predicted_lift && <span className="idea-lift">{p.predicted_lift}</span>}
                   {p.slack_status === "validated" && (
                     <span className="badge" style={{ borderColor: "#10b981", color: "#10b981" }}>✅ Validé Slack</span>
                   )}
