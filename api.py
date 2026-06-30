@@ -2152,3 +2152,83 @@ def instagram_hooks(
         pass
     hooks = select_hooks(user_context, count=max(1, min(payload.count, 20)), topic=payload.topic)
     return {"hooks": hooks}
+
+
+# ── ALE-169 : Outreach — Engagement Hunter ───────────────────────────────────
+
+class OutreachKeywordRequest(BaseModel):
+    keyword: str
+    description: str | None = None
+    is_active: bool = True
+    date_posted: str = "past_week"
+    content_type: str | None = None
+    author_keywords: str | None = None
+    sort_by: str = "date"
+
+
+class OutreachKeywordUpdateRequest(BaseModel):
+    keyword: str | None = None
+    description: str | None = None
+    is_active: bool | None = None
+    date_posted: str | None = None
+    content_type: str | None = None
+    author_keywords: str | None = None
+    sort_by: str | None = None
+
+
+@app.get("/outreach/keywords")
+def get_outreach_keywords(
+    token: str = Depends(require_token),
+) -> list[dict[str, Any]]:
+    """Liste les mots-clés LinkedIn surveillés par l'utilisateur."""
+    return db.list_outreach_keywords(token)
+
+
+@app.post("/outreach/keywords", status_code=201)
+def create_outreach_keyword_endpoint(
+    payload: OutreachKeywordRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Crée un nouveau mot-clé surveillé."""
+    created = db.create_outreach_keyword(token, payload.model_dump())
+    if not created:
+        raise HTTPException(status_code=500, detail="Création impossible (session invalide ou RLS).")
+    return created
+
+
+@app.patch("/outreach/keywords/{keyword_id}")
+def update_outreach_keyword_endpoint(
+    keyword_id: str,
+    payload: OutreachKeywordUpdateRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Met à jour un mot-clé surveillé."""
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    updated = db.update_outreach_keyword(token, keyword_id, updates)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Mot-clé introuvable ou accès refusé.")
+    return updated
+
+
+@app.delete("/outreach/keywords/{keyword_id}")
+def delete_outreach_keyword_endpoint(
+    keyword_id: str,
+    token: str = Depends(require_token),
+) -> dict[str, bool]:
+    """Supprime un mot-clé surveillé."""
+    ok = db.delete_outreach_keyword(token, keyword_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Mot-clé introuvable ou accès refusé.")
+    return {"deleted": True}
+
+
+@app.get("/outreach/leads")
+def get_outreach_leads(
+    status: str | None = None,
+    token: str = Depends(require_token),
+) -> list[dict[str, Any]]:
+    """Liste les leads détectés par l'Engagement Hunter. Filtre optionnel par status."""
+    valid_statuses = {"to-validate", "in-progress", "replied", "skipped"}
+    if status and status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Status invalide. Valeurs acceptées : {valid_statuses}")
+    return db.list_outreach_leads(token, status=status)
