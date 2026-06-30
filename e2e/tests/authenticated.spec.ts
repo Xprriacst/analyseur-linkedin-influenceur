@@ -42,17 +42,11 @@ test("onglet Mon profil : encart de publication X (Twitter) rendu", async ({ pag
   await expect(connectBtn.or(connectedPill).first()).toBeVisible();
 });
 
-test("Contenu › Mes contenus : liste posts/idées sans erreur", async ({ page }) => {
+test("Contenu › Mes contenus : liste de posts sauvegardés sans erreur", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Mes contenus");
   await expect(page.getByRole("heading", { name: /Mes contenus sauvegardés/i })).toBeVisible();
-  // Les deux sous-onglets de bascule.
-  await expect(page.getByRole("button", { name: /^Posts \(/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Idées \(/ })).toBeVisible();
   // Aucun bandeau d'erreur de chargement.
-  await expect(page.locator(".error")).toHaveCount(0);
-  // Bascule vers les idées sans crash.
-  await page.getByRole("button", { name: /^Idées \(/ }).click();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
