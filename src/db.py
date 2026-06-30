@@ -273,6 +273,22 @@ def _corpus_from_client(db: "Client", user_id: str, platform: str = "linkedin") 
             "length_words": row.get("length_words", 0) or 0,
         })
 
+    # ALE-167 : ré-injecter les sujets/angles réels (classifs LLM du cache global)
+    # par URL. Fallback transparent : classifs vide → posts inchangés.
+    classifs = get_classifications_by_url(
+        [inf["handle"] for inf in influencers], platform
+    )
+    if classifs:
+        for posts in posts_by_inf.values():
+            for post in posts:
+                meta = classifs.get(post.get("url"))
+                if not meta:
+                    continue
+                post["topic"] = meta.get("topic")
+                post["angle"] = meta.get("angle")
+                # ne pas écraser le hook_type heuristique calculé par patterns
+                post["llm_hook_type"] = meta.get("hook_type")
+
     corpus = []
     for inf in influencers:
         posts = posts_by_inf.get(inf["id"], [])
@@ -2270,6 +2286,43 @@ def get_cached_posts_for_influencer(cache_id: str) -> list[dict]:
         return resp.data or []
     except Exception:
         return []
+
+
+def get_classifications_by_url(
+    handles: list[str], platform: str = "linkedin"
+) -> dict[str, dict]:
+    """Charge les classifications LLM (topic/angle/hook_type/stage) du cache global.
+
+    Retourne `{url: {topic, angle, hook_type, stage}}` pour les posts classifiés
+    des influenceurs passés (par handle). Source = `cached_posts` (cross-user,
+    service-role). Utilisé pour ré-injecter les sujets/angles réels du corpus
+    dans la génération (ALE-167) sans re-scraper ni rappeler le LLM.
+
+    Fallback transparent : si la service-role n'est pas configurée ou le cache
+    est vide, retourne `{}` → le corpus reste inchangé, aucune régression.
+    """
+    if not admin_enabled():
+        return {}
+    out: dict[str, dict] = {}
+    for handle in handles:
+        try:
+            entry = get_influencer_from_cache(handle, platform)
+            if not entry:
+                continue
+            for row in get_cached_posts_for_influencer(entry["id"]):
+                url = row.get("url")
+                topic = row.get("topic")
+                if not url or not topic:
+                    continue
+                out[url] = {
+                    "topic": topic,
+                    "angle": row.get("angle"),
+                    "hook_type": row.get("hook_type"),
+                    "stage": row.get("stage"),
+                }
+        except Exception:
+            continue
+    return out
 
 
 def upsert_influencer_cache(
