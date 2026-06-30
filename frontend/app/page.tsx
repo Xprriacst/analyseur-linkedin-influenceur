@@ -2304,7 +2304,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
             </span>
             <span className="role-picker-hint">
               {role === "auto"
-                ? "Mix automatique : performance + méthodologie/autorité + relationnel/quotidien."
+                ? "Mix automatique : combinaison variée de rôles éditoriaux (performance, story, opinion…) tirés aléatoirement."
                 : "Les 3 variants utiliseront ce rôle."}
             </span>
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)" }}>
