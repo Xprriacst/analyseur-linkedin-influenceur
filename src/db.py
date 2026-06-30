@@ -2487,3 +2487,217 @@ def get_weekly_schedule_for_user(user_id: str) -> list[dict]:
         .execute()
     )
     return resp.data if resp.data else _WEEKLY_DEFAULTS
+
+
+# ---------------------------------------------------------------------------
+# Outreach — Engagement Hunter (ALE-169)
+# ---------------------------------------------------------------------------
+
+def list_outreach_keywords(access_token: str, limit: int = 100) -> list[dict]:
+    """Return the user's monitored keywords, newest first."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("monitored_keywords")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def create_outreach_keyword(access_token: str, data: dict) -> dict | None:
+    """Insert a new monitored keyword for the authenticated user."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "keyword": data["keyword"],
+        "description": data.get("description"),
+        "is_active": data.get("is_active", True),
+        "date_posted": data.get("date_posted", "past_week"),
+        "content_type": data.get("content_type"),
+        "author_keywords": data.get("author_keywords"),
+        "sort_by": data.get("sort_by", "date"),
+    }
+    resp = db.table("monitored_keywords").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def update_outreach_keyword(
+    access_token: str, keyword_id: str, data: dict
+) -> dict | None:
+    """Update a monitored keyword (owned by the authenticated user)."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    allowed = {"keyword", "description", "is_active", "date_posted",
+               "content_type", "author_keywords", "sort_by"}
+    updates = {k: v for k, v in data.items() if k in allowed}
+    if not updates:
+        return None
+    updates["updated_at"] = "now()"
+    db = client_for_token(access_token)
+    resp = (
+        db.table("monitored_keywords")
+        .update(updates)
+        .eq("id", keyword_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def delete_outreach_keyword(access_token: str, keyword_id: str) -> bool:
+    """Delete a monitored keyword. RLS guarantees ownership."""
+    if not supabase_enabled():
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    db.table("monitored_keywords").delete().eq("id", keyword_id).eq(
+        "user_id", user["id"]
+    ).execute()
+    return True
+
+
+def list_outreach_leads(
+    access_token: str, status: str | None = None, limit: int = 200
+) -> list[dict]:
+    """Return the user's outreach leads, newest first. Optionally filter by status."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    q = (
+        db.table("outreach_leads")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    if status:
+        q = q.eq("status", status)
+    resp = q.execute()
+    return resp.data or []
+
+
+# --- Helpers cron (service-role, jamais exposés via HTTP) ---
+
+def list_outreach_keyword_users() -> list[str]:
+    """Return distinct user_ids that have at least one active keyword (service-role)."""
+    if not admin_enabled():
+        return []
+    db = admin_client()
+    resp = (
+        db.table("monitored_keywords")
+        .select("user_id")
+        .eq("is_active", True)
+        .execute()
+    )
+    seen: set[str] = set()
+    users = []
+    for r in resp.data or []:
+        uid = r.get("user_id")
+        if uid and uid not in seen:
+            seen.add(uid)
+            users.append(uid)
+    return users
+
+
+def list_active_keywords_for_user(user_id: str) -> list[dict]:
+    """Return active monitored keywords for one user (service-role)."""
+    if not admin_enabled():
+        return []
+    db = admin_client()
+    resp = (
+        db.table("monitored_keywords")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("is_active", True)
+        .execute()
+    )
+    return resp.data or []
+
+
+def upsert_monitored_post(user_id: str, row: dict) -> dict | None:
+    """Insert or update a monitored post (service-role).
+
+    `row` must include at minimum: social_id, user_id already set.
+    Returns the upserted row.
+    """
+    if not admin_enabled():
+        return None
+    db = admin_client()
+    row = {**row, "user_id": user_id}
+    resp = (
+        db.table("monitored_posts")
+        .upsert(row, on_conflict="user_id,social_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def mark_post_engagers_fetched(post_id: str, count: int) -> None:
+    """Record that engagers have been fetched for a post (service-role)."""
+    if not admin_enabled():
+        return
+    db = admin_client()
+    db.table("monitored_posts").update({
+        "engagers_fetched_at": "now()",
+        "engagers_count": count,
+    }).eq("id", post_id).execute()
+
+
+def insert_outreach_lead(user_id: str, row: dict) -> dict | None:
+    """Insert a new lead if the profile URL is not already tracked (service-role).
+
+    Uses an upsert with on_conflict=do_nothing to silently skip duplicates.
+    Returns the inserted row, or None if it was a duplicate.
+    """
+    if not admin_enabled():
+        return None
+    db = admin_client()
+    row = {**row, "user_id": user_id}
+    resp = (
+        db.table("outreach_leads")
+        .upsert(row, on_conflict="user_id,linkedin_profile_url", ignore_duplicates=True)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_keyword_run_stats(
+    keyword_id: str, posts_delta: int, leads_delta: int, error: str | None = None
+) -> None:
+    """Update aggregate counters and last_run_at after a detector run (service-role)."""
+    if not admin_enabled():
+        return
+    db = admin_client()
+    updates: dict = {"last_run_at": "now()", "last_error": error}
+    if posts_delta > 0:
+        # increment via rpc would be cleaner; use raw SQL via rpc or just read+write
+        existing = (
+            db.table("monitored_keywords").select("posts_found_total,leads_found_total")
+            .eq("id", keyword_id).execute()
+        )
+        if existing.data:
+            row = existing.data[0]
+            updates["posts_found_total"] = row.get("posts_found_total", 0) + posts_delta
+            updates["leads_found_total"] = row.get("leads_found_total", 0) + leads_delta
+    db.table("monitored_keywords").update(updates).eq("id", keyword_id).execute()
