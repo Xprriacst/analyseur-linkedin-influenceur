@@ -2441,7 +2441,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                           await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ post_id: v.id }),
+                            body: JSON.stringify({ post_id: v.id, content: editedVariants[i] ?? v.post }),
                           });
                           setSlackSent((p) => ({ ...p, [i]: true }));
                         } finally {
@@ -3834,10 +3834,10 @@ function LibraryView({
                           await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ post_id: p.id }),
+                            body: JSON.stringify({ post_id: p.id, content: editedPosts[p.id] ?? p.post }),
                           });
                           setSlackSent((prev) => ({ ...prev, [p.id]: true }));
-                          setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, slack_status: "pending" } : pp));
+                          setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, post: editedPosts[p.id] ?? pp.post, slack_status: "pending" } : pp));
                         } finally {
                           setSlackSending((prev) => ({ ...prev, [p.id]: false }));
                         }
