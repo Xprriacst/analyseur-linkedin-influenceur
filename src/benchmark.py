@@ -30,6 +30,41 @@ def enrich_influencers(corpus: list[dict]) -> list[dict]:
     return result
 
 
+def _compute_top_topics(all_posts: list[dict], limit: int = 6) -> list[dict]:
+    """Sujets réels du corpus qui performent (ALE-167).
+
+    Agrège les posts par `topic` (classif LLM ré-injectée via le cache global),
+    calcule l'engagement moyen + le nombre de posts + un angle représentatif, et
+    retourne les `limit` sujets au meilleur engagement moyen. Liste vide si aucun
+    post du corpus n'est classifié (fallback : le prompt retombe sur l'ancien
+    comportement « choisis toi-même un sujet »).
+    """
+    by_topic: dict[str, dict] = {}
+    for p in all_posts:
+        topic = (p.get("topic") or "").strip()
+        if not topic:
+            continue
+        bucket = by_topic.setdefault(
+            topic, {"topic": topic, "total_engagement": 0, "n": 0, "angles": []}
+        )
+        bucket["total_engagement"] += p.get("engagement", 0) or 0
+        bucket["n"] += 1
+        angle = (p.get("angle") or "").strip()
+        if angle and angle not in bucket["angles"]:
+            bucket["angles"].append(angle)
+
+    topics = []
+    for b in by_topic.values():
+        topics.append({
+            "topic": b["topic"],
+            "avg_engagement": round(b["total_engagement"] / b["n"], 1) if b["n"] else 0,
+            "n": b["n"],
+            "sample_angle": b["angles"][0] if b["angles"] else None,
+        })
+    topics.sort(key=lambda t: t["avg_engagement"], reverse=True)
+    return topics[:limit]
+
+
 def build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
     """Build top posts list and benchmark summary."""
     all_posts: list[dict] = []
@@ -55,6 +90,7 @@ def build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
     benchmark = {
         "benchmarks": benchmarks,
         "top_hook_types": dict(hook_totals.most_common(6)),
+        "top_topics": _compute_top_topics(all_posts),
         "proven_insights": [
             "Hook stat+contrarian : combo sous-exploité, +40-80% vs post standard",
             "Triple CTA (comment+repost+save) : multiplicateur x2-3 prouvé sur le corpus",

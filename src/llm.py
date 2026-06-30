@@ -836,11 +836,39 @@ def generate_posts(
     à fort potentiel à partir du contexte client et du benchmark (comme la
     génération d'idées) — une idée = un post.
     """
+    def _example_header(e: dict) -> str:
+        bits = [
+            f"{e.get('influencer', '?')}",
+            f"{e.get('engagement', 0)} eng",
+            f"hook: {e.get('hook_type', 'other')}",
+        ]
+        if e.get("topic"):
+            bits.append(f"sujet: {e['topic']}")
+        if e.get("angle"):
+            bits.append(f"angle: {e['angle']}")
+        return " | ".join(bits)
+
     examples_text = "\n\n".join(
-        f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')}]\n{e.get('text', '')[:600]}"
+        f"[{_example_header(e)}]\n{e.get('text', '')[:600]}"
         for e in top_posts_examples[:6]
     )
     context_text = _format_user_context(user_context)
+
+    # ALE-167 : sujets réels du corpus qui performent (vide si corpus non classifié).
+    top_topics = benchmark.get("top_topics") or []
+    top_topics_block = ""
+    if top_topics:
+        lines = "\n".join(
+            f"- {t['topic']}"
+            + (f" (angle : {t['sample_angle']})" if t.get("sample_angle") else "")
+            + f" — engagement moyen {t.get('avg_engagement', 0)} sur {t.get('n', 0)} post(s)"
+            for t in top_topics
+        )
+        top_topics_block = (
+            "\n\nSujets qui performent réellement dans le corpus analysé "
+            "(inspire-toi de ces thèmes/angles, ne les recopie pas mot pour mot) :\n"
+            + lines
+        )
 
     count = max(1, min(count, 5))
     if editorial_role and editorial_role in ROLE_SPECS:
@@ -880,10 +908,11 @@ def generate_posts(
         f'Sujet du post à créer : "{topic_clean}"\n\n'
         if topic_clean
         else (
-            "Aucun sujet imposé : choisis toi-même, pour chaque variant, un sujet "
-            "original à fort potentiel viral, déduit du contexte client (métier, marché, "
-            "audience, offre) et des patterns qui marchent dans le benchmark ci-dessous. "
-            "Varie les sujets entre les variants.\n\n"
+            "Aucun sujet imposé : pour chaque variant, choisis un sujet à fort potentiel "
+            "en t'inspirant EN PRIORITÉ des sujets/angles qui performent réellement dans le "
+            "corpus analysé (voir la liste plus bas), déclinés pour le contexte client "
+            "(métier, marché, audience, offre). À défaut de corpus pertinent, déduis un sujet "
+            "original du contexte client. Varie les sujets entre les variants.\n\n"
         )
     )
     user = (
@@ -894,6 +923,7 @@ def generate_posts(
         + json.dumps(benchmark, ensure_ascii=False, indent=2)
         + "\n\nExemples des posts les plus performants :\n"
         + examples_text
+        + top_topics_block
         + f"\n\nGénère exactement {count} variant{'s' if count > 1 else ''} de post{'s' if count > 1 else ''} LinkedIn, un par rôle éditorial ci-dessous, "
         "DANS L'ORDRE indiqué :\n\n"
         + roles_block
