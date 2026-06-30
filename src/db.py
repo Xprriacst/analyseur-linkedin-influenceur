@@ -2368,3 +2368,122 @@ def upsert_cached_posts(cache_id: str, posts_with_classifs: list[dict]) -> None:
             admin.table("cached_posts").insert(new_rows).execute()
     except Exception:
         pass  # La persistance du cache ne doit jamais bloquer l'analyse
+
+
+# ── Posts hebdo (ALE-159) ─────────────────────────────────────────────────── #
+
+# Jours par défaut : lundi (0), mercredi (2), vendredi (4) à 9h Europe/Paris.
+_WEEKLY_DEFAULTS: list[dict[str, Any]] = [
+    {"day_of_week": 0, "hour": 9, "timezone": "Europe/Paris"},
+    {"day_of_week": 2, "hour": 9, "timezone": "Europe/Paris"},
+    {"day_of_week": 4, "hour": 9, "timezone": "Europe/Paris"},
+]
+
+
+def get_weekly_posts_enabled(access_token: str) -> bool:
+    """Whether the user opted in to the weekly posts cron."""
+    profile = get_editorial_profile(access_token)
+    return bool(profile and profile.get("weekly_posts_enabled"))
+
+
+def set_weekly_posts_enabled(access_token: str, enabled: bool) -> dict | None:
+    """Toggle the user's weekly-posts opt-in (creating the profile row if needed)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "weekly_posts_enabled": bool(enabled),
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    resp = (
+        db.table("user_editorial_profiles")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_weekly_schedule(access_token: str) -> list[dict]:
+    """Return the user's weekly schedule slots, falling back to defaults if none set."""
+    user = get_user(access_token)
+    if not user:
+        return _WEEKLY_DEFAULTS
+    db = client_for_token(access_token)
+    resp = (
+        db.table("weekly_post_schedule")
+        .select("day_of_week, hour, timezone")
+        .eq("user_id", user["id"])
+        .order("day_of_week")
+        .execute()
+    )
+    return resp.data if resp.data else _WEEKLY_DEFAULTS
+
+
+def set_weekly_schedule(access_token: str, slots: list[dict]) -> list[dict]:
+    """Replace the user's weekly schedule with the provided slots.
+
+    Each slot must have ``day_of_week`` (0-6), ``hour`` (0-23), and optionally
+    ``timezone`` (defaults to 'Europe/Paris'). Existing rows are deleted first
+    (replace semantics).
+    """
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    user_id = user["id"]
+    db.table("weekly_post_schedule").delete().eq("user_id", user_id).execute()
+    if not slots:
+        return []
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    rows = [
+        {
+            "user_id": user_id,
+            "day_of_week": int(s["day_of_week"]),
+            "hour": int(s.get("hour", 9)),
+            "timezone": str(s.get("timezone", "Europe/Paris")),
+            "created_at": now,
+            "updated_at": now,
+        }
+        for s in slots
+        if 0 <= int(s.get("day_of_week", -1)) <= 6
+    ]
+    if not rows:
+        return []
+    resp = db.table("weekly_post_schedule").insert(rows).execute()
+    return resp.data or []
+
+
+# --- Cron helpers (service-role, bypass RLS) -------------------------------- #
+
+def list_weekly_posts_users() -> list[str]:
+    """User ids that opted in to the weekly posts cron (service-role)."""
+    if not admin_enabled():
+        return []
+    db = admin_client()
+    resp = (
+        db.table("user_editorial_profiles")
+        .select("user_id")
+        .eq("weekly_posts_enabled", True)
+        .execute()
+    )
+    return [r["user_id"] for r in (resp.data or []) if r.get("user_id")]
+
+
+def get_weekly_schedule_for_user(user_id: str) -> list[dict]:
+    """Return the weekly schedule slots for a given user (service-role).
+
+    Falls back to defaults if the user has no schedule configured.
+    """
+    if not admin_enabled():
+        return _WEEKLY_DEFAULTS
+    db = admin_client()
+    resp = (
+        db.table("weekly_post_schedule")
+        .select("day_of_week, hour, timezone")
+        .eq("user_id", user_id)
+        .order("day_of_week")
+        .execute()
+    )
+    return resp.data if resp.data else _WEEKLY_DEFAULTS

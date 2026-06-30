@@ -1143,7 +1143,7 @@ function Sidebar({
                 return (
                   <button
                     className={`nav-item ${view === "assistant" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
-                    title={collapsed ? "Agent IA — bientôt disponible" : undefined}
+                    title={collapsed ? "Agent IA" : undefined}
                     onClick={() => {
                       if (locked) {
                         requireAuth("Crée un compte gratuit pour débloquer l'Agent IA.");
@@ -1154,7 +1154,6 @@ function Sidebar({
                   >
                     <MessageSquare size={14} />
                     {!collapsed && <span>Agent IA</span>}
-                    {!collapsed && <span className="nav-soon-badge">bientôt</span>}
                     {locked ? <Lock size={12} className="lock-ico" /> : null}
                   </button>
                 );
@@ -1796,7 +1795,23 @@ function useLinkedIn(isAuthed: boolean) {
     }
   }
 
-  return { status, busy, error, connect };
+  async function disconnect() {
+    setError("");
+    setBusy(true);
+    try {
+      await fetch(`${DIRECT_API_URL}/me/linkedin`, {
+        method: "DELETE",
+        headers: await authHeaders(),
+      });
+      setStatus((prev) => prev ? { ...prev, connected: false, account_id: null } : prev);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return { status, busy, error, connect, disconnect };
 }
 
 type XStatus = {
@@ -1917,7 +1932,7 @@ const _genCache: { variants: Variant[]; topic: string; appliedJobId: string | nu
   appliedJobId: null,
 };
 
-function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void }) {
+function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated, onRework }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void; onRework?: (post: string) => void }) {
   const [variants, setVariants] = useState<Variant[]>(_genCache.variants);
   const [topic, setTopic] = useState(_genCache.topic);
   const [role, setRole] = useState("auto");
@@ -2332,7 +2347,6 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     </span>
                   )}
                   <span className="badge" style={{ borderColor: color, color }}>{v.hook_type}</span>
-                  <span className="idea-lift">{v.predicted_lift}</span>
                 </div>
                 <p className="variant-strategy">{v.strategy}</p>
                 <div className="variant-text-wrap">
@@ -2427,7 +2441,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                           await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ post_id: v.id }),
+                            body: JSON.stringify({ post_id: v.id, content: editedVariants[i] ?? v.post }),
                           });
                           setSlackSent((p) => ({ ...p, [i]: true }));
                         } finally {
@@ -2448,6 +2462,15 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     >
                       {publishingX === i ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
                       {publishingX === i ? "Publication…" : publishedX === i ? "Publié ✓" : "Publier sur X"}
+                    </button>
+                  )}
+                  {onRework && (
+                    <button
+                      className="secondary-button"
+                      title="Ouvrir ce post dans l'Agent IA pour le retravailler"
+                      onClick={() => onRework(editedVariants[i] ?? v.post)}
+                    >
+                      <MessageSquare size={14} /> Retravailler avec l&apos;Agent IA
                     </button>
                   )}
                 </div>
@@ -2885,6 +2908,7 @@ function DailyIdeasView({
 
   // ALE-136 : le post du jour est postable (copier / sauvegarder / publier / programmer).
   const linkedin = useLinkedIn(isAuthed);
+  const twitter = useTwitter(isAuthed);
   const [editedPost, setEditedPost] = useState<Record<string, string>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -2897,6 +2921,9 @@ function DailyIdeasView({
   const [schedulingId, setSchedulingId] = useState<string | null>(null);
   const [scheduledId, setScheduledId] = useState<string | null>(null);
   const [postError, setPostError] = useState("");
+  const [publishingXId, setPublishingXId] = useState<string | null>(null);
+  const [publishedXId, setPublishedXId] = useState<string | null>(null);
+  const [confirmXId, setConfirmXId] = useState<string | null>(null);
 
   const postTextOf = (it: DailyIdea) => editedPost[it.id] ?? it.post_text ?? "";
 
@@ -2994,6 +3021,26 @@ function DailyIdeasView({
       setPostError(err.message);
     } finally {
       setSchedulingId(null);
+    }
+  }
+
+  async function publishPostX(it: DailyIdea) {
+    setConfirmXId(null);
+    setPublishingXId(it.id);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/x/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: postTextOf(it), draft: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication sur X impossible");
+      setPublishedXId(it.id);
+      setTimeout(() => setPublishedXId((s) => (s === it.id ? null : s)), 3000);
+    } catch (err: any) {
+      setPostError(err.message);
+    } finally {
+      setPublishingXId(null);
     }
   }
 
@@ -3234,14 +3281,12 @@ function DailyIdeasView({
             const isPost = !!it.post_text;
             const idea = isPost ? null : parseDailyIdeaMarkdown(it.idea_markdown);
             const lineTitle = isPost ? (it.strategy || (it.post_text || "").split("\n")[0].slice(0, 80)) : idea!.title;
-            const lift = isPost ? it.predicted_lift : idea!.estimated_lift;
             return (
               <details className="card daily-idea-line" key={it.id} open={idx === 0}>
                 <summary>
                   <span className="daily-line-date">{fmtDate(it.idea_date)}</span>
                   {idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}
                   <span className="daily-line-title">{lineTitle}</span>
-                  {lift && <span className="idea-lift">{lift}</span>}
                 </summary>
                 <div className="daily-line-body">
                   {isPost ? (
@@ -3285,6 +3330,25 @@ function DailyIdeasView({
                         <button className="secondary-button" onClick={() => openSchedule(it)}>
                           <Clock3 size={14} /> {scheduledId === it.id ? "Programmé ✓" : "Programmer"}
                         </button>
+                        <button
+                          className="secondary-button"
+                          disabled
+                          aria-disabled
+                          title="Génération d'image en cours d'amélioration — bientôt disponible"
+                        >
+                          <ImageIcon size={14} /> Image IA — bientôt
+                        </button>
+                        {twitter.status?.connected && (
+                          <button
+                            className="secondary-button"
+                            disabled={publishingXId === it.id}
+                            title="Publier maintenant sur X (Twitter)"
+                            onClick={() => setConfirmXId(it.id)}
+                          >
+                            {publishingXId === it.id ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
+                            {publishedXId === it.id ? "Publié ✓" : "Publier sur X"}
+                          </button>
+                        )}
                       </div>
                       {confirmPublishId === it.id && (
                         <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -3305,6 +3369,13 @@ function DailyIdeasView({
                             {schedulingId === it.id ? <Loader2 size={12} className="spinning" /> : <Clock3 size={12} />} Programmer sur LinkedIn
                           </button>
                           <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setScheduleForId(null)}>Annuler</button>
+                        </div>
+                      )}
+                      {confirmXId === it.id && (
+                        <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 13 }}>Publier ce post maintenant sur X ?</span>
+                          <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => publishPostX(it)}>Confirmer</button>
+                          <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmXId(null)}>Annuler</button>
                         </div>
                       )}
                     </>
@@ -3404,15 +3475,96 @@ function LibraryView({
   const [editedPosts, setEditedPosts] = useState<Record<string, string>>({});
   const [savingPost, setSavingPost] = useState<string | null>(null);
   const [savedPost, setSavedPost] = useState<string | null>(null);
+  // Tiroir repliable : permet de masquer la liste des posts sauvegardés pour atteindre
+  // la section « Posts programmés » sans scroller tout en bas.
+  const [savedOpen, setSavedOpen] = useState(true);
   const slack = useSlack(isAuthed);
   const linkedin = useLinkedIn(isAuthed);
+  const twitter = useTwitter(isAuthed);
   const [slackSent, setSlackSent] = useState<Record<string, boolean>>({});
   const [slackSending, setSlackSending] = useState<Record<string, boolean>>({});
   const [publishingPost, setPublishingPost] = useState<string | null>(null);
   const [publishedPost, setPublishedPost] = useState<string | null>(null);
   const [publishError, setPublishError] = useState("");
+  const [scheduledPosts, setScheduledPosts] = useState<ScheduledPost[]>([]);
+  const [cancellingPost, setCancellingPost] = useState<string | null>(null);
+  const [editingSchedule, setEditingSchedule] = useState<ScheduledPost | null>(null);
+  const [editScheduleText, setEditScheduleText] = useState("");
+  const [editScheduleDate, setEditScheduleDate] = useState("");
+  const [editingPost, setEditingPost] = useState<string | null>(null);
+  const [scheduleEditError, setScheduleEditError] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed || !linkedin.status?.connected) return;
+    let cancelled = false;
+    authHeaders().then((h) =>
+      fetch(`${DIRECT_API_URL}/me/linkedin/scheduled`, { headers: h })
+        .then((r) => r.ok ? r.json() : [])
+        .then((data) => { if (!cancelled) setScheduledPosts(data); })
+        .catch(() => {})
+    );
+    return () => { cancelled = true; };
+  }, [isAuthed, linkedin.status?.connected]);
+
+  async function cancelScheduled(postId: string) {
+    setCancellingPost(postId);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${postId}`, {
+        method: "DELETE",
+        headers: await authHeaders(),
+      });
+      if (res.ok) setScheduledPosts((prev) => prev.map((p) => p.id === postId ? { ...p, status: "cancelled" } : p));
+    } catch (_) {} finally {
+      setCancellingPost(null);
+    }
+  }
+
+  function openEditScheduled(post: ScheduledPost) {
+    if (post.status !== "pending") return;
+    setEditingSchedule(post);
+    setEditScheduleText(post.post_text);
+    setEditScheduleDate(isoToDatetimeLocalValue(post.scheduled_at));
+    setScheduleEditError("");
+  }
+
+  async function updateScheduled() {
+    if (!editingSchedule) return;
+    const trimmed = editScheduleText.trim();
+    if (!trimmed) { setScheduleEditError("Le texte du post ne peut pas être vide."); return; }
+    const localDate = new Date(editScheduleDate);
+    if (Number.isNaN(localDate.getTime())) { setScheduleEditError("Date invalide."); return; }
+    if (localDate <= new Date()) { setScheduleEditError("La date doit être dans le futur."); return; }
+    setEditingPost(editingSchedule.id);
+    setScheduleEditError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${editingSchedule.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post_text: trimmed, scheduled_at: localDate.toISOString() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Modification impossible.");
+      const updated = data.scheduled_post as ScheduledPost;
+      setScheduledPosts((prev) => prev.map((p) => p.id === updated.id ? updated : p));
+      setEditingSchedule(null);
+    } catch (err: any) {
+      setScheduleEditError(err.message);
+    } finally {
+      setEditingPost(null);
+    }
+  }
+
+  const [confirmPublishPostId, setConfirmPublishPostId] = useState<string | null>(null);
+  const [publishingXPost, setPublishingXPost] = useState<string | null>(null);
+  const [publishedXPost, setPublishedXPost] = useState<string | null>(null);
+  const [confirmXPostId, setConfirmXPostId] = useState<string | null>(null);
+  const [scheduleForPost, setScheduleForPost] = useState<string | null>(null);
+  const [scheduleDateLib, setScheduleDateLib] = useState("");
+  const [schedulingPostLib, setSchedulingPostLib] = useState<string | null>(null);
+  const [scheduledPostIds, setScheduledPostIds] = useState<Record<string, boolean>>({});
 
   async function publishSavedPost(p: SavedPost) {
+    setConfirmPublishPostId(null);
     if (!linkedin.status?.connected) {
       setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
       return;
@@ -3435,6 +3587,63 @@ function LibraryView({
       setPublishError(err.message);
     } finally {
       setPublishingPost(null);
+    }
+  }
+
+  async function publishSavedPostX(p: SavedPost) {
+    setConfirmXPostId(null);
+    setPublishingXPost(p.id);
+    try {
+      const text = editedPosts[p.id] ?? p.post;
+      const res = await fetch(`${DIRECT_API_URL}/me/x/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, draft: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication sur X impossible");
+      setPublishedXPost(p.id);
+      setTimeout(() => setPublishedXPost((s) => s === p.id ? null : s), 3000);
+    } catch (err: any) {
+      setPublishError(err.message);
+    } finally {
+      setPublishingXPost(null);
+    }
+  }
+
+  function openSchedulePost(p: SavedPost) {
+    if (!linkedin.status?.connected) {
+      setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    setScheduleDateLib(toDatetimeLocalValue(tomorrow));
+    setPublishError("");
+    setScheduleForPost(p.id);
+  }
+
+  async function schedulePostLib(p: SavedPost) {
+    setPublishError("");
+    setSchedulingPostLib(p.id);
+    try {
+      const localDate = new Date(scheduleDateLib);
+      if (isNaN(localDate.getTime())) throw new Error("Date invalide.");
+      if (localDate <= new Date()) throw new Error("La date doit être dans le futur.");
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: editedPosts[p.id] ?? p.post, scheduled_at: localDate.toISOString(), validate_via_slack: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Programmation impossible.");
+      setScheduledPostIds((prev) => ({ ...prev, [p.id]: true }));
+      setScheduleForPost(null);
+    } catch (err: any) {
+      setPublishError(err.message);
+    } finally {
+      setSchedulingPostLib(null);
     }
   }
 
@@ -3502,10 +3711,18 @@ function LibraryView({
   return (
     <div>
       <div className="section-header">
-        <div>
-          <h2 className="section-title"><Bookmark size={20} /> Mes contenus sauvegardés</h2>
-          <p className="section-desc">Retrouve les posts que tu as sauvegardés depuis le générateur. Relis-les, copie-les ou réutilise-les.</p>
-        </div>
+        <button
+          onClick={() => setSavedOpen((v) => !v)}
+          aria-expanded={savedOpen}
+          title={savedOpen ? "Replier les posts sauvegardés" : "Déplier les posts sauvegardés"}
+          style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", color: "inherit" }}
+        >
+          <ChevronRight size={20} style={{ marginTop: 2, flexShrink: 0, transform: savedOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+          <div>
+            <h2 className="section-title"><Bookmark size={20} /> Mes contenus sauvegardés{posts.length ? ` (${posts.length})` : ""}</h2>
+            <p className="section-desc">Retrouve les posts que tu as sauvegardés depuis le générateur. Relis-les, copie-les ou réutilise-les.</p>
+          </div>
+        </button>
         <button className="secondary-button" onClick={loadAll} disabled={loading}>
           {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
           Rafraîchir
@@ -3514,7 +3731,7 @@ function LibraryView({
 
       {error &&<div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {loading && posts.length === 0 ? (
+      {!savedOpen ? null : loading && posts.length === 0 ? (
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
           <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
           <p style={{ color: "var(--muted)" }}>Chargement de tes contenus…</p>
@@ -3533,7 +3750,6 @@ function LibraryView({
                     <span className="badge role-badge">{roleLabels[p.editorial_role] || p.editorial_role}</span>
                   )}
                   {p.hook_type && <span className="badge">{p.hook_type}</span>}
-                  {p.predicted_lift && <span className="idea-lift">{p.predicted_lift}</span>}
                   {p.slack_status === "validated" && (
                     <span className="badge" style={{ borderColor: "#10b981", color: "#10b981" }}>✅ Validé Slack</span>
                   )}
@@ -3593,22 +3809,33 @@ function LibraryView({
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  {p.topic && (
-                    <button className="secondary-button" onClick={() => onReuse(p.topic!)}>
-                      <Sparkles size={14} /> Régénérer sur ce sujet
-                    </button>
-                  )}
-                  {p.slack_status === "validated" && (
-                    <button
-                      className="primary-button"
-                      disabled={publishingPost === p.id}
-                      onClick={() => publishSavedPost(p)}
-                    >
-                      {publishingPost === p.id ? <><Loader2 size={14} className="spinning" /> Publication…</> : <><Linkedin size={14} /> Publier sur LinkedIn</>}
-                      {publishedPost === p.id && " ✓"}
-                    </button>
-                  )}
-                  {slack.status?.connected && p.slack_status !== "validated" && (
+                  <button
+                    className="primary-button"
+                    disabled={publishingPost === p.id}
+                    title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                    onClick={() => setConfirmPublishPostId(p.id)}
+                  >
+                    {publishingPost === p.id ? <><Loader2 size={14} className="spinning" /> Publication…</> : <><Linkedin size={14} /> {publishedPost === p.id ? "Publié ✓" : "Publier sur LinkedIn"}</>}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={schedulingPostLib === p.id || !!scheduledPostIds[p.id]}
+                    title={linkedin.status?.connected ? "Programmer une publication LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                    onClick={() => openSchedulePost(p)}
+                  >
+                    <Clock3 size={14} />
+                    {scheduledPostIds[p.id] ? "Programmé ✓" : "Programmer"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled
+                    aria-disabled
+                    title="Génération d'image en cours d'amélioration — bientôt disponible"
+                  >
+                    <ImageIcon size={14} />
+                    Image IA — bientôt
+                  </button>
+                  {slack.status?.connected && (
                     <button
                       className="secondary-button"
                       disabled={!!slackSending[p.id] || !!slackSent[p.id] || p.slack_status === "pending"}
@@ -3618,10 +3845,10 @@ function LibraryView({
                           await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ post_id: p.id }),
+                            body: JSON.stringify({ post_id: p.id, content: editedPosts[p.id] ?? p.post }),
                           });
                           setSlackSent((prev) => ({ ...prev, [p.id]: true }));
-                          setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, slack_status: "pending" } : pp));
+                          setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, post: editedPosts[p.id] ?? pp.post, slack_status: "pending" } : pp));
                         } finally {
                           setSlackSending((prev) => ({ ...prev, [p.id]: false }));
                         }
@@ -3631,10 +3858,54 @@ function LibraryView({
                       {slackSent[p.id] || p.slack_status === "pending" ? "Sur Slack ✓" : "Envoyer sur Slack"}
                     </button>
                   )}
+                  {twitter.status?.connected && (
+                    <button
+                      className="secondary-button"
+                      disabled={publishingXPost === p.id}
+                      title="Publier maintenant sur X (Twitter)"
+                      onClick={() => setConfirmXPostId(p.id)}
+                    >
+                      {publishingXPost === p.id ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
+                      {publishedXPost === p.id ? "Publié ✓" : "Publier sur X"}
+                    </button>
+                  )}
+                  {p.topic && (
+                    <button className="secondary-button" onClick={() => onReuse(p.topic!)}>
+                      <Sparkles size={14} /> Régénérer sur ce sujet
+                    </button>
+                  )}
                   <button className="secondary-button" style={{ marginLeft: "auto" }} onClick={() => deletePost(p.id)}>
                     <Trash2 size={14} /> Supprimer
                   </button>
                 </div>
+                {confirmPublishPostId === p.id && (
+                  <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
+                    <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => publishSavedPost(p)}>Confirmer</button>
+                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmPublishPostId(null)}>Annuler</button>
+                  </div>
+                )}
+                {scheduleForPost === p.id && (
+                  <div className="idea-footer" style={{ gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <input
+                      type="datetime-local"
+                      value={scheduleDateLib}
+                      onChange={(e) => setScheduleDateLib(e.target.value)}
+                      style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)" }}
+                    />
+                    <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} disabled={schedulingPostLib === p.id || !scheduleDateLib} onClick={() => schedulePostLib(p)}>
+                      {schedulingPostLib === p.id ? <Loader2 size={12} className="spinning" /> : <Clock3 size={12} />} Programmer sur LinkedIn
+                    </button>
+                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setScheduleForPost(null)}>Annuler</button>
+                  </div>
+                )}
+                {confirmXPostId === p.id && (
+                  <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13 }}>Publier ce post maintenant sur X ?</span>
+                    <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => publishSavedPostX(p)}>Confirmer</button>
+                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmXPostId(null)}>Annuler</button>
+                  </div>
+                )}
                 {publishError && publishingPost === null && publishedPost === null && (
                   <div className="error" style={{ marginTop: 6, fontSize: 13 }}>{publishError}</div>
                 )}
@@ -3643,11 +3914,276 @@ function LibraryView({
           </div>
         )
       )}
+
+      {linkedin.status?.connected && (
+        <div style={{ marginTop: 32 }}>
+          <div className="section-header" style={{ marginBottom: 16 }}>
+            <div>
+              <h2 className="section-title"><Clock3 size={20} /> Posts programmés</h2>
+              <p className="section-desc">Posts en attente de publication ou déjà publiés via la programmation LinkedIn.</p>
+            </div>
+          </div>
+          {scheduledPosts.length === 0 ? (
+            <div className="card" style={{ padding: 24, textAlign: "center", color: "var(--muted)" }}>
+              Aucun post programmé pour l'instant. Programme un post depuis le Générateur.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {scheduledPosts.map((p) => {
+                const statusLabel =
+                  p.status === "published" ? "Publié ✓"
+                  : p.status === "failed" ? "Échec"
+                  : p.status === "cancelled" && p.slack_status === "declined" ? "Refusé Slack — annulé"
+                  : p.status === "cancelled" ? "Annulé"
+                  : p.slack_status === "validated" ? "Validé Slack — en attente"
+                  : "Validation Slack en attente";
+                const statusColor =
+                  p.status === "published" || p.slack_status === "validated" ? "var(--success, #38a169)"
+                  : p.status === "failed" ? "var(--error, #e53e3e)"
+                  : p.status === "cancelled" ? "var(--muted)"
+                  : "var(--accent)";
+                return (
+                  <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{ margin: "0 0 4px", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.post_text.slice(0, 120)}{p.post_text.length > 120 ? "…" : ""}</p>
+                      <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+                        {new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
+                        {" — "}
+                        <span style={{ color: statusColor }}>{statusLabel}</span>
+                      </p>
+                      {p.status === "failed" && p.error_message && <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--error, #e53e3e)" }}>{p.error_message}</p>}
+                    </div>
+                    {p.status === "pending" && (
+                      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                        <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={editingPost === p.id || cancellingPost === p.id} onClick={() => openEditScheduled(p)}>
+                          <Pencil size={12} /> Modifier
+                        </button>
+                        <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={cancellingPost === p.id || editingPost === p.id} onClick={() => cancelScheduled(p.id)}>
+                          {cancellingPost === p.id ? <Loader2 size={12} className="spinning" /> : <Trash2 size={12} />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {editingSchedule !== null && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Modifier le post programmé</h3>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+              Tant que le post est en attente, tu peux corriger son texte et sa date de publication.
+            </p>
+            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>Texte du post</label>
+            <textarea value={editScheduleText} rows={8} className="variant-text" style={{ width: "100%", boxSizing: "border-box", marginBottom: 12 }} onChange={(e) => setEditScheduleText(e.target.value)} />
+            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>Date et heure de publication</label>
+            <input type="datetime-local" value={editScheduleDate} onChange={(e) => setEditScheduleDate(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 14, marginBottom: 12 }} />
+            {scheduleEditError && <p style={{ color: "var(--error, #e53e3e)", fontSize: 13, marginBottom: 8 }}>{scheduleEditError}</p>}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="secondary-button" disabled={editingPost === editingSchedule.id} onClick={() => setEditingSchedule(null)}>Annuler</button>
+              <button className="primary-button" disabled={editingPost === editingSchedule.id || !editScheduleDate || !editScheduleText.trim()} onClick={updateScheduled}>
+                {editingPost === editingSchedule.id ? <><Loader2 size={14} className="spinning" /> Enregistrement…</> : <><Clock3 size={14} /> Enregistrer</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
+/** Barre d'actions sous une réponse de l'Agent IA : publier / programmer / Slack / X / copier,
+ *  comme dans « Mes contenus », en opérant sur le texte brut de la réponse. */
+function AssistantMessageActions({
+  text,
+  linkedin,
+  twitter,
+  slack,
+}: {
+  text: string;
+  linkedin: ReturnType<typeof useLinkedIn>;
+  twitter: ReturnType<typeof useTwitter>;
+  slack: ReturnType<typeof useSlack>;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [confirmPub, setConfirmPub] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [published, setPublished] = useState(false);
+  const [confirmX, setConfirmX] = useState(false);
+  const [publishingX, setPublishingX] = useState(false);
+  const [publishedX, setPublishedX] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduled, setScheduled] = useState(false);
+  const [slackSending, setSlackSending] = useState(false);
+  const [slackSent, setSlackSent] = useState(false);
+  const [err, setErr] = useState("");
+
+  const btn = { fontSize: 12, minHeight: 30, padding: "0 10px" } as const;
+  const xLogo = (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+  );
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { setErr("Copie impossible."); }
+  }
+
+  async function publishLinkedIn() {
+    setConfirmPub(false);
+    if (!linkedin.status?.connected) { setErr("Connecte d'abord ton compte LinkedIn dans l'onglet Profil."); return; }
+    setErr(""); setPublishing(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, draft: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication impossible.");
+      setPublished(true);
+      setTimeout(() => setPublished(false), 3000);
+    } catch (e: any) { setErr(e.message); } finally { setPublishing(false); }
+  }
+
+  function openSchedule() {
+    if (!linkedin.status?.connected) { setErr("Connecte d'abord ton compte LinkedIn dans l'onglet Profil."); return; }
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    setScheduleDate(toDatetimeLocalValue(tomorrow));
+    setErr(""); setScheduleOpen(true);
+  }
+
+  async function doSchedule() {
+    setErr(""); setScheduling(true);
+    try {
+      const localDate = new Date(scheduleDate);
+      if (isNaN(localDate.getTime())) throw new Error("Date invalide.");
+      if (localDate <= new Date()) throw new Error("La date doit être dans le futur.");
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, scheduled_at: localDate.toISOString(), validate_via_slack: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Programmation impossible.");
+      setScheduled(true); setScheduleOpen(false);
+    } catch (e: any) { setErr(e.message); } finally { setScheduling(false); }
+  }
+
+  async function publishX() {
+    setConfirmX(false); setErr(""); setPublishingX(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/x/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, draft: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication sur X impossible.");
+      setPublishedX(true);
+      setTimeout(() => setPublishedX(false), 3000);
+    } catch (e: any) { setErr(e.message); } finally { setPublishingX(false); }
+  }
+
+  async function sendSlack() {
+    setErr(""); setSlackSending(true);
+    try {
+      // Slack a besoin d'un post_id : on persiste d'abord la réponse comme post sauvegardé.
+      const saveRes = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post: text }),
+      });
+      const saved = await saveRes.json();
+      if (!saveRes.ok) throw new Error(saved.detail || "Sauvegarde impossible.");
+      const res = await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post_id: saved.id, content: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi Slack impossible.");
+      setSlackSent(true);
+    } catch (e: any) { setErr(e.message); } finally { setSlackSending(false); }
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+      <button className="secondary-button" style={btn} onClick={copy}>
+        {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />} {copied ? "Copié ✓" : "Copier"}
+      </button>
+      <button
+        className="secondary-button"
+        style={btn}
+        disabled={publishing}
+        title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+        onClick={() => setConfirmPub(true)}
+      >
+        {publishing ? <Loader2 size={13} className="spinning" /> : <Linkedin size={13} />} {published ? "Publié ✓" : "Publier sur LinkedIn"}
+      </button>
+      <button
+        className="secondary-button"
+        style={btn}
+        disabled={scheduling || scheduled}
+        title={linkedin.status?.connected ? "Programmer une publication LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+        onClick={openSchedule}
+      >
+        <Clock3 size={13} /> {scheduled ? "Programmé ✓" : "Programmer"}
+      </button>
+      {twitter.status?.connected && (
+        <button className="secondary-button" style={btn} disabled={publishingX} title="Publier maintenant sur X (Twitter)" onClick={() => setConfirmX(true)}>
+          {publishingX ? <Loader2 size={13} className="spinning" /> : xLogo} {publishedX ? "Publié ✓" : "Publier sur X"}
+        </button>
+      )}
+      {slack.status?.connected && (
+        <button className="secondary-button" style={btn} disabled={slackSending || slackSent} onClick={sendSlack}>
+          {slackSending ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} {slackSent ? "Sur Slack ✓" : "Envoyer sur Slack"}
+        </button>
+      )}
+      {confirmPub && (
+        <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
+          <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
+          <button className="primary-button" style={btn} onClick={publishLinkedIn}>Confirmer</button>
+          <button className="secondary-button" style={btn} onClick={() => setConfirmPub(false)}>Annuler</button>
+        </div>
+      )}
+      {scheduleOpen && (
+        <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
+          <input
+            type="datetime-local"
+            value={scheduleDate}
+            onChange={(e) => setScheduleDate(e.target.value)}
+            style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)" }}
+          />
+          <button className="primary-button" style={btn} disabled={scheduling || !scheduleDate} onClick={doSchedule}>
+            {scheduling ? <Loader2 size={12} className="spinning" /> : <Clock3 size={12} />} Programmer sur LinkedIn
+          </button>
+          <button className="secondary-button" style={btn} onClick={() => setScheduleOpen(false)}>Annuler</button>
+        </div>
+      )}
+      {confirmX && (
+        <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
+          <span style={{ fontSize: 13 }}>Publier ce post maintenant sur X ?</span>
+          <button className="primary-button" style={btn} onClick={publishX}>Confirmer</button>
+          <button className="secondary-button" style={btn} onClick={() => setConfirmX(false)}>Annuler</button>
+        </div>
+      )}
+      {err && <div className="error" style={{ marginTop: 4, fontSize: 12, width: "100%" }}>{err}</div>}
+    </div>
+  );
+}
+
+function Assistant({ isAuthed, requireAuth, seed }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { post: string; nonce: number } | null }) {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -3656,6 +4192,10 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
+  // Réseaux connectés : permettent les actions (publier / programmer / Slack / X) sur chaque réponse.
+  const linkedin = useLinkedIn(isAuthed);
+  const twitter = useTwitter(isAuthed);
+  const slack = useSlack(isAuthed);
 
   async function loadMessages(conversationId: string) {
     setLoadingHistory(true);
@@ -3706,6 +4246,17 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
     loadConversations(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
+
+  // Démarre une nouvelle conversation quand un seed de post est fourni depuis le Générateur.
+  useEffect(() => {
+    if (!seed?.post || !isAuthed) return;
+    newConversation();
+    const seedText = `Voici un post que j'ai généré et que j'aimerais améliorer :\n\n---\n${seed.post}\n---`;
+    // setTimeout pour laisser newConversation() vider l'état avant d'envoyer.
+    const t = setTimeout(() => sendMessage(seedText), 50);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed?.nonce]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -3829,44 +4380,61 @@ function Assistant({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: 
       </aside>
 
       <section className="assistant-panel card">
-        <div className="assistant-standby-banner">
-          <Sparkles size={16} />
+        <div className="section-header">
           <div>
-            <strong>Bientôt disponible — assistant en cours d&apos;amélioration</strong>
-            <p>L&apos;Agent IA sera disponible prochainement avec la génération, publication et programmation directement depuis le chat.</p>
+            <h2 className="section-title"><MessageSquare size={20} /> Assistant LinkedIn</h2>
+            <p className="section-desc">Itère sur tes idées et brouillons avec mémoire, contexte client et benchmark influenceurs.</p>
           </div>
         </div>
-        <div style={{ opacity: 0.45, pointerEvents: "none", userSelect: "none" }}>
-          <div className="section-header">
-            <div>
-              <h2 className="section-title"><MessageSquare size={20} /> Assistant LinkedIn</h2>
-              <p className="section-desc">Itère sur tes idées et brouillons avec mémoire, contexte client et benchmark influenceurs.</p>
-            </div>
-          </div>
 
-          <div className="assistant-messages">
+        <div className="assistant-messages">
+          {messages.length === 0 ? (
             <div className="assistant-welcome">
               <Sparkles size={22} />
               <h3>Demande une idée, un angle ou une réécriture.</h3>
               <p>Exemple : &quot;Écris un post opinion sur les erreurs d&apos;automatisation LinkedIn pour des dirigeants B2B.&quot;</p>
             </div>
-          </div>
-
-          <div className="assistant-composer">
-            <textarea
-              value=""
-              onChange={() => {}}
-              placeholder="Écris ta demande : idée, brouillon à améliorer, angle, ton..."
-              rows={3}
-              disabled
-            />
-            <button className="primary-button" disabled>
-              <Send size={14} />
-              Envoyer
-            </button>
-          </div>
-          <p className="role-picker-hint" style={{ marginTop: 8 }}>Astuce : Cmd/Ctrl + Entrée pour envoyer.</p>
+          ) : (
+            messages.map((m, idx) => (
+              <div key={idx} className={`assistant-message ${m.role === "user" ? "user" : "assistant"}`}>
+                {m.role === "assistant" ? (
+                  <div className="assistant-message-content">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || (streaming && idx === messages.length - 1 ? "…" : "")}</ReactMarkdown>
+                    {m.content && !(streaming && idx === messages.length - 1) && (
+                      <AssistantMessageActions text={m.content} linkedin={linkedin} twitter={twitter} slack={slack} />
+                    )}
+                  </div>
+                ) : (
+                  <p className="assistant-message-content">{m.content}</p>
+                )}
+              </div>
+            ))
+          )}
+          {error && <div className="error" style={{ margin: "8px 0" }}>{error}</div>}
+          <div ref={endRef} />
         </div>
+
+        <div className="assistant-composer">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              // Entrée = envoyer ; Maj+Entrée = saut de ligne.
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (!streaming && input.trim()) void sendMessage();
+              }
+            }}
+            placeholder="Écris ta demande : idée, brouillon à améliorer, angle, ton..."
+            rows={3}
+            disabled={streaming}
+          />
+          <button className="primary-button" disabled={streaming || !input.trim()} onClick={() => sendMessage()}>
+            {streaming ? <Loader2 size={14} className="spinning" /> : <Send size={14} />}
+            {streaming ? "…" : "Envoyer"}
+          </button>
+        </div>
+        <p className="role-picker-hint" style={{ marginTop: 8 }}>Astuce : Entrée pour envoyer, Maj + Entrée pour un saut de ligne.</p>
       </section>
     </div>
   );
@@ -3912,83 +4480,6 @@ function ProfileView({
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
-  const [scheduledPosts, setScheduledPosts] = useState<ScheduledPost[]>([]);
-  const [cancellingPost, setCancellingPost] = useState<string | null>(null);
-  const [editingSchedule, setEditingSchedule] = useState<ScheduledPost | null>(null);
-  const [editScheduleText, setEditScheduleText] = useState("");
-  const [editScheduleDate, setEditScheduleDate] = useState("");
-  const [editingPost, setEditingPost] = useState<string | null>(null);
-  const [scheduleEditError, setScheduleEditError] = useState("");
-
-  useEffect(() => {
-    if (!isAuthed || !linkedin.status?.connected) return;
-    let cancelled = false;
-    authHeaders().then((h) =>
-      fetch(`${DIRECT_API_URL}/me/linkedin/scheduled`, { headers: h })
-        .then((r) => r.ok ? r.json() : [])
-        .then((data) => { if (!cancelled) setScheduledPosts(data); })
-        .catch(() => {})
-    );
-    return () => { cancelled = true; };
-  }, [isAuthed, linkedin.status?.connected]);
-
-  async function cancelScheduled(postId: string) {
-    setCancellingPost(postId);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${postId}`, {
-        method: "DELETE",
-        headers: await authHeaders(),
-      });
-      if (res.ok) setScheduledPosts((prev) => prev.map((p) => p.id === postId ? { ...p, status: "cancelled" } : p));
-    } catch (_) {} finally {
-      setCancellingPost(null);
-    }
-  }
-
-  function openEditScheduled(post: ScheduledPost) {
-    if (post.status !== "pending") return;
-    setEditingSchedule(post);
-    setEditScheduleText(post.post_text);
-    setEditScheduleDate(isoToDatetimeLocalValue(post.scheduled_at));
-    setScheduleEditError("");
-  }
-
-  async function updateScheduled() {
-    if (!editingSchedule) return;
-    const trimmed = editScheduleText.trim();
-    if (!trimmed) {
-      setScheduleEditError("Le texte du post ne peut pas être vide.");
-      return;
-    }
-    const localDate = new Date(editScheduleDate);
-    if (Number.isNaN(localDate.getTime())) {
-      setScheduleEditError("Date invalide.");
-      return;
-    }
-    if (localDate <= new Date()) {
-      setScheduleEditError("La date doit être dans le futur.");
-      return;
-    }
-    setEditingPost(editingSchedule.id);
-    setScheduleEditError("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${editingSchedule.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_text: trimmed, scheduled_at: localDate.toISOString() }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Modification impossible.");
-      const updated = data.scheduled_post as ScheduledPost;
-      setScheduledPosts((prev) => prev.map((p) => p.id === updated.id ? updated : p));
-      setEditingSchedule(null);
-    } catch (err: any) {
-      setScheduleEditError(err.message || "Modification impossible.");
-    } finally {
-      setEditingPost(null);
-    }
-  }
-
   // `Field` lit toujours la dernière valeur du profil via cette ref, ce qui
   // permet de garder une identité de composant stable (useCallback ci-dessous)
   // sans capturer un `profile` périmé.
@@ -4227,7 +4718,18 @@ function ProfileView({
           </div>
         </div>
         {linkedin.status?.connected ? (
-          <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+            <button
+              className="secondary-button"
+              onClick={() => { if (window.confirm("Déconnecter le compte LinkedIn ?")) linkedin.disconnect(); }}
+              disabled={linkedin.busy}
+              style={{ fontSize: 12 }}
+            >
+              {linkedin.busy ? <Loader2 size={12} className="spinning" /> : null}
+              Déconnecter
+            </button>
+          </div>
         ) : (
           <button className="primary-button" onClick={linkedin.connect} disabled={linkedin.busy}>
             {linkedin.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
@@ -4236,107 +4738,6 @@ function ProfileView({
         )}
       </section>
       {linkedin.error ? <div className="error" style={{ marginBottom: 12 }}>{linkedin.error}</div> : null}
-
-      {linkedin.status?.connected && scheduledPosts.length > 0 && (
-        <section className="card" style={{ marginBottom: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <Clock3 size={16} />
-            <strong>Posts programmés</strong>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {scheduledPosts.map((p) => {
-              const statusLabel =
-                p.status === "published"
-                  ? "Publié ✓"
-                  : p.status === "failed"
-                    ? "Échec"
-                    : p.status === "cancelled" && p.slack_status === "declined"
-                      ? "Refusé Slack — annulé"
-                      : p.status === "cancelled"
-                        ? "Annulé"
-                        : p.slack_status === "validated"
-                          ? "Validé Slack — en attente"
-                          : "Validation Slack en attente";
-              const statusColor =
-                p.status === "published" || p.slack_status === "validated"
-                  ? "var(--success, #38a169)"
-                  : p.status === "failed"
-                    ? "var(--error, #e53e3e)"
-                    : p.status === "cancelled"
-                      ? "var(--muted)"
-                      : "var(--accent)";
-              return (
-                <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ margin: "0 0 4px", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.post_text.slice(0, 120)}{p.post_text.length > 120 ? "…" : ""}</p>
-                    <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
-                      {new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
-                      {" — "}
-                      <span style={{ color: statusColor }}>{statusLabel}</span>
-                    </p>
-                    {p.status === "failed" && p.error_message && <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--error, #e53e3e)" }}>{p.error_message}</p>}
-                  </div>
-                  {p.status === "pending" && (
-                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                      <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={editingPost === p.id || cancellingPost === p.id} onClick={() => openEditScheduled(p)}>
-                        <Pencil size={12} /> Modifier
-                      </button>
-                      <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={cancellingPost === p.id || editingPost === p.id} onClick={() => cancelScheduled(p.id)}>
-                        {cancellingPost === p.id ? <Loader2 size={12} className="spinning" /> : <Trash2 size={12} />}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {editingSchedule !== null && (
-        <div style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
-          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
-        }}>
-          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
-            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Modifier le post programmé</h3>
-            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-              Tant que le post est en attente, tu peux corriger son texte et sa date de publication.
-            </p>
-            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
-              Texte du post
-            </label>
-            <textarea
-              value={editScheduleText}
-              rows={8}
-              className="variant-text"
-              style={{ width: "100%", boxSizing: "border-box", marginBottom: 12 }}
-              onChange={(e) => setEditScheduleText(e.target.value)}
-            />
-            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
-              Date et heure de publication
-            </label>
-            <input
-              type="datetime-local"
-              value={editScheduleDate}
-              onChange={(e) => setEditScheduleDate(e.target.value)}
-              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 14, marginBottom: 12 }}
-            />
-            {scheduleEditError && <p style={{ color: "var(--error, #e53e3e)", fontSize: 13, marginBottom: 8 }}>{scheduleEditError}</p>}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button className="secondary-button" disabled={editingPost === editingSchedule.id} onClick={() => setEditingSchedule(null)}>
-                Annuler
-              </button>
-              <button className="primary-button" disabled={editingPost === editingSchedule.id || !editScheduleDate || !editScheduleText.trim()} onClick={updateScheduled}>
-                {editingPost === editingSchedule.id
-                  ? <><Loader2 size={14} className="spinning" /> Enregistrement…</>
-                  : <><Clock3 size={14} /> Enregistrer</>
-                }
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -4932,6 +5333,7 @@ function ContentHub({
   onTab,
   seed,
   onReuse,
+  onRework,
   isAuthed,
   reservoirOnly = false,
   requireAuth,
@@ -4942,6 +5344,7 @@ function ContentHub({
   onTab: (t: ContentTab) => void;
   seed?: { topic: string; nonce: number } | null;
   onReuse: (topic: string) => void;
+  onRework?: (post: string) => void;
   isAuthed: boolean;
   reservoirOnly?: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
@@ -4980,7 +5383,7 @@ function ContentHub({
       </div>
 
       {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />}
-      {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} />}
+      {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} onRework={onRework} />}
       {tab === "library" && (
         <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
       )}
@@ -5108,6 +5511,8 @@ export default function Home() {
   const [contentTab, setContentTab] = useState<ContentTab>("generator");
   // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
   const [generatorSeed, setGeneratorSeed] = useState<{ topic: string; nonce: number } | null>(null);
+  // Post pré-rempli quand on "retravaille" un variant depuis le Générateur vers l'Agent IA.
+  const [assistantSeed, setAssistantSeed] = useState<{ post: string; nonce: number } | null>(null);
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
@@ -5560,7 +5965,7 @@ export default function Home() {
         <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "assistant" ? (
-            <Assistant isAuthed={isAuthed} requireAuth={requireAuth} />
+            <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} />
           ) : view === "profile" ? (
             <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : platform === "instagram" ? (
@@ -5634,6 +6039,10 @@ export default function Home() {
                   onReuse={(topic) => {
                     setGeneratorSeed({ topic, nonce: Date.now() });
                     setContentTab("generator");
+                  }}
+                  onRework={(post) => {
+                    setAssistantSeed({ post, nonce: Date.now() });
+                    setView("assistant");
                   }}
                 />
               )}

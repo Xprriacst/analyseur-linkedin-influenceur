@@ -253,13 +253,15 @@ def send_post_for_validation(
     text = post.get("post") or ""
     topic = post.get("topic") or ""
 
-    preview = text[:300] + ("…" if len(text) > 300 else "")
-
     header = f"*{topic}*" if topic else "*Post généré*"
     blocks: list[dict] = [
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"{header}\n> {preview}"},
+            "text": {"type": "mrkdwn", "text": header},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": _quote_full_text(text)},
         },
         {
             "type": "actions",
