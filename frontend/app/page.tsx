@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import {
   Activity,
   BarChart3,
+  CalendarDays,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -4480,6 +4481,9 @@ function ProfileView({
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
+  const [weeklyEnabled, setWeeklyEnabled] = useState(false);
+  const [weeklySchedule, setWeeklySchedule] = useState<{day_of_week: number; hour: number; timezone: string}[]>([]);
+  const [weeklySaving, setWeeklySaving] = useState(false);
   // `Field` lit toujours la dernière valeur du profil via cette ref, ce qui
   // permet de garder une identité de composant stable (useCallback ci-dessous)
   // sans capturer un `profile` périmé.
@@ -4510,6 +4514,62 @@ function ProfileView({
       }
     })();
   }, [isAuthed]);
+
+  useEffect(() => {
+    if (!isAuthed) { setWeeklyEnabled(false); setWeeklySchedule([]); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/weekly-posts`, { headers: await authHeaders() });
+        if (res.ok) {
+          const data = await res.json();
+          setWeeklyEnabled(!!data.enabled);
+          setWeeklySchedule(data.schedule || []);
+        }
+      } catch { /* silencieux */ }
+    })();
+  }, [isAuthed]);
+
+  async function toggleWeeklyEnabled() {
+    const next = !weeklyEnabled;
+    setWeeklyEnabled(next);
+    try {
+      await fetch(`${DIRECT_API_URL}/me/weekly-posts/enabled`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ enabled: next }),
+      });
+    } catch { setWeeklyEnabled(!next); }
+  }
+
+  async function saveWeeklySchedule(slots: {day_of_week: number; hour: number; timezone: string}[]) {
+    setWeeklySaving(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/weekly-posts/schedule`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ schedule: slots }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setWeeklySchedule(data.schedule || slots);
+      }
+    } catch { /* silencieux */ } finally { setWeeklySaving(false); }
+  }
+
+  function toggleWeeklyDay(day: number) {
+    const exists = weeklySchedule.find((s) => s.day_of_week === day);
+    const next = exists
+      ? weeklySchedule.filter((s) => s.day_of_week !== day)
+      : [...weeklySchedule, { day_of_week: day, hour: 9, timezone: "Europe/Paris" }].sort((a, b) => a.day_of_week - b.day_of_week);
+    setWeeklySchedule(next);
+    void saveWeeklySchedule(next);
+  }
+
+  function setWeeklyHour(day: number, hour: number) {
+    const next = weeklySchedule.map((s) => s.day_of_week === day ? { ...s, hour } : s);
+    setWeeklySchedule(next);
+    void saveWeeklySchedule(next);
+  }
 
   function updateField(key: keyof EditorialProfile, value: string) {
     setSaved(false);
@@ -4789,6 +4849,74 @@ function ProfileView({
         ) : null}
       </section>
       {slack.error ? <div className="error" style={{ marginBottom: 12 }}>{slack.error}</div> : null}
+
+      <section className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <CalendarDays size={20} style={{ flexShrink: 0, color: "var(--coral)" }} />
+            <div>
+              <strong>Posts automatiques de la semaine</strong>
+              <p className="section-desc" style={{ margin: 0 }}>
+                Génère et programme 3 posts chaque semaine, envoyés sur Slack pour validation avant publication. Requiert LinkedIn et Slack connectés.
+              </p>
+            </div>
+          </div>
+          {(!linkedin.status?.connected || !slack.status?.connected) ? (
+            <p className="section-desc" style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+              {!linkedin.status?.connected && !slack.status?.connected
+                ? "⚠️ Connecte LinkedIn et Slack (ci-dessus) pour activer."
+                : !linkedin.status?.connected
+                ? "⚠️ Connecte LinkedIn (ci-dessus) pour activer."
+                : "⚠️ Connecte Slack (ci-dessus) pour activer."}
+            </p>
+          ) : (
+            <label className="daily-switch">
+              <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
+              <span>Recevoir 3 posts/semaine à valider</span>
+            </label>
+          )}
+        </div>
+        {weeklyEnabled && linkedin.status?.connected && slack.status?.connected && (
+          <div style={{ marginTop: 16 }}>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 8 }}>
+              Jours de publication (heure locale, fuseau Europe/Paris) :
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+              {["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((label, day) => {
+                const slot = weeklySchedule.find((s) => s.day_of_week === day);
+                return (
+                  <div key={day} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 13, cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={!!slot}
+                        onChange={() => toggleWeeklyDay(day)}
+                        style={{ cursor: "pointer" }}
+                      />
+                      {label}
+                    </label>
+                    {slot && (
+                      <select
+                        value={slot.hour}
+                        onChange={(e) => setWeeklyHour(day, Number(e.target.value))}
+                        style={{ fontSize: 12, padding: "2px 4px", borderRadius: 4, border: "1px solid var(--border)" }}
+                      >
+                        {Array.from({ length: 24 }, (_, h) => (
+                          <option key={h} value={h}>{String(h).padStart(2, "0")}h</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {weeklySaving && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}><Loader2 size={12} className="spinning" style={{ verticalAlign: "-2px" }} /> Sauvegarde…</p>}
+            {weeklySchedule.length === 0 && (
+              <p style={{ fontSize: 12, color: "var(--coral)", marginTop: 6 }}>Sélectionne au moins un jour.</p>
+            )}
+          </div>
+        )}
+      </section>
 
       {error ? <div className="error" style={{ marginBottom: 12 }}>{error}</div> : null}
       {draftInfo ? <div className="auth-info" style={{ marginBottom: 12 }}>{draftInfo}</div> : null}
