@@ -3475,6 +3475,9 @@ function LibraryView({
   const [editedPosts, setEditedPosts] = useState<Record<string, string>>({});
   const [savingPost, setSavingPost] = useState<string | null>(null);
   const [savedPost, setSavedPost] = useState<string | null>(null);
+  // Tiroir repliable : permet de masquer la liste des posts sauvegardés pour atteindre
+  // la section « Posts programmés » sans scroller tout en bas.
+  const [savedOpen, setSavedOpen] = useState(true);
   const slack = useSlack(isAuthed);
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
@@ -3708,10 +3711,18 @@ function LibraryView({
   return (
     <div>
       <div className="section-header">
-        <div>
-          <h2 className="section-title"><Bookmark size={20} /> Mes contenus sauvegardés</h2>
-          <p className="section-desc">Retrouve les posts que tu as sauvegardés depuis le générateur. Relis-les, copie-les ou réutilise-les.</p>
-        </div>
+        <button
+          onClick={() => setSavedOpen((v) => !v)}
+          aria-expanded={savedOpen}
+          title={savedOpen ? "Replier les posts sauvegardés" : "Déplier les posts sauvegardés"}
+          style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", color: "inherit" }}
+        >
+          <ChevronRight size={20} style={{ marginTop: 2, flexShrink: 0, transform: savedOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+          <div>
+            <h2 className="section-title"><Bookmark size={20} /> Mes contenus sauvegardés{posts.length ? ` (${posts.length})` : ""}</h2>
+            <p className="section-desc">Retrouve les posts que tu as sauvegardés depuis le générateur. Relis-les, copie-les ou réutilise-les.</p>
+          </div>
+        </button>
         <button className="secondary-button" onClick={loadAll} disabled={loading}>
           {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
           Rafraîchir
@@ -3720,7 +3731,7 @@ function LibraryView({
 
       {error &&<div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {loading && posts.length === 0 ? (
+      {!savedOpen ? null : loading && posts.length === 0 ? (
         <div className="card" style={{ padding: 32, textAlign: "center" }}>
           <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
           <p style={{ color: "var(--muted)" }}>Chargement de tes contenus…</p>
@@ -3985,6 +3996,193 @@ function LibraryView({
   );
 }
 
+/** Barre d'actions sous une réponse de l'Agent IA : publier / programmer / Slack / X / copier,
+ *  comme dans « Mes contenus », en opérant sur le texte brut de la réponse. */
+function AssistantMessageActions({
+  text,
+  linkedin,
+  twitter,
+  slack,
+}: {
+  text: string;
+  linkedin: ReturnType<typeof useLinkedIn>;
+  twitter: ReturnType<typeof useTwitter>;
+  slack: ReturnType<typeof useSlack>;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [confirmPub, setConfirmPub] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [published, setPublished] = useState(false);
+  const [confirmX, setConfirmX] = useState(false);
+  const [publishingX, setPublishingX] = useState(false);
+  const [publishedX, setPublishedX] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduled, setScheduled] = useState(false);
+  const [slackSending, setSlackSending] = useState(false);
+  const [slackSent, setSlackSent] = useState(false);
+  const [err, setErr] = useState("");
+
+  const btn = { fontSize: 12, minHeight: 30, padding: "0 10px" } as const;
+  const xLogo = (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+  );
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { setErr("Copie impossible."); }
+  }
+
+  async function publishLinkedIn() {
+    setConfirmPub(false);
+    if (!linkedin.status?.connected) { setErr("Connecte d'abord ton compte LinkedIn dans l'onglet Profil."); return; }
+    setErr(""); setPublishing(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, draft: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication impossible.");
+      setPublished(true);
+      setTimeout(() => setPublished(false), 3000);
+    } catch (e: any) { setErr(e.message); } finally { setPublishing(false); }
+  }
+
+  function openSchedule() {
+    if (!linkedin.status?.connected) { setErr("Connecte d'abord ton compte LinkedIn dans l'onglet Profil."); return; }
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    setScheduleDate(toDatetimeLocalValue(tomorrow));
+    setErr(""); setScheduleOpen(true);
+  }
+
+  async function doSchedule() {
+    setErr(""); setScheduling(true);
+    try {
+      const localDate = new Date(scheduleDate);
+      if (isNaN(localDate.getTime())) throw new Error("Date invalide.");
+      if (localDate <= new Date()) throw new Error("La date doit être dans le futur.");
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, scheduled_at: localDate.toISOString(), validate_via_slack: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Programmation impossible.");
+      setScheduled(true); setScheduleOpen(false);
+    } catch (e: any) { setErr(e.message); } finally { setScheduling(false); }
+  }
+
+  async function publishX() {
+    setConfirmX(false); setErr(""); setPublishingX(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/x/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, draft: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication sur X impossible.");
+      setPublishedX(true);
+      setTimeout(() => setPublishedX(false), 3000);
+    } catch (e: any) { setErr(e.message); } finally { setPublishingX(false); }
+  }
+
+  async function sendSlack() {
+    setErr(""); setSlackSending(true);
+    try {
+      // Slack a besoin d'un post_id : on persiste d'abord la réponse comme post sauvegardé.
+      const saveRes = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post: text }),
+      });
+      const saved = await saveRes.json();
+      if (!saveRes.ok) throw new Error(saved.detail || "Sauvegarde impossible.");
+      const res = await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post_id: saved.id, content: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi Slack impossible.");
+      setSlackSent(true);
+    } catch (e: any) { setErr(e.message); } finally { setSlackSending(false); }
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+      <button className="secondary-button" style={btn} onClick={copy}>
+        {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />} {copied ? "Copié ✓" : "Copier"}
+      </button>
+      <button
+        className="secondary-button"
+        style={btn}
+        disabled={publishing}
+        title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+        onClick={() => setConfirmPub(true)}
+      >
+        {publishing ? <Loader2 size={13} className="spinning" /> : <Linkedin size={13} />} {published ? "Publié ✓" : "Publier sur LinkedIn"}
+      </button>
+      <button
+        className="secondary-button"
+        style={btn}
+        disabled={scheduling || scheduled}
+        title={linkedin.status?.connected ? "Programmer une publication LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+        onClick={openSchedule}
+      >
+        <Clock3 size={13} /> {scheduled ? "Programmé ✓" : "Programmer"}
+      </button>
+      {twitter.status?.connected && (
+        <button className="secondary-button" style={btn} disabled={publishingX} title="Publier maintenant sur X (Twitter)" onClick={() => setConfirmX(true)}>
+          {publishingX ? <Loader2 size={13} className="spinning" /> : xLogo} {publishedX ? "Publié ✓" : "Publier sur X"}
+        </button>
+      )}
+      {slack.status?.connected && (
+        <button className="secondary-button" style={btn} disabled={slackSending || slackSent} onClick={sendSlack}>
+          {slackSending ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} {slackSent ? "Sur Slack ✓" : "Envoyer sur Slack"}
+        </button>
+      )}
+      {confirmPub && (
+        <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
+          <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
+          <button className="primary-button" style={btn} onClick={publishLinkedIn}>Confirmer</button>
+          <button className="secondary-button" style={btn} onClick={() => setConfirmPub(false)}>Annuler</button>
+        </div>
+      )}
+      {scheduleOpen && (
+        <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
+          <input
+            type="datetime-local"
+            value={scheduleDate}
+            onChange={(e) => setScheduleDate(e.target.value)}
+            style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)" }}
+          />
+          <button className="primary-button" style={btn} disabled={scheduling || !scheduleDate} onClick={doSchedule}>
+            {scheduling ? <Loader2 size={12} className="spinning" /> : <Clock3 size={12} />} Programmer sur LinkedIn
+          </button>
+          <button className="secondary-button" style={btn} onClick={() => setScheduleOpen(false)}>Annuler</button>
+        </div>
+      )}
+      {confirmX && (
+        <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
+          <span style={{ fontSize: 13 }}>Publier ce post maintenant sur X ?</span>
+          <button className="primary-button" style={btn} onClick={publishX}>Confirmer</button>
+          <button className="secondary-button" style={btn} onClick={() => setConfirmX(false)}>Annuler</button>
+        </div>
+      )}
+      {err && <div className="error" style={{ marginTop: 4, fontSize: 12, width: "100%" }}>{err}</div>}
+    </div>
+  );
+}
+
 function Assistant({ isAuthed, requireAuth, seed }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { post: string; nonce: number } | null }) {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -3994,6 +4192,10 @@ function Assistant({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
+  // Réseaux connectés : permettent les actions (publier / programmer / Slack / X) sur chaque réponse.
+  const linkedin = useLinkedIn(isAuthed);
+  const twitter = useTwitter(isAuthed);
+  const slack = useSlack(isAuthed);
 
   async function loadMessages(conversationId: string) {
     setLoadingHistory(true);
@@ -4198,6 +4400,9 @@ function Assistant({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                 {m.role === "assistant" ? (
                   <div className="assistant-message-content">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || (streaming && idx === messages.length - 1 ? "…" : "")}</ReactMarkdown>
+                    {m.content && !(streaming && idx === messages.length - 1) && (
+                      <AssistantMessageActions text={m.content} linkedin={linkedin} twitter={twitter} slack={slack} />
+                    )}
                   </div>
                 ) : (
                   <p className="assistant-message-content">{m.content}</p>
@@ -4214,9 +4419,10 @@ function Assistant({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+              // Entrée = envoyer ; Maj+Entrée = saut de ligne.
+              if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                void sendMessage();
+                if (!streaming && input.trim()) void sendMessage();
               }
             }}
             placeholder="Écris ta demande : idée, brouillon à améliorer, angle, ton..."
@@ -4228,7 +4434,7 @@ function Assistant({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
             {streaming ? "…" : "Envoyer"}
           </button>
         </div>
-        <p className="role-picker-hint" style={{ marginTop: 8 }}>Astuce : Cmd/Ctrl + Entrée pour envoyer.</p>
+        <p className="role-picker-hint" style={{ marginTop: 8 }}>Astuce : Entrée pour envoyer, Maj + Entrée pour un saut de ligne.</p>
       </section>
     </div>
   );
