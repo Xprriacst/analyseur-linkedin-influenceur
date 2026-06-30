@@ -1500,6 +1500,7 @@ class SlackSendIdeasRequest(BaseModel):
 
 class SlackSendPostsRequest(BaseModel):
     post_id: str = Field(..., min_length=1)
+    content: Optional[str] = None
 
 
 @app.get("/me/integrations/slack/status")
@@ -1632,6 +1633,14 @@ def slack_send_post(
     post = db.get_generated_post(token, payload.post_id)
     if not post:
         raise HTTPException(status_code=404, detail=f"Post {payload.post_id} introuvable.")
+
+    # Si l'utilisateur a édité le post dans l'app sans cliquer « Sauvegarder »,
+    # le front envoie le texte courant : on le persiste avant l'envoi pour que
+    # Slack (et la publication validée derrière) utilisent bien le texte affiché.
+    content = (payload.content or "").strip()
+    if content and content != (post.get("post") or ""):
+        updated = db.update_generated_post(token, payload.post_id, new_post=content)
+        post = updated or {**post, "post": content}
 
     try:
         slack_client.send_post_for_validation(bot_token, channel_id, post)
