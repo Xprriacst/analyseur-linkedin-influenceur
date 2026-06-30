@@ -1795,7 +1795,23 @@ function useLinkedIn(isAuthed: boolean) {
     }
   }
 
-  return { status, busy, error, connect };
+  async function disconnect() {
+    setError("");
+    setBusy(true);
+    try {
+      await fetch(`${DIRECT_API_URL}/me/linkedin`, {
+        method: "DELETE",
+        headers: await authHeaders(),
+      });
+      setStatus((prev) => prev ? { ...prev, connected: false, account_id: null } : prev);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return { status, busy, error, connect, disconnect };
 }
 
 type XStatus = {
@@ -4255,7 +4271,18 @@ function ProfileView({
           </div>
         </div>
         {linkedin.status?.connected ? (
-          <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+            <button
+              className="secondary-button"
+              onClick={() => { if (window.confirm("Déconnecter le compte LinkedIn ?")) linkedin.disconnect(); }}
+              disabled={linkedin.busy}
+              style={{ fontSize: 12 }}
+            >
+              {linkedin.busy ? <Loader2 size={12} className="spinning" /> : null}
+              Déconnecter
+            </button>
+          </div>
         ) : (
           <button className="primary-button" onClick={linkedin.connect} disabled={linkedin.busy}>
             {linkedin.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
