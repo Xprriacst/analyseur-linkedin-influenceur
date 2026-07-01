@@ -4538,6 +4538,12 @@ function ProfileView({
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({ enabled: next }),
       });
+      // À la 1ère activation, le backend sème les jours par défaut : on recharge
+      // le planning pour afficher la grille pré-remplie tout de suite.
+      if (next && weeklySchedule.length === 0) {
+        const res = await fetch(`${DIRECT_API_URL}/me/weekly-posts`, { headers: await authHeaders() });
+        if (res.ok) setWeeklySchedule((await res.json()).schedule || []);
+      }
     } catch { setWeeklyEnabled(!next); }
   }
 
