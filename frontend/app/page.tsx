@@ -5868,7 +5868,7 @@ function OnboardingScreen({ onDone }: { onDone: () => void }) {
               </button>
             </div>
             {error && <div className="onb-error">{error}</div>}
-            <button className="onb-skip" onClick={onDone}>Passer cette étape</button>
+            <button className="onb-skip" onClick={() => setStep("page1")}>Continuer sans LinkedIn</button>
           </div>
         )}
 
@@ -5891,13 +5891,13 @@ function OnboardingScreen({ onDone }: { onDone: () => void }) {
                   className={"onb-toggle-btn" + (sel.audienceMode === "niche" ? " selected" : "")}
                   onClick={() => up({ audienceMode: "niche" })}
                 >
-                  J'ai une niche
+                  Une cible précise
                 </button>
                 <button
                   className={"onb-toggle-btn" + (sel.audienceMode === "large" ? " selected" : "")}
                   onClick={() => up({ audienceMode: "large" })}
                 >
-                  Je m'adresse large
+                  Un public large
                 </button>
               </div>
               {sel.audienceMode === "niche" && (
