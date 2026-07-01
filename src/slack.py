@@ -504,7 +504,7 @@ def verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
     """
     secret = _signing_secret()
     if not secret:
-        return True  # not configured → skip verification in dev
+        return False  # fail-closed: pas de secret = webhook rejetée
 
     # Reject requests older than 5 minutes
     try:

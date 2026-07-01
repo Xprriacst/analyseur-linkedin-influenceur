@@ -126,13 +126,21 @@ HOOK_TEMPLATES: list[str] = [
 ]
 
 
-def select_hooks(user_context: dict[str, Any], count: int = 8, topic: str | None = None) -> list[str]:
+def select_hooks(
+    user_context: dict[str, Any],
+    count: int = 8,
+    topic: str | None = None,
+    corpus_examples: list[dict] | None = None,
+) -> list[str]:
     """Sélectionne et personnalise les hooks les plus adaptés au profil utilisateur.
 
     Sélectionne aléatoirement count*3 hooks depuis la base, puis appelle Claude
     pour choisir les `count` hooks les plus pertinents et les personnaliser
     (placeholders remplacés par des infos du profil éditorial). Si `topic` est
-    fourni, les hooks sont orientés vers ce sujet/thème. Sortie toujours en français.
+    fourni, les hooks sont orientés vers ce sujet/thème. Si `corpus_examples`
+    est fourni, les posts Instagram les plus engageants des influenceurs analysés
+    sont inclus dans le contexte pour guider la personnalisation. Sortie toujours
+    en français.
 
     En cas d'absence de clé API ou d'erreur LLM, renvoie un fallback de hooks
     bruts (déjà en français) sans placeholder résiduel.
@@ -168,6 +176,18 @@ def select_hooks(user_context: dict[str, Any], count: int = 8, topic: str | None
 
         topic_line = f"\nSujet/thème à privilégier pour les hooks : {topic.strip()}\n" if (topic and topic.strip()) else ""
 
+        corpus_section = ""
+        if corpus_examples:
+            examples_text = "\n".join(
+                f"- [@{e.get('handle', '?')}] {e.get('text', '')[:200].replace(chr(10), ' ')}"
+                for e in corpus_examples[:8]
+            )
+            corpus_section = (
+                f"\nExemples de posts Instagram qui performent chez les influenceurs analysés "
+                f"(utilise leur style et leurs angles pour inspirer la personnalisation des hooks) :\n"
+                f"{examples_text}\n"
+            )
+
         system = (
             "Tu es un expert en contenu Instagram et réseaux sociaux. "
             "Ta mission : choisir les hooks les plus percutants pour ce profil "
@@ -182,6 +202,7 @@ def select_hooks(user_context: dict[str, Any], count: int = 8, topic: str | None
 
         user_msg = (
             f"Profil éditorial du client :\n{context_text}\n"
+            f"{corpus_section}"
             f"{topic_line}\n"
             f"Hooks disponibles :\n{pool_text}\n\n"
             f"Sélectionne exactement {count} hooks parmi cette liste "
