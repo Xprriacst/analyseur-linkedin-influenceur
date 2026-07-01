@@ -5646,16 +5646,127 @@ function ContentHub({
   );
 }
 
+// --- Onboarding « Cible » : wizard accueil → scan → 2 pages de confirmation ---
+type OnbStep = "intro" | "scanning" | "page1" | "page2";
+type OnbOption = { label: string; match?: string[] };
+
+const ONB_AUDIENCE_OPTIONS: OnbOption[] = [
+  { label: "Dirigeants de PME", match: ["pme", "dirigeant", "tpe", "patron", "ceo", "gérant", "chef d'entreprise"] },
+  { label: "Startups & fondateurs", match: ["startup", "fondateur", "founder", "porteur de projet", "scale"] },
+  { label: "Freelances & solopreneurs", match: ["freelance", "solo", "indépendant", "consultant indépendant"] },
+  { label: "E-commerçants", match: ["e-commerce", "ecommerce", "boutique", "shopify", "vendeur", "retail"] },
+  { label: "Coachs & consultants", match: ["coach", "consultant", "formateur"] },
+  { label: "Agences & studios", match: ["agence", "studio"] },
+  { label: "Éditeurs SaaS / tech", match: ["saas", "éditeur", "logiciel", "cto", "product"] },
+];
+
+const ONB_OFFER_OPTIONS: OnbOption[] = [
+  { label: "Un SaaS / produit", match: ["saas", "produit", "logiciel", "app", "plateforme", "outil"] },
+  { label: "Des prestations sur-mesure", match: ["prestation", "service", "sur-mesure", "freelance", "mission", "développement"] },
+  { label: "Du conseil / consulting", match: ["conseil", "consulting", "accompagnement", "stratégie", "audit"] },
+  { label: "De la formation", match: ["formation", "cours", "coaching", "bootcamp", "masterclass"] },
+  { label: "Une agence / studio", match: ["agence", "studio"] },
+];
+
+const ONB_OBJECTIVE_OPTIONS: OnbOption[] = [
+  { label: "Générer des leads", match: ["lead", "prospect", "client", "acquisition", "rendez-vous"] },
+  { label: "Développer ma notoriété", match: ["notoriété", "visibilité", "personal branding", "marque", "audience", "influence"] },
+  { label: "Vendre une offre", match: ["vendre", "vente", "offre", "convertir", "chiffre"] },
+  { label: "Recruter", match: ["recrut", "talent", "embauche", "hiring", "équipe"] },
+  { label: "Fédérer une communauté", match: ["communauté", "community", "engager", "réseau"] },
+];
+
+const ONB_INDUSTRY_OPTIONS: OnbOption[] = [
+  { label: "IA & Data", match: ["ia", "intelligence artificielle", "ai", "data", "machine learning", "llm"] },
+  { label: "SaaS / Logiciel", match: ["saas", "logiciel", "software"] },
+  { label: "Marketing & Growth", match: ["marketing", "growth", "acquisition", "communication", "ads"] },
+  { label: "Développement / Tech", match: ["dev", "développ", "code", "engineering", "no-code", "vibecod", "tech"] },
+  { label: "Conseil & Services", match: ["conseil", "service", "consulting", "cabinet"] },
+  { label: "E-commerce", match: ["e-commerce", "ecommerce", "retail", "boutique"] },
+];
+
+const ONB_SCAN_STEPS = [
+  "Lecture de ton profil…",
+  "Analyse de ton audience…",
+  "Identification de ton offre…",
+  "On peaufine tout ça…",
+];
+
+function onbMatch(text: string | undefined, options: OnbOption[]): string | null {
+  const t = (text || "").toLowerCase();
+  if (!t) return null;
+  for (const o of options) {
+    if (o.match?.some((m) => t.includes(m))) return o.label;
+  }
+  return null;
+}
+
+function onbInitSel(d: Record<string, string>) {
+  const audience = onbMatch(d.target_audience, ONB_AUDIENCE_OPTIONS) || d.target_audience || "";
+  return {
+    audienceMode: (audience ? "niche" : "") as "" | "niche" | "large",
+    audience,
+    offer: onbMatch(d.core_offer, ONB_OFFER_OPTIONS) || d.core_offer || "",
+    objective: onbMatch(d.linkedin_objective, ONB_OBJECTIVE_OPTIONS) || d.linkedin_objective || "",
+    industry: onbMatch(d.industry, ONB_INDUSTRY_OPTIONS) || d.industry || "",
+  };
+}
+
+function OnbChips({ options, value, onChange, placeholder }: {
+  options: OnbOption[];
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  const isPreset = options.some((o) => o.label === value);
+  const [other, setOther] = useState(!isPreset && !!value);
+  return (
+    <>
+      <div className="onb-chips">
+        {options.map((o, i) => (
+          <button
+            key={o.label}
+            type="button"
+            className={"onb-chip" + (!other && value === o.label ? " selected" : "")}
+            style={{ animationDelay: `${i * 45}ms` }}
+            onClick={() => { setOther(false); onChange(o.label); }}
+          >
+            {o.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          className={"onb-chip" + (other ? " selected" : "")}
+          style={{ animationDelay: `${options.length * 45}ms` }}
+          onClick={() => { setOther(true); onChange(""); }}
+        >
+          Autre
+        </button>
+      </div>
+      {other && (
+        <input
+          className="onb-other-input"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder || "Précise en quelques mots…"}
+          autoFocus
+        />
+      )}
+    </>
+  );
+}
+
 function OnboardingScreen({ onDone }: { onDone: () => void }) {
+  const [step, setStep] = useState<OnbStep>("intro");
   const [aiInput, setAiInput] = useState("");
-  const [drafting, setDrafting] = useState(false);
   const [error, setError] = useState("");
-  const [profilePreview, setProfilePreview] = useState<{
-    display_name?: string;
-    brand_name?: string;
-    business_description?: string;
-    industry?: string;
-  } | null>(null);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [sel, setSel] = useState(() => onbInitSel({}));
+  const [saving, setSaving] = useState(false);
+  const [scanIdx, setScanIdx] = useState(0);
+
+  const up = (patch: Partial<ReturnType<typeof onbInitSel>>) =>
+    setSel((s) => ({ ...s, ...patch }));
 
   const inputKind: "linkedin" | "website" | "description" = (() => {
     const v = aiInput.trim();
@@ -5665,85 +5776,177 @@ function OnboardingScreen({ onDone }: { onDone: () => void }) {
     return "description";
   })();
 
-  async function doPreFill() {
+  useEffect(() => {
+    if (step !== "scanning") return;
+    setScanIdx(0);
+    const id = setInterval(
+      () => setScanIdx((i) => (i < ONB_SCAN_STEPS.length - 1 ? i + 1 : i)),
+      850,
+    );
+    return () => clearInterval(id);
+  }, [step]);
+
+  async function analyze() {
     const trimmed = aiInput.trim();
-    if (!trimmed) { setError("Colle une URL LinkedIn, un site ou une description courte."); return; }
-    setDrafting(true); setError("");
+    if (!trimmed) { setError("Colle ton URL LinkedIn (ou une courte description)."); return; }
+    setError(""); setStep("scanning");
     try {
       const isLinkedin = inputKind === "linkedin";
       const isWebsite = inputKind === "website";
-      const res = await fetch(`${DIRECT_API_URL}/me/profile/draft`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({
-          activity_description: isLinkedin || isWebsite ? "" : trimmed,
-          linkedin_url: isLinkedin ? trimmed : "",
-          website_url: isWebsite ? trimmed : "",
-          use_apify_linkedin: isLinkedin,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Pré-remplissage impossible");
-      const merged = { ...(data.profile || {}) };
+      const minWait = new Promise((r) => setTimeout(r, 1800));
+      const fetchDraft = (async () => {
+        const res = await fetch(`${DIRECT_API_URL}/me/profile/draft`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({
+            activity_description: isLinkedin || isWebsite ? "" : trimmed,
+            linkedin_url: isLinkedin ? trimmed : "",
+            website_url: isWebsite ? trimmed : "",
+            use_apify_linkedin: isLinkedin,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Analyse impossible");
+        return (data.profile || {}) as Record<string, string>;
+      })();
+      const [d] = await Promise.all([fetchDraft, minWait]);
+      setDraft(d);
+      setSel(onbInitSel(d));
+      setStep("page1");
+    } catch (err: any) {
+      setError(err?.message || "Analyse impossible");
+      setStep("intro");
+    }
+  }
+
+  async function finish() {
+    setSaving(true);
+    const merged: Record<string, string> = {
+      ...draft,
+      target_audience: sel.audienceMode === "large" ? "Large, pas de niche précise" : sel.audience,
+      core_offer: sel.offer,
+      linkedin_objective: sel.objective,
+      industry: sel.industry,
+    };
+    try {
       await fetch(`${DIRECT_API_URL}/me/profile`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify(merged),
       });
-      setProfilePreview(merged);
-    } catch (err: any) {
-      setError(err.message || "Pré-remplissage impossible");
-    } finally {
-      setDrafting(false);
-    }
+    } catch { /* best effort — on n'empêche pas d'entrer dans l'app */ }
+    onDone();
   }
 
+  const firstName = (draft.display_name || "").trim().split(/\s+/)[0] || "";
+
   return (
-    <div className="onboarding-overlay">
-      <div className="onboarding-card">
-        <div className="onboarding-header">
-          <Sparkles size={28} className="onboarding-icon" />
-          <h1>Bienvenue sur LKD Outreach</h1>
-          <p>Pour personnaliser tes recommandations, commençons par ton profil éditorial.</p>
-        </div>
-        {!profilePreview ? (
-          <div className="onboarding-step">
-            <span className="onboarding-label">
-              Colle ton profil LinkedIn, ton site web ou décris ton activité en quelques mots.
-            </span>
-            <div className="onboarding-input-row">
+    <div className="onb-overlay">
+      <div className="onb-shell">
+        {(step === "page1" || step === "page2") && (
+          <div className="onb-progress">
+            <div className="onb-progress-fill" style={{ width: step === "page1" ? "50%" : "100%" }} />
+          </div>
+        )}
+
+        {step === "intro" && (
+          <div className="onb-screen" key="intro">
+            <div className="onb-icon-badge"><Target size={26} /></div>
+            <h1 className="onb-title">Bienvenue sur Cible</h1>
+            <p className="onb-subtitle">Colle ton profil LinkedIn, on prépare tout le reste pour toi.</p>
+            <div className="onb-input-row">
               <input
-                className="onboarding-input"
+                className="onb-input"
                 value={aiInput}
                 onChange={(e) => setAiInput(e.target.value)}
-                placeholder="https://linkedin.com/in/ton-profil ou « J'aide les PME à… »"
-                onKeyDown={(e) => { if (e.key === "Enter" && !drafting) doPreFill(); }}
+                onKeyDown={(e) => { if (e.key === "Enter") analyze(); }}
+                placeholder="https://linkedin.com/in/ton-profil"
                 autoFocus
               />
-              <button className="primary-button" onClick={doPreFill} disabled={drafting}>
-                {drafting ? <Loader2 size={15} className="spinning" /> : <Sparkles size={15} />}
-                {drafting ? "Analyse…" : "Pré-remplir"}
+              <button className="onb-cta" onClick={analyze}>
+                <Sparkles size={16} /> Analyser
               </button>
             </div>
-            {error && <div className="error" style={{ marginTop: 4 }}>{error}</div>}
-            <button className="link-button onboarding-skip" onClick={onDone}>
-              Passer cette étape →
-            </button>
+            {error && <div className="onb-error">{error}</div>}
+            <button className="onb-skip" onClick={onDone}>Passer cette étape</button>
           </div>
-        ) : (
-          <div className="onboarding-step">
-            <div className="onboarding-preview">
-              {profilePreview.display_name && <p><strong>Nom :</strong> {profilePreview.display_name}</p>}
-              {profilePreview.brand_name && <p><strong>Marque :</strong> {profilePreview.brand_name}</p>}
-              {profilePreview.industry && <p><strong>Secteur :</strong> {profilePreview.industry}</p>}
-              {profilePreview.business_description && (
-                <p><strong>Activité :</strong> {profilePreview.business_description}</p>
+        )}
+
+        {step === "scanning" && (
+          <div className="onb-screen onb-scan" key="scan">
+            <div className="onb-orb"><Linkedin size={34} /></div>
+            <div className="onb-scan-status" key={scanIdx}>{ONB_SCAN_STEPS[scanIdx]}</div>
+          </div>
+        )}
+
+        {step === "page1" && (
+          <div className="onb-screen" key="page1">
+            <h2 className="onb-greeting">{firstName ? `Ravi de te voir, ${firstName} ` : "Ravi de te voir "}👋</h2>
+            <p className="onb-lead">On a pré-rempli à partir de ton profil. Confirme ou ajuste 👇</p>
+
+            <div className="onb-block">
+              <label className="onb-block-label">À qui tu t'adresses&nbsp;?</label>
+              <div className="onb-toggle">
+                <button
+                  className={"onb-toggle-btn" + (sel.audienceMode === "niche" ? " selected" : "")}
+                  onClick={() => up({ audienceMode: "niche" })}
+                >
+                  J'ai une niche
+                </button>
+                <button
+                  className={"onb-toggle-btn" + (sel.audienceMode === "large" ? " selected" : "")}
+                  onClick={() => up({ audienceMode: "large" })}
+                >
+                  Je m'adresse large
+                </button>
+              </div>
+              {sel.audienceMode === "niche" && (
+                <OnbChips
+                  options={ONB_AUDIENCE_OPTIONS}
+                  value={sel.audience}
+                  onChange={(v) => up({ audience: v })}
+                  placeholder="Ta niche…"
+                />
               )}
             </div>
-            <p className="onboarding-hint">Profil enregistré — tu pourras ajuster les détails dans « Mon profil ».</p>
-            <button className="primary-button" style={{ width: "100%" }} onClick={onDone}>
-              Valider et continuer →
-            </button>
+
+            <div className="onb-block">
+              <label className="onb-block-label">Ce que tu proposes</label>
+              <OnbChips options={ONB_OFFER_OPTIONS} value={sel.offer} onChange={(v) => up({ offer: v })} />
+            </div>
+
+            <div className="onb-nav">
+              <button className="onb-back" onClick={onDone}>Passer</button>
+              <button className="onb-cta" onClick={() => setStep("page2")}>
+                Continuer <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "page2" && (
+          <div className="onb-screen" key="page2">
+            <h2 className="onb-greeting">Presque fini</h2>
+            <p className="onb-lead">Deux derniers points et c'est parti.</p>
+
+            <div className="onb-block">
+              <label className="onb-block-label">Ton objectif sur LinkedIn</label>
+              <OnbChips options={ONB_OBJECTIVE_OPTIONS} value={sel.objective} onChange={(v) => up({ objective: v })} />
+            </div>
+
+            <div className="onb-block">
+              <label className="onb-block-label">Ton secteur</label>
+              <OnbChips options={ONB_INDUSTRY_OPTIONS} value={sel.industry} onChange={(v) => up({ industry: v })} />
+            </div>
+
+            <div className="onb-nav">
+              <button className="onb-back" onClick={() => setStep("page1")}>
+                <ChevronLeft size={16} /> Retour
+              </button>
+              <button className="onb-cta" onClick={finish} disabled={saving}>
+                {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />} C'est parti
+              </button>
+            </div>
           </div>
         )}
       </div>
