@@ -2842,7 +2842,7 @@ function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAut
 // ── Fin ALE-69 ────────────────────────────────────────────────────────────────
 
 type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null; image_url?: string | null; source_url?: string | null };
-type IdeaSeed = { id: string; text: string; used_at?: string | null; created_at?: string };
+type IdeaSeed = { id: string; text: string; comment?: string | null; used_at?: string | null; created_at?: string };
 type IdeaLine = { id?: string; line: string; source_type?: string; source_ref?: string; source_url?: string };
 type DailyIdeaCard = Pick<Idea, "title" | "hook" | "hook_type" | "funnel" | "angle" | "why_it_works" | "estimated_lift">;
 
@@ -2894,6 +2894,7 @@ function DailyIdeasView({
   const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
   const [enabled, setEnabled] = useState(false);
   const [draft, setDraft] = useState("");
+  const [draftComment, setDraftComment] = useState("");
   const [loading, setLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -3128,18 +3129,22 @@ function DailyIdeasView({
   async function addSeed() {
     const text = draft.trim();
     if (text.length < 3) return;
+    // Le commentaire d'orientation n'a de sens que pour un lien d'annonce.
+    const isLinkDraft = /^https?:\/\/\S+$/i.test(text);
+    const comment = isLinkDraft ? draftComment.trim() : "";
     setAdding(true);
     setError("");
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify(comment ? { text, comment } : { text }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Ajout impossible");
       setSeeds((prev) => [...prev, data]);
       setDraft("");
+      setDraftComment("");
     } catch (err: any) {
       setError(err.message || "Ajout impossible");
     } finally {
@@ -3455,6 +3460,18 @@ function DailyIdeasView({
             {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter
           </button>
         </div>
+        {/* Champ d'orientation : uniquement quand l'idée saisie est un lien d'annonce. */}
+        {/^https?:\/\/\S+$/i.test(draft.trim()) && (
+          <input
+            type="text"
+            value={draftComment}
+            onChange={(e) => setDraftComment(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
+            placeholder="Commentaire pour orienter le post (optionnel) — ex. « insiste sur la vue mer »"
+            maxLength={500}
+            style={{ marginTop: 8, width: "100%", boxSizing: "border-box" }}
+          />
+        )}
 
         {seeds.length === 0 ? (
           <p style={{ color: "var(--muted)", margin: "12px 0 0", fontSize: 13 }}>Réservoir vide — l'idée du jour s'appuiera sur ton seul benchmark.</p>
@@ -3464,7 +3481,10 @@ function DailyIdeasView({
               const isLink = /^https?:\/\/\S+$/i.test((s.text || "").trim());
               return (
               <li key={s.id} className={s.used_at ? "used" : ""}>
-                <span>{isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}</span>
+                <span>
+                  {isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}
+                  {s.comment ? <em style={{ display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 }}>↳ orientation : {s.comment}</em> : null}
+                </span>
                 {isLink && !s.used_at ? <span className="daily-seed-tag">annonce</span> : null}
                 {s.used_at ? <span className="daily-seed-tag"><CheckCircle2 size={12} /> utilisée</span> : null}
                 <button className="icon-button" title="Supprimer" onClick={() => deleteSeed(s.id)}><Trash2 size={14} /></button>
