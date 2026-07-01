@@ -14,6 +14,7 @@ Env vars required:
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import hmac
 import json
@@ -22,6 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zoneinfo
 from typing import Any
 
 SLACK_API = "https://slack.com/api"
@@ -43,6 +45,60 @@ def _quote_full_text(text: str) -> str:
         text = text[:_MAX_QUOTE_LEN].rstrip() + "…"
     # Prefix every line so multi-paragraph posts render as one quote block.
     return "\n".join("> " + line for line in text.split("\n"))
+
+
+_FR_DAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+_FR_MONTHS = [
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+]
+# Slack image blocks require a publicly reachable image_url; cap the count so a
+# post with many medias never blows past Slack's block limit.
+_MAX_IMAGE_BLOCKS = 5
+
+
+def _format_scheduled_at(scheduled_at: str) -> str:
+    """Render an ISO 8601 datetime as readable French local time (Europe/Paris).
+
+    Ex. `2026-06-22T09:00:00+02:00` → `lundi 22 juin 2026 à 09h00`.
+    Falls back to the raw string if it can't be parsed.
+    """
+    if not scheduled_at:
+        return "—"
+    raw = scheduled_at.replace("Z", "+00:00") if isinstance(scheduled_at, str) else scheduled_at
+    try:
+        dt = datetime.datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return str(scheduled_at)
+    try:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        dt = dt.astimezone(zoneinfo.ZoneInfo("Europe/Paris"))
+    except Exception:
+        pass
+    return (
+        f"{_FR_DAYS[dt.weekday()]} {dt.day} {_FR_MONTHS[dt.month - 1]} "
+        f"{dt.year} à {dt.hour:02d}h{dt.minute:02d}"
+    )
+
+
+def _image_blocks(media_items: Any) -> list[dict]:
+    """Build Slack `image` blocks from a scheduled post's media_items.
+
+    Only items typed as image with a public http(s) URL are rendered — Slack
+    fetches the URL itself, so base64/data URLs and private paths are skipped.
+    """
+    blocks: list[dict] = []
+    for item in (media_items or []):
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or ""
+        if item.get("type") == "image" and isinstance(url, str) and url.startswith(("http://", "https://")):
+            alt = str(item.get("title") or "Image du post")[:150]
+            blocks.append({"type": "image", "image_url": url, "alt_text": alt})
+            if len(blocks) >= _MAX_IMAGE_BLOCKS:
+                break
+    return blocks
 
 
 class SlackError(RuntimeError):
@@ -362,7 +418,7 @@ def send_scheduled_post_for_validation(
     """Post a scheduled LinkedIn post to Slack with validation buttons."""
     post_id = scheduled_post.get("id", "")
     text = scheduled_post.get("post_text") or ""
-    scheduled_at = scheduled_post.get("scheduled_at") or ""
+    scheduled_at = _format_scheduled_at(scheduled_post.get("scheduled_at") or "")
     preview = _quote_full_text(text)
 
     blocks: list[dict] = [
@@ -372,7 +428,7 @@ def send_scheduled_post_for_validation(
                 "type": "mrkdwn",
                 "text": (
                     "*Post LinkedIn programmé*\n"
-                    f"*Publication prévue* : `{scheduled_at}`"
+                    f"*Publication prévue* : {scheduled_at}"
                 ),
             },
         },
@@ -380,6 +436,7 @@ def send_scheduled_post_for_validation(
             "type": "section",
             "text": {"type": "mrkdwn", "text": preview},
         },
+        *_image_blocks(scheduled_post.get("media_items")),
         _scheduled_post_actions_block(post_id),
     ]
 
@@ -415,7 +472,7 @@ def update_scheduled_post_message(
     """
     post_id = scheduled_post.get("id", "")
     text = scheduled_post.get("post_text") or ""
-    scheduled_at = scheduled_post.get("scheduled_at") or ""
+    scheduled_at = _format_scheduled_at(scheduled_post.get("scheduled_at") or "")
     preview = _quote_full_text(text)
     badge = _SCHEDULED_BADGES.get(status, "")
 
@@ -426,7 +483,7 @@ def update_scheduled_post_message(
                 "type": "mrkdwn",
                 "text": (
                     "*Post LinkedIn programmé*\n"
-                    f"*Publication prévue* : `{scheduled_at}`"
+                    f"*Publication prévue* : {scheduled_at}"
                 ),
             },
         },
@@ -434,6 +491,7 @@ def update_scheduled_post_message(
             "type": "section",
             "text": {"type": "mrkdwn", "text": preview},
         },
+        *_image_blocks(scheduled_post.get("media_items")),
     ]
     if badge:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": badge}})

@@ -2109,7 +2109,7 @@ def get_scheduled_post_for_user(post_id: str, user_id: str) -> dict | None:
     resp = (
         admin_client()
         .table("scheduled_posts")
-        .select("id, user_id, post_text, scheduled_at, status, slack_status")
+        .select("id, user_id, post_text, scheduled_at, status, slack_status, media_items")
         .eq("id", post_id)
         .eq("user_id", user_id)
         .limit(1)
