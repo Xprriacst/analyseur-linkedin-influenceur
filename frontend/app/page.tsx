@@ -522,6 +522,7 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la création de la série");
       setUrls("");
+      emitCredits((data as any).credits);
       onCreated(data as Job);
     } catch (err: any) {
       setError(err.message || "Échec de la création de la série");
@@ -741,6 +742,7 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Échec de la création de la série");
       setHandles("");
+      emitCredits((data as any).credits);
       onCreated(data as Job);
     } catch (err: any) {
       setError(err.message || "Échec de la création de la série");
