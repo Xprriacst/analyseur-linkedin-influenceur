@@ -2078,6 +2078,20 @@ def create_job(payload: JobRequest, token: str = Depends(require_token)) -> dict
         if not urls:
             raise HTTPException(status_code=400, detail="Aucune URL de profil LinkedIn valide.")
 
+    # Débit des crédits à l'avance : 20 crédits par influenceur de la série.
+    # Atomique (fonction Postgres debit_credits). Si le solde est insuffisant,
+    # la série n'est pas créée. Pas de remboursement auto si un profil échoue.
+    ok, balance = db.debit_credits(token, "analyze_job", len(urls))
+    if not ok:
+        cost = db.CREDIT_COSTS["analyze_job"] * len(urls)
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                f"Crédits insuffisants (solde : {balance}). "
+                f"Analyse de {len(urls)} profil(s) = {cost} crédit(s)."
+            ),
+        )
+
     try:
         job = db.create_job(token, urls, payload.limit, payload.run_llm, payload.use_cache, platform=platform)
     except Exception as exc:
@@ -2089,6 +2103,7 @@ def create_job(payload: JobRequest, token: str = Depends(require_token)) -> dict
         raise HTTPException(status_code=500, detail="Création de la série échouée.")
 
     start_job_thread(token, job["id"])
+    job["credits"] = balance
     return job
 
 
