@@ -807,14 +807,10 @@ Contre-exemples à NE PAS reproduire :
 
 
 def _auto_role_mix() -> list[str]:
-    """Mix éditorial par défaut : performance + méthodo/autorité + relationnel/quotidien + opinion + story."""
-    return [
-        "performance",
-        random.choice(["methodologie", "autorite"]),
-        random.choice(["relationnel", "quotidien"]),
-        random.choice(["opinion", "story"]),
-        random.choice(["methodologie", "autorite", "relationnel", "quotidien"]),
-    ]
+    """Mix éditorial aléatoire parmi tous les rôles disponibles, sans doublon."""
+    roles = list(ROLE_SPECS.keys())
+    random.shuffle(roles)
+    return roles
 
 
 def generate_posts(
