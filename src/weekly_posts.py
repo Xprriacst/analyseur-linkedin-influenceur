@@ -17,6 +17,7 @@ import zoneinfo
 
 from src import db
 from src.benchmark import build_benchmark, enrich_influencers
+from src.listing import ListingError, build_listing_topic, fetch_listing_preview, is_listing_url
 from src.llm import generate_posts
 from src import slack as slack_client
 
@@ -87,6 +88,19 @@ def _generate_for_user(user_id: str, run_date: datetime.date) -> int:
         # Pick a seed topic from the reservoir, then fall back to pure generation.
         seed = db.pop_unused_seed(user_id)
         seed_text = seed["text"] if seed else None
+
+        # Lien d'annonce : ancrer le post sur le bien (comme l'idée du jour).
+        if seed_text and is_listing_url(seed_text):
+            try:
+                seed_text = build_listing_topic(fetch_listing_preview(seed_text, download_image=False))
+            except ListingError as exc:
+                print(f"  · {user_id}: annonce illisible ({exc}) → post benchmark", file=sys.stderr)
+                seed_text = None
+
+        # Commentaire d'orientation saisi par l'utilisateur (annonces).
+        seed_comment = (seed.get("comment") or "").strip() if seed else ""
+        if seed_text and seed_comment:
+            seed_text += f"\n\nOrientation demandée par l'utilisateur : {seed_comment}"
 
         posts = generate_posts(
             seed_text,

@@ -1514,17 +1514,24 @@ def list_idea_seeds(access_token: str, limit: int = 200) -> list[dict]:
     return resp.data or []
 
 
-def add_idea_seed(access_token: str, text: str) -> dict | None:
-    """Add a seed idea to the user's reservoir."""
+def add_idea_seed(access_token: str, text: str, comment: str | None = None) -> dict | None:
+    """Add a seed idea to the user's reservoir.
+
+    `comment` is an optional orientation note (used for listing-URL seeds) that is
+    injected into the prompt at generation time.
+    """
     if not supabase_enabled():
         return None
     user = get_user(access_token)
     if not user:
         return None
     db = client_for_token(access_token)
+    row: dict[str, Any] = {"user_id": user["id"], "text": text}
+    if comment:
+        row["comment"] = comment
     resp = (
         db.table("idea_seeds")
-        .insert({"user_id": user["id"], "text": text})
+        .insert(row)
         .execute()
     )
     return resp.data[0] if resp.data else None

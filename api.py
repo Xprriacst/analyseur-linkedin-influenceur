@@ -1373,6 +1373,7 @@ def me_credits(token: str = Depends(require_token)) -> dict[str, Any]:
 
 class IdeaSeedRequest(BaseModel):
     text: str = Field(..., min_length=3, max_length=2000)
+    comment: str | None = Field(default=None, max_length=500)
 
 
 class DailyIdeasEnabledRequest(BaseModel):
@@ -1405,7 +1406,8 @@ def me_idea_seeds(token: str = Depends(require_token)) -> list[dict[str, Any]]:
 @app.post("/me/idea-seeds")
 def add_me_idea_seed(payload: IdeaSeedRequest, token: str = Depends(require_token)) -> dict[str, Any]:
     """Add an idea to the user's reservoir."""
-    seed = db.add_idea_seed(token, payload.text.strip())
+    comment = (payload.comment or "").strip() or None
+    seed = db.add_idea_seed(token, payload.text.strip(), comment=comment)
     if not seed:
         raise HTTPException(status_code=400, detail="Impossible d'enregistrer l'idée.")
     return seed
