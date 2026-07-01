@@ -1946,6 +1946,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   const slack = useSlack(isAuthed);
   const [slackSent, setSlackSent] = useState<Record<number, boolean>>({});
   const [slackSending, setSlackSending] = useState<Record<number, boolean>>({});
+  const [confirmSlackIndex, setConfirmSlackIndex] = useState<number | null>(null);
   const [publishing, setPublishing] = useState<number | null>(null);
   const [published, setPublished] = useState<number | null>(null);
   const [drafted, setDrafted] = useState<number | null>(null);
@@ -2438,19 +2439,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     <button
                       className="secondary-button"
                       disabled={!!slackSending[i] || !!slackSent[i]}
-                      onClick={async () => {
-                        setSlackSending((p) => ({ ...p, [i]: true }));
-                        try {
-                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ post_id: v.id, content: editedVariants[i] ?? v.post }),
-                          });
-                          setSlackSent((p) => ({ ...p, [i]: true }));
-                        } finally {
-                          setSlackSending((p) => ({ ...p, [i]: false }));
-                        }
-                      }}
+                      onClick={() => setConfirmSlackIndex(i)}
                     >
                       {slackSending[i] ? <Loader2 size={14} className="spinning" /> : null}
                       {slackSent[i] ? "Sur Slack ✓" : "Envoyer sur Slack"}
@@ -2477,6 +2466,33 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     </button>
                   )}
                 </div>
+                {confirmSlackIndex === i && (
+                  <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
+                    <button
+                      className="primary-button"
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                      disabled={!!slackSending[i]}
+                      onClick={async () => {
+                        setSlackSending((p) => ({ ...p, [i]: true }));
+                        try {
+                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+                            body: JSON.stringify({ post_id: v.id, content: editedVariants[i] ?? v.post }),
+                          });
+                          setSlackSent((p) => ({ ...p, [i]: true }));
+                        } finally {
+                          setSlackSending((p) => ({ ...p, [i]: false }));
+                          setConfirmSlackIndex(null);
+                        }
+                      }}
+                    >
+                      {slackSending[i] ? <Loader2 size={12} className="spinning" /> : null} Confirmer l&apos;envoi
+                    </button>
+                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmSlackIndex(null)}>Annuler</button>
+                  </div>
+                )}
                 {published === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
                 )}
@@ -3561,6 +3577,7 @@ function LibraryView({
   const [publishingXPost, setPublishingXPost] = useState<string | null>(null);
   const [publishedXPost, setPublishedXPost] = useState<string | null>(null);
   const [confirmXPostId, setConfirmXPostId] = useState<string | null>(null);
+  const [confirmSlackPostId, setConfirmSlackPostId] = useState<string | null>(null);
   const [scheduleForPost, setScheduleForPost] = useState<string | null>(null);
   const [scheduleDateLib, setScheduleDateLib] = useState("");
   const [schedulingPostLib, setSchedulingPostLib] = useState<string | null>(null);
@@ -3842,20 +3859,7 @@ function LibraryView({
                     <button
                       className="secondary-button"
                       disabled={!!slackSending[p.id] || !!slackSent[p.id] || p.slack_status === "pending"}
-                      onClick={async () => {
-                        setSlackSending((prev) => ({ ...prev, [p.id]: true }));
-                        try {
-                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ post_id: p.id, content: editedPosts[p.id] ?? p.post }),
-                          });
-                          setSlackSent((prev) => ({ ...prev, [p.id]: true }));
-                          setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, post: editedPosts[p.id] ?? pp.post, slack_status: "pending" } : pp));
-                        } finally {
-                          setSlackSending((prev) => ({ ...prev, [p.id]: false }));
-                        }
-                      }}
+                      onClick={() => setConfirmSlackPostId(p.id)}
                     >
                       {slackSending[p.id] ? <Loader2 size={14} className="spinning" /> : null}
                       {slackSent[p.id] || p.slack_status === "pending" ? "Sur Slack ✓" : "Envoyer sur Slack"}
@@ -3907,6 +3911,34 @@ function LibraryView({
                     <span style={{ fontSize: 13 }}>Publier ce post maintenant sur X ?</span>
                     <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => publishSavedPostX(p)}>Confirmer</button>
                     <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmXPostId(null)}>Annuler</button>
+                  </div>
+                )}
+                {confirmSlackPostId === p.id && (
+                  <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
+                    <button
+                      className="primary-button"
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                      disabled={!!slackSending[p.id]}
+                      onClick={async () => {
+                        setSlackSending((prev) => ({ ...prev, [p.id]: true }));
+                        try {
+                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+                            body: JSON.stringify({ post_id: p.id, content: editedPosts[p.id] ?? p.post }),
+                          });
+                          setSlackSent((prev) => ({ ...prev, [p.id]: true }));
+                          setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, post: editedPosts[p.id] ?? pp.post, slack_status: "pending" } : pp));
+                        } finally {
+                          setSlackSending((prev) => ({ ...prev, [p.id]: false }));
+                          setConfirmSlackPostId(null);
+                        }
+                      }}
+                    >
+                      {slackSending[p.id] ? <Loader2 size={12} className="spinning" /> : null} Confirmer l&apos;envoi
+                    </button>
+                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmSlackPostId(null)}>Annuler</button>
                   </div>
                 )}
                 {publishError && publishingPost === null && publishedPost === null && (
@@ -4027,6 +4059,7 @@ function AssistantMessageActions({
   const [scheduled, setScheduled] = useState(false);
   const [slackSending, setSlackSending] = useState(false);
   const [slackSent, setSlackSent] = useState(false);
+  const [confirmSlack, setConfirmSlack] = useState(false);
   const [generatingImg, setGeneratingImg] = useState(false);
   const [generatedImg, setGeneratedImg] = useState<string | null>(null);
   const [err, setErr] = useState("");
@@ -4103,7 +4136,7 @@ function AssistantMessageActions({
   }
 
   async function sendSlack() {
-    setErr(""); setSlackSending(true);
+    setErr(""); setConfirmSlack(false); setSlackSending(true);
     try {
       // Slack a besoin d'un post_id : on persiste d'abord la réponse comme post sauvegardé.
       const saveRes = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
@@ -4188,7 +4221,7 @@ function AssistantMessageActions({
         </button>
       )}
       {slack.status?.connected && (
-        <button className="secondary-button" style={btn} disabled={slackSending || slackSent} onClick={sendSlack}>
+        <button className="secondary-button" style={btn} disabled={slackSending || slackSent} onClick={() => setConfirmSlack(true)}>
           {slackSending ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} {slackSent ? "Sur Slack ✓" : "Envoyer sur Slack"}
         </button>
       )}
@@ -4218,6 +4251,15 @@ function AssistantMessageActions({
           <span style={{ fontSize: 13 }}>Publier ce post maintenant sur X ?</span>
           <button className="primary-button" style={btn} onClick={publishX}>Confirmer</button>
           <button className="secondary-button" style={btn} onClick={() => setConfirmX(false)}>Annuler</button>
+        </div>
+      )}
+      {confirmSlack && (
+        <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
+          <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
+          <button className="primary-button" style={btn} disabled={slackSending} onClick={sendSlack}>
+            {slackSending ? <Loader2 size={12} className="spinning" /> : null} Confirmer
+          </button>
+          <button className="secondary-button" style={btn} onClick={() => setConfirmSlack(false)}>Annuler</button>
         </div>
       )}
       {generatedImg && (
