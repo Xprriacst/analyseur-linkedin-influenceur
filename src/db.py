@@ -803,6 +803,10 @@ def update_generated_post(
 
 # ── Crédits utilisateur (ALE-41) ── #
 
+# Offre de bienvenue à l'inscription (1re visite). Doit rester alignée avec le
+# défaut de colonne et l'auto-création dans debit_credits() (migration 0028).
+WELCOME_CREDITS = 60
+
 CREDIT_COSTS: dict[str, int] = {
     "generate_post": 5,    # par variant
     "generate_ideas": 3,   # par lot (ALE-143)
@@ -835,13 +839,13 @@ def get_user_credits(access_token: str) -> dict:
         rows = []
     if rows:
         return {"balance": rows[0]["balance"], "enabled": True}
-    # Première visite : initialiser via service-role
+    # Première visite : initialiser via service-role (offre de bienvenue = 60).
     if admin_enabled():
         try:
-            admin_client().table("user_credits").insert({"user_id": user["id"], "balance": 20}).execute()
+            admin_client().table("user_credits").insert({"user_id": user["id"], "balance": WELCOME_CREDITS}).execute()
         except Exception:
             pass
-    return {"balance": 20, "enabled": True}
+    return {"balance": WELCOME_CREDITS, "enabled": True}
 
 
 def debit_credits(access_token: str, action: str, count: int = 1) -> tuple[bool, int]:
