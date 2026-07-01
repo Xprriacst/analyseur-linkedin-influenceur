@@ -13,6 +13,63 @@ from statistics import median as _median
 from src.patterns import analyze_patterns
 from src.stats import compute_stats
 
+_TOP_POSTS_LIMIT = 6
+_MIN_DISTINCT_CATEGORIES = 3
+
+
+def _select_diverse_top_posts(all_posts: list[dict], limit: int = _TOP_POSTS_LIMIT) -> list[dict]:
+    """Select up to `limit` posts covering ≥ MIN_DISTINCT_CATEGORIES hook_types/formats.
+
+    Within each bucket (hook_type first, then format as tiebreaker) we keep
+    the best-performing post. If the corpus is too homogeneous we fall back to
+    the plain top-N-by-engagement.
+    """
+    if not all_posts:
+        return []
+
+    by_hook: dict[str, list[dict]] = {}
+    for p in all_posts:
+        key = p.get("hook_type") or "other"
+        by_hook.setdefault(key, []).append(p)
+
+    # Best post per hook_type, sorted by their hook's top engagement.
+    hook_slots: list[dict] = [
+        max(posts, key=lambda p: p.get("engagement", 0))
+        for posts in by_hook.values()
+    ]
+    hook_slots.sort(key=lambda p: p.get("engagement", 0), reverse=True)
+
+    selected: list[dict] = hook_slots[:limit]
+
+    # If we still have room and haven't hit the format-diversity target, fill
+    # with best posts per format that aren't already selected.
+    if len(selected) < limit:
+        seen_ids = {id(p) for p in selected}
+        by_format: dict[str, list[dict]] = {}
+        for p in all_posts:
+            if id(p) not in seen_ids:
+                key = p.get("format") or "text"
+                by_format.setdefault(key, []).append(p)
+
+        format_slots = [
+            max(posts, key=lambda p: p.get("engagement", 0))
+            for posts in by_format.values()
+        ]
+        format_slots.sort(key=lambda p: p.get("engagement", 0), reverse=True)
+        for p in format_slots:
+            if len(selected) >= limit:
+                break
+            selected.append(p)
+
+    # Fallback: if we still don't have MIN_DISTINCT_CATEGORIES across hook+format,
+    # the corpus is homogeneous — plain top-N is fine.
+    distinct = len({p.get("hook_type", "other") for p in selected} |
+                   {p.get("format", "text") for p in selected})
+    if distinct < _MIN_DISTINCT_CATEGORIES:
+        return sorted(all_posts, key=lambda x: x.get("engagement", 0), reverse=True)[:limit]
+
+    return selected
+
 
 def _compute_corpus_insights(all_posts: list[dict]) -> list[str]:
     """Derive data-driven insights from the enriched post corpus.
@@ -154,7 +211,7 @@ def build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
         for hook, count in inf["patterns"].get("hook_distribution", {}).items():
             hook_totals[hook] += count
 
-    top_posts = sorted(all_posts, key=lambda x: x.get("engagement", 0), reverse=True)[:6]
+    top_posts = _select_diverse_top_posts(all_posts)
     benchmarks = []
     for inf in influencers:
         s = inf["stats"].get("engagement", {})
