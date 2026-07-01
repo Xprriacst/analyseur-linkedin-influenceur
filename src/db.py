@@ -2508,3 +2508,73 @@ def get_weekly_schedule_for_user(user_id: str) -> list[dict]:
         .execute()
     )
     return resp.data or []
+
+
+def get_slack_config_for_user(user_id: str) -> dict | None:
+    """Fetch Slack bot_token + channel_id for a user (service-role, for crons)."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("user_integrations")
+        .select("access_token, channel_id")
+        .eq("user_id", user_id)
+        .eq("service", "slack")
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def create_scheduled_post_admin(
+    user_id: str,
+    post_text: str,
+    scheduled_at_iso: str,
+) -> dict | None:
+    """Insert a scheduled post with service-role (no user JWT). Used by crons."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("scheduled_posts")
+        .insert({
+            "user_id": user_id,
+            "post_text": post_text,
+            "scheduled_at": scheduled_at_iso,
+            "media_items": [],
+            "slack_status": "pending",
+        })
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def set_scheduled_post_slack_ts_admin(post_id: str, message_ts: str) -> None:
+    """Persist the Slack message timestamp for a scheduled post (service-role)."""
+    if not admin_enabled():
+        return
+    admin_client().table("scheduled_posts").update({
+        "slack_message_ts": message_ts,
+        "updated_at": "now()",
+    }).eq("id", post_id).execute()
+
+
+def weekly_post_exists(user_id: str, utc_date: str) -> bool:
+    """True if a non-cancelled scheduled post already exists for this user on utc_date.
+
+    `utc_date` is YYYY-MM-DD. Used by the weekly cron for idempotency.
+    """
+    if not admin_enabled():
+        return False
+    resp = (
+        admin_client()
+        .table("scheduled_posts")
+        .select("id")
+        .eq("user_id", user_id)
+        .gte("scheduled_at", f"{utc_date}T00:00:00+00:00")
+        .lte("scheduled_at", f"{utc_date}T23:59:59+00:00")
+        .neq("status", "cancelled")
+        .limit(1)
+        .execute()
+    )
+    return bool(resp.data)

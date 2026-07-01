@@ -1,0 +1,60 @@
+name: Notif Slack — PR agent prête à merger
+
+# Envoie une notification Slack dès qu'une PR d'agent (feat/ale-*) est ouverte
+# vers `dev`. Permet à Alex de merger depuis son téléphone sans oublier.
+#
+# Pré-requis : secret GitHub `SLACK_WEBHOOK_URL` = URL d'un Incoming Webhook Slack
+# (Slack App → Features → Incoming Webhooks → Add New Webhook to Workspace).
+
+on:
+  pull_request:
+    types: [opened]
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    # N'envoyer que pour les branches d'agents (feat/ale-*), pas les PRs manuelles
+    if: startsWith(github.head_ref, 'feat/ale-')
+    steps:
+      - name: Envoyer la notification Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL non configuré — notification ignorée."
+            exit 0
+          fi
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"text\": \"🤖 PR agent prête à merger\",
+              \"blocks\": [
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"*🤖 PR agent prête à merger*\n<${PR_URL}|PR #${PR_NUMBER} — ${PR_TITLE}>\nBranche : \`${HEAD_REF}\` → \`dev\`\"
+                  }
+                },
+                {
+                  \"type\": \"actions\",
+                  \"elements\": [
+                    {
+                      \"type\": \"button\",
+                      \"text\": { \"type\": \"plain_text\", \"text\": \"Voir la PR\" },
+                      \"url\": \"${PR_URL}\",
+                      \"style\": \"primary\"
+                    }
+                  ]
+                }
+              ]
+            }"

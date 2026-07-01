@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import json
+import secrets
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -27,6 +30,16 @@ from src.daily_ideas import _render_idea_markdown
 from src.listing import ListingError, build_listing_topic, fetch_listing_preview, is_listing_url
 
 load_dotenv()
+
+if slack_client.enabled() and not os.environ.get("SLACK_SIGNING_SECRET"):
+    print(
+        "⚠️  SLACK_SIGNING_SECRET absent : les webhooks Slack seront refusés (fail-closed). "
+        "Ajoutez-le dans les variables d'environnement.",
+        file=sys.stderr,
+    )
+
+# État CSRF OAuth Slack : token → {user_id, expires}. TTL 10 min, en mémoire.
+_slack_oauth_states: dict[str, dict] = {}
 
 app = FastAPI(title="LinkedIn Strategy Decoder API")
 
@@ -1538,6 +1551,7 @@ class SlackConnectRequest(BaseModel):
 class SlackCallbackRequest(BaseModel):
     code: str = Field(..., min_length=4)
     redirect_uri: str = Field(..., min_length=10)
+    state: str = ""  # CSRF token généré par /connect ; vide = flux sans state (rétro-compat dev)
 
 
 class SlackSendIdeasRequest(BaseModel):
@@ -1573,11 +1587,16 @@ def slack_connect(
     """Return the Slack OAuth authorization URL to redirect the user to."""
     if not slack_client.enabled():
         raise HTTPException(status_code=400, detail="SLACK_CLIENT_ID / SLACK_CLIENT_SECRET manquants sur le serveur.")
+    user = db.get_user(token) or {}
+    user_id = user.get("id", "")
+    state_token = secrets.token_urlsafe(32)
+    _slack_oauth_states[state_token] = {"user_id": user_id, "expires": time.time() + 600}
     try:
-        auth_url = slack_client.build_oauth_url(payload.redirect_uri)
+        auth_url = slack_client.build_oauth_url(payload.redirect_uri, state=state_token)
     except slack_client.SlackError as exc:
+        _slack_oauth_states.pop(state_token, None)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"auth_url": auth_url}
+    return {"auth_url": auth_url, "state": state_token}
 
 
 @app.post("/me/integrations/slack/callback")
@@ -1588,6 +1607,13 @@ def slack_callback(
     """Exchange an OAuth code for tokens and persist the Slack integration."""
     if not slack_client.enabled():
         raise HTTPException(status_code=400, detail="SLACK_CLIENT_ID / SLACK_CLIENT_SECRET manquants sur le serveur.")
+    if payload.state:
+        stored = _slack_oauth_states.pop(payload.state, None)
+        if not stored or time.time() > stored["expires"]:
+            raise HTTPException(status_code=400, detail="État OAuth invalide ou expiré.")
+        current_user = db.get_user(token) or {}
+        if stored["user_id"] and stored["user_id"] != current_user.get("id"):
+            raise HTTPException(status_code=400, detail="État OAuth ne correspond pas à l'utilisateur authentifié.")
     try:
         oauth = slack_client.exchange_code(payload.code, payload.redirect_uri)
     except slack_client.SlackError as exc:
@@ -2196,5 +2222,29 @@ def instagram_hooks(
         user_context = {k: v for k, v in profile.items() if v not in (None, "")}
     except Exception:
         pass
-    hooks = select_hooks(user_context, count=max(1, min(payload.count, 20)), topic=payload.topic)
+
+    corpus_examples: list[dict] = []
+    try:
+        corpus = db.get_user_corpus(token, platform="instagram")
+        for entry in corpus:
+            handle = entry.get("handle", "")
+            for post in entry.get("posts", []):
+                text = (post.get("text") or "").strip()
+                if text:
+                    corpus_examples.append({
+                        "handle": handle,
+                        "text": text,
+                        "engagement": post.get("engagement", 0) or 0,
+                    })
+        corpus_examples.sort(key=lambda x: x["engagement"], reverse=True)
+        corpus_examples = corpus_examples[:8]
+    except Exception:
+        pass
+
+    hooks = select_hooks(
+        user_context,
+        count=max(1, min(payload.count, 20)),
+        topic=payload.topic,
+        corpus_examples=corpus_examples or None,
+    )
     return {"hooks": hooks}

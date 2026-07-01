@@ -26,6 +26,7 @@ import {
   LogIn,
   LogOut,
   Bookmark,
+  BookmarkPlus,
   MessageSquare,
   Pencil,
   PenTool,
@@ -1896,6 +1897,7 @@ function useSlack(isAuthed: boolean) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Connexion Slack impossible");
       sessionStorage.setItem("slack_oauth_pending", "1");
+      if (data.state) sessionStorage.setItem("slack_oauth_state", data.state);
       window.location.href = data.auth_url;
     } catch (err: any) {
       setError(err.message);
@@ -2305,7 +2307,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
             </span>
             <span className="role-picker-hint">
               {role === "auto"
-                ? "Mix automatique : performance + méthodologie/autorité + relationnel/quotidien."
+                ? "Mix automatique : combinaison variée de rôles éditoriaux (performance, story, opinion…) tirés aléatoirement."
                 : "Les 3 variants utiliseront ce rôle."}
             </span>
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)" }}>
@@ -4011,6 +4013,8 @@ function AssistantMessageActions({
   slack: ReturnType<typeof useSlack>;
 }) {
   const [copied, setCopied] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savedPost, setSavedPost] = useState(false);
   const [confirmPub, setConfirmPub] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [published, setPublished] = useState(false);
@@ -4023,6 +4027,8 @@ function AssistantMessageActions({
   const [scheduled, setScheduled] = useState(false);
   const [slackSending, setSlackSending] = useState(false);
   const [slackSent, setSlackSent] = useState(false);
+  const [generatingImg, setGeneratingImg] = useState(false);
+  const [generatedImg, setGeneratedImg] = useState<string | null>(null);
   const [err, setErr] = useState("");
 
   const btn = { fontSize: 12, minHeight: 30, padding: "0 10px" } as const;
@@ -4118,10 +4124,45 @@ function AssistantMessageActions({
     } catch (e: any) { setErr(e.message); } finally { setSlackSending(false); }
   }
 
+  async function save() {
+    setErr(""); setSaving(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Sauvegarde impossible.");
+      setSavedPost(true);
+    } catch (e: any) { setErr(e.message); } finally { setSaving(false); }
+  }
+
+  async function generateImageFn() {
+    setErr(""); setGeneratingImg(true); setGeneratedImg(null);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post_text: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
+      setGeneratedImg(data.image_data);
+      if (data.credits !== undefined) emitCredits(data.credits);
+    } catch (e: any) { setErr(e.message); } finally { setGeneratingImg(false); }
+  }
+
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
       <button className="secondary-button" style={btn} onClick={copy}>
         {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />} {copied ? "Copié ✓" : "Copier"}
+      </button>
+      <button className="secondary-button" style={btn} disabled={saving || savedPost} onClick={save}>
+        {saving ? <Loader2 size={13} className="spinning" /> : <BookmarkPlus size={13} />} {savedPost ? "Sauvegardé ✓" : "Sauvegarder"}
+      </button>
+      <button className="secondary-button" style={btn} disabled={generatingImg} onClick={generateImageFn}>
+        {generatingImg ? <Loader2 size={13} className="spinning" /> : <ImageIcon size={13} />} {generatingImg ? "Génération…" : "Générer une image"}
       </button>
       <button
         className="secondary-button"
@@ -4177,6 +4218,22 @@ function AssistantMessageActions({
           <span style={{ fontSize: 13 }}>Publier ce post maintenant sur X ?</span>
           <button className="primary-button" style={btn} onClick={publishX}>Confirmer</button>
           <button className="secondary-button" style={btn} onClick={() => setConfirmX(false)}>Annuler</button>
+        </div>
+      )}
+      {generatedImg && (
+        <div style={{ width: "100%", marginTop: 8 }}>
+          <img
+            src={`data:image/png;base64,${generatedImg}`}
+            alt="Image générée"
+            style={{ maxWidth: "100%", borderRadius: 8, border: "1px solid var(--border)" }}
+          />
+          <a
+            href={`data:image/png;base64,${generatedImg}`}
+            download="post-image.png"
+            style={{ display: "inline-block", marginTop: 6, fontSize: 12, color: "var(--accent)" }}
+          >
+            Télécharger l'image
+          </a>
         </div>
       )}
       {err && <div className="error" style={{ marginTop: 4, fontSize: 12, width: "100%" }}>{err}</div>}
@@ -5972,13 +6029,15 @@ export default function Home() {
     const code = params.get("code");
     if (!code || !sessionStorage.getItem("slack_oauth_pending")) return;
     sessionStorage.removeItem("slack_oauth_pending");
+    const slackOauthState = sessionStorage.getItem("slack_oauth_state") || params.get("state") || "";
+    sessionStorage.removeItem("slack_oauth_state");
     (async () => {
       try {
         const redirectUri = `${window.location.origin}${window.location.pathname}`;
         await fetch(`${DIRECT_API_URL}/me/integrations/slack/callback`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-          body: JSON.stringify({ code, redirect_uri: redirectUri }),
+          body: JSON.stringify({ code, redirect_uri: redirectUri, state: slackOauthState }),
         });
       } catch { /* ignore */ }
       params.delete("code");
