@@ -1750,10 +1750,12 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
     except Exception:
         raise HTTPException(status_code=400, detail="Payload Slack invalide (JSON).")
 
-    # Modal submission: the user edited a scheduled post's text from Slack (ALE-149).
+    # Modal submission: the user edited a post's text from Slack.
+    # Deux flux symétriques : posts programmés (ALE-149) et posts envoyés directement.
     if data.get("type") == "view_submission":
         view = data.get("view") or {}
-        if view.get("callback_id") != "edit_scheduled_post_modal":
+        callback_id = view.get("callback_id")
+        if callback_id not in ("edit_scheduled_post_modal", "edit_post_modal"):
             return {"response_action": "clear"}
         slack_user_id = (data.get("user") or {}).get("id", "")
         integration = db.get_user_by_slack_id(slack_user_id)
@@ -1770,18 +1772,31 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
         ).strip()
         if not (integration and post_id and new_text):
             return {"response_action": "clear"}
-        updated = db.update_scheduled_post_text_admin(post_id, integration["user_id"], new_text)
-        if not updated:
-            return {
-                "response_action": "errors",
-                "errors": {"post_text_block": "Ce post n'est plus modifiable (déjà publié ou annulé)."},
-            }
         bot_token_w = integration.get("access_token", "")
-        if bot_token_w and channel_id_w and ts_w:
-            try:
-                slack_client.update_scheduled_post_message(bot_token_w, channel_id_w, ts_w, updated, "edited")
-            except slack_client.SlackError:
-                pass
+        if callback_id == "edit_scheduled_post_modal":
+            updated = db.update_scheduled_post_text_admin(post_id, integration["user_id"], new_text)
+            if not updated:
+                return {
+                    "response_action": "errors",
+                    "errors": {"post_text_block": "Ce post n'est plus modifiable (déjà publié ou annulé)."},
+                }
+            if bot_token_w and channel_id_w and ts_w:
+                try:
+                    slack_client.update_scheduled_post_message(bot_token_w, channel_id_w, ts_w, updated, "edited")
+                except slack_client.SlackError:
+                    pass
+        else:  # edit_post_modal (post envoyé directement)
+            updated = db.update_generated_post_text_admin(post_id, integration["user_id"], new_text)
+            if not updated:
+                return {
+                    "response_action": "errors",
+                    "errors": {"post_text_block": "Ce post n'est plus modifiable."},
+                }
+            if bot_token_w and channel_id_w and ts_w:
+                try:
+                    slack_client.update_post_message(bot_token_w, channel_id_w, ts_w, updated, "edited")
+                except slack_client.SlackError:
+                    pass
         return {"response_action": "clear"}
 
     if data.get("type") != "block_actions":
@@ -1824,12 +1839,27 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
         status = "validated" if action_id == "validate_post" else "rejected"
         if integration:
             db.update_post_slack_status(item_id, integration["user_id"], status)
+            post = db.get_generated_post_for_user(item_id, integration["user_id"]) or {"id": item_id}
             bot_token_w = integration.get("access_token", "")
             channel_id_w = (data.get("channel") or {}).get("id", "")
             ts_w = (data.get("message") or {}).get("ts", "")
             if bot_token_w and channel_id_w and ts_w:
                 try:
-                    slack_client.update_post_message(bot_token_w, channel_id_w, ts_w, {"id": item_id}, status)
+                    slack_client.update_post_message(bot_token_w, channel_id_w, ts_w, post, status)
+                except slack_client.SlackError:
+                    pass
+
+    elif action_id == "edit_post":
+        # Ouvre la modal d'édition immédiatement — le trigger_id expire en ~3 s.
+        if integration:
+            bot_token_w = integration.get("access_token", "")
+            trigger_id = data.get("trigger_id", "")
+            channel_id_w = (data.get("channel") or {}).get("id", "")
+            ts_w = (data.get("message") or {}).get("ts", "")
+            post = db.get_generated_post_for_user(item_id, integration["user_id"]) or {"id": item_id}
+            if bot_token_w and trigger_id:
+                try:
+                    slack_client.open_generated_post_edit_modal(bot_token_w, trigger_id, post, channel_id_w, ts_w)
                 except slack_client.SlackError:
                     pass
 
