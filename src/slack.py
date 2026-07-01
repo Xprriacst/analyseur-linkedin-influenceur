@@ -319,25 +319,7 @@ def send_post_for_validation(
             "type": "section",
             "text": {"type": "mrkdwn", "text": _quote_full_text(text)},
         },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "action_id": "validate_post",
-                    "value": post_id,
-                    "text": {"type": "plain_text", "text": "✅ Valider", "emoji": True},
-                    "style": "primary",
-                },
-                {
-                    "type": "button",
-                    "action_id": "reject_post",
-                    "value": post_id,
-                    "text": {"type": "plain_text", "text": "❌ Rejeter", "emoji": True},
-                    "style": "danger",
-                },
-            ],
-        },
+        _post_actions_block(post_id),
     ]
 
     data = _api_call(
@@ -350,6 +332,42 @@ def send_post_for_validation(
     return data["ts"]
 
 
+def _post_actions_block(post_id: str) -> dict:
+    """Validate / edit / reject buttons for a generated-post Slack message."""
+    return {
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "action_id": "validate_post",
+                "value": post_id,
+                "text": {"type": "plain_text", "text": "✅ Valider", "emoji": True},
+                "style": "primary",
+            },
+            {
+                "type": "button",
+                "action_id": "edit_post",
+                "value": post_id,
+                "text": {"type": "plain_text", "text": "✏️ Modifier", "emoji": True},
+            },
+            {
+                "type": "button",
+                "action_id": "reject_post",
+                "value": post_id,
+                "text": {"type": "plain_text", "text": "❌ Rejeter", "emoji": True},
+                "style": "danger",
+            },
+        ],
+    }
+
+
+_POST_BADGES = {
+    "validated": "✅ Validé — prêt à publier",
+    "rejected": "❌ Rejeté",
+    "edited": "✏️ Modifié — à re-valider",
+}
+
+
 def update_post_message(
     bot_token: str,
     channel_id: str,
@@ -357,20 +375,32 @@ def update_post_message(
     post: dict,
     status: str,
 ) -> None:
-    """Replace the buttons with a status badge after a user validates or rejects a post."""
+    """Refresh a generated-post Slack message after a validate/reject/edit action.
+
+    `validated` / `rejected` are terminal → buttons replaced by a status badge.
+    `edited` keeps the validate/edit/reject buttons so the user can re-validate
+    the new content (symétrie avec les posts programmés)."""
     topic = post.get("topic") or ""
     text = post.get("post") or ""
-    preview = text[:300] + ("…" if len(text) > 300 else "")
-
-    badge = "✅ Validé — prêt à publier" if status == "validated" else "❌ Rejeté"
     header = f"*{topic}*" if topic else "*Post généré*"
+    badge = _POST_BADGES.get(status, "")
 
     blocks: list[dict] = [
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"{header}\n> {preview}\n{badge}"},
-        }
+            "text": {"type": "mrkdwn", "text": header},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": _quote_full_text(text)},
+        },
     ]
+    if badge:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": badge}})
+    # Non-terminal states (edited) keep the action buttons for re-validation.
+    if status not in ("validated", "rejected"):
+        blocks.append(_post_actions_block(post.get("id", "")))
+
     _api_call(
         "chat.update",
         bot_token,
@@ -533,6 +563,50 @@ def open_post_edit_modal(
     view = {
         "type": "modal",
         "callback_id": "edit_scheduled_post_modal",
+        "private_metadata": metadata,
+        "title": {"type": "plain_text", "text": "Modifier le post"},
+        "submit": {"type": "plain_text", "text": "Enregistrer"},
+        "close": {"type": "plain_text", "text": "Annuler"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "post_text_block",
+                "label": {"type": "plain_text", "text": "Texte du post LinkedIn"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "post_text_input",
+                    "multiline": True,
+                    "max_length": 3000,
+                    "initial_value": text[:3000],
+                },
+            },
+        ],
+    }
+    _api_call("views.open", bot_token, trigger_id=trigger_id, view=view)
+
+
+def open_generated_post_edit_modal(
+    bot_token: str,
+    trigger_id: str,
+    post: dict,
+    channel_id: str,
+    message_ts: str,
+) -> None:
+    """Open a Slack modal to edit a generated post's text (envoi direct).
+
+    Symétrie avec `open_post_edit_modal` (posts programmés) : le `view_submission`
+    handler (callback_id `edit_post_modal`) persiste le nouveau texte et rafraîchit
+    le message d'origine. `trigger_id` expire en ~3 s → appeler dès le clic."""
+    post_id = post.get("id", "")
+    text = post.get("post") or ""
+    metadata = json.dumps({
+        "post_id": post_id,
+        "channel_id": channel_id,
+        "message_ts": message_ts,
+    })
+    view = {
+        "type": "modal",
+        "callback_id": "edit_post_modal",
         "private_metadata": metadata,
         "title": {"type": "plain_text", "text": "Modifier le post"},
         "submit": {"type": "plain_text", "text": "Enregistrer"},

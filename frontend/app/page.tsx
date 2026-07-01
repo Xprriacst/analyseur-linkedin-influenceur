@@ -6204,7 +6204,7 @@ export default function Home() {
     // chaque changement de compte, sinon l'utilisateur suivant voit les données
     // du précédent. Exception : passage anonyme → connecté avec une analyse à
     // l'écran, qu'on conserve et qu'on sauvegarde dans le nouveau compte.
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s);
       const uid = s?.user?.id ?? null;
       if (uid === userIdRef.current) return;
@@ -6226,7 +6226,10 @@ export default function Home() {
       }
 
       pendingAnonResultRef.current = null;
-      setAuthOpen(false);
+      // Ne pas fermer une modale que l'utilisateur vient d'ouvrir juste parce que
+      // Supabase restaure une session existante au chargement (INITIAL_SESSION).
+      // On ne ferme que sur une vraie connexion (SIGNED_IN / création de compte).
+      if (event !== "INITIAL_SESSION") setAuthOpen(false);
       setReports([]);
       setInfluencers([]);
       setResult(null);

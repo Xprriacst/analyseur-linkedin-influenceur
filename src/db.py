@@ -2113,6 +2113,42 @@ def update_post_slack_status(post_id: str, user_id: str, status: str) -> bool:
     return bool(resp.data)
 
 
+def get_generated_post_for_user(post_id: str, user_id: str) -> dict | None:
+    """Fetch a generated post by id/user with service-role access (webhook, no JWT)."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("generated_posts")
+        .select("id, user_id, post, topic, slack_status")
+        .eq("id", post_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_generated_post_text_admin(post_id: str, user_id: str, text: str) -> dict | None:
+    """Edit a generated post's text from Slack (service-role, no JWT in webhook).
+
+    Resets `slack_status` to 'pending' so an edited post must be re-validated
+    before it counts as approved (symétrie avec les posts programmés, ALE-149).
+    Returns the updated row, or None if the post no longer exists for this user.
+    """
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("generated_posts")
+        .update({"post": text, "slack_status": "pending"})
+        .eq("id", post_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def get_scheduled_post_for_user(post_id: str, user_id: str) -> dict | None:
     """Fetch a scheduled post by id/user with service-role access."""
     if not admin_enabled():
