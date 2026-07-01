@@ -1896,6 +1896,7 @@ function useSlack(isAuthed: boolean) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Connexion Slack impossible");
       sessionStorage.setItem("slack_oauth_pending", "1");
+      if (data.state) sessionStorage.setItem("slack_oauth_state", data.state);
       window.location.href = data.auth_url;
     } catch (err: any) {
       setError(err.message);
@@ -5894,13 +5895,15 @@ export default function Home() {
     const code = params.get("code");
     if (!code || !sessionStorage.getItem("slack_oauth_pending")) return;
     sessionStorage.removeItem("slack_oauth_pending");
+    const slackOauthState = sessionStorage.getItem("slack_oauth_state") || params.get("state") || "";
+    sessionStorage.removeItem("slack_oauth_state");
     (async () => {
       try {
         const redirectUri = `${window.location.origin}${window.location.pathname}`;
         await fetch(`${DIRECT_API_URL}/me/integrations/slack/callback`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-          body: JSON.stringify({ code, redirect_uri: redirectUri }),
+          body: JSON.stringify({ code, redirect_uri: redirectUri, state: slackOauthState }),
         });
       } catch { /* ignore */ }
       params.delete("code");
