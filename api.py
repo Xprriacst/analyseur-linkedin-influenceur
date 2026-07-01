@@ -1439,6 +1439,52 @@ def set_me_daily_ideas_enabled(
     return {"enabled": payload.enabled}
 
 
+# ── ALE-157 : Weekly posts (UI opt-in + schedule) ────────────────────────────
+
+class WeeklyPostsEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class WeeklyScheduleSlot(BaseModel):
+    day_of_week: int = Field(..., ge=0, le=6)
+    hour: int = Field(9, ge=0, le=23)
+    timezone: str = "Europe/Paris"
+
+
+class WeeklyScheduleRequest(BaseModel):
+    schedule: list[WeeklyScheduleSlot] = []
+
+
+@app.get("/me/weekly-posts")
+def get_me_weekly_posts(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Return the user's weekly-posts opt-in state and schedule."""
+    return {
+        "enabled": db.get_weekly_posts_enabled(token),
+        "schedule": db.get_weekly_schedule(token),
+    }
+
+
+@app.post("/me/weekly-posts/enabled")
+def set_me_weekly_posts_enabled(
+    payload: WeeklyPostsEnabledRequest,
+    token: str = Depends(require_token),
+) -> dict[str, bool]:
+    """Toggle the weekly-posts opt-in for the authenticated user."""
+    db.set_weekly_posts_enabled(token, payload.enabled)
+    return {"enabled": payload.enabled}
+
+
+@app.put("/me/weekly-posts/schedule")
+def put_me_weekly_posts_schedule(
+    payload: WeeklyScheduleRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Replace the user's weekly-posts schedule."""
+    slots = [s.model_dump() for s in payload.schedule]
+    saved = db.set_weekly_schedule(token, slots)
+    return {"schedule": saved}
+
+
 @app.post("/me/daily-ideas/regenerate")
 def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]:
     """Regenerate today's daily idea on demand (costs 1 credit)."""

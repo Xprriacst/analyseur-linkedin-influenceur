@@ -2402,14 +2402,33 @@ def set_weekly_posts_enabled(access_token: str, enabled: bool) -> dict | None:
         .upsert(row, on_conflict="user_id")
         .execute()
     )
+    # À la première activation, pré-remplir le planning avec les jours par
+    # défaut (Lun/Mer/Ven 9h) pour que la grille ne soit pas vide. On ne touche
+    # pas à un planning déjà configuré, et on ne sème rien à la désactivation.
+    if enabled:
+        existing = (
+            db.table("weekly_post_schedule")
+            .select("id")
+            .eq("user_id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        if not (existing.data or []):
+            set_weekly_schedule(access_token, _WEEKLY_DEFAULTS)
     return resp.data[0] if resp.data else None
 
 
 def get_weekly_schedule(access_token: str) -> list[dict]:
-    """Return the user's weekly schedule slots, falling back to defaults if none set."""
+    """Return the user's weekly schedule slots exactly as stored.
+
+    An empty list means the user has no day configured (and thus wants no
+    posts). Defaults are only seeded at opt-in time (``set_weekly_posts_enabled``),
+    never silently substituted here — otherwise unchecking every day would
+    resurrect the Mon/Wed/Fri defaults.
+    """
     user = get_user(access_token)
     if not user:
-        return _WEEKLY_DEFAULTS
+        return []
     db = client_for_token(access_token)
     resp = (
         db.table("weekly_post_schedule")
@@ -2418,7 +2437,7 @@ def get_weekly_schedule(access_token: str) -> list[dict]:
         .order("day_of_week")
         .execute()
     )
-    return resp.data if resp.data else _WEEKLY_DEFAULTS
+    return resp.data or []
 
 
 def set_weekly_schedule(access_token: str, slots: list[dict]) -> list[dict]:
@@ -2474,10 +2493,12 @@ def list_weekly_posts_users() -> list[str]:
 def get_weekly_schedule_for_user(user_id: str) -> list[dict]:
     """Return the weekly schedule slots for a given user (service-role).
 
-    Falls back to defaults if the user has no schedule configured.
+    Returns exactly what is stored: an empty list means the user configured no
+    day, so the cron must generate nothing. No defaults fallback here — the
+    opt-in switch is the master control and defaults are only seeded at opt-in.
     """
     if not admin_enabled():
-        return _WEEKLY_DEFAULTS
+        return []
     db = admin_client()
     resp = (
         db.table("weekly_post_schedule")
@@ -2486,7 +2507,7 @@ def get_weekly_schedule_for_user(user_id: str) -> list[dict]:
         .order("day_of_week")
         .execute()
     )
-    return resp.data if resp.data else _WEEKLY_DEFAULTS
+    return resp.data or []
 
 
 def get_slack_config_for_user(user_id: str) -> dict | None:
