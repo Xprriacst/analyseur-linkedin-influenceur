@@ -6240,28 +6240,45 @@ export default function Home() {
       setError("");
       setView("content");
       setShowOnboarding(false);
-      setCheckingProfile(!!uid);
-      if (uid) setTimeout(() => {
+      setCheckingProfile(false);
+      const loadUserData = () => {
         loadReports(); loadJobs(); loadInfluencerLibrary(); loadGenerationJobs();
-        // Affiche l'onboarding si le profil est vide (nouvel utilisateur).
-        // Tant que ce check n'a pas répondu, on reste sur l'écran de chargement
-        // (checkingProfile) → pas de flash de l'app avant l'onboarding.
-        // Garde-fou : si le backend est en cold-start (Render free), on ne bloque
-        // pas l'app indéfiniment — au bout de 3,5 s on affiche l'app quand même
-        // (l'onboarding surgira quand le check répondra, comme avant).
-        const guard = setTimeout(() => setCheckingProfile(false), 3500);
-        (async () => {
-          try {
-            const res = await fetch(`${DIRECT_API_URL}/me/profile`, { headers: await authHeaders() });
-            if (res.ok) {
-              const p = await res.json();
-              const hasProfile = !!(p.display_name || p.brand_name || p.business_description);
-              if (!hasProfile) setShowOnboarding(true);
-            }
-          } catch { /* ignore */ }
-          finally { clearTimeout(guard); setCheckingProfile(false); }
-        })();
-      }, 0);
+      };
+      if (uid) {
+        // Décision d'onboarding SANS attendre le backend : le flag vit dans les
+        // métadonnées Supabase (présentes dans la session/token, zéro réseau).
+        //  - onboarding_done   → l'a déjà fait/passé → jamais d'onboarding.
+        //  - onboarding_pending → nouveau compte (posé à l'inscription) → onboarding immédiat.
+        //  - aucun flag        → compte "legacy" → repli : on vérifie le profil serveur.
+        const meta = (s?.user?.user_metadata || {}) as Record<string, unknown>;
+        if (meta.onboarding_done === true) {
+          setTimeout(loadUserData, 0);
+        } else if (meta.onboarding_pending === true) {
+          setShowOnboarding(true);
+          setTimeout(loadUserData, 0);
+        } else {
+          // Legacy : petit splash le temps de vérifier le profil. Garde-fou 3,5 s
+          // pour ne pas bloquer l'app si le backend est en cold-start.
+          setCheckingProfile(true);
+          setTimeout(() => {
+            loadUserData();
+            const guard = setTimeout(() => setCheckingProfile(false), 3500);
+            (async () => {
+              try {
+                const res = await fetch(`${DIRECT_API_URL}/me/profile`, { headers: await authHeaders() });
+                if (res.ok) {
+                  const p = await res.json();
+                  const hasProfile = !!(p.display_name || p.brand_name || p.business_description);
+                  if (!hasProfile) setShowOnboarding(true);
+                  // Profil déjà rempli : on pose le flag pour un login instantané la prochaine fois.
+                  else supabase.auth.updateUser({ data: { onboarding_done: true } }).catch(() => {});
+                }
+              } catch { /* ignore */ }
+              finally { clearTimeout(guard); setCheckingProfile(false); }
+            })();
+          }, 0);
+        }
+      }
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -6384,7 +6401,13 @@ export default function Home() {
   return (
     <>
       {showOnboarding && isAuthed && (
-        <OnboardingScreen onDone={() => { setShowOnboarding(false); setView("content"); }} />
+        <OnboardingScreen onDone={() => {
+          setShowOnboarding(false);
+          setView("content");
+          // Marque l'onboarding comme fait (dans les métadonnées Supabase) → il ne
+          // réapparaîtra plus, même après refresh, sans dépendre du backend.
+          supabase.auth.updateUser({ data: { onboarding_pending: false, onboarding_done: true } }).catch(() => {});
+        }} />
       )}
       {isAuthed && checkingProfile && !showOnboarding && (
         <div className="onb-overlay">
