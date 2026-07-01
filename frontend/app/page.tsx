@@ -5983,6 +5983,9 @@ export default function Home() {
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [credits, setCredits] = useState<number | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  // Le temps de vérifier (côté serveur) si le profil est vide, on affiche un
+  // écran de chargement neutre plutôt que l'app qui "flashe" puis l'onboarding.
+  const [checkingProfile, setCheckingProfile] = useState(false);
   const userIdRef = useRef<string | null>(null);
   const prevJobActiveRef = useRef(false);
   // Analyse anonyme affichée mais pas encore sauvegardée : sauvée dès l'inscription.
@@ -6237,9 +6240,16 @@ export default function Home() {
       setError("");
       setView("content");
       setShowOnboarding(false);
+      setCheckingProfile(!!uid);
       if (uid) setTimeout(() => {
         loadReports(); loadJobs(); loadInfluencerLibrary(); loadGenerationJobs();
         // Affiche l'onboarding si le profil est vide (nouvel utilisateur).
+        // Tant que ce check n'a pas répondu, on reste sur l'écran de chargement
+        // (checkingProfile) → pas de flash de l'app avant l'onboarding.
+        // Garde-fou : si le backend est en cold-start (Render free), on ne bloque
+        // pas l'app indéfiniment — au bout de 3,5 s on affiche l'app quand même
+        // (l'onboarding surgira quand le check répondra, comme avant).
+        const guard = setTimeout(() => setCheckingProfile(false), 3500);
         (async () => {
           try {
             const res = await fetch(`${DIRECT_API_URL}/me/profile`, { headers: await authHeaders() });
@@ -6249,6 +6259,7 @@ export default function Home() {
               if (!hasProfile) setShowOnboarding(true);
             }
           } catch { /* ignore */ }
+          finally { clearTimeout(guard); setCheckingProfile(false); }
         })();
       }, 0);
     });
@@ -6374,6 +6385,11 @@ export default function Home() {
     <>
       {showOnboarding && isAuthed && (
         <OnboardingScreen onDone={() => { setShowOnboarding(false); setView("content"); }} />
+      )}
+      {isAuthed && checkingProfile && !showOnboarding && (
+        <div className="onb-overlay">
+          <div className="onb-boot"><Loader2 size={30} className="spinning" /></div>
+        </div>
       )}
       <div className="app-shell">
         <Sidebar

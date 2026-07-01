@@ -474,6 +474,7 @@ a { color: inherit; text-decoration: none; }
     var(--background, #fff);
 }
 .onb-shell { width: 100%; max-width: 500px; display: flex; flex-direction: column; gap: 20px; }
+.onb-boot { color: var(--primary); display: flex; align-items: center; justify-content: center; }
 .onb-screen { animation: onb-fade-up .5s cubic-bezier(.16,1,.3,1) both; }
 
 .onb-progress { height: 3px; background: var(--surface-high); border-radius: 999px; overflow: hidden; }
