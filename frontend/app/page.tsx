@@ -5701,25 +5701,42 @@ function onbMatch(text: string | undefined, options: OnbOption[]): string | null
   return null;
 }
 
+// Un champ = plusieurs choix cochés (multi-select) + un éventuel texte libre « Autre ».
+type OnbField = { picks: string[]; other: string };
+
+function onbField(text: string | undefined, options: OnbOption[]): OnbField {
+  const m = onbMatch(text, options);
+  if (m) return { picks: [m], other: "" };
+  return { picks: [], other: (text || "").trim() };
+}
+
+function onbJoin(f: OnbField): string {
+  return [...f.picks, f.other.trim()].filter(Boolean).join(", ");
+}
+
 function onbInitSel(d: Record<string, string>) {
-  const audience = onbMatch(d.target_audience, ONB_AUDIENCE_OPTIONS) || d.target_audience || "";
+  const audience = onbField(d.target_audience, ONB_AUDIENCE_OPTIONS);
   return {
-    audienceMode: (audience ? "niche" : "") as "" | "niche" | "large",
+    displayName: (d.display_name || "").trim(),
+    audienceMode: (audience.picks.length || audience.other ? "niche" : "") as "" | "niche" | "large",
     audience,
-    offer: onbMatch(d.core_offer, ONB_OFFER_OPTIONS) || d.core_offer || "",
-    objective: onbMatch(d.linkedin_objective, ONB_OBJECTIVE_OPTIONS) || d.linkedin_objective || "",
-    industry: onbMatch(d.industry, ONB_INDUSTRY_OPTIONS) || d.industry || "",
+    offer: onbField(d.core_offer, ONB_OFFER_OPTIONS),
+    objective: onbField(d.linkedin_objective, ONB_OBJECTIVE_OPTIONS),
+    industry: onbField(d.industry, ONB_INDUSTRY_OPTIONS),
   };
 }
 
-function OnbChips({ options, value, onChange, placeholder }: {
+function OnbChips({ options, field, onChange, placeholder }: {
   options: OnbOption[];
-  value: string;
-  onChange: (v: string) => void;
+  field: OnbField;
+  onChange: (next: OnbField) => void;
   placeholder?: string;
 }) {
-  const isPreset = options.some((o) => o.label === value);
-  const [other, setOther] = useState(!isPreset && !!value);
+  const [showOther, setShowOther] = useState(!!field.other);
+  const toggle = (label: string) => {
+    const has = field.picks.includes(label);
+    onChange({ ...field, picks: has ? field.picks.filter((p) => p !== label) : [...field.picks, label] });
+  };
   return (
     <>
       <div className="onb-chips">
@@ -5727,27 +5744,31 @@ function OnbChips({ options, value, onChange, placeholder }: {
           <button
             key={o.label}
             type="button"
-            className={"onb-chip" + (!other && value === o.label ? " selected" : "")}
+            className={"onb-chip" + (field.picks.includes(o.label) ? " selected" : "")}
             style={{ animationDelay: `${i * 45}ms` }}
-            onClick={() => { setOther(false); onChange(o.label); }}
+            onClick={() => toggle(o.label)}
           >
             {o.label}
           </button>
         ))}
         <button
           type="button"
-          className={"onb-chip" + (other ? " selected" : "")}
+          className={"onb-chip" + (showOther ? " selected" : "")}
           style={{ animationDelay: `${options.length * 45}ms` }}
-          onClick={() => { setOther(true); onChange(""); }}
+          onClick={() => {
+            const next = !showOther;
+            setShowOther(next);
+            if (!next) onChange({ ...field, other: "" });
+          }}
         >
           Autre
         </button>
       </div>
-      {other && (
+      {showOther && (
         <input
           className="onb-other-input"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
+          value={field.other}
+          onChange={(e) => onChange({ ...field, other: e.target.value })}
           placeholder={placeholder || "Précise en quelques mots…"}
           autoFocus
         />
@@ -5823,10 +5844,11 @@ function OnboardingScreen({ onDone }: { onDone: () => void }) {
     setSaving(true);
     const merged: Record<string, string> = {
       ...draft,
-      target_audience: sel.audienceMode === "large" ? "Large, pas de niche précise" : sel.audience,
-      core_offer: sel.offer,
-      linkedin_objective: sel.objective,
-      industry: sel.industry,
+      display_name: sel.displayName.trim() || draft.display_name || "",
+      target_audience: sel.audienceMode === "large" ? "Large, pas de niche précise" : onbJoin(sel.audience),
+      core_offer: onbJoin(sel.offer),
+      linkedin_objective: onbJoin(sel.objective),
+      industry: onbJoin(sel.industry),
     };
     try {
       await fetch(`${DIRECT_API_URL}/me/profile`, {
@@ -5837,8 +5859,6 @@ function OnboardingScreen({ onDone }: { onDone: () => void }) {
     } catch { /* best effort — on n'empêche pas d'entrer dans l'app */ }
     onDone();
   }
-
-  const firstName = (draft.display_name || "").trim().split(/\s+/)[0] || "";
 
   return (
     <div className="onb-overlay">
@@ -5881,8 +5901,19 @@ function OnboardingScreen({ onDone }: { onDone: () => void }) {
 
         {step === "page1" && (
           <div className="onb-screen" key="page1">
-            <h2 className="onb-greeting">{firstName ? `Ravi de te voir, ${firstName} ` : "Ravi de te voir "}👋</h2>
-            <p className="onb-lead">On a pré-rempli à partir de ton profil. Confirme ou ajuste 👇</p>
+            <h2 className="onb-greeting">Ravi de te voir 👋</h2>
+            <p className="onb-lead">On a pré-rempli à partir de ton profil. Confirme ou ajuste — tu peux choisir plusieurs réponses 👇</p>
+
+            <div className="onb-block">
+              <label className="onb-block-label">Nom et prénom</label>
+              <input
+                className="onb-other-input"
+                style={{ marginTop: 0 }}
+                value={sel.displayName}
+                onChange={(e) => up({ displayName: e.target.value })}
+                placeholder="Ton nom et prénom"
+              />
+            </div>
 
             <div className="onb-block">
               <label className="onb-block-label">À qui tu t'adresses&nbsp;?</label>
@@ -5903,7 +5934,7 @@ function OnboardingScreen({ onDone }: { onDone: () => void }) {
               {sel.audienceMode === "niche" && (
                 <OnbChips
                   options={ONB_AUDIENCE_OPTIONS}
-                  value={sel.audience}
+                  field={sel.audience}
                   onChange={(v) => up({ audience: v })}
                   placeholder="Ta niche…"
                 />
@@ -5912,7 +5943,7 @@ function OnboardingScreen({ onDone }: { onDone: () => void }) {
 
             <div className="onb-block">
               <label className="onb-block-label">Ce que tu proposes</label>
-              <OnbChips options={ONB_OFFER_OPTIONS} value={sel.offer} onChange={(v) => up({ offer: v })} />
+              <OnbChips options={ONB_OFFER_OPTIONS} field={sel.offer} onChange={(v) => up({ offer: v })} />
             </div>
 
             <div className="onb-nav">
@@ -5931,12 +5962,12 @@ function OnboardingScreen({ onDone }: { onDone: () => void }) {
 
             <div className="onb-block">
               <label className="onb-block-label">Ton objectif sur LinkedIn</label>
-              <OnbChips options={ONB_OBJECTIVE_OPTIONS} value={sel.objective} onChange={(v) => up({ objective: v })} />
+              <OnbChips options={ONB_OBJECTIVE_OPTIONS} field={sel.objective} onChange={(v) => up({ objective: v })} />
             </div>
 
             <div className="onb-block">
               <label className="onb-block-label">Ton secteur</label>
-              <OnbChips options={ONB_INDUSTRY_OPTIONS} value={sel.industry} onChange={(v) => up({ industry: v })} />
+              <OnbChips options={ONB_INDUSTRY_OPTIONS} field={sel.industry} onChange={(v) => up({ industry: v })} />
             </div>
 
             <div className="onb-nav">
