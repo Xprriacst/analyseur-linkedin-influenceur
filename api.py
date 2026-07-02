@@ -1563,6 +1563,7 @@ class SlackSendIdeasRequest(BaseModel):
 class SlackSendPostsRequest(BaseModel):
     post_id: str = Field(..., min_length=1)
     content: Optional[str] = None
+    images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
 
 
 @app.get("/me/integrations/slack/status")
@@ -1715,6 +1716,19 @@ def slack_send_post(
     if content and content != (post.get("post") or ""):
         updated = db.update_generated_post(token, payload.post_id, new_post=content)
         post = updated or {**post, "post": content}
+
+    # Images jointes (annonce / upload) → URLs publiques Zernio, affichées sur
+    # Slack. Persistées sur le post pour survivre aux clics Valider/Modifier (qui
+    # rechargent le post depuis la base). Non bloquant : un échec d'upload média
+    # n'empêche pas l'envoi du texte.
+    if payload.images:
+        try:
+            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
+        except zernio.ZernioError:
+            media_items = []
+        if media_items:
+            db.update_generated_post_media(token, payload.post_id, media_items)
+            post = {**post, "media_items": media_items}
 
     try:
         slack_client.send_post_for_validation(bot_token, channel_id, post)

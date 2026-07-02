@@ -319,6 +319,7 @@ def send_post_for_validation(
             "type": "section",
             "text": {"type": "mrkdwn", "text": _quote_full_text(text)},
         },
+        *_image_blocks(post.get("media_items")),
         _post_actions_block(post_id),
     ]
 
@@ -394,6 +395,7 @@ def update_post_message(
             "type": "section",
             "text": {"type": "mrkdwn", "text": _quote_full_text(text)},
         },
+        *_image_blocks(post.get("media_items")),
     ]
     if badge:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": badge}})

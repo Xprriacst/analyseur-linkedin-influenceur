@@ -2481,7 +2481,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                           await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ post_id: v.id, content: editedVariants[i] ?? v.post }),
+                            body: JSON.stringify({ post_id: v.id, content: editedVariants[i] ?? v.post, images: imagePayloadForVariant(i) }),
                           });
                           setSlackSent((p) => ({ ...p, [i]: true }));
                         } finally {
