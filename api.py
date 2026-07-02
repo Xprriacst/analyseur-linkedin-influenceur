@@ -2283,29 +2283,5 @@ def instagram_hooks(
         user_context = {k: v for k, v in profile.items() if v not in (None, "")}
     except Exception:
         pass
-
-    corpus_examples: list[dict] = []
-    try:
-        corpus = db.get_user_corpus(token, platform="instagram")
-        for entry in corpus:
-            handle = entry.get("handle", "")
-            for post in entry.get("posts", []):
-                text = (post.get("text") or "").strip()
-                if text:
-                    corpus_examples.append({
-                        "handle": handle,
-                        "text": text,
-                        "engagement": post.get("engagement", 0) or 0,
-                    })
-        corpus_examples.sort(key=lambda x: x["engagement"], reverse=True)
-        corpus_examples = corpus_examples[:8]
-    except Exception:
-        pass
-
-    hooks = select_hooks(
-        user_context,
-        count=max(1, min(payload.count, 20)),
-        topic=payload.topic,
-        corpus_examples=corpus_examples or None,
-    )
+    hooks = select_hooks(user_context, count=max(1, min(payload.count, 20)), topic=payload.topic)
     return {"hooks": hooks}
