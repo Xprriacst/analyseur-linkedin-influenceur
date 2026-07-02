@@ -2120,13 +2120,52 @@ def get_generated_post_for_user(post_id: str, user_id: str) -> dict | None:
     resp = (
         admin_client()
         .table("generated_posts")
-        .select("id, user_id, post, topic, slack_status, media_items")
+        .select("id, user_id, post, topic, slack_status, media_items, zernio_post_id")
         .eq("id", post_id)
         .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
     return resp.data[0] if resp.data else None
+
+
+def get_zernio_account_for_user(user_id: str) -> str | None:
+    """Return a user's connected LinkedIn account id (service-role, for the webhook).
+
+    Used to publish a directly-sent post on Slack validation, without a JWT.
+    """
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("user_editorial_profiles")
+        .select("zernio_account_id")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        return None
+    return resp.data[0].get("zernio_account_id")
+
+
+def mark_generated_post_published(post_id: str, user_id: str, zernio_post_id: str | None) -> bool:
+    """Record a successful LinkedIn publication of a directly-sent post.
+
+    Sets slack_status='published' and stores the Zernio post id so a replayed
+    Slack webhook never republishes the same post (idempotence).
+    """
+    if not admin_enabled():
+        return False
+    resp = (
+        admin_client()
+        .table("generated_posts")
+        .update({"slack_status": "published", "zernio_post_id": zernio_post_id})
+        .eq("id", post_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return bool(resp.data)
 
 
 def update_generated_post_media(access_token: str, post_id: str, media_items: list[dict]) -> bool:

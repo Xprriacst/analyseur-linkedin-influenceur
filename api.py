@@ -1850,18 +1850,61 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
                     pass
 
     elif action_id in ("validate_post", "reject_post"):
-        status = "validated" if action_id == "validate_post" else "rejected"
         if integration:
-            db.update_post_slack_status(item_id, integration["user_id"], status)
-            post = db.get_generated_post_for_user(item_id, integration["user_id"]) or {"id": item_id}
+            user_id_w = integration["user_id"]
             bot_token_w = integration.get("access_token", "")
             channel_id_w = (data.get("channel") or {}).get("id", "")
             ts_w = (data.get("message") or {}).get("ts", "")
-            if bot_token_w and channel_id_w and ts_w:
-                try:
-                    slack_client.update_post_message(bot_token_w, channel_id_w, ts_w, post, status)
-                except slack_client.SlackError:
+
+            if action_id == "reject_post":
+                db.update_post_slack_status(item_id, user_id_w, "rejected")
+                post = db.get_generated_post_for_user(item_id, user_id_w) or {"id": item_id}
+                if bot_token_w and channel_id_w and ts_w:
+                    try:
+                        slack_client.update_post_message(bot_token_w, channel_id_w, ts_w, post, "rejected")
+                    except slack_client.SlackError:
+                        pass
+            else:
+                # Valider un post « envoi direct » = le publier immédiatement sur
+                # LinkedIn (via Zernio), comme le cron le fait pour les posts
+                # programmés. Sans ce câblage, la validation ne faisait que poser
+                # un badge et le post ne partait jamais.
+                db.update_post_slack_status(item_id, user_id_w, "validated")
+                post = db.get_generated_post_for_user(item_id, user_id_w) or {"id": item_id}
+                display_status = "published"
+                error_detail = ""
+                if post.get("zernio_post_id"):
+                    # Déjà publié (webhook rejouée par Slack) → ne pas republier.
                     pass
+                elif not zernio.enabled():
+                    display_status = "publish_error"
+                    error_detail = "Publication LinkedIn indisponible côté serveur."
+                else:
+                    account_id = db.get_zernio_account_for_user(user_id_w)
+                    if not account_id:
+                        display_status = "publish_error"
+                        error_detail = "Aucun compte LinkedIn connecté."
+                    else:
+                        try:
+                            media_items = zernio.prepare_image_media_items(post.get("media_items") or [])
+                            result = zernio.create_post(
+                                post.get("post") or "",
+                                account_id,
+                                publish_now=True,
+                                media_items=media_items,
+                            )
+                            z_post = result.get("post") or result
+                            db.mark_generated_post_published(item_id, user_id_w, (z_post or {}).get("_id"))
+                        except Exception as exc:
+                            display_status = "publish_error"
+                            error_detail = str(exc)
+                if bot_token_w and channel_id_w and ts_w:
+                    try:
+                        slack_client.update_post_message(
+                            bot_token_w, channel_id_w, ts_w, post, display_status, error=error_detail
+                        )
+                    except slack_client.SlackError:
+                        pass
 
     elif action_id == "edit_post":
         # Ouvre la modal d'édition immédiatement — le trigger_id expire en ~3 s.

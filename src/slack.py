@@ -364,10 +364,16 @@ def _post_actions_block(post_id: str) -> dict:
 
 
 _POST_BADGES = {
-    "validated": "✅ Validé — prêt à publier",
+    "published": "✅ Publié sur LinkedIn",
     "rejected": "❌ Rejeté",
     "edited": "✏️ Modifié — à re-valider",
+    "publish_error": "⚠️ Échec de la publication",
 }
+
+# Terminal states : plus de boutons (publié = fait, rejeté = abandonné).
+# `publish_error` garde les boutons pour permettre un nouvel essai après avoir
+# connecté LinkedIn / résolu l'erreur.
+_POST_TERMINAL = ("published", "rejected")
 
 
 def update_post_message(
@@ -376,15 +382,18 @@ def update_post_message(
     ts: str,
     post: dict,
     status: str,
+    error: str = "",
 ) -> None:
     """Refresh a generated-post Slack message after a validate/reject/edit action.
 
-    `validated` / `rejected` are terminal → buttons replaced by a status badge.
-    `edited` keeps the validate/edit/reject buttons so the user can re-validate
-    the new content (symétrie avec les posts programmés)."""
+    `published` / `rejected` are terminal → buttons replaced by a status badge.
+    `edited` and `publish_error` keep the validate/edit/reject buttons so the user
+    can (re-)validate the content (symétrie avec les posts programmés)."""
     text = post.get("post") or ""
     header = "*📝 Post à valider*"
     badge = _POST_BADGES.get(status, "")
+    if status == "publish_error" and error:
+        badge = f"{badge} : {error[:200]}"
 
     blocks: list[dict] = [
         {
@@ -399,8 +408,8 @@ def update_post_message(
     ]
     if badge:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": badge}})
-    # Non-terminal states (edited) keep the action buttons for re-validation.
-    if status not in ("validated", "rejected"):
+    # Non-terminal states (edited, publish_error) keep the action buttons.
+    if status not in _POST_TERMINAL:
         blocks.append(_post_actions_block(post.get("id", "")))
 
     _api_call(
