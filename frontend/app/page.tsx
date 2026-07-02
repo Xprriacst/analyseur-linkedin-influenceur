@@ -51,6 +51,26 @@ const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL ??
   "https://analyseur-linkedin-influenceur-api.onrender.com";
 
+// Environnement dev : bandeau d'entête + rappels UI, jamais affichés en prod.
+// Piloté par NEXT_PUBLIC_APP_ENV=dev (site Netlify dev) ; fallback = URL backend
+// dev (`-api-dev`) pour que l'indicateur marche même si la variable n'est pas posée.
+const IS_DEV_ENV =
+  process.env.NEXT_PUBLIC_APP_ENV === "dev" ||
+  (process.env.NEXT_PUBLIC_BACKEND_URL ?? "").includes("-api-dev");
+
+// Rappel dev-only affiché près des actions Slack : sur dev, l'app Slack renvoie
+// les clics de boutons à la prod → l'envoi part mais Valider/Modifier ne se
+// testent pas ici. Rend null en prod.
+function DevSlackNote() {
+  if (!IS_DEV_ENV) return null;
+  return (
+    <div className="dev-slack-note">
+      ⚠️ Sur dev, les boutons Slack ne sont pas testables : le message part bien,
+      mais les clics (Valider / Modifier) sont traités par la prod.
+    </div>
+  );
+}
+
 // Solde de crédits : les endpoints coûteux renvoient le nouveau solde. On le
 // diffuse via un évènement window pour rafraîchir la pastille de la sidebar
 // (gérée par Home) sans prop-drilling à travers le hub « Contenu ».
@@ -2471,6 +2491,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                 {confirmSlackIndex === i && (
                   <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
+                    <DevSlackNote />
                     <button
                       className="primary-button"
                       style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
@@ -3938,6 +3959,7 @@ function LibraryView({
                 {confirmSlackPostId === p.id && (
                   <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
+                    <DevSlackNote />
                     <button
                       className="primary-button"
                       style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
@@ -4285,6 +4307,7 @@ function AssistantMessageActions({
       {confirmSlack && (
         <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
           <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
+          <DevSlackNote />
           <button className="primary-button" style={btn} disabled={slackSending} onClick={sendSlack}>
             {slackSending ? <Loader2 size={12} className="spinning" /> : null} Confirmer
           </button>
@@ -6441,6 +6464,9 @@ export default function Home() {
 
   return (
     <>
+      {IS_DEV_ENV && (
+        <div className="dev-env-banner">🚧 ENVIRONNEMENT DEV — base partagée avec la prod</div>
+      )}
       {showOnboarding && isAuthed && (
         <OnboardingScreen onDone={() => {
           setShowOnboarding(false);
@@ -6455,7 +6481,7 @@ export default function Home() {
           <div className="onb-boot"><Loader2 size={30} className="spinning" /></div>
         </div>
       )}
-      <div className="app-shell">
+      <div className={IS_DEV_ENV ? "app-shell dev-env" : "app-shell"}>
         <Sidebar
           health={health}
           reports={reports}
