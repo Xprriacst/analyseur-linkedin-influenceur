@@ -54,7 +54,12 @@ export default function AuthModal({
         if (error) throw error;
         onClose(); // session set → Home reacts via onAuthStateChange
       } else {
-        const { data, error } = await supabase.auth.signUp({ email, password });
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          // Flag lu au login pour afficher l'onboarding immédiatement (sans appel backend).
+          options: { data: { onboarding_pending: true } },
+        });
         if (error) throw error;
         if (data.session) {
           // Email confirmation disabled → instantly logged in.

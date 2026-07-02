@@ -14,6 +14,7 @@ Env vars required:
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import hmac
 import json
@@ -22,6 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zoneinfo
 from typing import Any
 
 SLACK_API = "https://slack.com/api"
@@ -43,6 +45,60 @@ def _quote_full_text(text: str) -> str:
         text = text[:_MAX_QUOTE_LEN].rstrip() + "…"
     # Prefix every line so multi-paragraph posts render as one quote block.
     return "\n".join("> " + line for line in text.split("\n"))
+
+
+_FR_DAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+_FR_MONTHS = [
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+]
+# Slack image blocks require a publicly reachable image_url; cap the count so a
+# post with many medias never blows past Slack's block limit.
+_MAX_IMAGE_BLOCKS = 5
+
+
+def _format_scheduled_at(scheduled_at: str) -> str:
+    """Render an ISO 8601 datetime as readable French local time (Europe/Paris).
+
+    Ex. `2026-06-22T09:00:00+02:00` → `lundi 22 juin 2026 à 09h00`.
+    Falls back to the raw string if it can't be parsed.
+    """
+    if not scheduled_at:
+        return "—"
+    raw = scheduled_at.replace("Z", "+00:00") if isinstance(scheduled_at, str) else scheduled_at
+    try:
+        dt = datetime.datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return str(scheduled_at)
+    try:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        dt = dt.astimezone(zoneinfo.ZoneInfo("Europe/Paris"))
+    except Exception:
+        pass
+    return (
+        f"{_FR_DAYS[dt.weekday()]} {dt.day} {_FR_MONTHS[dt.month - 1]} "
+        f"{dt.year} à {dt.hour:02d}h{dt.minute:02d}"
+    )
+
+
+def _image_blocks(media_items: Any) -> list[dict]:
+    """Build Slack `image` blocks from a scheduled post's media_items.
+
+    Only items typed as image with a public http(s) URL are rendered — Slack
+    fetches the URL itself, so base64/data URLs and private paths are skipped.
+    """
+    blocks: list[dict] = []
+    for item in (media_items or []):
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or ""
+        if item.get("type") == "image" and isinstance(url, str) and url.startswith(("http://", "https://")):
+            alt = str(item.get("title") or "Image du post")[:150]
+            blocks.append({"type": "image", "image_url": url, "alt_text": alt})
+            if len(blocks) >= _MAX_IMAGE_BLOCKS:
+                break
+    return blocks
 
 
 class SlackError(RuntimeError):
@@ -263,25 +319,8 @@ def send_post_for_validation(
             "type": "section",
             "text": {"type": "mrkdwn", "text": _quote_full_text(text)},
         },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "action_id": "validate_post",
-                    "value": post_id,
-                    "text": {"type": "plain_text", "text": "✅ Valider", "emoji": True},
-                    "style": "primary",
-                },
-                {
-                    "type": "button",
-                    "action_id": "reject_post",
-                    "value": post_id,
-                    "text": {"type": "plain_text", "text": "❌ Rejeter", "emoji": True},
-                    "style": "danger",
-                },
-            ],
-        },
+        *_image_blocks(post.get("media_items")),
+        _post_actions_block(post_id),
     ]
 
     data = _api_call(
@@ -294,6 +333,42 @@ def send_post_for_validation(
     return data["ts"]
 
 
+def _post_actions_block(post_id: str) -> dict:
+    """Validate / edit / reject buttons for a generated-post Slack message."""
+    return {
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "action_id": "validate_post",
+                "value": post_id,
+                "text": {"type": "plain_text", "text": "✅ Valider", "emoji": True},
+                "style": "primary",
+            },
+            {
+                "type": "button",
+                "action_id": "edit_post",
+                "value": post_id,
+                "text": {"type": "plain_text", "text": "✏️ Modifier", "emoji": True},
+            },
+            {
+                "type": "button",
+                "action_id": "reject_post",
+                "value": post_id,
+                "text": {"type": "plain_text", "text": "❌ Rejeter", "emoji": True},
+                "style": "danger",
+            },
+        ],
+    }
+
+
+_POST_BADGES = {
+    "validated": "✅ Validé — prêt à publier",
+    "rejected": "❌ Rejeté",
+    "edited": "✏️ Modifié — à re-valider",
+}
+
+
 def update_post_message(
     bot_token: str,
     channel_id: str,
@@ -301,20 +376,33 @@ def update_post_message(
     post: dict,
     status: str,
 ) -> None:
-    """Replace the buttons with a status badge after a user validates or rejects a post."""
+    """Refresh a generated-post Slack message after a validate/reject/edit action.
+
+    `validated` / `rejected` are terminal → buttons replaced by a status badge.
+    `edited` keeps the validate/edit/reject buttons so the user can re-validate
+    the new content (symétrie avec les posts programmés)."""
     topic = post.get("topic") or ""
     text = post.get("post") or ""
-    preview = text[:300] + ("…" if len(text) > 300 else "")
-
-    badge = "✅ Validé — prêt à publier" if status == "validated" else "❌ Rejeté"
     header = f"*{topic}*" if topic else "*Post généré*"
+    badge = _POST_BADGES.get(status, "")
 
     blocks: list[dict] = [
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"{header}\n> {preview}\n{badge}"},
-        }
+            "text": {"type": "mrkdwn", "text": header},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": _quote_full_text(text)},
+        },
+        *_image_blocks(post.get("media_items")),
     ]
+    if badge:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": badge}})
+    # Non-terminal states (edited) keep the action buttons for re-validation.
+    if status not in ("validated", "rejected"):
+        blocks.append(_post_actions_block(post.get("id", "")))
+
     _api_call(
         "chat.update",
         bot_token,
@@ -362,7 +450,7 @@ def send_scheduled_post_for_validation(
     """Post a scheduled LinkedIn post to Slack with validation buttons."""
     post_id = scheduled_post.get("id", "")
     text = scheduled_post.get("post_text") or ""
-    scheduled_at = scheduled_post.get("scheduled_at") or ""
+    scheduled_at = _format_scheduled_at(scheduled_post.get("scheduled_at") or "")
     preview = _quote_full_text(text)
 
     blocks: list[dict] = [
@@ -372,7 +460,7 @@ def send_scheduled_post_for_validation(
                 "type": "mrkdwn",
                 "text": (
                     "*Post LinkedIn programmé*\n"
-                    f"*Publication prévue* : `{scheduled_at}`"
+                    f"*Publication prévue* : {scheduled_at}"
                 ),
             },
         },
@@ -380,6 +468,7 @@ def send_scheduled_post_for_validation(
             "type": "section",
             "text": {"type": "mrkdwn", "text": preview},
         },
+        *_image_blocks(scheduled_post.get("media_items")),
         _scheduled_post_actions_block(post_id),
     ]
 
@@ -415,7 +504,7 @@ def update_scheduled_post_message(
     """
     post_id = scheduled_post.get("id", "")
     text = scheduled_post.get("post_text") or ""
-    scheduled_at = scheduled_post.get("scheduled_at") or ""
+    scheduled_at = _format_scheduled_at(scheduled_post.get("scheduled_at") or "")
     preview = _quote_full_text(text)
     badge = _SCHEDULED_BADGES.get(status, "")
 
@@ -426,7 +515,7 @@ def update_scheduled_post_message(
                 "type": "mrkdwn",
                 "text": (
                     "*Post LinkedIn programmé*\n"
-                    f"*Publication prévue* : `{scheduled_at}`"
+                    f"*Publication prévue* : {scheduled_at}"
                 ),
             },
         },
@@ -434,6 +523,7 @@ def update_scheduled_post_message(
             "type": "section",
             "text": {"type": "mrkdwn", "text": preview},
         },
+        *_image_blocks(scheduled_post.get("media_items")),
     ]
     if badge:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": badge}})
@@ -497,6 +587,50 @@ def open_post_edit_modal(
     _api_call("views.open", bot_token, trigger_id=trigger_id, view=view)
 
 
+def open_generated_post_edit_modal(
+    bot_token: str,
+    trigger_id: str,
+    post: dict,
+    channel_id: str,
+    message_ts: str,
+) -> None:
+    """Open a Slack modal to edit a generated post's text (envoi direct).
+
+    Symétrie avec `open_post_edit_modal` (posts programmés) : le `view_submission`
+    handler (callback_id `edit_post_modal`) persiste le nouveau texte et rafraîchit
+    le message d'origine. `trigger_id` expire en ~3 s → appeler dès le clic."""
+    post_id = post.get("id", "")
+    text = post.get("post") or ""
+    metadata = json.dumps({
+        "post_id": post_id,
+        "channel_id": channel_id,
+        "message_ts": message_ts,
+    })
+    view = {
+        "type": "modal",
+        "callback_id": "edit_post_modal",
+        "private_metadata": metadata,
+        "title": {"type": "plain_text", "text": "Modifier le post"},
+        "submit": {"type": "plain_text", "text": "Enregistrer"},
+        "close": {"type": "plain_text", "text": "Annuler"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "post_text_block",
+                "label": {"type": "plain_text", "text": "Texte du post LinkedIn"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "post_text_input",
+                    "multiline": True,
+                    "max_length": 3000,
+                    "initial_value": text[:3000],
+                },
+            },
+        ],
+    }
+    _api_call("views.open", bot_token, trigger_id=trigger_id, view=view)
+
+
 def verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
     """Verify a Slack request signature to prevent webhook spoofing.
 
@@ -504,7 +638,7 @@ def verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
     """
     secret = _signing_secret()
     if not secret:
-        return True  # not configured → skip verification in dev
+        return False  # fail-closed: pas de secret = webhook rejetée
 
     # Reject requests older than 5 minutes
     try:

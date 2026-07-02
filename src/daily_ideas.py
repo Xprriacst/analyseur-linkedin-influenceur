@@ -17,7 +17,7 @@ import sys
 from src import db
 from src.benchmark import build_benchmark, enrich_influencers
 from src.listing import ListingError, build_listing_topic, fetch_listing_preview, is_listing_url
-from src.llm import generate_posts
+from src.llm import ROLE_SPECS, generate_posts
 
 
 def _render_idea_markdown(idea: dict, seed_text: str | None) -> str:
@@ -79,12 +79,24 @@ def _generate_for_user(user_id: str, today: str) -> bool:
             print(f"  · {user_id}: annonce illisible ({exc}) → post benchmark", file=sys.stderr)
             seed_text = None
 
+    # Commentaire d'orientation saisi par l'utilisateur (annonces) : on l'ajoute
+    # au sujet pour guider la génération sans écraser l'annonce elle-même.
+    seed_comment = (seed.get("comment") or "").strip() if seed else ""
+    if seed_text and seed_comment:
+        seed_text += f"\n\nOrientation demandée par l'utilisateur : {seed_comment}"
+
+    # Rôle éditorial déterministe basé sur le jour (7 rôles → 1 rôle différent/semaine,
+    # idempotence garantie : même date = même rôle même si le cron tourne plusieurs fois).
+    _roles = list(ROLE_SPECS.keys())
+    daily_role = _roles[datetime.date.fromisoformat(today).toordinal() % len(_roles)]
+
     # ALE-136 : on génère un VRAI post complet (postable), plus un simple concept.
     posts = generate_posts(
         seed_text,
         top_posts,
         benchmark,
         user_context=context,
+        editorial_role=daily_role,
         count=1,
     )
     if not posts:

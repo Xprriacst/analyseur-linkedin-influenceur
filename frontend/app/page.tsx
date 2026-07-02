@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import {
   Activity,
   BarChart3,
+  CalendarDays,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -25,6 +26,7 @@ import {
   LogIn,
   LogOut,
   Bookmark,
+  BookmarkPlus,
   MessageSquare,
   Pencil,
   PenTool,
@@ -1897,6 +1899,7 @@ function useSlack(isAuthed: boolean) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Connexion Slack impossible");
       sessionStorage.setItem("slack_oauth_pending", "1");
+      if (data.state) sessionStorage.setItem("slack_oauth_state", data.state);
       window.location.href = data.auth_url;
     } catch (err: any) {
       setError(err.message);
@@ -1945,6 +1948,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   const slack = useSlack(isAuthed);
   const [slackSent, setSlackSent] = useState<Record<number, boolean>>({});
   const [slackSending, setSlackSending] = useState<Record<number, boolean>>({});
+  const [confirmSlackIndex, setConfirmSlackIndex] = useState<number | null>(null);
   const [publishing, setPublishing] = useState<number | null>(null);
   const [published, setPublished] = useState<number | null>(null);
   const [drafted, setDrafted] = useState<number | null>(null);
@@ -2306,7 +2310,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
             </span>
             <span className="role-picker-hint">
               {role === "auto"
-                ? "Mix automatique : performance + méthodologie/autorité + relationnel/quotidien."
+                ? "Mix automatique : combinaison variée de rôles éditoriaux (performance, story, opinion…) tirés aléatoirement."
                 : "Les 3 variants utiliseront ce rôle."}
             </span>
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)" }}>
@@ -2437,19 +2441,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     <button
                       className="secondary-button"
                       disabled={!!slackSending[i] || !!slackSent[i]}
-                      onClick={async () => {
-                        setSlackSending((p) => ({ ...p, [i]: true }));
-                        try {
-                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ post_id: v.id, content: editedVariants[i] ?? v.post }),
-                          });
-                          setSlackSent((p) => ({ ...p, [i]: true }));
-                        } finally {
-                          setSlackSending((p) => ({ ...p, [i]: false }));
-                        }
-                      }}
+                      onClick={() => setConfirmSlackIndex(i)}
                     >
                       {slackSending[i] ? <Loader2 size={14} className="spinning" /> : null}
                       {slackSent[i] ? "Sur Slack ✓" : "Envoyer sur Slack"}
@@ -2476,6 +2468,33 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     </button>
                   )}
                 </div>
+                {confirmSlackIndex === i && (
+                  <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
+                    <button
+                      className="primary-button"
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                      disabled={!!slackSending[i]}
+                      onClick={async () => {
+                        setSlackSending((p) => ({ ...p, [i]: true }));
+                        try {
+                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+                            body: JSON.stringify({ post_id: v.id, content: editedVariants[i] ?? v.post, images: imagePayloadForVariant(i) }),
+                          });
+                          setSlackSent((p) => ({ ...p, [i]: true }));
+                        } finally {
+                          setSlackSending((p) => ({ ...p, [i]: false }));
+                          setConfirmSlackIndex(null);
+                        }
+                      }}
+                    >
+                      {slackSending[i] ? <Loader2 size={12} className="spinning" /> : null} Confirmer l&apos;envoi
+                    </button>
+                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmSlackIndex(null)}>Annuler</button>
+                  </div>
+                )}
                 {published === i && (
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
                 )}
@@ -2825,7 +2844,7 @@ function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAut
 // ── Fin ALE-69 ────────────────────────────────────────────────────────────────
 
 type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null; image_url?: string | null; source_url?: string | null };
-type IdeaSeed = { id: string; text: string; used_at?: string | null; created_at?: string };
+type IdeaSeed = { id: string; text: string; comment?: string | null; used_at?: string | null; created_at?: string };
 type IdeaLine = { id?: string; line: string; source_type?: string; source_ref?: string; source_url?: string };
 type DailyIdeaCard = Pick<Idea, "title" | "hook" | "hook_type" | "funnel" | "angle" | "why_it_works" | "estimated_lift">;
 
@@ -2877,6 +2896,7 @@ function DailyIdeasView({
   const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
   const [enabled, setEnabled] = useState(false);
   const [draft, setDraft] = useState("");
+  const [draftComment, setDraftComment] = useState("");
   const [loading, setLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -3111,18 +3131,22 @@ function DailyIdeasView({
   async function addSeed() {
     const text = draft.trim();
     if (text.length < 3) return;
+    // Le commentaire d'orientation n'a de sens que pour un lien d'annonce.
+    const isLinkDraft = /^https?:\/\/\S+$/i.test(text);
+    const comment = isLinkDraft ? draftComment.trim() : "";
     setAdding(true);
     setError("");
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify(comment ? { text, comment } : { text }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Ajout impossible");
       setSeeds((prev) => [...prev, data]);
       setDraft("");
+      setDraftComment("");
     } catch (err: any) {
       setError(err.message || "Ajout impossible");
     } finally {
@@ -3438,6 +3462,18 @@ function DailyIdeasView({
             {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter
           </button>
         </div>
+        {/* Champ d'orientation : uniquement quand l'idée saisie est un lien d'annonce. */}
+        {/^https?:\/\/\S+$/i.test(draft.trim()) && (
+          <input
+            type="text"
+            value={draftComment}
+            onChange={(e) => setDraftComment(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
+            placeholder="Commentaire pour orienter le post (optionnel) — ex. « insiste sur la vue mer »"
+            maxLength={500}
+            style={{ marginTop: 8, width: "100%", boxSizing: "border-box" }}
+          />
+        )}
 
         {seeds.length === 0 ? (
           <p style={{ color: "var(--muted)", margin: "12px 0 0", fontSize: 13 }}>Réservoir vide — l'idée du jour s'appuiera sur ton seul benchmark.</p>
@@ -3447,7 +3483,10 @@ function DailyIdeasView({
               const isLink = /^https?:\/\/\S+$/i.test((s.text || "").trim());
               return (
               <li key={s.id} className={s.used_at ? "used" : ""}>
-                <span>{isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}</span>
+                <span>
+                  {isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}
+                  {s.comment ? <em style={{ display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 }}>↳ orientation : {s.comment}</em> : null}
+                </span>
                 {isLink && !s.used_at ? <span className="daily-seed-tag">annonce</span> : null}
                 {s.used_at ? <span className="daily-seed-tag"><CheckCircle2 size={12} /> utilisée</span> : null}
                 <button className="icon-button" title="Supprimer" onClick={() => deleteSeed(s.id)}><Trash2 size={14} /></button>
@@ -3560,6 +3599,7 @@ function LibraryView({
   const [publishingXPost, setPublishingXPost] = useState<string | null>(null);
   const [publishedXPost, setPublishedXPost] = useState<string | null>(null);
   const [confirmXPostId, setConfirmXPostId] = useState<string | null>(null);
+  const [confirmSlackPostId, setConfirmSlackPostId] = useState<string | null>(null);
   const [scheduleForPost, setScheduleForPost] = useState<string | null>(null);
   const [scheduleDateLib, setScheduleDateLib] = useState("");
   const [schedulingPostLib, setSchedulingPostLib] = useState<string | null>(null);
@@ -3841,20 +3881,7 @@ function LibraryView({
                     <button
                       className="secondary-button"
                       disabled={!!slackSending[p.id] || !!slackSent[p.id] || p.slack_status === "pending"}
-                      onClick={async () => {
-                        setSlackSending((prev) => ({ ...prev, [p.id]: true }));
-                        try {
-                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ post_id: p.id, content: editedPosts[p.id] ?? p.post }),
-                          });
-                          setSlackSent((prev) => ({ ...prev, [p.id]: true }));
-                          setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, post: editedPosts[p.id] ?? pp.post, slack_status: "pending" } : pp));
-                        } finally {
-                          setSlackSending((prev) => ({ ...prev, [p.id]: false }));
-                        }
-                      }}
+                      onClick={() => setConfirmSlackPostId(p.id)}
                     >
                       {slackSending[p.id] ? <Loader2 size={14} className="spinning" /> : null}
                       {slackSent[p.id] || p.slack_status === "pending" ? "Sur Slack ✓" : "Envoyer sur Slack"}
@@ -3906,6 +3933,34 @@ function LibraryView({
                     <span style={{ fontSize: 13 }}>Publier ce post maintenant sur X ?</span>
                     <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => publishSavedPostX(p)}>Confirmer</button>
                     <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmXPostId(null)}>Annuler</button>
+                  </div>
+                )}
+                {confirmSlackPostId === p.id && (
+                  <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
+                    <button
+                      className="primary-button"
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                      disabled={!!slackSending[p.id]}
+                      onClick={async () => {
+                        setSlackSending((prev) => ({ ...prev, [p.id]: true }));
+                        try {
+                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+                            body: JSON.stringify({ post_id: p.id, content: editedPosts[p.id] ?? p.post }),
+                          });
+                          setSlackSent((prev) => ({ ...prev, [p.id]: true }));
+                          setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, post: editedPosts[p.id] ?? pp.post, slack_status: "pending" } : pp));
+                        } finally {
+                          setSlackSending((prev) => ({ ...prev, [p.id]: false }));
+                          setConfirmSlackPostId(null);
+                        }
+                      }}
+                    >
+                      {slackSending[p.id] ? <Loader2 size={12} className="spinning" /> : null} Confirmer l&apos;envoi
+                    </button>
+                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmSlackPostId(null)}>Annuler</button>
                   </div>
                 )}
                 {publishError && publishingPost === null && publishedPost === null && (
@@ -4012,6 +4067,8 @@ function AssistantMessageActions({
   slack: ReturnType<typeof useSlack>;
 }) {
   const [copied, setCopied] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savedPost, setSavedPost] = useState(false);
   const [confirmPub, setConfirmPub] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [published, setPublished] = useState(false);
@@ -4024,6 +4081,9 @@ function AssistantMessageActions({
   const [scheduled, setScheduled] = useState(false);
   const [slackSending, setSlackSending] = useState(false);
   const [slackSent, setSlackSent] = useState(false);
+  const [confirmSlack, setConfirmSlack] = useState(false);
+  const [generatingImg, setGeneratingImg] = useState(false);
+  const [generatedImg, setGeneratedImg] = useState<string | null>(null);
   const [err, setErr] = useState("");
 
   const btn = { fontSize: 12, minHeight: 30, padding: "0 10px" } as const;
@@ -4098,7 +4158,7 @@ function AssistantMessageActions({
   }
 
   async function sendSlack() {
-    setErr(""); setSlackSending(true);
+    setErr(""); setConfirmSlack(false); setSlackSending(true);
     try {
       // Slack a besoin d'un post_id : on persiste d'abord la réponse comme post sauvegardé.
       const saveRes = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
@@ -4119,10 +4179,52 @@ function AssistantMessageActions({
     } catch (e: any) { setErr(e.message); } finally { setSlackSending(false); }
   }
 
+  async function save() {
+    setErr(""); setSaving(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Sauvegarde impossible.");
+      setSavedPost(true);
+    } catch (e: any) { setErr(e.message); } finally { setSaving(false); }
+  }
+
+  async function generateImageFn() {
+    setErr(""); setGeneratingImg(true); setGeneratedImg(null);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post_text: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
+      setGeneratedImg(data.image_data);
+      if (data.credits !== undefined) emitCredits(data.credits);
+    } catch (e: any) { setErr(e.message); } finally { setGeneratingImg(false); }
+  }
+
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
       <button className="secondary-button" style={btn} onClick={copy}>
         {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />} {copied ? "Copié ✓" : "Copier"}
+      </button>
+      <button className="secondary-button" style={btn} disabled={saving || savedPost} onClick={save}>
+        {saving ? <Loader2 size={13} className="spinning" /> : <BookmarkPlus size={13} />} {savedPost ? "Sauvegardé ✓" : "Sauvegarder"}
+      </button>
+      <button
+        className="secondary-button"
+        style={btn}
+        disabled
+        aria-disabled
+        title="Génération d'image en cours d'amélioration — bientôt disponible"
+        onClick={generateImageFn}
+      >
+        <ImageIcon size={13} /> Image IA — bientôt
       </button>
       <button
         className="secondary-button"
@@ -4148,7 +4250,7 @@ function AssistantMessageActions({
         </button>
       )}
       {slack.status?.connected && (
-        <button className="secondary-button" style={btn} disabled={slackSending || slackSent} onClick={sendSlack}>
+        <button className="secondary-button" style={btn} disabled={slackSending || slackSent} onClick={() => setConfirmSlack(true)}>
           {slackSending ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} {slackSent ? "Sur Slack ✓" : "Envoyer sur Slack"}
         </button>
       )}
@@ -4178,6 +4280,31 @@ function AssistantMessageActions({
           <span style={{ fontSize: 13 }}>Publier ce post maintenant sur X ?</span>
           <button className="primary-button" style={btn} onClick={publishX}>Confirmer</button>
           <button className="secondary-button" style={btn} onClick={() => setConfirmX(false)}>Annuler</button>
+        </div>
+      )}
+      {confirmSlack && (
+        <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
+          <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
+          <button className="primary-button" style={btn} disabled={slackSending} onClick={sendSlack}>
+            {slackSending ? <Loader2 size={12} className="spinning" /> : null} Confirmer
+          </button>
+          <button className="secondary-button" style={btn} onClick={() => setConfirmSlack(false)}>Annuler</button>
+        </div>
+      )}
+      {generatedImg && (
+        <div style={{ width: "100%", marginTop: 8 }}>
+          <img
+            src={`data:image/png;base64,${generatedImg}`}
+            alt="Image générée"
+            style={{ maxWidth: "100%", borderRadius: 8, border: "1px solid var(--border)" }}
+          />
+          <a
+            href={`data:image/png;base64,${generatedImg}`}
+            download="post-image.png"
+            style={{ display: "inline-block", marginTop: 6, fontSize: 12, color: "var(--accent)" }}
+          >
+            Télécharger l'image
+          </a>
         </div>
       )}
       {err && <div className="error" style={{ marginTop: 4, fontSize: 12, width: "100%" }}>{err}</div>}
@@ -4482,6 +4609,9 @@ function ProfileView({
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
+  const [weeklyEnabled, setWeeklyEnabled] = useState(false);
+  const [weeklySchedule, setWeeklySchedule] = useState<{day_of_week: number; hour: number; timezone: string}[]>([]);
+  const [weeklySaving, setWeeklySaving] = useState(false);
   // `Field` lit toujours la dernière valeur du profil via cette ref, ce qui
   // permet de garder une identité de composant stable (useCallback ci-dessous)
   // sans capturer un `profile` périmé.
@@ -4512,6 +4642,68 @@ function ProfileView({
       }
     })();
   }, [isAuthed]);
+
+  useEffect(() => {
+    if (!isAuthed) { setWeeklyEnabled(false); setWeeklySchedule([]); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/weekly-posts`, { headers: await authHeaders() });
+        if (res.ok) {
+          const data = await res.json();
+          setWeeklyEnabled(!!data.enabled);
+          setWeeklySchedule(data.schedule || []);
+        }
+      } catch { /* silencieux */ }
+    })();
+  }, [isAuthed]);
+
+  async function toggleWeeklyEnabled() {
+    const next = !weeklyEnabled;
+    setWeeklyEnabled(next);
+    try {
+      await fetch(`${DIRECT_API_URL}/me/weekly-posts/enabled`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ enabled: next }),
+      });
+      // À la 1ère activation, le backend sème les jours par défaut : on recharge
+      // le planning pour afficher la grille pré-remplie tout de suite.
+      if (next && weeklySchedule.length === 0) {
+        const res = await fetch(`${DIRECT_API_URL}/me/weekly-posts`, { headers: await authHeaders() });
+        if (res.ok) setWeeklySchedule((await res.json()).schedule || []);
+      }
+    } catch { setWeeklyEnabled(!next); }
+  }
+
+  async function saveWeeklySchedule(slots: {day_of_week: number; hour: number; timezone: string}[]) {
+    setWeeklySaving(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/weekly-posts/schedule`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ schedule: slots }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setWeeklySchedule(data.schedule || slots);
+      }
+    } catch { /* silencieux */ } finally { setWeeklySaving(false); }
+  }
+
+  function toggleWeeklyDay(day: number) {
+    const exists = weeklySchedule.find((s) => s.day_of_week === day);
+    const next = exists
+      ? weeklySchedule.filter((s) => s.day_of_week !== day)
+      : [...weeklySchedule, { day_of_week: day, hour: 9, timezone: "Europe/Paris" }].sort((a, b) => a.day_of_week - b.day_of_week);
+    setWeeklySchedule(next);
+    void saveWeeklySchedule(next);
+  }
+
+  function setWeeklyHour(day: number, hour: number) {
+    const next = weeklySchedule.map((s) => s.day_of_week === day ? { ...s, hour } : s);
+    setWeeklySchedule(next);
+    void saveWeeklySchedule(next);
+  }
 
   function updateField(key: keyof EditorialProfile, value: string) {
     setSaved(false);
@@ -4791,6 +4983,74 @@ function ProfileView({
         ) : null}
       </section>
       {slack.error ? <div className="error" style={{ marginBottom: 12 }}>{slack.error}</div> : null}
+
+      <section className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <CalendarDays size={20} style={{ flexShrink: 0, color: "var(--coral)" }} />
+            <div>
+              <strong>Posts automatiques de la semaine</strong>
+              <p className="section-desc" style={{ margin: 0 }}>
+                Génère et programme 3 posts chaque semaine, envoyés sur Slack pour validation avant publication. Requiert LinkedIn et Slack connectés.
+              </p>
+            </div>
+          </div>
+          {(!linkedin.status?.connected || !slack.status?.connected) ? (
+            <p className="section-desc" style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+              {!linkedin.status?.connected && !slack.status?.connected
+                ? "⚠️ Connecte LinkedIn et Slack (ci-dessus) pour activer."
+                : !linkedin.status?.connected
+                ? "⚠️ Connecte LinkedIn (ci-dessus) pour activer."
+                : "⚠️ Connecte Slack (ci-dessus) pour activer."}
+            </p>
+          ) : (
+            <label className="daily-switch">
+              <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
+              <span>Recevoir 3 posts/semaine à valider</span>
+            </label>
+          )}
+        </div>
+        {weeklyEnabled && linkedin.status?.connected && slack.status?.connected && (
+          <div style={{ marginTop: 16 }}>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 8 }}>
+              Jours de publication (heure locale, fuseau Europe/Paris) :
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+              {["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((label, day) => {
+                const slot = weeklySchedule.find((s) => s.day_of_week === day);
+                return (
+                  <div key={day} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 13, cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={!!slot}
+                        onChange={() => toggleWeeklyDay(day)}
+                        style={{ cursor: "pointer" }}
+                      />
+                      {label}
+                    </label>
+                    {slot && (
+                      <select
+                        value={slot.hour}
+                        onChange={(e) => setWeeklyHour(day, Number(e.target.value))}
+                        style={{ fontSize: 12, padding: "2px 4px", borderRadius: 4, border: "1px solid var(--border)" }}
+                      >
+                        {Array.from({ length: 24 }, (_, h) => (
+                          <option key={h} value={h}>{String(h).padStart(2, "0")}h</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {weeklySaving && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}><Loader2 size={12} className="spinning" style={{ verticalAlign: "-2px" }} /> Sauvegarde…</p>}
+            {weeklySchedule.length === 0 && (
+              <p style={{ fontSize: 12, color: "var(--coral)", marginTop: 6 }}>Sélectionne au moins un jour.</p>
+            )}
+          </div>
+        )}
+      </section>
 
       {error ? <div className="error" style={{ marginBottom: 12 }}>{error}</div> : null}
       {draftInfo ? <div className="auth-info" style={{ marginBottom: 12 }}>{draftInfo}</div> : null}
@@ -5393,16 +5653,148 @@ function ContentHub({
   );
 }
 
+// --- Onboarding « Cible » : wizard accueil → scan → 2 pages de confirmation ---
+type OnbStep = "intro" | "scanning" | "page1" | "page2";
+type OnbOption = { label: string; match?: string[] };
+
+const ONB_AUDIENCE_OPTIONS: OnbOption[] = [
+  { label: "Dirigeants de PME", match: ["pme", "dirigeant", "tpe", "patron", "ceo", "gérant", "chef d'entreprise"] },
+  { label: "Startups & fondateurs", match: ["startup", "fondateur", "founder", "porteur de projet", "scale"] },
+  { label: "Freelances & solopreneurs", match: ["freelance", "solo", "indépendant", "consultant indépendant"] },
+  { label: "E-commerçants", match: ["e-commerce", "ecommerce", "boutique", "shopify", "vendeur", "retail"] },
+  { label: "Coachs & consultants", match: ["coach", "consultant", "formateur"] },
+  { label: "Agences & studios", match: ["agence", "studio"] },
+  { label: "Éditeurs SaaS / tech", match: ["saas", "éditeur", "logiciel", "cto", "product"] },
+];
+
+const ONB_OFFER_OPTIONS: OnbOption[] = [
+  { label: "Un SaaS / produit", match: ["saas", "produit", "logiciel", "app", "plateforme", "outil"] },
+  { label: "Des prestations sur-mesure", match: ["prestation", "service", "sur-mesure", "freelance", "mission", "développement"] },
+  { label: "Du conseil / consulting", match: ["conseil", "consulting", "accompagnement", "stratégie", "audit"] },
+  { label: "De la formation", match: ["formation", "cours", "coaching", "bootcamp", "masterclass"] },
+  { label: "Une agence / studio", match: ["agence", "studio"] },
+];
+
+const ONB_OBJECTIVE_OPTIONS: OnbOption[] = [
+  { label: "Générer des leads", match: ["lead", "prospect", "client", "acquisition", "rendez-vous"] },
+  { label: "Développer ma notoriété", match: ["notoriété", "visibilité", "personal branding", "marque", "audience", "influence"] },
+  { label: "Vendre une offre", match: ["vendre", "vente", "offre", "convertir", "chiffre"] },
+  { label: "Recruter", match: ["recrut", "talent", "embauche", "hiring", "équipe"] },
+  { label: "Fédérer une communauté", match: ["communauté", "community", "engager", "réseau"] },
+];
+
+const ONB_INDUSTRY_OPTIONS: OnbOption[] = [
+  { label: "IA & Data", match: ["ia", "intelligence artificielle", "ai", "data", "machine learning", "llm"] },
+  { label: "SaaS / Logiciel", match: ["saas", "logiciel", "software"] },
+  { label: "Marketing & Growth", match: ["marketing", "growth", "acquisition", "communication", "ads"] },
+  { label: "Développement / Tech", match: ["dev", "développ", "code", "engineering", "no-code", "vibecod", "tech"] },
+  { label: "Conseil & Services", match: ["conseil", "service", "consulting", "cabinet"] },
+  { label: "E-commerce", match: ["e-commerce", "ecommerce", "retail", "boutique"] },
+];
+
+const ONB_SCAN_STEPS = [
+  "Lecture de ton profil…",
+  "Analyse de ton audience…",
+  "Identification de ton offre…",
+  "On peaufine tout ça…",
+];
+
+function onbMatch(text: string | undefined, options: OnbOption[]): string | null {
+  const t = (text || "").toLowerCase();
+  if (!t) return null;
+  for (const o of options) {
+    if (o.match?.some((m) => t.includes(m))) return o.label;
+  }
+  return null;
+}
+
+// Un champ = plusieurs choix cochés (multi-select) + un éventuel texte libre « Autre ».
+type OnbField = { picks: string[]; other: string };
+
+function onbField(text: string | undefined, options: OnbOption[]): OnbField {
+  const m = onbMatch(text, options);
+  if (m) return { picks: [m], other: "" };
+  return { picks: [], other: (text || "").trim() };
+}
+
+function onbJoin(f: OnbField): string {
+  return [...f.picks, f.other.trim()].filter(Boolean).join(", ");
+}
+
+function onbInitSel(d: Record<string, string>) {
+  const audience = onbField(d.target_audience, ONB_AUDIENCE_OPTIONS);
+  return {
+    displayName: (d.display_name || "").trim(),
+    audienceMode: (audience.picks.length || audience.other ? "niche" : "") as "" | "niche" | "large",
+    audience,
+    offer: onbField(d.core_offer, ONB_OFFER_OPTIONS),
+    objective: onbField(d.linkedin_objective, ONB_OBJECTIVE_OPTIONS),
+    industry: onbField(d.industry, ONB_INDUSTRY_OPTIONS),
+  };
+}
+
+function OnbChips({ options, field, onChange, placeholder }: {
+  options: OnbOption[];
+  field: OnbField;
+  onChange: (next: OnbField) => void;
+  placeholder?: string;
+}) {
+  const [showOther, setShowOther] = useState(!!field.other);
+  const toggle = (label: string) => {
+    const has = field.picks.includes(label);
+    onChange({ ...field, picks: has ? field.picks.filter((p) => p !== label) : [...field.picks, label] });
+  };
+  return (
+    <>
+      <div className="onb-chips">
+        {options.map((o, i) => (
+          <button
+            key={o.label}
+            type="button"
+            className={"onb-chip" + (field.picks.includes(o.label) ? " selected" : "")}
+            style={{ animationDelay: `${i * 45}ms` }}
+            onClick={() => toggle(o.label)}
+          >
+            {o.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          className={"onb-chip" + (showOther ? " selected" : "")}
+          style={{ animationDelay: `${options.length * 45}ms` }}
+          onClick={() => {
+            const next = !showOther;
+            setShowOther(next);
+            if (!next) onChange({ ...field, other: "" });
+          }}
+        >
+          Autre
+        </button>
+      </div>
+      {showOther && (
+        <input
+          className="onb-other-input"
+          value={field.other}
+          onChange={(e) => onChange({ ...field, other: e.target.value })}
+          placeholder={placeholder || "Précise en quelques mots…"}
+          autoFocus
+        />
+      )}
+    </>
+  );
+}
+
 function OnboardingScreen({ onDone }: { onDone: () => void }) {
+  const [step, setStep] = useState<OnbStep>("intro");
   const [aiInput, setAiInput] = useState("");
-  const [drafting, setDrafting] = useState(false);
   const [error, setError] = useState("");
-  const [profilePreview, setProfilePreview] = useState<{
-    display_name?: string;
-    brand_name?: string;
-    business_description?: string;
-    industry?: string;
-  } | null>(null);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [sel, setSel] = useState(() => onbInitSel({}));
+  const [saving, setSaving] = useState(false);
+  const [scanIdx, setScanIdx] = useState(0);
+
+  const up = (patch: Partial<ReturnType<typeof onbInitSel>>) =>
+    setSel((s) => ({ ...s, ...patch }));
 
   const inputKind: "linkedin" | "website" | "description" = (() => {
     const v = aiInput.trim();
@@ -5412,85 +5804,187 @@ function OnboardingScreen({ onDone }: { onDone: () => void }) {
     return "description";
   })();
 
-  async function doPreFill() {
+  useEffect(() => {
+    if (step !== "scanning") return;
+    setScanIdx(0);
+    const id = setInterval(
+      () => setScanIdx((i) => (i < ONB_SCAN_STEPS.length - 1 ? i + 1 : i)),
+      850,
+    );
+    return () => clearInterval(id);
+  }, [step]);
+
+  async function analyze() {
     const trimmed = aiInput.trim();
-    if (!trimmed) { setError("Colle une URL LinkedIn, un site ou une description courte."); return; }
-    setDrafting(true); setError("");
+    if (!trimmed) { setError("Colle ton URL LinkedIn (ou une courte description)."); return; }
+    setError(""); setStep("scanning");
     try {
       const isLinkedin = inputKind === "linkedin";
       const isWebsite = inputKind === "website";
-      const res = await fetch(`${DIRECT_API_URL}/me/profile/draft`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({
-          activity_description: isLinkedin || isWebsite ? "" : trimmed,
-          linkedin_url: isLinkedin ? trimmed : "",
-          website_url: isWebsite ? trimmed : "",
-          use_apify_linkedin: isLinkedin,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Pré-remplissage impossible");
-      const merged = { ...(data.profile || {}) };
+      const minWait = new Promise((r) => setTimeout(r, 1800));
+      const fetchDraft = (async () => {
+        const res = await fetch(`${DIRECT_API_URL}/me/profile/draft`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({
+            activity_description: isLinkedin || isWebsite ? "" : trimmed,
+            linkedin_url: isLinkedin ? trimmed : "",
+            website_url: isWebsite ? trimmed : "",
+            use_apify_linkedin: isLinkedin,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Analyse impossible");
+        return (data.profile || {}) as Record<string, string>;
+      })();
+      const [d] = await Promise.all([fetchDraft, minWait]);
+      setDraft(d);
+      setSel(onbInitSel(d));
+      setStep("page1");
+    } catch (err: any) {
+      setError(err?.message || "Analyse impossible");
+      setStep("intro");
+    }
+  }
+
+  async function finish() {
+    setSaving(true);
+    const merged: Record<string, string> = {
+      ...draft,
+      display_name: sel.displayName.trim() || draft.display_name || "",
+      target_audience: sel.audienceMode === "large" ? "Large, pas de niche précise" : onbJoin(sel.audience),
+      core_offer: onbJoin(sel.offer),
+      linkedin_objective: onbJoin(sel.objective),
+      industry: onbJoin(sel.industry),
+    };
+    try {
       await fetch(`${DIRECT_API_URL}/me/profile`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify(merged),
       });
-      setProfilePreview(merged);
-    } catch (err: any) {
-      setError(err.message || "Pré-remplissage impossible");
-    } finally {
-      setDrafting(false);
-    }
+    } catch { /* best effort — on n'empêche pas d'entrer dans l'app */ }
+    onDone();
   }
 
   return (
-    <div className="onboarding-overlay">
-      <div className="onboarding-card">
-        <div className="onboarding-header">
-          <Sparkles size={28} className="onboarding-icon" />
-          <h1>Bienvenue sur LKD Outreach</h1>
-          <p>Pour personnaliser tes recommandations, commençons par ton profil éditorial.</p>
-        </div>
-        {!profilePreview ? (
-          <div className="onboarding-step">
-            <span className="onboarding-label">
-              Colle ton profil LinkedIn, ton site web ou décris ton activité en quelques mots.
-            </span>
-            <div className="onboarding-input-row">
+    <div className="onb-overlay">
+      <div className="onb-shell">
+        {(step === "page1" || step === "page2") && (
+          <div className="onb-progress">
+            <div className="onb-progress-fill" style={{ width: step === "page1" ? "50%" : "100%" }} />
+          </div>
+        )}
+
+        {step === "intro" && (
+          <div className="onb-screen" key="intro">
+            <div className="onb-icon-badge"><Target size={26} /></div>
+            <h1 className="onb-title">Bienvenue sur Cible</h1>
+            <p className="onb-subtitle">Colle ton profil LinkedIn, on prépare tout le reste pour toi.</p>
+            <div className="onb-input-row">
               <input
-                className="onboarding-input"
+                className="onb-input"
                 value={aiInput}
                 onChange={(e) => setAiInput(e.target.value)}
-                placeholder="https://linkedin.com/in/ton-profil ou « J'aide les PME à… »"
-                onKeyDown={(e) => { if (e.key === "Enter" && !drafting) doPreFill(); }}
+                onKeyDown={(e) => { if (e.key === "Enter") analyze(); }}
+                placeholder="https://linkedin.com/in/ton-profil"
                 autoFocus
               />
-              <button className="primary-button" onClick={doPreFill} disabled={drafting}>
-                {drafting ? <Loader2 size={15} className="spinning" /> : <Sparkles size={15} />}
-                {drafting ? "Analyse…" : "Pré-remplir"}
+              <button className="onb-cta" onClick={analyze}>
+                <Sparkles size={16} /> Analyser
               </button>
             </div>
-            {error && <div className="error" style={{ marginTop: 4 }}>{error}</div>}
-            <button className="link-button onboarding-skip" onClick={onDone}>
-              Passer cette étape →
-            </button>
+            {error && <div className="onb-error">{error}</div>}
+            <button className="onb-skip" onClick={() => setStep("page1")}>Continuer sans LinkedIn</button>
           </div>
-        ) : (
-          <div className="onboarding-step">
-            <div className="onboarding-preview">
-              {profilePreview.display_name && <p><strong>Nom :</strong> {profilePreview.display_name}</p>}
-              {profilePreview.brand_name && <p><strong>Marque :</strong> {profilePreview.brand_name}</p>}
-              {profilePreview.industry && <p><strong>Secteur :</strong> {profilePreview.industry}</p>}
-              {profilePreview.business_description && (
-                <p><strong>Activité :</strong> {profilePreview.business_description}</p>
+        )}
+
+        {step === "scanning" && (
+          <div className="onb-screen onb-scan" key="scan">
+            <div className="onb-orb"><Linkedin size={34} /></div>
+            <div className="onb-scan-status" key={scanIdx}>{ONB_SCAN_STEPS[scanIdx]}</div>
+          </div>
+        )}
+
+        {step === "page1" && (
+          <div className="onb-screen" key="page1">
+            <h2 className="onb-greeting">Ravi de te voir 👋</h2>
+            <p className="onb-lead">On a pré-rempli à partir de ton profil. Confirme ou ajuste — tu peux choisir plusieurs réponses 👇</p>
+
+            <div className="onb-block">
+              <label className="onb-block-label">Nom et prénom</label>
+              <input
+                className="onb-other-input"
+                style={{ marginTop: 0 }}
+                value={sel.displayName}
+                onChange={(e) => up({ displayName: e.target.value })}
+                placeholder="Ton nom et prénom"
+              />
+            </div>
+
+            <div className="onb-block">
+              <label className="onb-block-label">À qui tu t'adresses&nbsp;?</label>
+              <div className="onb-toggle">
+                <button
+                  className={"onb-toggle-btn" + (sel.audienceMode === "niche" ? " selected" : "")}
+                  onClick={() => up({ audienceMode: "niche" })}
+                >
+                  Une cible précise
+                </button>
+                <button
+                  className={"onb-toggle-btn" + (sel.audienceMode === "large" ? " selected" : "")}
+                  onClick={() => up({ audienceMode: "large" })}
+                >
+                  Un public large
+                </button>
+              </div>
+              {sel.audienceMode === "niche" && (
+                <OnbChips
+                  options={ONB_AUDIENCE_OPTIONS}
+                  field={sel.audience}
+                  onChange={(v) => up({ audience: v })}
+                  placeholder="Ta niche…"
+                />
               )}
             </div>
-            <p className="onboarding-hint">Profil enregistré — tu pourras ajuster les détails dans « Mon profil ».</p>
-            <button className="primary-button" style={{ width: "100%" }} onClick={onDone}>
-              Valider et continuer →
-            </button>
+
+            <div className="onb-block">
+              <label className="onb-block-label">Ce que tu proposes</label>
+              <OnbChips options={ONB_OFFER_OPTIONS} field={sel.offer} onChange={(v) => up({ offer: v })} />
+            </div>
+
+            <div className="onb-nav">
+              <button className="onb-back" onClick={onDone}>Passer</button>
+              <button className="onb-cta" onClick={() => setStep("page2")}>
+                Continuer <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "page2" && (
+          <div className="onb-screen" key="page2">
+            <h2 className="onb-greeting">Presque fini</h2>
+            <p className="onb-lead">Deux derniers points et c'est parti.</p>
+
+            <div className="onb-block">
+              <label className="onb-block-label">Ton objectif sur LinkedIn</label>
+              <OnbChips options={ONB_OBJECTIVE_OPTIONS} field={sel.objective} onChange={(v) => up({ objective: v })} />
+            </div>
+
+            <div className="onb-block">
+              <label className="onb-block-label">Ton secteur</label>
+              <OnbChips options={ONB_INDUSTRY_OPTIONS} field={sel.industry} onChange={(v) => up({ industry: v })} />
+            </div>
+
+            <div className="onb-nav">
+              <button className="onb-back" onClick={() => setStep("page1")}>
+                <ChevronLeft size={16} /> Retour
+              </button>
+              <button className="onb-cta" onClick={finish} disabled={saving}>
+                {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />} C'est parti
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -5527,6 +6021,9 @@ export default function Home() {
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [credits, setCredits] = useState<number | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  // Le temps de vérifier (côté serveur) si le profil est vide, on affiche un
+  // écran de chargement neutre plutôt que l'app qui "flashe" puis l'onboarding.
+  const [checkingProfile, setCheckingProfile] = useState(false);
   const userIdRef = useRef<string | null>(null);
   const prevJobActiveRef = useRef(false);
   // Analyse anonyme affichée mais pas encore sauvegardée : sauvée dès l'inscription.
@@ -5745,7 +6242,7 @@ export default function Home() {
     // chaque changement de compte, sinon l'utilisateur suivant voit les données
     // du précédent. Exception : passage anonyme → connecté avec une analyse à
     // l'écran, qu'on conserve et qu'on sauvegarde dans le nouveau compte.
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s);
       const uid = s?.user?.id ?? null;
       if (uid === userIdRef.current) return;
@@ -5767,7 +6264,10 @@ export default function Home() {
       }
 
       pendingAnonResultRef.current = null;
-      setAuthOpen(false);
+      // Ne pas fermer une modale que l'utilisateur vient d'ouvrir juste parce que
+      // Supabase restaure une session existante au chargement (INITIAL_SESSION).
+      // On ne ferme que sur une vraie connexion (SIGNED_IN / création de compte).
+      if (event !== "INITIAL_SESSION") setAuthOpen(false);
       setReports([]);
       setInfluencers([]);
       setResult(null);
@@ -5781,20 +6281,45 @@ export default function Home() {
       setError("");
       setView("content");
       setShowOnboarding(false);
-      if (uid) setTimeout(() => {
+      setCheckingProfile(false);
+      const loadUserData = () => {
         loadReports(); loadJobs(); loadInfluencerLibrary(); loadGenerationJobs();
-        // Affiche l'onboarding si le profil est vide (nouvel utilisateur).
-        (async () => {
-          try {
-            const res = await fetch(`${DIRECT_API_URL}/me/profile`, { headers: await authHeaders() });
-            if (res.ok) {
-              const p = await res.json();
-              const hasProfile = !!(p.display_name || p.brand_name || p.business_description);
-              if (!hasProfile) setShowOnboarding(true);
-            }
-          } catch { /* ignore */ }
-        })();
-      }, 0);
+      };
+      if (uid) {
+        // Décision d'onboarding SANS attendre le backend : le flag vit dans les
+        // métadonnées Supabase (présentes dans la session/token, zéro réseau).
+        //  - onboarding_done   → l'a déjà fait/passé → jamais d'onboarding.
+        //  - onboarding_pending → nouveau compte (posé à l'inscription) → onboarding immédiat.
+        //  - aucun flag        → compte "legacy" → repli : on vérifie le profil serveur.
+        const meta = (s?.user?.user_metadata || {}) as Record<string, unknown>;
+        if (meta.onboarding_done === true) {
+          setTimeout(loadUserData, 0);
+        } else if (meta.onboarding_pending === true) {
+          setShowOnboarding(true);
+          setTimeout(loadUserData, 0);
+        } else {
+          // Legacy : petit splash le temps de vérifier le profil. Garde-fou 3,5 s
+          // pour ne pas bloquer l'app si le backend est en cold-start.
+          setCheckingProfile(true);
+          setTimeout(() => {
+            loadUserData();
+            const guard = setTimeout(() => setCheckingProfile(false), 3500);
+            (async () => {
+              try {
+                const res = await fetch(`${DIRECT_API_URL}/me/profile`, { headers: await authHeaders() });
+                if (res.ok) {
+                  const p = await res.json();
+                  const hasProfile = !!(p.display_name || p.brand_name || p.business_description);
+                  if (!hasProfile) setShowOnboarding(true);
+                  // Profil déjà rempli : on pose le flag pour un login instantané la prochaine fois.
+                  else supabase.auth.updateUser({ data: { onboarding_done: true } }).catch(() => {});
+                }
+              } catch { /* ignore */ }
+              finally { clearTimeout(guard); setCheckingProfile(false); }
+            })();
+          }, 0);
+        }
+      }
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -5840,13 +6365,15 @@ export default function Home() {
     const code = params.get("code");
     if (!code || !sessionStorage.getItem("slack_oauth_pending")) return;
     sessionStorage.removeItem("slack_oauth_pending");
+    const slackOauthState = sessionStorage.getItem("slack_oauth_state") || params.get("state") || "";
+    sessionStorage.removeItem("slack_oauth_state");
     (async () => {
       try {
         const redirectUri = `${window.location.origin}${window.location.pathname}`;
         await fetch(`${DIRECT_API_URL}/me/integrations/slack/callback`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-          body: JSON.stringify({ code, redirect_uri: redirectUri }),
+          body: JSON.stringify({ code, redirect_uri: redirectUri, state: slackOauthState }),
         });
       } catch { /* ignore */ }
       params.delete("code");
@@ -5915,7 +6442,18 @@ export default function Home() {
   return (
     <>
       {showOnboarding && isAuthed && (
-        <OnboardingScreen onDone={() => { setShowOnboarding(false); setView("content"); }} />
+        <OnboardingScreen onDone={() => {
+          setShowOnboarding(false);
+          setView("content");
+          // Marque l'onboarding comme fait (dans les métadonnées Supabase) → il ne
+          // réapparaîtra plus, même après refresh, sans dépendre du backend.
+          supabase.auth.updateUser({ data: { onboarding_pending: false, onboarding_done: true } }).catch(() => {});
+        }} />
+      )}
+      {isAuthed && checkingProfile && !showOnboarding && (
+        <div className="onb-overlay">
+          <div className="onb-boot"><Loader2 size={30} className="spinning" /></div>
+        </div>
       )}
       <div className="app-shell">
         <Sidebar

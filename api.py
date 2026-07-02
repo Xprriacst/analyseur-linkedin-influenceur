@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import json
+import secrets
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -27,6 +30,16 @@ from src.daily_ideas import _render_idea_markdown
 from src.listing import ListingError, build_listing_topic, fetch_listing_preview, is_listing_url
 
 load_dotenv()
+
+if slack_client.enabled() and not os.environ.get("SLACK_SIGNING_SECRET"):
+    print(
+        "⚠️  SLACK_SIGNING_SECRET absent : les webhooks Slack seront refusés (fail-closed). "
+        "Ajoutez-le dans les variables d'environnement.",
+        file=sys.stderr,
+    )
+
+# État CSRF OAuth Slack : token → {user_id, expires}. TTL 10 min, en mémoire.
+_slack_oauth_states: dict[str, dict] = {}
 
 app = FastAPI(title="LinkedIn Strategy Decoder API")
 
@@ -1360,6 +1373,7 @@ def me_credits(token: str = Depends(require_token)) -> dict[str, Any]:
 
 class IdeaSeedRequest(BaseModel):
     text: str = Field(..., min_length=3, max_length=2000)
+    comment: str | None = Field(default=None, max_length=500)
 
 
 class DailyIdeasEnabledRequest(BaseModel):
@@ -1392,7 +1406,8 @@ def me_idea_seeds(token: str = Depends(require_token)) -> list[dict[str, Any]]:
 @app.post("/me/idea-seeds")
 def add_me_idea_seed(payload: IdeaSeedRequest, token: str = Depends(require_token)) -> dict[str, Any]:
     """Add an idea to the user's reservoir."""
-    seed = db.add_idea_seed(token, payload.text.strip())
+    comment = (payload.comment or "").strip() or None
+    seed = db.add_idea_seed(token, payload.text.strip(), comment=comment)
     if not seed:
         raise HTTPException(status_code=400, detail="Impossible d'enregistrer l'idée.")
     return seed
@@ -1424,6 +1439,52 @@ def set_me_daily_ideas_enabled(
     """Toggle the daily-idea opt-in for the authenticated user."""
     db.set_daily_ideas_enabled(token, payload.enabled)
     return {"enabled": payload.enabled}
+
+
+# ── ALE-157 : Weekly posts (UI opt-in + schedule) ────────────────────────────
+
+class WeeklyPostsEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class WeeklyScheduleSlot(BaseModel):
+    day_of_week: int = Field(..., ge=0, le=6)
+    hour: int = Field(9, ge=0, le=23)
+    timezone: str = "Europe/Paris"
+
+
+class WeeklyScheduleRequest(BaseModel):
+    schedule: list[WeeklyScheduleSlot] = []
+
+
+@app.get("/me/weekly-posts")
+def get_me_weekly_posts(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Return the user's weekly-posts opt-in state and schedule."""
+    return {
+        "enabled": db.get_weekly_posts_enabled(token),
+        "schedule": db.get_weekly_schedule(token),
+    }
+
+
+@app.post("/me/weekly-posts/enabled")
+def set_me_weekly_posts_enabled(
+    payload: WeeklyPostsEnabledRequest,
+    token: str = Depends(require_token),
+) -> dict[str, bool]:
+    """Toggle the weekly-posts opt-in for the authenticated user."""
+    db.set_weekly_posts_enabled(token, payload.enabled)
+    return {"enabled": payload.enabled}
+
+
+@app.put("/me/weekly-posts/schedule")
+def put_me_weekly_posts_schedule(
+    payload: WeeklyScheduleRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Replace the user's weekly-posts schedule."""
+    slots = [s.model_dump() for s in payload.schedule]
+    saved = db.set_weekly_schedule(token, slots)
+    return {"schedule": saved}
 
 
 @app.post("/me/daily-ideas/regenerate")
@@ -1492,6 +1553,7 @@ class SlackConnectRequest(BaseModel):
 class SlackCallbackRequest(BaseModel):
     code: str = Field(..., min_length=4)
     redirect_uri: str = Field(..., min_length=10)
+    state: str = ""  # CSRF token généré par /connect ; vide = flux sans state (rétro-compat dev)
 
 
 class SlackSendIdeasRequest(BaseModel):
@@ -1501,6 +1563,7 @@ class SlackSendIdeasRequest(BaseModel):
 class SlackSendPostsRequest(BaseModel):
     post_id: str = Field(..., min_length=1)
     content: Optional[str] = None
+    images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
 
 
 @app.get("/me/integrations/slack/status")
@@ -1527,11 +1590,16 @@ def slack_connect(
     """Return the Slack OAuth authorization URL to redirect the user to."""
     if not slack_client.enabled():
         raise HTTPException(status_code=400, detail="SLACK_CLIENT_ID / SLACK_CLIENT_SECRET manquants sur le serveur.")
+    user = db.get_user(token) or {}
+    user_id = user.get("id", "")
+    state_token = secrets.token_urlsafe(32)
+    _slack_oauth_states[state_token] = {"user_id": user_id, "expires": time.time() + 600}
     try:
-        auth_url = slack_client.build_oauth_url(payload.redirect_uri)
+        auth_url = slack_client.build_oauth_url(payload.redirect_uri, state=state_token)
     except slack_client.SlackError as exc:
+        _slack_oauth_states.pop(state_token, None)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"auth_url": auth_url}
+    return {"auth_url": auth_url, "state": state_token}
 
 
 @app.post("/me/integrations/slack/callback")
@@ -1542,6 +1610,13 @@ def slack_callback(
     """Exchange an OAuth code for tokens and persist the Slack integration."""
     if not slack_client.enabled():
         raise HTTPException(status_code=400, detail="SLACK_CLIENT_ID / SLACK_CLIENT_SECRET manquants sur le serveur.")
+    if payload.state:
+        stored = _slack_oauth_states.pop(payload.state, None)
+        if not stored or time.time() > stored["expires"]:
+            raise HTTPException(status_code=400, detail="État OAuth invalide ou expiré.")
+        current_user = db.get_user(token) or {}
+        if stored["user_id"] and stored["user_id"] != current_user.get("id"):
+            raise HTTPException(status_code=400, detail="État OAuth ne correspond pas à l'utilisateur authentifié.")
     try:
         oauth = slack_client.exchange_code(payload.code, payload.redirect_uri)
     except slack_client.SlackError as exc:
@@ -1642,6 +1717,19 @@ def slack_send_post(
         updated = db.update_generated_post(token, payload.post_id, new_post=content)
         post = updated or {**post, "post": content}
 
+    # Images jointes (annonce / upload) → URLs publiques Zernio, affichées sur
+    # Slack. Persistées sur le post pour survivre aux clics Valider/Modifier (qui
+    # rechargent le post depuis la base). Non bloquant : un échec d'upload média
+    # n'empêche pas l'envoi du texte.
+    if payload.images:
+        try:
+            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
+        except zernio.ZernioError:
+            media_items = []
+        if media_items:
+            db.update_generated_post_media(token, payload.post_id, media_items)
+            post = {**post, "media_items": media_items}
+
     try:
         slack_client.send_post_for_validation(bot_token, channel_id, post)
     except slack_client.SlackError as exc:
@@ -1676,10 +1764,12 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
     except Exception:
         raise HTTPException(status_code=400, detail="Payload Slack invalide (JSON).")
 
-    # Modal submission: the user edited a scheduled post's text from Slack (ALE-149).
+    # Modal submission: the user edited a post's text from Slack.
+    # Deux flux symétriques : posts programmés (ALE-149) et posts envoyés directement.
     if data.get("type") == "view_submission":
         view = data.get("view") or {}
-        if view.get("callback_id") != "edit_scheduled_post_modal":
+        callback_id = view.get("callback_id")
+        if callback_id not in ("edit_scheduled_post_modal", "edit_post_modal"):
             return {"response_action": "clear"}
         slack_user_id = (data.get("user") or {}).get("id", "")
         integration = db.get_user_by_slack_id(slack_user_id)
@@ -1696,18 +1786,31 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
         ).strip()
         if not (integration and post_id and new_text):
             return {"response_action": "clear"}
-        updated = db.update_scheduled_post_text_admin(post_id, integration["user_id"], new_text)
-        if not updated:
-            return {
-                "response_action": "errors",
-                "errors": {"post_text_block": "Ce post n'est plus modifiable (déjà publié ou annulé)."},
-            }
         bot_token_w = integration.get("access_token", "")
-        if bot_token_w and channel_id_w and ts_w:
-            try:
-                slack_client.update_scheduled_post_message(bot_token_w, channel_id_w, ts_w, updated, "edited")
-            except slack_client.SlackError:
-                pass
+        if callback_id == "edit_scheduled_post_modal":
+            updated = db.update_scheduled_post_text_admin(post_id, integration["user_id"], new_text)
+            if not updated:
+                return {
+                    "response_action": "errors",
+                    "errors": {"post_text_block": "Ce post n'est plus modifiable (déjà publié ou annulé)."},
+                }
+            if bot_token_w and channel_id_w and ts_w:
+                try:
+                    slack_client.update_scheduled_post_message(bot_token_w, channel_id_w, ts_w, updated, "edited")
+                except slack_client.SlackError:
+                    pass
+        else:  # edit_post_modal (post envoyé directement)
+            updated = db.update_generated_post_text_admin(post_id, integration["user_id"], new_text)
+            if not updated:
+                return {
+                    "response_action": "errors",
+                    "errors": {"post_text_block": "Ce post n'est plus modifiable."},
+                }
+            if bot_token_w and channel_id_w and ts_w:
+                try:
+                    slack_client.update_post_message(bot_token_w, channel_id_w, ts_w, updated, "edited")
+                except slack_client.SlackError:
+                    pass
         return {"response_action": "clear"}
 
     if data.get("type") != "block_actions":
@@ -1750,12 +1853,27 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
         status = "validated" if action_id == "validate_post" else "rejected"
         if integration:
             db.update_post_slack_status(item_id, integration["user_id"], status)
+            post = db.get_generated_post_for_user(item_id, integration["user_id"]) or {"id": item_id}
             bot_token_w = integration.get("access_token", "")
             channel_id_w = (data.get("channel") or {}).get("id", "")
             ts_w = (data.get("message") or {}).get("ts", "")
             if bot_token_w and channel_id_w and ts_w:
                 try:
-                    slack_client.update_post_message(bot_token_w, channel_id_w, ts_w, {"id": item_id}, status)
+                    slack_client.update_post_message(bot_token_w, channel_id_w, ts_w, post, status)
+                except slack_client.SlackError:
+                    pass
+
+    elif action_id == "edit_post":
+        # Ouvre la modal d'édition immédiatement — le trigger_id expire en ~3 s.
+        if integration:
+            bot_token_w = integration.get("access_token", "")
+            trigger_id = data.get("trigger_id", "")
+            channel_id_w = (data.get("channel") or {}).get("id", "")
+            ts_w = (data.get("message") or {}).get("ts", "")
+            post = db.get_generated_post_for_user(item_id, integration["user_id"]) or {"id": item_id}
+            if bot_token_w and trigger_id:
+                try:
+                    slack_client.open_generated_post_edit_modal(bot_token_w, trigger_id, post, channel_id_w, ts_w)
                 except slack_client.SlackError:
                     pass
 

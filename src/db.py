@@ -1518,17 +1518,24 @@ def list_idea_seeds(access_token: str, limit: int = 200) -> list[dict]:
     return resp.data or []
 
 
-def add_idea_seed(access_token: str, text: str) -> dict | None:
-    """Add a seed idea to the user's reservoir."""
+def add_idea_seed(access_token: str, text: str, comment: str | None = None) -> dict | None:
+    """Add a seed idea to the user's reservoir.
+
+    `comment` is an optional orientation note (used for listing-URL seeds) that is
+    injected into the prompt at generation time.
+    """
     if not supabase_enabled():
         return None
     user = get_user(access_token)
     if not user:
         return None
     db = client_for_token(access_token)
+    row: dict[str, Any] = {"user_id": user["id"], "text": text}
+    if comment:
+        row["comment"] = comment
     resp = (
         db.table("idea_seeds")
-        .insert({"user_id": user["id"], "text": text})
+        .insert(row)
         .execute()
     )
     return resp.data[0] if resp.data else None
@@ -2106,6 +2113,61 @@ def update_post_slack_status(post_id: str, user_id: str, status: str) -> bool:
     return bool(resp.data)
 
 
+def get_generated_post_for_user(post_id: str, user_id: str) -> dict | None:
+    """Fetch a generated post by id/user with service-role access (webhook, no JWT)."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("generated_posts")
+        .select("id, user_id, post, topic, slack_status, media_items")
+        .eq("id", post_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_generated_post_media(access_token: str, post_id: str, media_items: list[dict]) -> bool:
+    """Persist the Slack media_items (public image URLs) on a generated post.
+
+    JWT-scoped (appelé depuis /send-posts). Permet aux images jointes de survivre
+    aux clics Valider/Modifier sur Slack (qui rechargent le post depuis la base)."""
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"media_items": media_items or []})
+        .eq("user_id", user["id"])
+        .eq("id", post_id)
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def update_generated_post_text_admin(post_id: str, user_id: str, text: str) -> dict | None:
+    """Edit a generated post's text from Slack (service-role, no JWT in webhook).
+
+    Resets `slack_status` to 'pending' so an edited post must be re-validated
+    before it counts as approved (symétrie avec les posts programmés, ALE-149).
+    Returns the updated row, or None if the post no longer exists for this user.
+    """
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("generated_posts")
+        .update({"post": text, "slack_status": "pending"})
+        .eq("id", post_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def get_scheduled_post_for_user(post_id: str, user_id: str) -> dict | None:
     """Fetch a scheduled post by id/user with service-role access."""
     if not admin_enabled():
@@ -2113,7 +2175,7 @@ def get_scheduled_post_for_user(post_id: str, user_id: str) -> dict | None:
     resp = (
         admin_client()
         .table("scheduled_posts")
-        .select("id, user_id, post_text, scheduled_at, status, slack_status")
+        .select("id, user_id, post_text, scheduled_at, status, slack_status, media_items")
         .eq("id", post_id)
         .eq("user_id", user_id)
         .limit(1)
@@ -2406,14 +2468,33 @@ def set_weekly_posts_enabled(access_token: str, enabled: bool) -> dict | None:
         .upsert(row, on_conflict="user_id")
         .execute()
     )
+    # À la première activation, pré-remplir le planning avec les jours par
+    # défaut (Lun/Mer/Ven 9h) pour que la grille ne soit pas vide. On ne touche
+    # pas à un planning déjà configuré, et on ne sème rien à la désactivation.
+    if enabled:
+        existing = (
+            db.table("weekly_post_schedule")
+            .select("id")
+            .eq("user_id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        if not (existing.data or []):
+            set_weekly_schedule(access_token, _WEEKLY_DEFAULTS)
     return resp.data[0] if resp.data else None
 
 
 def get_weekly_schedule(access_token: str) -> list[dict]:
-    """Return the user's weekly schedule slots, falling back to defaults if none set."""
+    """Return the user's weekly schedule slots exactly as stored.
+
+    An empty list means the user has no day configured (and thus wants no
+    posts). Defaults are only seeded at opt-in time (``set_weekly_posts_enabled``),
+    never silently substituted here — otherwise unchecking every day would
+    resurrect the Mon/Wed/Fri defaults.
+    """
     user = get_user(access_token)
     if not user:
-        return _WEEKLY_DEFAULTS
+        return []
     db = client_for_token(access_token)
     resp = (
         db.table("weekly_post_schedule")
@@ -2422,7 +2503,7 @@ def get_weekly_schedule(access_token: str) -> list[dict]:
         .order("day_of_week")
         .execute()
     )
-    return resp.data if resp.data else _WEEKLY_DEFAULTS
+    return resp.data or []
 
 
 def set_weekly_schedule(access_token: str, slots: list[dict]) -> list[dict]:
@@ -2478,10 +2559,12 @@ def list_weekly_posts_users() -> list[str]:
 def get_weekly_schedule_for_user(user_id: str) -> list[dict]:
     """Return the weekly schedule slots for a given user (service-role).
 
-    Falls back to defaults if the user has no schedule configured.
+    Returns exactly what is stored: an empty list means the user configured no
+    day, so the cron must generate nothing. No defaults fallback here — the
+    opt-in switch is the master control and defaults are only seeded at opt-in.
     """
     if not admin_enabled():
-        return _WEEKLY_DEFAULTS
+        return []
     db = admin_client()
     resp = (
         db.table("weekly_post_schedule")
@@ -2490,4 +2573,74 @@ def get_weekly_schedule_for_user(user_id: str) -> list[dict]:
         .order("day_of_week")
         .execute()
     )
-    return resp.data if resp.data else _WEEKLY_DEFAULTS
+    return resp.data or []
+
+
+def get_slack_config_for_user(user_id: str) -> dict | None:
+    """Fetch Slack bot_token + channel_id for a user (service-role, for crons)."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("user_integrations")
+        .select("access_token, channel_id")
+        .eq("user_id", user_id)
+        .eq("service", "slack")
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def create_scheduled_post_admin(
+    user_id: str,
+    post_text: str,
+    scheduled_at_iso: str,
+) -> dict | None:
+    """Insert a scheduled post with service-role (no user JWT). Used by crons."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("scheduled_posts")
+        .insert({
+            "user_id": user_id,
+            "post_text": post_text,
+            "scheduled_at": scheduled_at_iso,
+            "media_items": [],
+            "slack_status": "pending",
+        })
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def set_scheduled_post_slack_ts_admin(post_id: str, message_ts: str) -> None:
+    """Persist the Slack message timestamp for a scheduled post (service-role)."""
+    if not admin_enabled():
+        return
+    admin_client().table("scheduled_posts").update({
+        "slack_message_ts": message_ts,
+        "updated_at": "now()",
+    }).eq("id", post_id).execute()
+
+
+def weekly_post_exists(user_id: str, utc_date: str) -> bool:
+    """True if a non-cancelled scheduled post already exists for this user on utc_date.
+
+    `utc_date` is YYYY-MM-DD. Used by the weekly cron for idempotency.
+    """
+    if not admin_enabled():
+        return False
+    resp = (
+        admin_client()
+        .table("scheduled_posts")
+        .select("id")
+        .eq("user_id", user_id)
+        .gte("scheduled_at", f"{utc_date}T00:00:00+00:00")
+        .lte("scheduled_at", f"{utc_date}T23:59:59+00:00")
+        .neq("status", "cancelled")
+        .limit(1)
+        .execute()
+    )
+    return bool(resp.data)

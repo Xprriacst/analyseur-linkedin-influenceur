@@ -519,7 +519,8 @@ def generate_ideas(
         "Contexte client à respecter en priorité :\n"
         + context_text
         + seed_directive
-        + "\n\nBenchmarks issus de l'analyse d'influenceurs LinkedIn :\n"
+        + "\n\nBenchmarks issus de l'analyse d'influenceurs LinkedIn "
+        "(corpus_insights = données mesurées sur ce corpus réel, à ne pas contredire) :\n"
         + json.dumps(benchmark, ensure_ascii=False, indent=2)
         + "\n\nExemples des posts les plus performants :\n"
         + examples_text
@@ -807,14 +808,10 @@ Contre-exemples à NE PAS reproduire :
 
 
 def _auto_role_mix() -> list[str]:
-    """Mix éditorial par défaut : performance + méthodo/autorité + relationnel/quotidien + opinion + story."""
-    return [
-        "performance",
-        random.choice(["methodologie", "autorite"]),
-        random.choice(["relationnel", "quotidien"]),
-        random.choice(["opinion", "story"]),
-        random.choice(["methodologie", "autorite", "relationnel", "quotidien"]),
-    ]
+    """Mix éditorial aléatoire parmi tous les rôles disponibles, sans doublon."""
+    roles = list(ROLE_SPECS.keys())
+    random.shuffle(roles)
+    return roles
 
 
 def generate_posts(
@@ -890,7 +887,8 @@ def generate_posts(
         topic_directive
         + "Contexte client à respecter EN PRIORITÉ (prime sur les patterns viraux) :\n"
         + context_text
-        + "\n\nBenchmarks issus de l'analyse d'influenceurs LinkedIn :\n"
+        + "\n\nBenchmarks issus de l'analyse d'influenceurs LinkedIn "
+        "(corpus_insights = données mesurées sur ce corpus réel, à respecter et ne pas contredire) :\n"
         + json.dumps(benchmark, ensure_ascii=False, indent=2)
         + "\n\nExemples des posts les plus performants :\n"
         + examples_text
