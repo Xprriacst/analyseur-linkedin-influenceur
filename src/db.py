@@ -2120,13 +2120,32 @@ def get_generated_post_for_user(post_id: str, user_id: str) -> dict | None:
     resp = (
         admin_client()
         .table("generated_posts")
-        .select("id, user_id, post, topic, slack_status")
+        .select("id, user_id, post, topic, slack_status, media_items")
         .eq("id", post_id)
         .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
     return resp.data[0] if resp.data else None
+
+
+def update_generated_post_media(access_token: str, post_id: str, media_items: list[dict]) -> bool:
+    """Persist the Slack media_items (public image URLs) on a generated post.
+
+    JWT-scoped (appelé depuis /send-posts). Permet aux images jointes de survivre
+    aux clics Valider/Modifier sur Slack (qui rechargent le post depuis la base)."""
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"media_items": media_items or []})
+        .eq("user_id", user["id"])
+        .eq("id", post_id)
+        .execute()
+    )
+    return bool(resp.data)
 
 
 def update_generated_post_text_admin(post_id: str, user_id: str, text: str) -> dict | None:
