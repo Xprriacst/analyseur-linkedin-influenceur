@@ -307,9 +307,10 @@ def send_post_for_validation(
     """
     post_id = post.get("id", "")
     text = post.get("post") or ""
-    topic = post.get("topic") or ""
 
-    header = f"*{topic}*" if topic else "*Post généré*"
+    # Titre neutre : on ne montre PAS le sujet/prompt de génération sur Slack —
+    # la validation ne porte que sur le texte du post lui-même.
+    header = "*📝 Post à valider*"
     blocks: list[dict] = [
         {
             "type": "section",
@@ -381,9 +382,8 @@ def update_post_message(
     `validated` / `rejected` are terminal → buttons replaced by a status badge.
     `edited` keeps the validate/edit/reject buttons so the user can re-validate
     the new content (symétrie avec les posts programmés)."""
-    topic = post.get("topic") or ""
     text = post.get("post") or ""
-    header = f"*{topic}*" if topic else "*Post généré*"
+    header = "*📝 Post à valider*"
     badge = _POST_BADGES.get(status, "")
 
     blocks: list[dict] = [
