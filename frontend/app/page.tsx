@@ -4216,8 +4216,15 @@ function AssistantMessageActions({
       <button className="secondary-button" style={btn} disabled={saving || savedPost} onClick={save}>
         {saving ? <Loader2 size={13} className="spinning" /> : <BookmarkPlus size={13} />} {savedPost ? "Sauvegardé ✓" : "Sauvegarder"}
       </button>
-      <button className="secondary-button" style={btn} disabled={generatingImg} onClick={generateImageFn}>
-        {generatingImg ? <Loader2 size={13} className="spinning" /> : <ImageIcon size={13} />} {generatingImg ? "Génération…" : "Générer une image"}
+      <button
+        className="secondary-button"
+        style={btn}
+        disabled
+        aria-disabled
+        title="Génération d'image en cours d'amélioration — bientôt disponible"
+        onClick={generateImageFn}
+      >
+        <ImageIcon size={13} /> Image IA — bientôt
       </button>
       <button
         className="secondary-button"
