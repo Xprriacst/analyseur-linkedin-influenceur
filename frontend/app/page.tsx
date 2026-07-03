@@ -2928,6 +2928,13 @@ function DailyIdeasView({
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
+  // Drag armé uniquement quand on saisit la poignée (le texte reste sélectionnable).
+  const [dragArmedId, setDragArmedId] = useState<string | null>(null);
+  // Édition d'une idée du réservoir.
+  const [editingSeedId, setEditingSeedId] = useState<string | null>(null);
+  const [editSeedText, setEditSeedText] = useState("");
+  const [editSeedComment, setEditSeedComment] = useState("");
+  const [savingSeedEdit, setSavingSeedEdit] = useState(false);
 
   // ALE-143 : lot d'idées « une ligne »
   const [ideaBatch, setIdeaBatch] = useState<IdeaLine[]>([]);
@@ -3213,6 +3220,40 @@ function DailyIdeasView({
         body: JSON.stringify({ ordered_ids }),
       });
     } catch { void loadAll(); }
+  }
+
+  // Édition d'une idée du réservoir (texte + commentaire d'orientation).
+  function startSeedEdit(s: IdeaSeed) {
+    setEditingSeedId(s.id);
+    setEditSeedText(s.text || "");
+    setEditSeedComment(s.comment || "");
+    setError("");
+  }
+
+  async function saveSeedEdit(id: string) {
+    const text = editSeedText.trim();
+    if (text.length < 3) return;
+    const isLinkEdit = /^https?:\/\/\S+$/i.test(text);
+    // Le commentaire d'orientation n'a de sens que pour un lien d'annonce ;
+    // "" = effacer côté backend.
+    const comment = isLinkEdit ? editSeedComment.trim() : "";
+    setSavingSeedEdit(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text, comment }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Modification impossible");
+      setSeeds((prev) => prev.map((s) => (s.id === id ? data : s)));
+      setEditingSeedId(null);
+    } catch (err: any) {
+      setError(err.message || "Modification impossible");
+    } finally {
+      setSavingSeedEdit(false);
+    }
   }
 
   async function toggleEnabled() {
@@ -3535,23 +3576,74 @@ function DailyIdeasView({
           <ul className="daily-seed-list">
             {seeds.map((s) => {
               const isLink = /^https?:\/\/\S+$/i.test((s.text || "").trim());
+              const isEditing = editingSeedId === s.id;
+              const editIsLink = /^https?:\/\/\S+$/i.test(editSeedText.trim());
               return (
               <li
                 key={s.id}
                 className={`${s.used_at ? "used" : ""}${dragId === s.id ? " dragging" : ""}`}
-                draggable
+                // Drag armé uniquement depuis la poignée : le texte reste sélectionnable.
+                draggable={dragArmedId === s.id && !isEditing}
                 onDragStart={() => setDragId(s.id)}
                 onDragOver={(e) => { e.preventDefault(); reorderTo(s.id); }}
-                onDrop={(e) => { e.preventDefault(); void persistSeedOrder(); }}
-                onDragEnd={() => void persistSeedOrder()}
+                onDrop={(e) => { e.preventDefault(); setDragArmedId(null); void persistSeedOrder(); }}
+                onDragEnd={() => { setDragArmedId(null); void persistSeedOrder(); }}
               >
-                <span className="daily-seed-grip" title="Glisser pour réordonner" aria-hidden><GripVertical size={14} /></span>
-                <span className="daily-seed-text">
-                  {isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}
-                  {s.comment ? <em style={{ display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 }}>↳ orientation : {s.comment}</em> : null}
+                <span
+                  className="daily-seed-grip"
+                  title="Glisser pour réordonner"
+                  aria-hidden
+                  onMouseDown={() => setDragArmedId(s.id)}
+                  onMouseUp={() => setDragArmedId(null)}
+                  onTouchStart={() => setDragArmedId(s.id)}
+                >
+                  <GripVertical size={14} />
                 </span>
-                {isLink && !s.used_at ? <span className="daily-seed-tag">annonce</span> : null}
-                {s.used_at ? <span className="daily-seed-tag"><CheckCircle2 size={12} /> utilisée</span> : null}
+                {isEditing ? (
+                  <span className="daily-seed-text" style={{ display: "grid", gap: 6 }}>
+                    <input
+                      type="text"
+                      value={editSeedText}
+                      autoFocus
+                      onChange={(e) => setEditSeedText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveSeedEdit(s.id); } if (e.key === "Escape") setEditingSeedId(null); }}
+                      maxLength={2000}
+                      style={{ width: "100%", boxSizing: "border-box" }}
+                    />
+                    {editIsLink && (
+                      <input
+                        type="text"
+                        value={editSeedComment}
+                        onChange={(e) => setEditSeedComment(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveSeedEdit(s.id); } if (e.key === "Escape") setEditingSeedId(null); }}
+                        placeholder="Commentaire pour orienter le post (optionnel)"
+                        maxLength={500}
+                        style={{ width: "100%", boxSizing: "border-box" }}
+                      />
+                    )}
+                    <span style={{ display: "flex", gap: 6 }}>
+                      <button
+                        className="primary-button"
+                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
+                        disabled={savingSeedEdit || editSeedText.trim().length < 3}
+                        onClick={() => void saveSeedEdit(s.id)}
+                      >
+                        {savingSeedEdit ? <Loader2 size={12} className="spinning" /> : null} Sauvegarder
+                      </button>
+                      <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} onClick={() => setEditingSeedId(null)}>Annuler</button>
+                    </span>
+                  </span>
+                ) : (
+                  <span className="daily-seed-text">
+                    {isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}
+                    {s.comment ? <em style={{ display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 }}>↳ orientation : {s.comment}</em> : null}
+                  </span>
+                )}
+                {!isEditing && isLink && !s.used_at ? <span className="daily-seed-tag">annonce</span> : null}
+                {!isEditing && s.used_at ? <span className="daily-seed-tag"><CheckCircle2 size={12} /> utilisée</span> : null}
+                {!isEditing && (
+                  <button className="icon-button" title="Modifier" onClick={() => startSeedEdit(s)}><Pencil size={14} /></button>
+                )}
                 <button className="icon-button" title="Supprimer" onClick={() => deleteSeed(s.id)}><Trash2 size={14} /></button>
               </li>
               );

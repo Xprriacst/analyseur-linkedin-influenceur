@@ -1583,6 +1583,40 @@ def reorder_idea_seeds(access_token: str, ordered_ids: list[str]) -> bool:
     return True
 
 
+def update_idea_seed(
+    access_token: str,
+    seed_id: str,
+    text: str | None = None,
+    comment: str | None = None,
+) -> dict | None:
+    """Edit a seed's text and/or orientation comment (RLS scope user).
+
+    `text=None` → inchangé ; `comment=None` → inchangé, `comment=""` → effacé.
+    Returns the updated row or None.
+    """
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    updates: dict[str, Any] = {}
+    if text is not None:
+        updates["text"] = text
+    if comment is not None:
+        updates["comment"] = comment or None
+    if not updates:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("idea_seeds")
+        .update(updates)
+        .eq("id", seed_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def delete_idea_seed(access_token: str, seed_id: str) -> bool:
     """Delete one of the user's seeds. RLS guarantees ownership."""
     if not supabase_enabled():
