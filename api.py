@@ -1308,6 +1308,21 @@ class CreatePostRequest(BaseModel):
     hook_type: str | None = None
     strategy: str | None = None
     predicted_lift: str | None = None
+    images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
+
+
+def _saved_post_media_items(images: list[LinkedInImageRequest]) -> tuple[list[dict[str, Any]], bool]:
+    """Convert attached images to public-URL media_items (ALE-179).
+
+    Les data URLs sont hébergées sur Zernio (URL publique), les URLs déjà
+    publiques passent telles quelles. Non bloquant : un échec d'upload ne doit
+    pas empêcher la sauvegarde du texte — retourne (items, erreur)."""
+    if not images:
+        return [], False
+    try:
+        return zernio.prepare_image_media_items(_image_payload(images)), False
+    except zernio.ZernioError:
+        return [], True
 
 
 @app.post("/me/generated-posts")
@@ -1315,6 +1330,7 @@ def create_me_generated_post(
     payload: CreatePostRequest, token: str = Depends(require_token)
 ) -> dict[str, Any]:
     """Create an explicitly-saved post (ALE-136 : sauvegarder le post du jour)."""
+    media_items, media_error = _saved_post_media_items(payload.images)
     row = db.create_saved_post(
         token,
         payload.post,
@@ -1323,9 +1339,12 @@ def create_me_generated_post(
         hook_type=payload.hook_type,
         strategy=payload.strategy,
         predicted_lift=payload.predicted_lift,
+        media_items=media_items or None,
     )
     if not row:
         raise HTTPException(status_code=500, detail="Sauvegarde impossible.")
+    if media_error:
+        row["media_error"] = True
     return row
 
 
@@ -1344,16 +1363,28 @@ def delete_me_generated_post(post_id: str, token: str = Depends(require_token)) 
 class UpdatePostRequest(BaseModel):
     post: str | None = Field(default=None, min_length=1, max_length=50000)
     saved: bool | None = None
+    # None = ne pas toucher aux images ; [] = tout retirer (ALE-179).
+    images: list[LinkedInImageRequest] | None = Field(default=None, max_length=zernio.MAX_LINKEDIN_IMAGES)
 
 
 @app.put("/me/generated-posts/{post_id}")
 def update_me_generated_post(post_id: str, payload: UpdatePostRequest, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Update a saved post's text and/or its `saved` flag (ALE-134)."""
-    if payload.post is None and payload.saved is None:
-        raise HTTPException(status_code=400, detail="Rien à mettre à jour (post ou saved requis).")
-    updated = db.update_generated_post(token, post_id, payload.post, payload.saved)
+    """Update a saved post's text, its `saved` flag and/or its images (ALE-134/179)."""
+    if payload.post is None and payload.saved is None and payload.images is None:
+        raise HTTPException(status_code=400, detail="Rien à mettre à jour (post, saved ou images requis).")
+    media_items: list[dict[str, Any]] | None = None
+    media_error = False
+    if payload.images is not None:
+        media_items, media_error = _saved_post_media_items(payload.images)
+        if media_error and not media_items and payload.post is None and payload.saved is None:
+            raise HTTPException(status_code=502, detail="Hébergement des images impossible, réessaie.")
+        if media_error:
+            media_items = None  # échec upload : ne pas écraser les images existantes
+    updated = db.update_generated_post(token, post_id, payload.post, payload.saved, media_items=media_items)
     if not updated:
         raise HTTPException(status_code=404, detail="Post introuvable ou non autorisé.")
+    if media_error:
+        updated["media_error"] = True
     return updated
 
 
