@@ -15,6 +15,7 @@ import {
   Download,
   Eye,
   FileText,
+  GripVertical,
   Image as ImageIcon,
   ImagePlus,
   Lightbulb,
@@ -142,6 +143,8 @@ type LinkedInImageAttachment = {
   source: "upload" | "generated";
 };
 type SavedIdea = Idea & { id: string; created_at?: string };
+// Image persistée sur un post sauvegardé (URL publique Zernio, format media_items).
+type SavedPostMediaItem = { type?: string; url: string; title?: string };
 type SavedPost = {
   id: string;
   topic?: string;
@@ -152,6 +155,7 @@ type SavedPost = {
   post: string;
   created_at?: string;
   slack_status?: string | null;
+  media_items?: SavedPostMediaItem[] | null;
 };
 type ScheduledPost = {
   id: string;
@@ -2041,7 +2045,8 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   }
 
   // ALE-134 : marque explicitement un post comme « sauvegardé » (persiste aussi
-  // le texte édité). Seuls les posts sauvegardés apparaissent dans « Mes contenus ».
+  // le texte édité et les images jointes, ALE-179). Seuls les posts sauvegardés
+  // apparaissent dans « Mes contenus ».
   async function saveVariant(i: number, text: string, id?: string) {
     if (!id) return;
     setSavingVariant(i);
@@ -2049,7 +2054,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: text, saved: true }),
+        body: JSON.stringify({ post: text, saved: true, images: imagePayloadForVariant(i) }),
       });
       if (res.ok) {
         setSavedVariant(i);
@@ -2922,6 +2927,7 @@ function DailyIdeasView({
   const [regenerating, setRegenerating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
+  const [dragId, setDragId] = useState<string | null>(null);
 
   // ALE-143 : lot d'idées « une ligne »
   const [ideaBatch, setIdeaBatch] = useState<IdeaLine[]>([]);
@@ -3179,6 +3185,33 @@ function DailyIdeasView({
     setSeeds((prev) => prev.filter((s) => s.id !== id));
     try {
       await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void loadAll(); }
+  }
+
+  // Glisser-déposer : réordonne le réservoir. Le cron (idée du jour / posts hebdo)
+  // pioche ensuite dans ce nouvel ordre.
+  function reorderTo(targetId: string) {
+    if (!dragId || dragId === targetId) return;
+    setSeeds((prev) => {
+      const from = prev.findIndex((s) => s.id === dragId);
+      const to = prev.findIndex((s) => s.id === targetId);
+      if (from < 0 || to < 0 || from === to) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  }
+
+  async function persistSeedOrder() {
+    setDragId(null);
+    try {
+      const ordered_ids = seeds.map((s) => s.id);
+      await fetch(`${DIRECT_API_URL}/me/idea-seeds/reorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ ordered_ids }),
+      });
     } catch { void loadAll(); }
   }
 
@@ -3503,8 +3536,17 @@ function DailyIdeasView({
             {seeds.map((s) => {
               const isLink = /^https?:\/\/\S+$/i.test((s.text || "").trim());
               return (
-              <li key={s.id} className={s.used_at ? "used" : ""}>
-                <span>
+              <li
+                key={s.id}
+                className={`${s.used_at ? "used" : ""}${dragId === s.id ? " dragging" : ""}`}
+                draggable
+                onDragStart={() => setDragId(s.id)}
+                onDragOver={(e) => { e.preventDefault(); reorderTo(s.id); }}
+                onDrop={(e) => { e.preventDefault(); void persistSeedOrder(); }}
+                onDragEnd={() => void persistSeedOrder()}
+              >
+                <span className="daily-seed-grip" title="Glisser pour réordonner" aria-hidden><GripVertical size={14} /></span>
+                <span className="daily-seed-text">
                   {isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}
                   {s.comment ? <em style={{ display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 }}>↳ orientation : {s.comment}</em> : null}
                 </span>
@@ -3625,6 +3667,9 @@ function LibraryView({
   const [scheduleDateLib, setScheduleDateLib] = useState("");
   const [schedulingPostLib, setSchedulingPostLib] = useState<string | null>(null);
   const [scheduledPostIds, setScheduledPostIds] = useState<Record<string, boolean>>({});
+  // ALE-179 : joindre des images à un post sauvegardé.
+  const [attachingPost, setAttachingPost] = useState<string | null>(null);
+  const [imageErrorLib, setImageErrorLib] = useState("");
 
   async function publishSavedPost(p: SavedPost) {
     setConfirmPublishPostId(null);
@@ -3639,7 +3684,7 @@ function LibraryView({
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft: false }),
+        body: JSON.stringify({ content: text, draft: false, images: savedPostImagePayload(p) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Publication impossible");
@@ -3697,7 +3742,7 @@ function LibraryView({
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: editedPosts[p.id] ?? p.post, scheduled_at: localDate.toISOString(), validate_via_slack: false }),
+        body: JSON.stringify({ content: editedPosts[p.id] ?? p.post, scheduled_at: localDate.toISOString(), validate_via_slack: false, images: savedPostImagePayload(p) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Programmation impossible.");
@@ -3754,6 +3799,63 @@ function LibraryView({
     try {
       await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, { method: "DELETE", headers: await authHeaders() });
     } catch { void loadAll(); }
+  }
+
+  // ALE-179 : images d'un post sauvegardé. Les media_items stockés sont des URLs
+  // publiques (hébergées par le backend à la sauvegarde) → payload {url}.
+  function savedPostImagePayload(p: SavedPost) {
+    return (p.media_items || []).filter((m) => m?.url).map((m) => ({ url: m.url, filename: m.title || undefined }));
+  }
+
+  async function persistSavedPostImages(p: SavedPost, images: Array<{ url?: string; data_url?: string; filename?: string }>) {
+    setAttachingPost(p.id);
+    setImageErrorLib("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${p.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ images }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement des images impossible.");
+      if (data.media_error) throw new Error("Hébergement des images impossible, réessaie.");
+      setPosts((prev) => prev.map((pp) => (pp.id === p.id ? { ...pp, media_items: data.media_items || [] } : pp)));
+    } catch (err: any) {
+      setImageErrorLib(err.message || "Enregistrement des images impossible.");
+    } finally {
+      setAttachingPost(null);
+    }
+  }
+
+  function attachImagesToSavedPost(p: SavedPost, files: FileList | null) {
+    if (!files?.length) return;
+    setImageErrorLib("");
+    const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length !== files.length) {
+      setImageErrorLib("Seuls les fichiers image sont acceptés.");
+    }
+    const readers = imageFiles.map((file) => new Promise<{ data_url: string; filename: string } | null>((resolve) => {
+      if (file.size > 8 * 1024 * 1024) {
+        setImageErrorLib("LinkedIn limite chaque image à 8 Mo.");
+        resolve(null);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === "string" && reader.result ? { data_url: reader.result, filename: file.name } : null);
+      reader.onerror = () => { setImageErrorLib(`Lecture impossible pour ${file.name}.`); resolve(null); };
+      reader.readAsDataURL(file);
+    }));
+    void Promise.all(readers).then((added) => {
+      const fresh = added.filter(Boolean) as Array<{ data_url: string; filename: string }>;
+      if (!fresh.length) return;
+      const images = [...savedPostImagePayload(p), ...fresh].slice(0, 20);
+      void persistSavedPostImages(p, images);
+    });
+  }
+
+  function removeSavedPostImage(p: SavedPost, url: string) {
+    const images = savedPostImagePayload(p).filter((m) => m.url !== url);
+    void persistSavedPostImages(p, images);
   }
 
   if (!isAuthed) {
@@ -3898,6 +4000,21 @@ function LibraryView({
                     <ImageIcon size={14} />
                     Image IA — bientôt
                   </button>
+                  <label className="secondary-button" style={{ cursor: attachingPost === p.id ? "wait" : "pointer" }}>
+                    {attachingPost === p.id ? <Loader2 size={14} className="spinning" /> : <ImagePlus size={14} />}
+                    Joindre des images
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+                      multiple
+                      disabled={attachingPost === p.id}
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        attachImagesToSavedPost(p, e.currentTarget.files);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
                   {slack.status?.connected && (
                     <button
                       className="secondary-button"
@@ -3970,7 +4087,7 @@ function LibraryView({
                           await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ post_id: p.id, content: editedPosts[p.id] ?? p.post }),
+                            body: JSON.stringify({ post_id: p.id, content: editedPosts[p.id] ?? p.post, images: savedPostImagePayload(p) }),
                           });
                           setSlackSent((prev) => ({ ...prev, [p.id]: true }));
                           setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, post: editedPosts[p.id] ?? pp.post, slack_status: "pending" } : pp));
@@ -3984,6 +4101,43 @@ function LibraryView({
                     </button>
                     <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmSlackPostId(null)}>Annuler</button>
                   </div>
+                )}
+                {(p.media_items || []).length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                      {(p.media_items || []).length} image{(p.media_items || []).length > 1 ? "s" : ""} jointe{(p.media_items || []).length > 1 ? "s" : ""} au post LinkedIn.
+                    </p>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
+                      {(p.media_items || []).map((image, imageIndex) => (
+                        <div key={image.url} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
+                          <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                            <a
+                              href={image.url}
+                              download={image.title || `post-image-${imageIndex + 1}.png`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="secondary-button"
+                              style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}
+                            >
+                              <Download size={12} /> Télécharger
+                            </a>
+                            <button
+                              className="secondary-button"
+                              style={{ minHeight: 28, padding: "0 8px", fontSize: 12 }}
+                              disabled={attachingPost === p.id}
+                              onClick={() => removeSavedPostImage(p, image.url)}
+                            >
+                              <Trash2 size={12} /> Retirer
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {imageErrorLib && attachingPost === null && (
+                  <div className="error" style={{ marginTop: 6, fontSize: 13 }}>{imageErrorLib}</div>
                 )}
                 {publishError && publishingPost === null && publishedPost === null && (
                   <div className="error" style={{ marginTop: 6, fontSize: 13 }}>{publishError}</div>

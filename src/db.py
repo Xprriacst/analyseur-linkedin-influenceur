@@ -668,6 +668,7 @@ def create_saved_post(
     hook_type: str | None = None,
     strategy: str | None = None,
     predicted_lift: str | None = None,
+    media_items: list[dict] | None = None,
 ) -> dict | None:
     """Create a single explicitly-saved generated post (ALE-136 : sauvegarder le post du jour)."""
     if not supabase_enabled():
@@ -676,18 +677,21 @@ def create_saved_post(
     if not user:
         return None
     db = client_for_token(access_token)
+    row: dict = {
+        "user_id": user["id"],
+        "topic": topic or None,
+        "editorial_role": editorial_role,
+        "hook_type": hook_type,
+        "strategy": strategy,
+        "predicted_lift": predicted_lift,
+        "post": post_text,
+        "saved": True,
+    }
+    if media_items:
+        row["media_items"] = media_items
     resp = (
         db.table("generated_posts")
-        .insert({
-            "user_id": user["id"],
-            "topic": topic or None,
-            "editorial_role": editorial_role,
-            "hook_type": hook_type,
-            "strategy": strategy,
-            "predicted_lift": predicted_lift,
-            "post": post_text,
-            "saved": True,
-        })
+        .insert(row)
         .execute()
     )
     return resp.data[0] if resp.data else None
@@ -774,11 +778,12 @@ def update_generated_post(
     post_id: str,
     new_post: str | None = None,
     saved: bool | None = None,
+    media_items: list[dict] | None = None,
 ) -> dict | None:
-    """Update a saved post's text and/or its `saved` flag (ALE-134).
+    """Update a saved post's text, `saved` flag and/or images (ALE-134/179).
 
-    Both fields are optional; only the provided ones are written. Returns the
-    updated row or None.
+    All fields are optional; only the provided ones are written. `media_items`
+    remplace la liste d'images ([] = tout retirer). Returns the updated row or None.
     """
     user = get_user(access_token)
     if not user:
@@ -788,6 +793,8 @@ def update_generated_post(
         updates["post"] = new_post
     if saved is not None:
         updates["saved"] = saved
+    if media_items is not None:
+        updates["media_items"] = media_items
     if not updates:
         return None
     db = client_for_token(access_token)
@@ -1500,7 +1507,7 @@ def append_chat_message(access_token: str, conversation_id: str, role: str, cont
 # --------------------------------------------------------------------------- #
 
 def list_idea_seeds(access_token: str, limit: int = 200) -> list[dict]:
-    """List the user's idea seeds, oldest first (FIFO consumption order)."""
+    """List the user's idea seeds in manual order (position), oldest first as fallback."""
     if not supabase_enabled():
         return []
     user = get_user(access_token)
@@ -1511,6 +1518,7 @@ def list_idea_seeds(access_token: str, limit: int = 200) -> list[dict]:
         db.table("idea_seeds")
         .select("*")
         .eq("user_id", user["id"])
+        .order("position", desc=False)
         .order("created_at", desc=False)
         .limit(limit)
         .execute()
@@ -1533,12 +1541,46 @@ def add_idea_seed(access_token: str, text: str, comment: str | None = None) -> d
     row: dict[str, Any] = {"user_id": user["id"], "text": text}
     if comment:
         row["comment"] = comment
+    # Nouvelle idée = ajoutée en fin de réservoir (position max + 1).
+    last = (
+        db.table("idea_seeds")
+        .select("position")
+        .eq("user_id", user["id"])
+        .order("position", desc=True)
+        .limit(1)
+        .execute()
+    )
+    max_pos = (last.data[0].get("position") if last.data else None)
+    row["position"] = (max_pos + 1) if isinstance(max_pos, int) else 0
     resp = (
         db.table("idea_seeds")
         .insert(row)
         .execute()
     )
     return resp.data[0] if resp.data else None
+
+
+def reorder_idea_seeds(access_token: str, ordered_ids: list[str]) -> bool:
+    """Persist a new manual order for the user's seeds.
+
+    `ordered_ids` is the full list of the user's seed ids in the desired order.
+    RLS scopes every update to the caller; unknown ids simply match no row.
+    """
+    if not supabase_enabled():
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    for index, seed_id in enumerate(ordered_ids):
+        (
+            db.table("idea_seeds")
+            .update({"position": index})
+            .eq("id", seed_id)
+            .eq("user_id", user["id"])
+            .execute()
+        )
+    return True
 
 
 def delete_idea_seed(access_token: str, seed_id: str) -> bool:
@@ -1644,7 +1686,11 @@ def get_ai_context_for_user(user_id: str) -> dict[str, Any] | None:
 
 
 def pop_unused_seed(user_id: str) -> dict | None:
-    """Return the oldest unused seed for a user (service-role). Does not mark it."""
+    """Return the next unused seed for a user in manual order (service-role).
+
+    Honours the user's manual ordering (position); falls back to created_at for
+    rows without a position. Does not mark the seed as used.
+    """
     if not admin_enabled():
         return None
     db = admin_client()
@@ -1653,6 +1699,7 @@ def pop_unused_seed(user_id: str) -> dict | None:
         .select("*")
         .eq("user_id", user_id)
         .is_("used_at", "null")
+        .order("position", desc=False)
         .order("created_at", desc=False)
         .limit(1)
         .execute()
@@ -1716,7 +1763,7 @@ def replace_daily_idea(
 
 
 def get_unused_seed_by_token(access_token: str) -> dict | None:
-    """Return the oldest unused idea seed for the authenticated user."""
+    """Return the next unused idea seed for the authenticated user (manual order)."""
     user = get_user(access_token)
     if not user or not supabase_enabled():
         return None
@@ -1726,6 +1773,7 @@ def get_unused_seed_by_token(access_token: str) -> dict | None:
         .select("*")
         .eq("user_id", user["id"])
         .is_("used_at", "null")
+        .order("position", desc=False)
         .order("created_at", desc=False)
         .limit(1)
         .execute()
