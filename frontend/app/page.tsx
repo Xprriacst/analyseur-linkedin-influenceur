@@ -45,6 +45,7 @@ import {
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import AuthModal, { type AuthMode } from "./components/AuthModal";
+import PostActionsBar, { type PostAction } from "./components/PostActionsBar";
 import { authHeaders, supabase } from "./lib/supabase";
 
 const API_URL = "/api";
@@ -2490,94 +2491,86 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     </button>
                   </div>
                 )}
-                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button
-                    className="primary-button"
-                    disabled={publishing === i}
-                    title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => publishVariant(i, editedVariants[i] ?? v.post)}
-                  >
-                    {publishing === i && published !== i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
-                    {publishing === i && published !== i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
-                  </button>
-                  {v.id && (
-                    <button
-                      className="secondary-button"
-                      disabled={savingVariant === i}
-                      title="Sauvegarder ce post dans « Mes contenus »"
-                      onClick={() => saveVariant(i, editedVariants[i] ?? v.post, v.id)}
-                    >
-                      {savingVariant === i ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />}
-                      {savedVariant === i ? "Sauvegardé ✓" : "Sauvegarder"}
-                    </button>
-                  )}
-                  <button
-                    className="secondary-button"
-                    disabled={publishing === i || !!scheduledIndices[i]}
-                    title={
-                      linkedin.status?.connected
+                <PostActionsBar
+                  publishBusy={publishing === i && published !== i}
+                  publishLabel={published === i ? "Publié ✓" : publishing === i ? "Publication…" : "Publier"}
+                  publishActions={[
+                    {
+                      key: "linkedin",
+                      icon: <Linkedin size={14} />,
+                      label: published === i ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
+                      disabled: publishing === i,
+                      title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                      onClick: () => publishVariant(i, editedVariants[i] ?? v.post),
+                    },
+                    {
+                      key: "schedule",
+                      icon: <Clock3 size={14} />,
+                      label: scheduledIndices[i] ? "Programmé ✓" : "Programmer…",
+                      disabled: publishing === i || !!scheduledIndices[i],
+                      title: linkedin.status?.connected
                         ? "Programmer : publication directe à une date, ou validation Slack au préalable"
-                        : "Connecte ton compte LinkedIn dans l'onglet Profil"
-                    }
-                    onClick={() => openScheduleModal(i, editedVariants[i] ?? v.post)}
-                  >
-                    <Clock3 size={14} />
-                    {scheduledIndices[i] ? "Programmé ✓" : "Programmer"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    disabled
-                    aria-disabled
-                    title="Génération d'image en cours d'amélioration — bientôt disponible"
-                  >
-                    <ImageIcon size={14} />
-                    Image IA — bientôt
-                  </button>
-                  <label className="secondary-button" style={{ cursor: "pointer" }}>
-                    <ImagePlus size={14} />
-                    Joindre des images
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
-                      multiple
-                      style={{ display: "none" }}
-                      onChange={(e) => {
-                        addUploadedImages(i, e.currentTarget.files);
-                        e.currentTarget.value = "";
-                      }}
-                    />
-                  </label>
-                  {slack.status?.connected && v.id && (
-                    <button
-                      className="secondary-button"
-                      disabled={!!slackSending[i] || !!slackSent[i]}
-                      onClick={() => setConfirmSlackIndex(i)}
-                    >
-                      {slackSending[i] ? <Loader2 size={14} className="spinning" /> : null}
-                      {slackSent[i] ? "Sur Slack ✓" : "Envoyer sur Slack"}
-                    </button>
-                  )}
-                  {twitter.status?.connected && (
-                    <button
-                      className="secondary-button"
-                      disabled={publishingX === i}
-                      title="Publier maintenant sur X (Twitter)"
-                      onClick={() => publishVariantX(i, editedVariants[i] ?? v.post)}
-                    >
-                      {publishingX === i ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
-                      {publishingX === i ? "Publication…" : publishedX === i ? "Publié ✓" : "Publier sur X"}
-                    </button>
-                  )}
-                  {onRework && (
-                    <button
-                      className="secondary-button"
-                      title="Ouvrir ce post dans l'Agent IA pour le retravailler"
-                      onClick={() => onRework(editedVariants[i] ?? v.post)}
-                    >
-                      <MessageSquare size={14} /> Retravailler avec l&apos;Agent IA
-                    </button>
-                  )}
-                </div>
+                        : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                      onClick: () => openScheduleModal(i, editedVariants[i] ?? v.post),
+                    },
+                    ...(slack.status?.connected && v.id
+                      ? [{
+                          key: "slack",
+                          icon: <Send size={14} />,
+                          label: slackSent[i] ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
+                          disabled: !!slackSending[i] || !!slackSent[i],
+                          onClick: () => setConfirmSlackIndex(i),
+                        } satisfies PostAction]
+                      : []),
+                    ...(twitter.status?.connected
+                      ? [{
+                          key: "x",
+                          icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>,
+                          label: publishingX === i ? "Publication…" : publishedX === i ? "Publié sur X ✓" : "Publier sur X",
+                          disabled: publishingX === i,
+                          onClick: () => publishVariantX(i, editedVariants[i] ?? v.post),
+                        } satisfies PostAction]
+                      : []),
+                  ]}
+                  moreActions={[
+                    ...(v.id
+                      ? [{
+                          key: "save",
+                          icon: <Bookmark size={14} />,
+                          label: savedVariant === i ? "Sauvegardé ✓" : "Sauvegarder",
+                          disabled: savingVariant === i,
+                          title: "Sauvegarder ce post dans « Mes contenus »",
+                          onClick: () => saveVariant(i, editedVariants[i] ?? v.post, v.id),
+                        } satisfies PostAction]
+                      : []),
+                    {
+                      key: "attach",
+                      icon: <ImagePlus size={14} />,
+                      label: "Joindre des images",
+                      filePicker: {
+                        accept: "image/png,image/jpeg,image/jpg,image/webp,image/gif",
+                        multiple: true,
+                        onFiles: (files) => addUploadedImages(i, files),
+                      },
+                    },
+                    {
+                      key: "image-ia",
+                      icon: <ImageIcon size={14} />,
+                      label: "Image IA — bientôt",
+                      disabled: true,
+                      title: "Génération d'image en cours d'amélioration — bientôt disponible",
+                    },
+                    ...(onRework
+                      ? [{
+                          key: "rework",
+                          icon: <MessageSquare size={14} />,
+                          label: "Retravailler avec l'Agent IA",
+                          title: "Ouvrir ce post dans l'Agent IA pour le retravailler",
+                          onClick: () => onRework(editedVariants[i] ?? v.post),
+                        } satisfies PostAction]
+                      : []),
+                  ]}
+                />
                 {confirmSlackIndex === i && (
                   <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
@@ -3432,55 +3425,73 @@ function DailyIdeasView({
                           </p>
                         </div>
                       )}
-                      <textarea
-                        className="variant-text"
-                        rows={10}
-                        value={postTextOf(it)}
-                        onChange={(e) => setEditedPost((p) => ({ ...p, [it.id]: e.target.value }))}
-                        style={{ width: "100%", boxSizing: "border-box" }}
-                      />
-                      <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8, marginTop: 10 }}>
-                        <button className="secondary-button" onClick={() => copyPost(it)}>
-                          {copiedId === it.id ? <CheckCircle2 size={14} /> : <Copy size={14} />} {copiedId === it.id ? "Copié ✓" : "Copier"}
-                        </button>
-                        <button className="secondary-button" disabled={savingId === it.id} onClick={() => savePost(it)}>
-                          {savingId === it.id ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />} {savedId === it.id ? "Sauvegardé ✓" : "Sauvegarder"}
-                        </button>
+                      <div className="variant-text-wrap">
+                        <textarea
+                          className="variant-text"
+                          rows={10}
+                          value={postTextOf(it)}
+                          onChange={(e) => setEditedPost((p) => ({ ...p, [it.id]: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box" }}
+                        />
                         <button
-                          className="secondary-button"
-                          disabled={publishingId === it.id}
-                          title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                          onClick={() => setConfirmPublishId(it.id)}
+                          type="button"
+                          className="variant-copy-button"
+                          aria-label={copiedId === it.id ? "Post copié" : "Copier le post"}
+                          title={copiedId === it.id ? "Copié ✓" : "Copier le post"}
+                          onClick={() => copyPost(it)}
                         >
-                          {publishingId === it.id ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />} {publishedId === it.id ? "Publié ✓" : "Publier"}
+                          {copiedId === it.id ? <CheckCircle2 size={16} /> : <Copy size={16} />}
                         </button>
-                        <button
-                          className="secondary-button"
-                          title={linkedin.status?.connected ? "Programmer : publication directe à une date, ou validation Slack au préalable" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                          onClick={() => openSchedule(it)}
-                        >
-                          <Clock3 size={14} /> {scheduledId === it.id ? "Programmé ✓" : "Programmer"}
-                        </button>
-                        <button
-                          className="secondary-button"
-                          disabled
-                          aria-disabled
-                          title="Génération d'image en cours d'amélioration — bientôt disponible"
-                        >
-                          <ImageIcon size={14} /> Image IA — bientôt
-                        </button>
-                        {twitter.status?.connected && (
-                          <button
-                            className="secondary-button"
-                            disabled={publishingXId === it.id}
-                            title="Publier maintenant sur X (Twitter)"
-                            onClick={() => setConfirmXId(it.id)}
-                          >
-                            {publishingXId === it.id ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
-                            {publishedXId === it.id ? "Publié ✓" : "Publier sur X"}
-                          </button>
-                        )}
                       </div>
+                      <PostActionsBar
+                        publishBusy={publishingId === it.id}
+                        publishLabel={publishedId === it.id ? "Publié ✓" : publishingId === it.id ? "Publication…" : "Publier"}
+                        publishActions={[
+                          {
+                            key: "linkedin",
+                            icon: <Linkedin size={14} />,
+                            label: publishedId === it.id ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
+                            disabled: publishingId === it.id,
+                            title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                            onClick: () => setConfirmPublishId(it.id),
+                          },
+                          {
+                            key: "schedule",
+                            icon: <Clock3 size={14} />,
+                            label: scheduledId === it.id ? "Programmé ✓" : "Programmer…",
+                            title: linkedin.status?.connected
+                              ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+                              : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                            onClick: () => openSchedule(it),
+                          },
+                          ...(twitter.status?.connected
+                            ? [{
+                                key: "x",
+                                icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>,
+                                label: publishingXId === it.id ? "Publication…" : publishedXId === it.id ? "Publié sur X ✓" : "Publier sur X",
+                                disabled: publishingXId === it.id,
+                                onClick: () => setConfirmXId(it.id),
+                              } satisfies PostAction]
+                            : []),
+                        ]}
+                        moreActions={[
+                          {
+                            key: "save",
+                            icon: <Bookmark size={14} />,
+                            label: savedId === it.id ? "Sauvegardé ✓" : "Sauvegarder",
+                            disabled: savingId === it.id,
+                            title: "Sauvegarder ce post dans « Mes contenus »",
+                            onClick: () => savePost(it),
+                          },
+                          {
+                            key: "image-ia",
+                            icon: <ImageIcon size={14} />,
+                            label: "Image IA — bientôt",
+                            disabled: true,
+                            title: "Génération d'image en cours d'amélioration — bientôt disponible",
+                          },
+                        ]}
+                      />
                       {confirmPublishId === it.id && (
                         <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
                           <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
@@ -4045,78 +4056,83 @@ function LibraryView({
                     </button>
                   </div>
                 )}
-                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button
-                    className="primary-button"
-                    disabled={publishingPost === p.id}
-                    title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => setConfirmPublishPostId(p.id)}
-                  >
-                    {publishingPost === p.id ? <><Loader2 size={14} className="spinning" /> Publication…</> : <><Linkedin size={14} /> {publishedPost === p.id ? "Publié ✓" : "Publier sur LinkedIn"}</>}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    disabled={!!scheduledPostIds[p.id]}
-                    title={linkedin.status?.connected ? "Programmer : publication directe à une date, ou validation Slack au préalable" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => openSchedulePost(p)}
-                  >
-                    <Clock3 size={14} />
-                    {scheduledPostIds[p.id] ? "Programmé ✓" : "Programmer"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    disabled
-                    aria-disabled
-                    title="Génération d'image en cours d'amélioration — bientôt disponible"
-                  >
-                    <ImageIcon size={14} />
-                    Image IA — bientôt
-                  </button>
-                  <label className="secondary-button" style={{ cursor: attachingPost === p.id ? "wait" : "pointer" }}>
-                    {attachingPost === p.id ? <Loader2 size={14} className="spinning" /> : <ImagePlus size={14} />}
-                    Joindre des images
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
-                      multiple
-                      disabled={attachingPost === p.id}
-                      style={{ display: "none" }}
-                      onChange={(e) => {
-                        attachImagesToSavedPost(p, e.currentTarget.files);
-                        e.currentTarget.value = "";
-                      }}
-                    />
-                  </label>
-                  {slack.status?.connected && (
-                    <button
-                      className="secondary-button"
-                      disabled={!!slackSending[p.id] || !!slackSent[p.id] || p.slack_status === "pending"}
-                      onClick={() => setConfirmSlackPostId(p.id)}
-                    >
-                      {slackSending[p.id] ? <Loader2 size={14} className="spinning" /> : null}
-                      {slackSent[p.id] || p.slack_status === "pending" ? "Sur Slack ✓" : "Envoyer sur Slack"}
-                    </button>
-                  )}
-                  {twitter.status?.connected && (
-                    <button
-                      className="secondary-button"
-                      disabled={publishingXPost === p.id}
-                      title="Publier maintenant sur X (Twitter)"
-                      onClick={() => setConfirmXPostId(p.id)}
-                    >
-                      {publishingXPost === p.id ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
-                      {publishedXPost === p.id ? "Publié ✓" : "Publier sur X"}
-                    </button>
-                  )}
-                  {p.topic && (
-                    <button className="secondary-button" onClick={() => onReuse(p.topic!)}>
-                      <Sparkles size={14} /> Régénérer sur ce sujet
-                    </button>
-                  )}
-                  <button className="secondary-button" style={{ marginLeft: "auto" }} onClick={() => deletePost(p.id)}>
-                    <Trash2 size={14} /> Supprimer
-                  </button>
-                </div>
+                <PostActionsBar
+                  publishBusy={publishingPost === p.id}
+                  publishLabel={publishedPost === p.id ? "Publié ✓" : publishingPost === p.id ? "Publication…" : "Publier"}
+                  publishActions={[
+                    {
+                      key: "linkedin",
+                      icon: <Linkedin size={14} />,
+                      label: publishedPost === p.id ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
+                      disabled: publishingPost === p.id,
+                      title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                      onClick: () => setConfirmPublishPostId(p.id),
+                    },
+                    {
+                      key: "schedule",
+                      icon: <Clock3 size={14} />,
+                      label: scheduledPostIds[p.id] ? "Programmé ✓" : "Programmer…",
+                      disabled: !!scheduledPostIds[p.id],
+                      title: linkedin.status?.connected
+                        ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+                        : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                      onClick: () => openSchedulePost(p),
+                    },
+                    ...(slack.status?.connected
+                      ? [{
+                          key: "slack",
+                          icon: <Send size={14} />,
+                          label: slackSent[p.id] || p.slack_status === "pending" ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
+                          disabled: !!slackSending[p.id] || !!slackSent[p.id] || p.slack_status === "pending",
+                          onClick: () => setConfirmSlackPostId(p.id),
+                        } satisfies PostAction]
+                      : []),
+                    ...(twitter.status?.connected
+                      ? [{
+                          key: "x",
+                          icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>,
+                          label: publishingXPost === p.id ? "Publication…" : publishedXPost === p.id ? "Publié sur X ✓" : "Publier sur X",
+                          disabled: publishingXPost === p.id,
+                          onClick: () => setConfirmXPostId(p.id),
+                        } satisfies PostAction]
+                      : []),
+                  ]}
+                  moreActions={[
+                    {
+                      key: "attach",
+                      icon: attachingPost === p.id ? <Loader2 size={14} className="spinning" /> : <ImagePlus size={14} />,
+                      label: "Joindre des images",
+                      disabled: attachingPost === p.id,
+                      filePicker: {
+                        accept: "image/png,image/jpeg,image/jpg,image/webp,image/gif",
+                        multiple: true,
+                        onFiles: (files) => attachImagesToSavedPost(p, files),
+                      },
+                    },
+                    {
+                      key: "image-ia",
+                      icon: <ImageIcon size={14} />,
+                      label: "Image IA — bientôt",
+                      disabled: true,
+                      title: "Génération d'image en cours d'amélioration — bientôt disponible",
+                    },
+                    ...(p.topic
+                      ? [{
+                          key: "regen",
+                          icon: <Sparkles size={14} />,
+                          label: "Régénérer sur ce sujet",
+                          onClick: () => onReuse(p.topic!),
+                        } satisfies PostAction]
+                      : []),
+                    {
+                      key: "delete",
+                      icon: <Trash2 size={14} />,
+                      label: "Supprimer",
+                      danger: true,
+                      onClick: () => deletePost(p.id),
+                    },
+                  ]}
+                />
                 {confirmPublishPostId === p.id && (
                   <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>

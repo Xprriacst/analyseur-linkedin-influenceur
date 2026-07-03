@@ -1089,6 +1089,55 @@ a { color: inherit; text-decoration: none; }
   border-top: 1px solid var(--border);
 }
 
+/* ── Barre d'actions unifiée des posts (ALE-185) ── */
+.post-actions-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.action-menu-wrap { position: relative; display: inline-flex; }
+
+.action-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 240px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 50;
+}
+
+.action-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.action-menu-item:hover:not(:disabled):not(.is-disabled) { background: var(--surface-low); }
+.action-menu-item:disabled,
+.action-menu-item.is-disabled { opacity: 0.5; cursor: not-allowed; }
+.action-menu-item.danger { color: var(--danger); }
+
 .idea-difficulty {
   font-size: 11px;
   font-weight: 600;
