@@ -1376,6 +1376,10 @@ class IdeaSeedRequest(BaseModel):
     comment: str | None = Field(default=None, max_length=500)
 
 
+class IdeaSeedReorderRequest(BaseModel):
+    ordered_ids: list[str] = Field(..., max_length=500)
+
+
 class DailyIdeasEnabledRequest(BaseModel):
     enabled: bool
 
@@ -1411,6 +1415,12 @@ def add_me_idea_seed(payload: IdeaSeedRequest, token: str = Depends(require_toke
     if not seed:
         raise HTTPException(status_code=400, detail="Impossible d'enregistrer l'idée.")
     return seed
+
+
+@app.post("/me/idea-seeds/reorder")
+def reorder_me_idea_seeds(payload: IdeaSeedReorderRequest, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Persist a new manual order for the user's reservoir (drag & drop)."""
+    return {"ok": db.reorder_idea_seeds(token, payload.ordered_ids)}
 
 
 @app.delete("/me/idea-seeds/{seed_id}")

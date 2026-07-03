@@ -15,6 +15,7 @@ import {
   Download,
   Eye,
   FileText,
+  GripVertical,
   Image as ImageIcon,
   ImagePlus,
   Lightbulb,
@@ -2922,6 +2923,7 @@ function DailyIdeasView({
   const [regenerating, setRegenerating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
+  const [dragId, setDragId] = useState<string | null>(null);
 
   // ALE-143 : lot d'idées « une ligne »
   const [ideaBatch, setIdeaBatch] = useState<IdeaLine[]>([]);
@@ -3179,6 +3181,33 @@ function DailyIdeasView({
     setSeeds((prev) => prev.filter((s) => s.id !== id));
     try {
       await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void loadAll(); }
+  }
+
+  // Glisser-déposer : réordonne le réservoir. Le cron (idée du jour / posts hebdo)
+  // pioche ensuite dans ce nouvel ordre.
+  function reorderTo(targetId: string) {
+    if (!dragId || dragId === targetId) return;
+    setSeeds((prev) => {
+      const from = prev.findIndex((s) => s.id === dragId);
+      const to = prev.findIndex((s) => s.id === targetId);
+      if (from < 0 || to < 0 || from === to) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  }
+
+  async function persistSeedOrder() {
+    setDragId(null);
+    try {
+      const ordered_ids = seeds.map((s) => s.id);
+      await fetch(`${DIRECT_API_URL}/me/idea-seeds/reorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ ordered_ids }),
+      });
     } catch { void loadAll(); }
   }
 
@@ -3503,8 +3532,17 @@ function DailyIdeasView({
             {seeds.map((s) => {
               const isLink = /^https?:\/\/\S+$/i.test((s.text || "").trim());
               return (
-              <li key={s.id} className={s.used_at ? "used" : ""}>
-                <span>
+              <li
+                key={s.id}
+                className={`${s.used_at ? "used" : ""}${dragId === s.id ? " dragging" : ""}`}
+                draggable
+                onDragStart={() => setDragId(s.id)}
+                onDragOver={(e) => { e.preventDefault(); reorderTo(s.id); }}
+                onDrop={(e) => { e.preventDefault(); void persistSeedOrder(); }}
+                onDragEnd={() => void persistSeedOrder()}
+              >
+                <span className="daily-seed-grip" title="Glisser pour réordonner" aria-hidden><GripVertical size={14} /></span>
+                <span className="daily-seed-text">
                   {isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}
                   {s.comment ? <em style={{ display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 }}>↳ orientation : {s.comment}</em> : null}
                 </span>
