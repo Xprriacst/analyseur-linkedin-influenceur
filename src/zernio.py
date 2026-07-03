@@ -22,12 +22,19 @@ BASE_URL = "https://zernio.com/api/v1"
 PLATFORM = "linkedin"  # default / legacy constant
 MAX_LINKEDIN_IMAGES = 20
 MAX_LINKEDIN_IMAGE_BYTES = 8 * 1024 * 1024
+# ALE-186 : LinkedIn accepte 1 document (PDF → carrousel) par post, jamais
+# mélangé avec des images. Zernio plafonne à 100 Mo / 300 pages ; on limite à
+# 20 Mo car le fichier transite en base64 dans le JSON de l'API.
+MAX_LINKEDIN_DOCUMENT_BYTES = 20 * 1024 * 1024
 IMAGE_CONTENT_TYPES = {
     "image/jpeg": "jpg",
     "image/jpg": "jpg",
     "image/png": "png",
     "image/webp": "webp",
     "image/gif": "gif",
+}
+DOCUMENT_CONTENT_TYPES = {
+    "application/pdf": "pdf",
 }
 _DATA_URL_RE = re.compile(r"^data:(?P<content_type>[-\w.]+/[-+\w.]+);base64,(?P<data>.+)$", re.DOTALL)
 
@@ -125,6 +132,72 @@ def upload_media_bytes(filename: str, content_type: str, data: bytes) -> str:
     except urllib.error.URLError as exc:
         raise ZernioError(f"Upload média Zernio injoignable : {exc.reason}") from exc
     return public_url
+
+
+def _is_document_item(item: dict[str, Any]) -> bool:
+    if str(item.get("type") or "").strip().lower() == "document":
+        return True
+    source = str(item.get("data_url") or item.get("url") or "").strip()
+    if source.startswith("data:"):
+        return source[5:].split(";", 1)[0].strip().lower() in DOCUMENT_CONTENT_TYPES
+    return urllib.parse.urlparse(source).path.lower().endswith(".pdf")
+
+
+def _prepare_document_item(doc: dict[str, Any]) -> dict[str, Any]:
+    """Convert a PDF attachment into a Zernio `document` mediaItem.
+
+    LinkedIn affiche le PDF en carrousel feuilletable ; Zernio utilise le
+    `title` de l'item comme titre du document (fallback : nom du fichier)."""
+    source = str(doc.get("data_url") or doc.get("url") or "").strip()
+    if not source:
+        raise ZernioError("Document invalide : URL ou data_url manquante.")
+
+    if source.startswith("data:"):
+        match = _DATA_URL_RE.match(source)
+        if not match:
+            raise ZernioError("Document invalide : format data URL base64 attendu.")
+        content_type = match.group("content_type").lower()
+        if content_type not in DOCUMENT_CONTENT_TYPES:
+            raise ZernioError("Format document non supporté. Utilise un PDF.")
+        try:
+            data = base64.b64decode(match.group("data"), validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ZernioError("Document invalide : base64 illisible.") from exc
+        if not data:
+            raise ZernioError("Document invalide : fichier vide.")
+        if len(data) > MAX_LINKEDIN_DOCUMENT_BYTES:
+            raise ZernioError("PDF trop volumineux (20 Mo maximum).")
+        filename = _sanitize_filename(doc.get("filename"), DOCUMENT_CONTENT_TYPES[content_type])
+        media_url = upload_media_bytes(filename, content_type, data)
+    else:
+        parsed = urllib.parse.urlparse(source)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ZernioError("Document invalide : URL publique http(s) attendue.")
+        media_url = source
+
+    item: dict[str, Any] = {"type": "document", "url": media_url}
+    title = str(doc.get("title") or doc.get("filename") or "").strip()
+    if title:
+        item["title"] = title[:200]
+    return item
+
+
+def prepare_media_items(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Convert app attachments (images OU un document PDF) into Zernio mediaItems.
+
+    Contrainte LinkedIn : un post contient soit jusqu'à 20 images, soit 1 seul
+    document — jamais les deux (ALE-186)."""
+    if not items:
+        return []
+    documents = [item for item in items if _is_document_item(item)]
+    images = [item for item in items if not _is_document_item(item)]
+    if documents and images:
+        raise ZernioError("LinkedIn n'accepte pas d'images en plus d'un document PDF dans le même post.")
+    if len(documents) > 1:
+        raise ZernioError("LinkedIn accepte un seul document PDF par post.")
+    if documents:
+        return [_prepare_document_item(documents[0])]
+    return prepare_image_media_items(images)
 
 
 def prepare_image_media_items(images: list[dict[str, Any]] | None) -> list[dict[str, Any]]:

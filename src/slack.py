@@ -98,6 +98,14 @@ def _image_blocks(media_items: Any) -> list[dict]:
             blocks.append({"type": "image", "image_url": url, "alt_text": alt})
             if len(blocks) >= _MAX_IMAGE_BLOCKS:
                 break
+        elif item.get("type") == "document" and isinstance(url, str) and url.startswith(("http://", "https://")):
+            # ALE-186 : un PDF ne peut pas s'afficher en bloc image Slack — on
+            # le signale avec un lien pour que le validateur puisse l'ouvrir.
+            title = str(item.get("title") or "document.pdf")[:150]
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"📄 Document joint (carrousel LinkedIn) : <{url}|{title}>"}],
+            })
     return blocks
 
 

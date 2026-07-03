@@ -45,6 +45,14 @@ LLM/Apify), persistance après refresh, publication externe.
 - [ ] « Programmer sur LinkedIn » (direct) → le post part à l'heure choisie sans passer par Slack.
 - [ ] Un post de Mes contenus **avec images** programmé → les images sont bien conservées à la publication.
 
+## 5ter. Pièce jointe PDF — post « document » LinkedIn (ALE-186)
+- [ ] Générateur ou Mes contenus → **« Joindre images / PDF »** → choisir un PDF (< 20 Mo) → il s'affiche comme pièce jointe 📄 (pas d'aperçu image).
+- [ ] Joindre un PDF **remplace** les images existantes (et inversement) avec un message explicatif — LinkedIn ne mélange pas les deux.
+- [ ] PDF > 20 Mo → refusé avec message clair.
+- [ ] **Publier** le post avec PDF → sur LinkedIn, le PDF apparaît en **carrousel feuilletable** (titre = nom du fichier).
+- [ ] **Programmer** un post avec PDF (direct et via validation Slack) → le PDF est conservé à la publication ; sur Slack, une ligne « 📄 Document joint » avec lien apparaît sous le post.
+- [ ] Post avec PDF **sauvegardé** dans Mes contenus → après F5, la pièce 📄 est toujours là.
+
 ## 6. Isolation / sécurité (régression historique)
 - [ ] Connecté en compte A (noter ses contenus) → **déconnexion** → connexion compte B **dans le même onglet**.
 - [ ] B ne voit **aucun** contenu/profil/post de A (Mes contenus, Analyses récentes, Profil).

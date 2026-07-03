@@ -141,6 +141,8 @@ type LinkedInImageAttachment = {
   url: string;
   filename?: string;
   source: "upload" | "generated";
+  // ALE-186 : "document" = PDF (carrousel LinkedIn), exclusif avec les images.
+  kind?: "image" | "document";
 };
 type SavedIdea = Idea & { id: string; created_at?: string };
 // Image persistée sur un post sauvegardé (URL publique Zernio, format media_items).
@@ -1954,7 +1956,7 @@ function useSlack(isAuthed: boolean) {
 // Mes contenus, Idée du jour, Agent IA) — date/heure + choix « Valider via
 // Slack » ou programmation directe. Les sections ne doivent plus recoder leur
 // propre programmation : tout passe par ce composant.
-type ScheduleModalImage = { url: string; filename?: string };
+type ScheduleModalImage = { url: string; filename?: string; kind?: "image" | "document" };
 
 function SchedulePostModal({
   text,
@@ -1996,6 +1998,7 @@ function SchedulePostModal({
           images: images.map((image) => ({
             ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
             filename: image.filename,
+            ...(image.kind === "document" ? { type: "document" } : {}),
           })),
         }),
       });
@@ -2029,16 +2032,27 @@ function SchedulePostModal({
         {images.length > 0 && (
           <div style={{ marginBottom: 12 }}>
             <p className="role-picker-hint" style={{ marginBottom: 8 }}>
-              {images.length} image{images.length > 1 ? "s" : ""} {images.length > 1 ? "seront conservées" : "sera conservée"} pour la publication programmée.
+              {images[0]?.kind === "document"
+                ? "Le document PDF sera publié en carrousel avec le post programmé."
+                : `${images.length} image${images.length > 1 ? "s" : ""} ${images.length > 1 ? "seront conservées" : "sera conservée"} pour la publication programmée.`}
             </p>
             <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
               {images.map((image, idx) => (
-                <img
-                  key={`${image.url.slice(0, 64)}-${idx}`}
-                  src={image.url}
-                  alt={`Image programmée ${idx + 1}`}
-                  style={{ width: 74, height: 74, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
-                />
+                image.kind === "document" ? (
+                  <span
+                    key={`${image.url.slice(0, 64)}-${idx}`}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}
+                  >
+                    📄 {image.filename || "document.pdf"}
+                  </span>
+                ) : (
+                  <img
+                    key={`${image.url.slice(0, 64)}-${idx}`}
+                    src={image.url}
+                    alt={`Image programmée ${idx + 1}`}
+                    style={{ width: 74, height: 74, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
+                  />
+                )
               ))}
             </div>
           </div>
@@ -2163,6 +2177,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     return (variantImages[i] || []).map((image) => ({
       ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
       filename: image.filename,
+      ...(image.kind === "document" ? { type: "document" as const } : {}),
     }));
   }
 
@@ -2300,9 +2315,48 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   function addUploadedImages(i: number, files: FileList | null) {
     if (!files?.length) return;
     setImageError("");
-    const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length !== files.length) {
-      setImageError("Seuls les fichiers image sont acceptés.");
+    const all = Array.from(files);
+    const pdfFile = all.find((file) => file.type === "application/pdf");
+
+    // ALE-186 : un PDF devient un post « document » (carrousel LinkedIn) —
+    // exclusif : il remplace toute pièce jointe existante, et une seule à la fois.
+    if (pdfFile) {
+      if (all.length > 1) {
+        setImageError("Un post LinkedIn contient soit un PDF, soit des images — le PDF a été gardé seul.");
+      }
+      if (pdfFile.size > 20 * 1024 * 1024) {
+        setImageError("PDF trop volumineux (20 Mo maximum).");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : "";
+        if (!result) return;
+        setVariantImages((prev) => ({
+          ...prev,
+          [i]: [{
+            id: `upload-${Date.now()}-${pdfFile.name}`,
+            url: result,
+            filename: pdfFile.name,
+            source: "upload",
+            kind: "document",
+          }],
+        }));
+      };
+      reader.onerror = () => setImageError(`Lecture impossible pour ${pdfFile.name}.`);
+      reader.readAsDataURL(pdfFile);
+      return;
+    }
+
+    const imageFiles = all.filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length !== all.length) {
+      setImageError("Seuls les fichiers image ou PDF sont acceptés.");
+    }
+    // Ajouter des images remplace un éventuel PDF joint (exclusivité LinkedIn).
+    const hasDocument = (variantImages[i] || []).some((a) => a.kind === "document");
+    if (hasDocument && imageFiles.length) {
+      setImageError("Le PDF joint a été remplacé par les images (LinkedIn ne mélange pas les deux).");
+      setVariantImages((prev) => ({ ...prev, [i]: [] }));
     }
     for (const file of imageFiles) {
       if (file.size > 8 * 1024 * 1024) {
@@ -2321,7 +2375,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
         };
         setVariantImages((prev) => ({
           ...prev,
-          [i]: [...(prev[i] || []), attachment].slice(0, 20),
+          [i]: [...(prev[i] || []).filter((a) => a.kind !== "document"), attachment].slice(0, 20),
         }));
       };
       reader.onerror = () => setImageError(`Lecture impossible pour ${file.name}.`);
@@ -2533,12 +2587,12 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     <ImageIcon size={14} />
                     Image IA — bientôt
                   </button>
-                  <label className="secondary-button" style={{ cursor: "pointer" }}>
+                  <label className="secondary-button" style={{ cursor: "pointer" }} title="Images (8 Mo max chacune) ou un PDF (20 Mo max, publié en carrousel LinkedIn)">
                     <ImagePlus size={14} />
-                    Joindre des images
+                    Joindre images / PDF
                     <input
                       type="file"
-                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,application/pdf"
                       multiple
                       style={{ display: "none" }}
                       onChange={(e) => {
@@ -2620,16 +2674,25 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                 {(variantImages[i] || []).length > 0 && (
                   <div style={{ marginTop: 12 }}>
                     <p className="role-picker-hint" style={{ marginBottom: 8 }}>
-                      {(variantImages[i] || []).length} image{(variantImages[i] || []).length > 1 ? "s" : ""} jointe{(variantImages[i] || []).length > 1 ? "s" : ""} au post LinkedIn.
+                      {(variantImages[i] || [])[0]?.kind === "document"
+                        ? "Document PDF joint — publié en carrousel feuilletable sur LinkedIn."
+                        : `${(variantImages[i] || []).length} image${(variantImages[i] || []).length > 1 ? "s" : ""} jointe${(variantImages[i] || []).length > 1 ? "s" : ""} au post LinkedIn.`}
                     </p>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
                       {(variantImages[i] || []).map((image, imageIndex) => (
                         <div key={image.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
-                          <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                          {image.kind === "document" ? (
+                            <div style={{ width: "100%", aspectRatio: "1 / 1", borderRadius: 6, background: "var(--surface-low)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12, color: "var(--muted)", padding: 8, boxSizing: "border-box", textAlign: "center" }}>
+                              <span style={{ fontSize: 26 }}>📄</span>
+                              <span style={{ wordBreak: "break-all" }}>{image.filename || "document.pdf"}</span>
+                            </div>
+                          ) : (
+                            <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                          )}
                           <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                             <a
                               href={image.url}
-                              download={image.filename || `post-image-${i + 1}-${imageIndex + 1}.png`}
+                              download={image.filename || (image.kind === "document" ? `post-document-${i + 1}.pdf` : `post-image-${i + 1}-${imageIndex + 1}.png`)}
                               className="secondary-button"
                               style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}
                             >
@@ -2676,16 +2739,24 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
             {(variantImages[confirmIndex] || []).length > 0 && (
               <div style={{ marginBottom: 16 }}>
                 <p className="role-picker-hint" style={{ marginBottom: 8 }}>
-                  {(variantImages[confirmIndex] || []).length} image{(variantImages[confirmIndex] || []).length > 1 ? "s" : ""} {(variantImages[confirmIndex] || []).length > 1 ? "seront jointes" : "sera jointe"}.
+                  {(variantImages[confirmIndex] || [])[0]?.kind === "document"
+                    ? "Le document PDF sera publié en carrousel."
+                    : `${(variantImages[confirmIndex] || []).length} image${(variantImages[confirmIndex] || []).length > 1 ? "s" : ""} ${(variantImages[confirmIndex] || []).length > 1 ? "seront jointes" : "sera jointe"}.`}
                 </p>
                 <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
                   {(variantImages[confirmIndex] || []).map((image, idx) => (
-                    <img
-                      key={image.id}
-                      src={image.url}
-                      alt={`Image jointe ${idx + 1}`}
-                      style={{ width: 86, height: 86, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
-                    />
+                    image.kind === "document" ? (
+                      <span key={image.id} style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>
+                        📄 {image.filename || "document.pdf"}
+                      </span>
+                    ) : (
+                      <img
+                        key={image.id}
+                        src={image.url}
+                        alt={`Image jointe ${idx + 1}`}
+                        style={{ width: 86, height: 86, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
+                      />
+                    )
                   ))}
                 </div>
               </div>
@@ -3873,13 +3944,17 @@ function LibraryView({
     } catch { void loadAll(); }
   }
 
-  // ALE-179 : images d'un post sauvegardé. Les media_items stockés sont des URLs
-  // publiques (hébergées par le backend à la sauvegarde) → payload {url}.
+  // ALE-179/186 : médias d'un post sauvegardé (images ou PDF). Les media_items
+  // stockés sont des URLs publiques (hébergées par le backend à la sauvegarde).
   function savedPostImagePayload(p: SavedPost) {
-    return (p.media_items || []).filter((m) => m?.url).map((m) => ({ url: m.url, filename: m.title || undefined }));
+    return (p.media_items || []).filter((m) => m?.url).map((m) => ({
+      url: m.url,
+      filename: m.title || undefined,
+      ...(m.type === "document" ? { type: "document" as const, kind: "document" as const } : {}),
+    }));
   }
 
-  async function persistSavedPostImages(p: SavedPost, images: Array<{ url?: string; data_url?: string; filename?: string }>) {
+  async function persistSavedPostImages(p: SavedPost, images: Array<{ url?: string; data_url?: string; filename?: string; type?: string }>) {
     setAttachingPost(p.id);
     setImageErrorLib("");
     try {
@@ -3902,9 +3977,33 @@ function LibraryView({
   function attachImagesToSavedPost(p: SavedPost, files: FileList | null) {
     if (!files?.length) return;
     setImageErrorLib("");
-    const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length !== files.length) {
-      setImageErrorLib("Seuls les fichiers image sont acceptés.");
+    const all = Array.from(files);
+    const pdfFile = all.find((file) => file.type === "application/pdf");
+
+    // ALE-186 : un PDF devient un post « document » (carrousel LinkedIn) —
+    // exclusif : il remplace les images existantes, une seule pièce à la fois.
+    if (pdfFile) {
+      if (all.length > 1) {
+        setImageErrorLib("Un post LinkedIn contient soit un PDF, soit des images — le PDF a été gardé seul.");
+      }
+      if (pdfFile.size > 20 * 1024 * 1024) {
+        setImageErrorLib("PDF trop volumineux (20 Mo maximum).");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : "";
+        if (!result) return;
+        void persistSavedPostImages(p, [{ data_url: result, filename: pdfFile.name, type: "document" }]);
+      };
+      reader.onerror = () => setImageErrorLib(`Lecture impossible pour ${pdfFile.name}.`);
+      reader.readAsDataURL(pdfFile);
+      return;
+    }
+
+    const imageFiles = all.filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length !== all.length) {
+      setImageErrorLib("Seuls les fichiers image ou PDF sont acceptés.");
     }
     const readers = imageFiles.map((file) => new Promise<{ data_url: string; filename: string } | null>((resolve) => {
       if (file.size > 8 * 1024 * 1024) {
@@ -3920,7 +4019,12 @@ function LibraryView({
     void Promise.all(readers).then((added) => {
       const fresh = added.filter(Boolean) as Array<{ data_url: string; filename: string }>;
       if (!fresh.length) return;
-      const images = [...savedPostImagePayload(p), ...fresh].slice(0, 20);
+      // Ajouter des images retire un éventuel PDF (exclusivité LinkedIn).
+      const existing = savedPostImagePayload(p).filter((m) => m.type !== "document");
+      if (existing.length !== savedPostImagePayload(p).length) {
+        setImageErrorLib("Le PDF joint a été remplacé par les images (LinkedIn ne mélange pas les deux).");
+      }
+      const images = [...existing, ...fresh].slice(0, 20);
       void persistSavedPostImages(p, images);
     });
   }
@@ -4072,12 +4176,12 @@ function LibraryView({
                     <ImageIcon size={14} />
                     Image IA — bientôt
                   </button>
-                  <label className="secondary-button" style={{ cursor: attachingPost === p.id ? "wait" : "pointer" }}>
+                  <label className="secondary-button" style={{ cursor: attachingPost === p.id ? "wait" : "pointer" }} title="Images (8 Mo max chacune) ou un PDF (20 Mo max, publié en carrousel LinkedIn)">
                     {attachingPost === p.id ? <Loader2 size={14} className="spinning" /> : <ImagePlus size={14} />}
-                    Joindre des images
+                    Joindre images / PDF
                     <input
                       type="file"
-                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,application/pdf"
                       multiple
                       disabled={attachingPost === p.id}
                       style={{ display: "none" }}
@@ -4175,12 +4279,21 @@ function LibraryView({
                 {(p.media_items || []).length > 0 && (
                   <div style={{ marginTop: 12 }}>
                     <p className="role-picker-hint" style={{ marginBottom: 8 }}>
-                      {(p.media_items || []).length} image{(p.media_items || []).length > 1 ? "s" : ""} jointe{(p.media_items || []).length > 1 ? "s" : ""} au post LinkedIn.
+                      {(p.media_items || [])[0]?.type === "document"
+                        ? "Document PDF joint — publié en carrousel feuilletable sur LinkedIn."
+                        : `${(p.media_items || []).length} image${(p.media_items || []).length > 1 ? "s" : ""} jointe${(p.media_items || []).length > 1 ? "s" : ""} au post LinkedIn.`}
                     </p>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
                       {(p.media_items || []).map((image, imageIndex) => (
                         <div key={image.url} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
-                          <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                          {image.type === "document" ? (
+                            <div style={{ width: "100%", aspectRatio: "1 / 1", borderRadius: 6, background: "var(--surface-low)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12, color: "var(--muted)", padding: 8, boxSizing: "border-box", textAlign: "center" }}>
+                              <span style={{ fontSize: 26 }}>📄</span>
+                              <span style={{ wordBreak: "break-all" }}>{image.title || "document.pdf"}</span>
+                            </div>
+                          ) : (
+                            <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                          )}
                           <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                             <a
                               href={image.url}

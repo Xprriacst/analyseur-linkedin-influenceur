@@ -41,7 +41,7 @@ def run() -> None:
             continue
 
         try:
-            media_items = zernio.prepare_image_media_items(post.get("media_items") or [])
+            media_items = zernio.prepare_media_items(post.get("media_items") or [])
             result = zernio.create_post(
                 post["post_text"],
                 account_id,

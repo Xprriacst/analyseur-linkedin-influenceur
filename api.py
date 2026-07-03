@@ -358,10 +358,13 @@ class LinkedInConnectRequest(BaseModel):
 
 
 class LinkedInImageRequest(BaseModel):
-    url: Optional[str] = Field(default=None, description="Public image URL or data:image/... base64 URL.")
-    data_url: Optional[str] = Field(default=None, description="Uploaded/generated image as a data:image/... base64 URL.")
+    # ALE-186 : un item peut aussi être un document PDF (type="document") —
+    # LinkedIn l'affiche en carrousel ; exclusif avec les images (vérifié dans zernio).
+    url: Optional[str] = Field(default=None, description="Public media URL or data: base64 URL.")
+    data_url: Optional[str] = Field(default=None, description="Uploaded/generated media as a data: base64 URL.")
     filename: Optional[str] = Field(default=None, max_length=200)
     title: Optional[str] = Field(default=None, max_length=200)
+    type: Optional[str] = Field(default=None, pattern="^(image|document)$")
 
 
 class LinkedInPublishRequest(BaseModel):
@@ -457,7 +460,7 @@ def me_linkedin_publish(
     if not account_id:
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
     try:
-        media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
+        media_items = zernio.prepare_media_items(_image_payload(payload.images))
         result = zernio.create_post(
             payload.content.strip(),
             account_id,
@@ -1312,7 +1315,7 @@ class CreatePostRequest(BaseModel):
 
 
 def _saved_post_media_items(images: list[LinkedInImageRequest]) -> tuple[list[dict[str, Any]], bool]:
-    """Convert attached images to public-URL media_items (ALE-179).
+    """Convert attached media (images ou PDF) to public-URL media_items (ALE-179/186).
 
     Les data URLs sont hébergées sur Zernio (URL publique), les URLs déjà
     publiques passent telles quelles. Non bloquant : un échec d'upload ne doit
@@ -1320,7 +1323,7 @@ def _saved_post_media_items(images: list[LinkedInImageRequest]) -> tuple[list[di
     if not images:
         return [], False
     try:
-        return zernio.prepare_image_media_items(_image_payload(images)), False
+        return zernio.prepare_media_items(_image_payload(images)), False
     except zernio.ZernioError:
         return [], True
 
@@ -1785,7 +1788,7 @@ def slack_send_post(
     # n'empêche pas l'envoi du texte.
     if payload.images:
         try:
-            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
+            media_items = zernio.prepare_media_items(_image_payload(payload.images))
         except zernio.ZernioError:
             media_items = []
         if media_items:
