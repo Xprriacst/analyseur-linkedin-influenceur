@@ -1026,6 +1026,35 @@ class IdeasRequest(BaseModel):
     web_search: bool = Field(default=False)
 
 
+class GeneratePdfSource(BaseModel):
+    """ALE-187 : PDF source de génération — l'IA le lit et en tire les posts."""
+    data_url: str = Field(..., description="PDF en data URL base64 (data:application/pdf;base64,…).")
+    filename: Optional[str] = Field(default=None, max_length=200)
+
+
+MAX_GENERATE_PDF_BYTES = 10 * 1024 * 1024
+
+
+def _generate_pdf_source(payload: "GenerateRequest") -> dict[str, Any] | None:
+    """Valide le PDF source et retourne {"data": <base64>, "filename": str} | None.
+
+    Limites : PDF uniquement, 10 Mo max (l'API Anthropic accepte 32 Mo par
+    requête et ~100 pages ; le prompt de génération occupe déjà une partie)."""
+    if not payload.pdf:
+        return None
+    prefix = "data:application/pdf;base64,"
+    data_url = payload.pdf.data_url.strip()
+    if not data_url.startswith(prefix):
+        raise HTTPException(status_code=400, detail="Le fichier source doit être un PDF (data URL base64).")
+    b64 = data_url[len(prefix):].strip()
+    # ~4/3 d'overhead base64 : borne la taille sans décoder les 10 Mo en mémoire.
+    if len(b64) > MAX_GENERATE_PDF_BYTES * 4 // 3 + 4:
+        raise HTTPException(status_code=400, detail="PDF source trop volumineux (10 Mo maximum).")
+    if not b64:
+        raise HTTPException(status_code=400, detail="PDF source vide.")
+    return {"data": b64, "filename": (payload.pdf.filename or "document.pdf").strip() or "document.pdf"}
+
+
 class GenerateRequest(BaseModel):
     topic: Optional[str] = Field(default=None)
     editorial_role: Optional[str] = Field(default=None)
@@ -1033,6 +1062,8 @@ class GenerateRequest(BaseModel):
     # exposes web search as an autonomous server-side tool; the model decides.
     web_search: bool = Field(default=False)
     count: int = Field(default=1, ge=1, le=3)
+    # ALE-187 : PDF source facultatif — les posts sont générés à partir de son contenu.
+    pdf: Optional[GeneratePdfSource] = Field(default=None)
 
 
 class GenerateImageRequest(BaseModel):
@@ -1152,6 +1183,7 @@ def _generate_posts_response(
     token: Optional[str],
     on_web_search=None,
 ) -> dict[str, Any]:
+    source_pdf = _generate_pdf_source(payload)
     context = _prepare_generate_context(payload, token)
     variants = generate_posts(
         context["topic"],
@@ -1161,14 +1193,17 @@ def _generate_posts_response(
         editorial_role=context["role"],
         count=payload.count,
         on_web_search=on_web_search,
+        source_pdf=source_pdf,
     )
-    variants, save_error = _save_generated_variants(token, context["topic"], variants)
+    save_topic = context["topic"] or (f"PDF : {source_pdf['filename']}" if source_pdf else context["topic"])
+    variants, save_error = _save_generated_variants(token, save_topic, variants)
     return {"variants": variants, "save_error": save_error, "credits": context["credits"]}
 
 
 @app.post("/generate/stream")
 def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(optional_token)) -> StreamingResponse:
     """Generate posts as SSE and report autonomous web-search starts live."""
+    source_pdf = _generate_pdf_source(payload)
     context = _prepare_generate_context(payload, token)
 
     def stream_response():
@@ -1192,8 +1227,10 @@ def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(opt
                     editorial_role=context["role"],
                     count=payload.count,
                     on_web_search=on_web_search,
+                    source_pdf=source_pdf,
                 )
-                variants, save_error = _save_generated_variants(token, context["topic"], variants)
+                save_topic = context["topic"] or (f"PDF : {source_pdf['filename']}" if source_pdf else context["topic"])
+                variants, save_error = _save_generated_variants(token, save_topic, variants)
                 events.put(("done", {
                     "variants": variants,
                     "save_error": save_error,
@@ -1239,6 +1276,9 @@ def create_generation_job(payload: GenerateRequest, token: str = Depends(require
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
+    # ALE-187 : PDF source validé avant tout débit de crédits.
+    source_pdf = _generate_pdf_source(payload)
+
     influencers = _get_influencers(token)
     if not influencers:
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
@@ -1251,10 +1291,13 @@ def create_generation_job(payload: GenerateRequest, token: str = Depends(require
 
     role = (payload.editorial_role or "").strip() or None
     topic = (payload.topic or "").strip() or None
-    job = db.create_generation_job(token, topic, role, payload.web_search, payload.count)
+    # Le sujet affiché du job mentionne le PDF (le fichier lui-même est passé en
+    # mémoire au thread, pas stocké en base).
+    display_topic = topic or (f"PDF : {source_pdf['filename']}" if source_pdf else None)
+    job = db.create_generation_job(token, display_topic, role, payload.web_search, payload.count)
     if not job:
         raise HTTPException(status_code=500, detail="Création du job de génération impossible.")
-    start_generation_job_thread(token, job["id"])
+    start_generation_job_thread(token, job["id"], source_pdf=source_pdf)
     job["credits"] = balance
     return job
 

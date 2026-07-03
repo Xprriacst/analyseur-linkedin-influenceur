@@ -157,7 +157,7 @@ def _extract_web_search_query(block: Any, input_payload: Any = None) -> str | No
 
 def _call_streaming(
     system: str,
-    user: str,
+    user: str | list[dict[str, Any]],
     max_tokens: int = 4096,
     temperature: float = 0.2,
     tools: list[dict] | None = None,
@@ -228,12 +228,14 @@ def _call_streaming(
 
 def _call(
     system: str,
-    user: str,
+    user: str | list[dict[str, Any]],
     max_tokens: int = 4096,
     temperature: float = 0.2,
     tools: list[dict] | None = None,
     on_web_search: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict:
+    # `user` : texte simple, ou liste de blocs de contenu Anthropic (ex. un
+    # document PDF base64 suivi du prompt texte — ALE-187).
     if on_web_search:
         return _call_streaming(
             system,
@@ -823,6 +825,7 @@ def generate_posts(
     web_search: bool = False,
     count: int = 1,
     on_web_search: Callable[[dict[str, Any]], None] | None = None,
+    source_pdf: dict[str, Any] | None = None,
 ) -> list[dict]:
     """Generate LinkedIn post variants (default 1) covering editorial roles.
 
@@ -832,6 +835,10 @@ def generate_posts(
     ``topic`` is optional : quand il est vide, le LLM choisit lui-même un sujet
     à fort potentiel à partir du contexte client et du benchmark (comme la
     génération d'idées) — une idée = un post.
+
+    ``source_pdf`` (ALE-187) : ``{"data": <base64 sans préfixe>, "filename": str}``.
+    Le PDF est fourni à Claude comme document source (lecture native, texte +
+    tableaux + graphiques) — les posts doivent s'appuyer sur son contenu.
     """
     examples_text = "\n\n".join(
         f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')}]\n{e.get('text', '')[:600]}"
@@ -873,16 +880,34 @@ def generate_posts(
         + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
     topic_clean = (topic or "").strip()
-    topic_directive = (
-        f'Sujet du post à créer : "{topic_clean}"\n\n'
-        if topic_clean
-        else (
+    if source_pdf:
+        pdf_name = str(source_pdf.get("filename") or "document.pdf")
+        pdf_directive = (
+            f"Un document PDF source ({pdf_name}) est joint à cette demande. "
+            "Lis-le attentivement : c'est la matière première des posts. "
+            "Appuie chaque variant sur son contenu réel — idées clés, chiffres exacts, exemples, "
+            "conclusions — sans jamais inventer de données absentes du document. "
+        )
+        if topic_clean:
+            topic_directive = (
+                pdf_directive
+                + f'Angle demandé par le client pour exploiter ce document : "{topic_clean}"\n\n'
+            )
+        else:
+            topic_directive = (
+                pdf_directive
+                + "Aucun angle imposé : choisis toi-même, pour chaque variant, l'angle le plus "
+                "fort du document pour l'audience du client. Varie les angles entre les variants.\n\n"
+            )
+    elif topic_clean:
+        topic_directive = f'Sujet du post à créer : "{topic_clean}"\n\n'
+    else:
+        topic_directive = (
             "Aucun sujet imposé : choisis toi-même, pour chaque variant, un sujet "
             "original à fort potentiel viral, déduit du contexte client (métier, marché, "
             "audience, offre) et des patterns qui marchent dans le benchmark ci-dessous. "
             "Varie les sujets entre les variants.\n\n"
         )
-    )
     user = (
         topic_directive
         + "Contexte client à respecter EN PRIORITÉ (prime sur les patterns viraux) :\n"
@@ -921,9 +946,25 @@ Schéma JSON attendu (toutes les clés obligatoires) :
   ]
 }"""
     )
+    # ALE-187 : le PDF source est passé en bloc `document` natif (avant le texte),
+    # Claude le lit directement — texte, tableaux et graphiques inclus.
+    user_content: str | list[dict[str, Any]] = user
+    if source_pdf and source_pdf.get("data"):
+        user_content = [
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": source_pdf["data"],
+                },
+                "title": str(source_pdf.get("filename") or "document.pdf")[:200],
+            },
+            {"type": "text", "text": user},
+        ]
     data = _call(
         system,
-        user,
+        user_content,
         max_tokens=6000,
         temperature=0.7,
         tools=search_tools,

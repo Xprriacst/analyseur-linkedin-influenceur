@@ -22,6 +22,14 @@ LLM/Apify), persistance après refresh, publication externe.
 - [ ] **Mes contenus → Posts** → les 3 posts apparaissent (sujet, rôle, date).
 - [ ] F5 → toujours présents.
 
+## 2bis. Génération depuis un PDF source (ALE-187)
+- [ ] **Générateur** → **« 📄 Générer depuis un PDF »** → choisir un PDF (< 10 Mo) → une pastille 📄 avec le nom du fichier apparaît.
+- [ ] **Générer** (avec ou sans sujet) → les posts s'appuient sur le **contenu réel du document** (idées, chiffres exacts — vérifier contre le PDF).
+- [ ] Avec un sujet en plus → le sujet sert d'**angle** pour exploiter le document.
+- [ ] Dans **Mes contenus**, les posts générés sans sujet affichent « PDF : nom-du-fichier » comme sujet.
+- [ ] PDF > 10 Mo ou fichier non-PDF → refusé avec message clair, aucun crédit débité.
+- [ ] « Retirer » la pastille → la génération suivante repart sans document.
+
 ## 3. Génération d'idées — persistance
 - [ ] **Générateur → Générer des idées** → idées affichées.
 - [ ] **Mes contenus → Idées** → présentes après F5.

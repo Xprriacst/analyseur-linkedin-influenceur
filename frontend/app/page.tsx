@@ -2113,6 +2113,8 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   const [editedVariants, setEditedVariants] = useState<Record<number, string>>({});
   const [copiedVariant, setCopiedVariant] = useState<number | null>(null);
   const [variantCount, setVariantCount] = useState(1);
+  // ALE-187 : PDF source de génération — l'IA lit le document et en tire les posts.
+  const [sourcePdf, setSourcePdf] = useState<{ dataUrl: string; filename: string } | null>(null);
   const [scheduleModal, setScheduleModal] = useState<{ index: number; text: string; images: LinkedInImageAttachment[] } | null>(null);
   const [scheduledIndices, setScheduledIndices] = useState<Record<number, "direct" | "slack">>({});
   const [scheduleError, setScheduleError] = useState("");
@@ -2345,9 +2347,11 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     setLoadingPosts(true);
     try {
       // Sujet optionnel : sans sujet, le backend choisit lui-même un angle (idée = post).
-      const body: { topic?: string; editorial_role?: string; count?: number } = { count: variantCount };
+      const body: { topic?: string; editorial_role?: string; count?: number; pdf?: { data_url: string; filename: string } } = { count: variantCount };
       if (t.trim()) body.topic = t.trim();
       if (role !== "auto") body.editorial_role = role;
+      // ALE-187 : PDF source — l'IA le lit et en tire les posts.
+      if (sourcePdf) body.pdf = { data_url: sourcePdf.dataUrl, filename: sourcePdf.filename };
       const res = await fetch(`${DIRECT_API_URL}/generate/jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
@@ -2362,6 +2366,27 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     } finally {
       setLoadingPosts(false);
     }
+  }
+
+  function pickSourcePdf(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) return;
+    setError("");
+    if (file.type !== "application/pdf") {
+      setError("Le document source doit être un PDF.");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError("PDF source trop volumineux (10 Mo maximum).");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      if (result) setSourcePdf({ dataUrl: result, filename: file.name });
+    };
+    reader.onerror = () => setError(`Lecture impossible pour ${file.name}.`);
+    reader.readAsDataURL(file);
   }
 
   const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
@@ -2407,6 +2432,34 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
               {(loadingPosts || genJobActive) ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
               {genJobActive ? "Génération en cours…" : "Générer"}
             </button>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+            {sourcePdf ? (
+              <>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px", fontSize: 13, background: "var(--surface)" }}>
+                  📄 {sourcePdf.filename}
+                </span>
+                <span className="role-picker-hint" style={{ margin: 0 }}>
+                  L&apos;IA lira ce document et en tirera les posts (le sujet devient un angle optionnel).
+                </span>
+                <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} onClick={() => setSourcePdf(null)}>
+                  <Trash2 size={12} /> Retirer
+                </button>
+              </>
+            ) : (
+              <label className="secondary-button" style={{ cursor: "pointer", fontSize: 12, minHeight: 30 }} title="L'IA lit le PDF (texte, tableaux, graphiques) et génère les posts à partir de son contenu — 10 Mo max">
+                📄 Générer depuis un PDF
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    pickSourcePdf(e.currentTarget.files);
+                    e.currentTarget.value = "";
+                  }}
+                />
+              </label>
+            )}
           </div>
           <div className="role-picker">
             <label className="role-picker-label">Rôle éditorial</label>
