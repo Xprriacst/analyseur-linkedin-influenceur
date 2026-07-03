@@ -3401,13 +3401,12 @@ function DailyIdeasView({
           {ideas.map((it, idx) => {
             const isPost = !!it.post_text;
             const idea = isPost ? null : parseDailyIdeaMarkdown(it.idea_markdown);
-            const lineTitle = isPost ? (it.strategy || (it.post_text || "").split("\n")[0].slice(0, 80)) : idea!.title;
             return (
               <details className="card daily-idea-line" key={it.id} open={idx === 0}>
+                {/* Ligne fermée = date seule (demande Alex 2026-07-03 : pas d'extrait, trop d'info). */}
                 <summary>
                   <span className="daily-line-date">{fmtDate(it.idea_date)}</span>
                   {idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}
-                  <span className="daily-line-title">{lineTitle}</span>
                 </summary>
                 <div className="daily-line-body">
                   {isPost ? (
