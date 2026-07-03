@@ -668,6 +668,7 @@ def create_saved_post(
     hook_type: str | None = None,
     strategy: str | None = None,
     predicted_lift: str | None = None,
+    media_items: list[dict] | None = None,
 ) -> dict | None:
     """Create a single explicitly-saved generated post (ALE-136 : sauvegarder le post du jour)."""
     if not supabase_enabled():
@@ -676,18 +677,21 @@ def create_saved_post(
     if not user:
         return None
     db = client_for_token(access_token)
+    row: dict = {
+        "user_id": user["id"],
+        "topic": topic or None,
+        "editorial_role": editorial_role,
+        "hook_type": hook_type,
+        "strategy": strategy,
+        "predicted_lift": predicted_lift,
+        "post": post_text,
+        "saved": True,
+    }
+    if media_items:
+        row["media_items"] = media_items
     resp = (
         db.table("generated_posts")
-        .insert({
-            "user_id": user["id"],
-            "topic": topic or None,
-            "editorial_role": editorial_role,
-            "hook_type": hook_type,
-            "strategy": strategy,
-            "predicted_lift": predicted_lift,
-            "post": post_text,
-            "saved": True,
-        })
+        .insert(row)
         .execute()
     )
     return resp.data[0] if resp.data else None
@@ -774,11 +778,12 @@ def update_generated_post(
     post_id: str,
     new_post: str | None = None,
     saved: bool | None = None,
+    media_items: list[dict] | None = None,
 ) -> dict | None:
-    """Update a saved post's text and/or its `saved` flag (ALE-134).
+    """Update a saved post's text, `saved` flag and/or images (ALE-134/179).
 
-    Both fields are optional; only the provided ones are written. Returns the
-    updated row or None.
+    All fields are optional; only the provided ones are written. `media_items`
+    remplace la liste d'images ([] = tout retirer). Returns the updated row or None.
     """
     user = get_user(access_token)
     if not user:
@@ -788,6 +793,8 @@ def update_generated_post(
         updates["post"] = new_post
     if saved is not None:
         updates["saved"] = saved
+    if media_items is not None:
+        updates["media_items"] = media_items
     if not updates:
         return None
     db = client_for_token(access_token)
