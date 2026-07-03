@@ -4449,50 +4449,70 @@ function AssistantMessageActions({
 
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
-      <button className="secondary-button" style={btn} onClick={copy}>
-        {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />} {copied ? "Copié ✓" : "Copier"}
-      </button>
-      <button className="secondary-button" style={btn} disabled={saving || savedPost} onClick={save}>
-        {saving ? <Loader2 size={13} className="spinning" /> : <BookmarkPlus size={13} />} {savedPost ? "Sauvegardé ✓" : "Sauvegarder"}
-      </button>
-      <button
-        className="secondary-button"
-        style={btn}
-        disabled
-        aria-disabled
-        title="Génération d'image en cours d'amélioration — bientôt disponible"
-        onClick={generateImageFn}
+      <PostActionsBar
+        publishBusy={publishing}
+        publishLabel={published ? "Publié ✓" : publishing ? "Publication…" : "Publier"}
+        publishActions={[
+          {
+            key: "linkedin",
+            icon: <Linkedin size={14} />,
+            label: published ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
+            disabled: publishing,
+            title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
+            onClick: () => setConfirmPub(true),
+          },
+          {
+            key: "schedule",
+            icon: <Clock3 size={14} />,
+            label: scheduled ? "Programmé ✓" : "Programmer…",
+            disabled: scheduled,
+            title: linkedin.status?.connected
+              ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+              : "Connecte ton compte LinkedIn dans l'onglet Profil",
+            onClick: openSchedule,
+          },
+          ...(slack.status?.connected
+            ? [{
+                key: "slack",
+                icon: <Send size={14} />,
+                label: slackSent ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
+                disabled: slackSending || slackSent,
+                onClick: () => setConfirmSlack(true),
+              } satisfies PostAction]
+            : []),
+          ...(twitter.status?.connected
+            ? [{
+                key: "x",
+                icon: xLogo,
+                label: publishingX ? "Publication…" : publishedX ? "Publié sur X ✓" : "Publier sur X",
+                disabled: publishingX,
+                onClick: () => setConfirmX(true),
+              } satisfies PostAction]
+            : []),
+        ]}
+        moreActions={[
+          {
+            key: "save",
+            icon: <BookmarkPlus size={14} />,
+            label: savedPost ? "Sauvegardé ✓" : "Sauvegarder",
+            disabled: saving || savedPost,
+            title: "Sauvegarder ce post dans « Mes contenus »",
+            onClick: save,
+          },
+          {
+            key: "image-ia",
+            icon: <ImageIcon size={14} />,
+            label: "Image IA — bientôt",
+            disabled: true,
+            title: "Génération d'image en cours d'amélioration — bientôt disponible",
+            onClick: generateImageFn,
+          },
+        ]}
       >
-        <ImageIcon size={13} /> Image IA — bientôt
-      </button>
-      <button
-        className="secondary-button"
-        style={btn}
-        disabled={publishing}
-        title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-        onClick={() => setConfirmPub(true)}
-      >
-        {publishing ? <Loader2 size={13} className="spinning" /> : <Linkedin size={13} />} {published ? "Publié ✓" : "Publier sur LinkedIn"}
-      </button>
-      <button
-        className="secondary-button"
-        style={btn}
-        disabled={scheduled}
-        title={linkedin.status?.connected ? "Programmer : publication directe à une date, ou validation Slack au préalable" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-        onClick={openSchedule}
-      >
-        <Clock3 size={13} /> {scheduled ? "Programmé ✓" : "Programmer"}
-      </button>
-      {twitter.status?.connected && (
-        <button className="secondary-button" style={btn} disabled={publishingX} title="Publier maintenant sur X (Twitter)" onClick={() => setConfirmX(true)}>
-          {publishingX ? <Loader2 size={13} className="spinning" /> : xLogo} {publishedX ? "Publié ✓" : "Publier sur X"}
+        <button className="secondary-button" style={btn} onClick={copy}>
+          {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />} {copied ? "Copié ✓" : "Copier"}
         </button>
-      )}
-      {slack.status?.connected && (
-        <button className="secondary-button" style={btn} disabled={slackSending || slackSent} onClick={() => setConfirmSlack(true)}>
-          {slackSending ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} {slackSent ? "Sur Slack ✓" : "Envoyer sur Slack"}
-        </button>
-      )}
+      </PostActionsBar>
       {confirmPub && (
         <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
           <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
