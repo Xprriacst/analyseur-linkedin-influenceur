@@ -1454,6 +1454,27 @@ def reorder_me_idea_seeds(payload: IdeaSeedReorderRequest, token: str = Depends(
     return {"ok": db.reorder_idea_seeds(token, payload.ordered_ids)}
 
 
+class IdeaSeedUpdateRequest(BaseModel):
+    text: str | None = Field(default=None, min_length=3, max_length=2000)
+    # None = inchangé ; "" = effacer le commentaire d'orientation.
+    comment: str | None = Field(default=None, max_length=500)
+
+
+@app.put("/me/idea-seeds/{seed_id}")
+def update_me_idea_seed(seed_id: str, payload: IdeaSeedUpdateRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Edit an idea's text and/or orientation comment in the reservoir."""
+    if payload.text is None and payload.comment is None:
+        raise HTTPException(status_code=400, detail="Rien à mettre à jour (text ou comment requis).")
+    text = payload.text.strip() if payload.text is not None else None
+    if text is not None and len(text) < 3:
+        raise HTTPException(status_code=422, detail="L'idée doit faire au moins 3 caractères.")
+    comment = payload.comment.strip() if payload.comment is not None else None
+    seed = db.update_idea_seed(token, seed_id, text=text, comment=comment)
+    if not seed:
+        raise HTTPException(status_code=404, detail="Idée introuvable ou non autorisée.")
+    return seed
+
+
 @app.delete("/me/idea-seeds/{seed_id}")
 def delete_me_idea_seed(seed_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
     """Delete one of the user's seeds."""
