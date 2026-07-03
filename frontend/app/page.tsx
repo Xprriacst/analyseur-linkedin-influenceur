@@ -1950,6 +1950,130 @@ function useSlack(isAuthed: boolean) {
   return { status, busy, error, connect, disconnect, refresh };
 }
 
+// ALE-184 : fenêtre de programmation commune à toutes les sections (Générateur,
+// Mes contenus, Idée du jour, Agent IA) — date/heure + choix « Valider via
+// Slack » ou programmation directe. Les sections ne doivent plus recoder leur
+// propre programmation : tout passe par ce composant.
+type ScheduleModalImage = { url: string; filename?: string };
+
+function SchedulePostModal({
+  text,
+  images = [],
+  slackConnected,
+  onClose,
+  onScheduled,
+}: {
+  text: string;
+  images?: ScheduleModalImage[];
+  slackConnected: boolean;
+  onClose: () => void;
+  onScheduled: (viaSlack: boolean) => void;
+}) {
+  const [scheduleDate, setScheduleDate] = useState(() => {
+    // Prefill to tomorrow 9:00 local time
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    return toDatetimeLocalValue(tomorrow);
+  });
+  const [scheduling, setScheduling] = useState(false);
+  const [error, setError] = useState("");
+
+  async function doSchedule(validateViaSlack: boolean) {
+    setError("");
+    setScheduling(true);
+    try {
+      const localDate = new Date(scheduleDate);
+      if (isNaN(localDate.getTime())) throw new Error("Date invalide.");
+      if (localDate <= new Date()) throw new Error("La date doit être dans le futur.");
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          content: text,
+          scheduled_at: localDate.toISOString(),
+          validate_via_slack: validateViaSlack,
+          images: images.map((image) => ({
+            ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
+            filename: image.filename,
+          })),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Programmation impossible.");
+      onScheduled(validateViaSlack);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setScheduling(false);
+    }
+  }
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+    }}>
+      <div className="card" style={{ maxWidth: 520, width: "100%", padding: 24 }}>
+        <h3 style={{ marginTop: 0, marginBottom: 8 }}>Programmer ce post</h3>
+        <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+          Choisis la date/heure, puis programme directement sur LinkedIn, ou demande d&apos;abord une validation Slack — dans ce cas le post n&apos;est publié à l&apos;heure choisie que s&apos;il est validé sur Slack.
+        </p>
+        <textarea
+          readOnly
+          value={text}
+          rows={6}
+          className="variant-text"
+          style={{ width: "100%", boxSizing: "border-box", marginBottom: 12 }}
+        />
+        {images.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+              {images.length} image{images.length > 1 ? "s" : ""} {images.length > 1 ? "seront conservées" : "sera conservée"} pour la publication programmée.
+            </p>
+            <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
+              {images.map((image, idx) => (
+                <img
+                  key={`${image.url.slice(0, 64)}-${idx}`}
+                  src={image.url}
+                  alt={`Image programmée ${idx + 1}`}
+                  style={{ width: 74, height: 74, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+        <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
+          Date et heure de publication
+        </label>
+        <input
+          type="datetime-local"
+          value={scheduleDate}
+          onChange={(e) => setScheduleDate(e.target.value)}
+          style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 14, marginBottom: 12 }}
+        />
+        {error && <p style={{ color: "var(--error, #e53e3e)", fontSize: 13, marginBottom: 8 }}>{error}</p>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+          <button className="secondary-button" disabled={scheduling} onClick={onClose}>
+            Annuler
+          </button>
+          <button
+            className="secondary-button"
+            disabled={scheduling || !scheduleDate || !slackConnected}
+            title={slackConnected ? "Envoyer une demande de validation Slack avant publication" : "Connecte Slack dans l'onglet Profil pour valider"}
+            onClick={() => doSchedule(true)}
+          >
+            {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Valider via Slack
+          </button>
+          <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={() => doSchedule(false)}>
+            {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Programmer sur LinkedIn</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Cache module-level : survit aux changements d'onglet dans la même session (ALE-145).
 // Réinitialisé à chaque refresh de page. `appliedJobId` (ALE-141) mémorise le
 // dernier job de génération dont on a injecté le résultat, pour qu'un nouveau
@@ -1990,9 +2114,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   const [copiedVariant, setCopiedVariant] = useState<number | null>(null);
   const [variantCount, setVariantCount] = useState(1);
   const [scheduleModal, setScheduleModal] = useState<{ index: number; text: string; images: LinkedInImageAttachment[] } | null>(null);
-  const [scheduleDate, setScheduleDate] = useState("");
-  const [scheduling, setScheduling] = useState(false);
-  const [scheduledIndices, setScheduledIndices] = useState<Record<number, boolean>>({});
+  const [scheduledIndices, setScheduledIndices] = useState<Record<number, "direct" | "slack">>({});
   const [scheduleError, setScheduleError] = useState("");
 
   // "Réutiliser" depuis Mes contenus : pré-remplit le sujet et lance la génération.
@@ -2142,45 +2264,8 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       setScheduleError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
       return;
     }
-    // Prefill to tomorrow 9:00 local time
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(9, 0, 0, 0);
-    setScheduleDate(toDatetimeLocalValue(tomorrow));
     setScheduleError("");
     setScheduleModal({ index: i, text, images: variantImages[i] || [] });
-  }
-
-  async function doSchedule(validateViaSlack: boolean) {
-    if (!scheduleModal) return;
-    setScheduleError("");
-    setScheduling(true);
-    try {
-      const localDate = new Date(scheduleDate);
-      if (isNaN(localDate.getTime())) throw new Error("Date invalide.");
-      if (localDate <= new Date()) throw new Error("La date doit être dans le futur.");
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({
-          content: scheduleModal.text,
-          scheduled_at: localDate.toISOString(),
-          validate_via_slack: validateViaSlack,
-          images: scheduleModal.images.map((image) => ({
-            ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
-            filename: image.filename,
-          })),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Planification impossible.");
-      setScheduledIndices((prev) => ({ ...prev, [scheduleModal.index]: true }));
-      setScheduleModal(null);
-    } catch (err: any) {
-      setScheduleError(err.message);
-    } finally {
-      setScheduling(false);
-    }
   }
 
   async function generateImage(i: number, postText: string) {
@@ -2428,7 +2513,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                   )}
                   <button
                     className="secondary-button"
-                    disabled={publishing === i || scheduling || !!scheduledIndices[i]}
+                    disabled={publishing === i || !!scheduledIndices[i]}
                     title={
                       linkedin.status?.connected
                         ? "Programmer : publication directe à une date, ou validation Slack au préalable"
@@ -2528,7 +2613,9 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                   <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur X ✓</p>
                 )}
                 {scheduledIndices[i] && (
-                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post programmé ✓ — demande de validation envoyée sur Slack.</p>
+                  <p className="role-picker-hint" style={{ marginTop: 6 }}>
+                    {scheduledIndices[i] === "slack" ? "Post programmé ✓ — demande de validation envoyée sur Slack." : "Post programmé sur LinkedIn ✓"}
+                  </p>
                 )}
                 {(variantImages[i] || []).length > 0 && (
                   <div style={{ marginTop: 12 }}>
@@ -2659,67 +2746,16 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       )}
 
       {scheduleModal !== null && (
-        <div style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
-          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
-        }}>
-          <div className="card" style={{ maxWidth: 520, width: "100%", padding: 24 }}>
-            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Programmer ce post</h3>
-            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-              Choisis la date/heure, puis programme directement sur LinkedIn, ou demande d&apos;abord une validation Slack — dans ce cas le post n&apos;est publié à l&apos;heure choisie que s&apos;il est validé sur Slack.
-            </p>
-            <textarea
-              readOnly
-              value={scheduleModal.text}
-              rows={6}
-              className="variant-text"
-              style={{ width: "100%", boxSizing: "border-box", marginBottom: 12 }}
-            />
-            {scheduleModal.images.length > 0 && (
-              <div style={{ marginBottom: 12 }}>
-                <p className="role-picker-hint" style={{ marginBottom: 8 }}>
-                  {scheduleModal.images.length} image{scheduleModal.images.length > 1 ? "s" : ""} {scheduleModal.images.length > 1 ? "seront conservées" : "sera conservée"} pour la publication programmée.
-                </p>
-                <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
-                  {scheduleModal.images.map((image, idx) => (
-                    <img
-                      key={image.id}
-                      src={image.url}
-                      alt={`Image programmée ${idx + 1}`}
-                      style={{ width: 74, height: 74, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
-              Date et heure de publication
-            </label>
-            <input
-              type="datetime-local"
-              value={scheduleDate}
-              onChange={(e) => setScheduleDate(e.target.value)}
-              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)", fontSize: 14, marginBottom: 12 }}
-            />
-            {scheduleError && <p style={{ color: "var(--error, #e53e3e)", fontSize: 13, marginBottom: 8 }}>{scheduleError}</p>}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-              <button className="secondary-button" onClick={() => setScheduleModal(null)}>
-                Annuler
-              </button>
-              <button
-                className="secondary-button"
-                disabled={scheduling || !scheduleDate || !slack.status?.connected}
-                title={slack.status?.connected ? "Envoyer une demande de validation Slack avant publication" : "Connecte Slack dans l'onglet Profil pour valider"}
-                onClick={() => doSchedule(true)}
-              >
-                {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Valider via Slack
-              </button>
-              <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={() => doSchedule(false)}>
-                {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Programmer sur LinkedIn</>}
-              </button>
-            </div>
-          </div>
-        </div>
+        <SchedulePostModal
+          text={scheduleModal.text}
+          images={scheduleModal.images}
+          slackConnected={!!slack.status?.connected}
+          onClose={() => setScheduleModal(null)}
+          onScheduled={(viaSlack) => {
+            setScheduledIndices((prev) => ({ ...prev, [scheduleModal.index]: viaSlack ? "slack" : "direct" }));
+            setScheduleModal(null);
+          }}
+        />
       )}
       {scheduleError && !scheduleModal && <div className="error" style={{ marginTop: 12 }}>{scheduleError}</div>}
     </div>
@@ -2965,6 +3001,7 @@ function DailyIdeasView({
   // ALE-136 : le post du jour est postable (copier / sauvegarder / publier / programmer).
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
+  const slack = useSlack(isAuthed);
   const [editedPost, setEditedPost] = useState<Record<string, string>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -2972,9 +3009,7 @@ function DailyIdeasView({
   const [confirmPublishId, setConfirmPublishId] = useState<string | null>(null);
   const [publishingId, setPublishingId] = useState<string | null>(null);
   const [publishedId, setPublishedId] = useState<string | null>(null);
-  const [scheduleForId, setScheduleForId] = useState<string | null>(null);
-  const [scheduleDate, setScheduleDate] = useState("");
-  const [schedulingId, setSchedulingId] = useState<string | null>(null);
+  const [scheduleModalIdea, setScheduleModalIdea] = useState<DailyIdea | null>(null);
   const [scheduledId, setScheduledId] = useState<string | null>(null);
   const [postError, setPostError] = useState("");
   const [publishingXId, setPublishingXId] = useState<string | null>(null);
@@ -3048,36 +3083,8 @@ function DailyIdeasView({
       setPostError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
       return;
     }
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(9, 0, 0, 0);
-    setScheduleDate(toDatetimeLocalValue(tomorrow));
     setPostError("");
-    setScheduleForId(it.id);
-  }
-
-  async function schedulePost(it: DailyIdea) {
-    setPostError("");
-    setSchedulingId(it.id);
-    try {
-      const localDate = new Date(scheduleDate);
-      if (isNaN(localDate.getTime())) throw new Error("Date invalide.");
-      if (localDate <= new Date()) throw new Error("La date doit être dans le futur.");
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: postTextOf(it), scheduled_at: localDate.toISOString(), validate_via_slack: false, images: it.image_url ? [{ url: it.image_url }] : [] }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Programmation impossible.");
-      setScheduledId(it.id);
-      setScheduleForId(null);
-      setTimeout(() => setScheduledId((s) => (s === it.id ? null : s)), 3000);
-    } catch (err: any) {
-      setPostError(err.message);
-    } finally {
-      setSchedulingId(null);
-    }
+    setScheduleModalIdea(it);
   }
 
   async function publishPostX(it: DailyIdea) {
@@ -3447,7 +3454,11 @@ function DailyIdeasView({
                         >
                           {publishingId === it.id ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />} {publishedId === it.id ? "Publié ✓" : "Publier"}
                         </button>
-                        <button className="secondary-button" onClick={() => openSchedule(it)}>
+                        <button
+                          className="secondary-button"
+                          title={linkedin.status?.connected ? "Programmer : publication directe à une date, ou validation Slack au préalable" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                          onClick={() => openSchedule(it)}
+                        >
                           <Clock3 size={14} /> {scheduledId === it.id ? "Programmé ✓" : "Programmer"}
                         </button>
                         <button
@@ -3477,19 +3488,18 @@ function DailyIdeasView({
                           <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmPublishId(null)}>Annuler</button>
                         </div>
                       )}
-                      {scheduleForId === it.id && (
-                        <div className="idea-footer" style={{ gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
-                          <input
-                            type="datetime-local"
-                            value={scheduleDate}
-                            onChange={(e) => setScheduleDate(e.target.value)}
-                            style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)" }}
-                          />
-                          <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} disabled={schedulingId === it.id || !scheduleDate} onClick={() => schedulePost(it)}>
-                            {schedulingId === it.id ? <Loader2 size={12} className="spinning" /> : <Clock3 size={12} />} Programmer sur LinkedIn
-                          </button>
-                          <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setScheduleForId(null)}>Annuler</button>
-                        </div>
+                      {scheduleModalIdea?.id === it.id && (
+                        <SchedulePostModal
+                          text={postTextOf(it)}
+                          images={it.image_url ? [{ url: it.image_url }] : []}
+                          slackConnected={!!slack.status?.connected}
+                          onClose={() => setScheduleModalIdea(null)}
+                          onScheduled={() => {
+                            setScheduledId(it.id);
+                            setScheduleModalIdea(null);
+                            setTimeout(() => setScheduledId((s) => (s === it.id ? null : s)), 3000);
+                          }}
+                        />
                       )}
                       {confirmXId === it.id && (
                         <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -3755,8 +3765,6 @@ function LibraryView({
   const [confirmXPostId, setConfirmXPostId] = useState<string | null>(null);
   const [confirmSlackPostId, setConfirmSlackPostId] = useState<string | null>(null);
   const [scheduleForPost, setScheduleForPost] = useState<string | null>(null);
-  const [scheduleDateLib, setScheduleDateLib] = useState("");
-  const [schedulingPostLib, setSchedulingPostLib] = useState<string | null>(null);
   const [scheduledPostIds, setScheduledPostIds] = useState<Record<string, boolean>>({});
   // ALE-179 : joindre des images à un post sauvegardé.
   const [attachingPost, setAttachingPost] = useState<string | null>(null);
@@ -3815,35 +3823,8 @@ function LibraryView({
       setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
       return;
     }
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(9, 0, 0, 0);
-    setScheduleDateLib(toDatetimeLocalValue(tomorrow));
     setPublishError("");
     setScheduleForPost(p.id);
-  }
-
-  async function schedulePostLib(p: SavedPost) {
-    setPublishError("");
-    setSchedulingPostLib(p.id);
-    try {
-      const localDate = new Date(scheduleDateLib);
-      if (isNaN(localDate.getTime())) throw new Error("Date invalide.");
-      if (localDate <= new Date()) throw new Error("La date doit être dans le futur.");
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: editedPosts[p.id] ?? p.post, scheduled_at: localDate.toISOString(), validate_via_slack: false, images: savedPostImagePayload(p) }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Programmation impossible.");
-      setScheduledPostIds((prev) => ({ ...prev, [p.id]: true }));
-      setScheduleForPost(null);
-    } catch (err: any) {
-      setPublishError(err.message);
-    } finally {
-      setSchedulingPostLib(null);
-    }
   }
 
   const roleLabels: Record<string, string> = {
@@ -4075,8 +4056,8 @@ function LibraryView({
                   </button>
                   <button
                     className="secondary-button"
-                    disabled={schedulingPostLib === p.id || !!scheduledPostIds[p.id]}
-                    title={linkedin.status?.connected ? "Programmer une publication LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+                    disabled={!!scheduledPostIds[p.id]}
+                    title={linkedin.status?.connected ? "Programmer : publication directe à une date, ou validation Slack au préalable" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
                     onClick={() => openSchedulePost(p)}
                   >
                     <Clock3 size={14} />
@@ -4144,18 +4125,16 @@ function LibraryView({
                   </div>
                 )}
                 {scheduleForPost === p.id && (
-                  <div className="idea-footer" style={{ gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
-                    <input
-                      type="datetime-local"
-                      value={scheduleDateLib}
-                      onChange={(e) => setScheduleDateLib(e.target.value)}
-                      style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)" }}
-                    />
-                    <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} disabled={schedulingPostLib === p.id || !scheduleDateLib} onClick={() => schedulePostLib(p)}>
-                      {schedulingPostLib === p.id ? <Loader2 size={12} className="spinning" /> : <Clock3 size={12} />} Programmer sur LinkedIn
-                    </button>
-                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setScheduleForPost(null)}>Annuler</button>
-                  </div>
+                  <SchedulePostModal
+                    text={editedPosts[p.id] ?? p.post}
+                    images={savedPostImagePayload(p)}
+                    slackConnected={!!slack.status?.connected}
+                    onClose={() => setScheduleForPost(null)}
+                    onScheduled={() => {
+                      setScheduledPostIds((prev) => ({ ...prev, [p.id]: true }));
+                      setScheduleForPost(null);
+                    }}
+                  />
                 )}
                 {confirmXPostId === p.id && (
                   <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -4343,8 +4322,6 @@ function AssistantMessageActions({
   const [publishingX, setPublishingX] = useState(false);
   const [publishedX, setPublishedX] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
-  const [scheduleDate, setScheduleDate] = useState("");
-  const [scheduling, setScheduling] = useState(false);
   const [scheduled, setScheduled] = useState(false);
   const [slackSending, setSlackSending] = useState(false);
   const [slackSent, setSlackSent] = useState(false);
@@ -4385,28 +4362,7 @@ function AssistantMessageActions({
 
   function openSchedule() {
     if (!linkedin.status?.connected) { setErr("Connecte d'abord ton compte LinkedIn dans l'onglet Profil."); return; }
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(9, 0, 0, 0);
-    setScheduleDate(toDatetimeLocalValue(tomorrow));
     setErr(""); setScheduleOpen(true);
-  }
-
-  async function doSchedule() {
-    setErr(""); setScheduling(true);
-    try {
-      const localDate = new Date(scheduleDate);
-      if (isNaN(localDate.getTime())) throw new Error("Date invalide.");
-      if (localDate <= new Date()) throw new Error("La date doit être dans le futur.");
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/schedule`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, scheduled_at: localDate.toISOString(), validate_via_slack: false }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Programmation impossible.");
-      setScheduled(true); setScheduleOpen(false);
-    } catch (e: any) { setErr(e.message); } finally { setScheduling(false); }
   }
 
   async function publishX() {
@@ -4505,8 +4461,8 @@ function AssistantMessageActions({
       <button
         className="secondary-button"
         style={btn}
-        disabled={scheduling || scheduled}
-        title={linkedin.status?.connected ? "Programmer une publication LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
+        disabled={scheduled}
+        title={linkedin.status?.connected ? "Programmer : publication directe à une date, ou validation Slack au préalable" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
         onClick={openSchedule}
       >
         <Clock3 size={13} /> {scheduled ? "Programmé ✓" : "Programmer"}
@@ -4529,18 +4485,12 @@ function AssistantMessageActions({
         </div>
       )}
       {scheduleOpen && (
-        <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
-          <input
-            type="datetime-local"
-            value={scheduleDate}
-            onChange={(e) => setScheduleDate(e.target.value)}
-            style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink)" }}
-          />
-          <button className="primary-button" style={btn} disabled={scheduling || !scheduleDate} onClick={doSchedule}>
-            {scheduling ? <Loader2 size={12} className="spinning" /> : <Clock3 size={12} />} Programmer sur LinkedIn
-          </button>
-          <button className="secondary-button" style={btn} onClick={() => setScheduleOpen(false)}>Annuler</button>
-        </div>
+        <SchedulePostModal
+          text={text}
+          slackConnected={!!slack.status?.connected}
+          onClose={() => setScheduleOpen(false)}
+          onScheduled={() => { setScheduled(true); setScheduleOpen(false); }}
+        />
       )}
       {confirmX && (
         <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>

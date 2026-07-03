@@ -38,6 +38,13 @@ LLM/Apify), persistance après refresh, publication externe.
 - [ ] **Enregistrer en brouillon** → « Brouillon ✓ » (vérifier côté Zernio/LinkedIn).
 - [ ] **Générer une image** → image affichée + téléchargeable.
 
+## 5bis. Programmation — même modal partout (ALE-184)
+- [ ] **Programmer** ouvre la **même fenêtre** (date/heure + « Valider via Slack » + « Programmer sur LinkedIn ») depuis les 4 endroits : Générateur, Mes contenus, Idée du jour, réponse de l'Agent IA.
+- [ ] Slack non connecté → bouton « Valider via Slack » grisé (info-bulle « Connecte Slack… »).
+- [ ] Slack connecté → « Valider via Slack » → message reçu sur Slack ; le post ne part sur LinkedIn qu'après validation (cron ~5 min après l'heure choisie).
+- [ ] « Programmer sur LinkedIn » (direct) → le post part à l'heure choisie sans passer par Slack.
+- [ ] Un post de Mes contenus **avec images** programmé → les images sont bien conservées à la publication.
+
 ## 6. Isolation / sécurité (régression historique)
 - [ ] Connecté en compte A (noter ses contenus) → **déconnexion** → connexion compte B **dans le même onglet**.
 - [ ] B ne voit **aucun** contenu/profil/post de A (Mes contenus, Analyses récentes, Profil).
