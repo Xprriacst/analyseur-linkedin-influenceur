@@ -184,7 +184,7 @@ def start_job_thread(access_token: str, job_id: str) -> None:
 GENERATION_TIMEOUT_S = 300
 
 
-def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, count):
+def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, count, source_pdf=None):
     """Exécute `generate_posts` avec un timeout dur (thread jetable abandonné si figé)."""
     from src.llm import generate_posts
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -196,6 +196,7 @@ def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, cou
         user_context=user_context,
         editorial_role=role,
         count=count,
+        source_pdf=source_pdf,
     )
     try:
         return fut.result(timeout=GENERATION_TIMEOUT_S)
@@ -203,11 +204,15 @@ def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, cou
         ex.shutdown(wait=False)
 
 
-def process_generation_job(access_token: str, job_id: str) -> None:
+def process_generation_job(access_token: str, job_id: str, source_pdf: dict | None = None) -> None:
     """Génère les posts d'un job en arrière-plan et persiste le résultat.
 
     Idempotent quant à l'annulation : si le job a été annulé (statut `cancelled`)
     avant ou pendant le calcul, on n'écrit jamais `done` par-dessus.
+
+    ``source_pdf`` (ALE-187) est passé en mémoire depuis la requête de création
+    (jamais stocké en base) : si le service redémarre avant la fin, le job est
+    soldé en erreur comme n'importe quel job interrompu.
     """
     from src.benchmark import build_benchmark, enrich_influencers
 
@@ -223,11 +228,16 @@ def process_generation_job(access_token: str, job_id: str) -> None:
         top_posts, benchmark = build_benchmark(influencers)
         user_context = db.get_user_ai_context(access_token)
         role = (job.get("editorial_role") or "").strip() or None
-        topic = (job.get("topic") or "").strip()
+        display_topic = (job.get("topic") or "").strip()
+        # Avec un PDF sans sujet utilisateur, le topic du job est un libellé
+        # d'affichage (« PDF : fichier.pdf ») — pas un angle de génération.
+        topic = display_topic
+        if source_pdf and display_topic == f"PDF : {source_pdf.get('filename')}":
+            topic = ""
         count = int(job.get("count") or 1)
 
         variants = _generate_posts_guarded(
-            topic, top_posts, benchmark, user_context, role, count
+            topic, top_posts, benchmark, user_context, role, count, source_pdf=source_pdf
         )
 
         # Annulé pendant le calcul ? On respecte l'annulation.
@@ -236,7 +246,7 @@ def process_generation_job(access_token: str, job_id: str) -> None:
 
         save_error: str | None = None
         try:
-            variants = db.save_generated_posts(access_token, topic, variants)
+            variants = db.save_generated_posts(access_token, display_topic, variants)
         except Exception as exc:  # noqa: BLE001 — la sauvegarde est best-effort
             save_error = str(exc)
 
@@ -252,9 +262,12 @@ def process_generation_job(access_token: str, job_id: str) -> None:
         )
 
 
-def start_generation_job_thread(access_token: str, job_id: str) -> None:
+def start_generation_job_thread(access_token: str, job_id: str, source_pdf: dict | None = None) -> None:
     """Lance la génération d'un job dans un thread de fond (non bloquant)."""
     thread = threading.Thread(
-        target=process_generation_job, args=(access_token, job_id), daemon=True
+        target=process_generation_job,
+        args=(access_token, job_id),
+        kwargs={"source_pdf": source_pdf},
+        daemon=True,
     )
     thread.start()
