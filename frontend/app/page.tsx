@@ -2075,15 +2075,29 @@ function SchedulePostModal({
   );
 }
 
-/** Pop-up de génération d'image IA (ALE) : prépare d'abord un prompt à partir du
+/** Pop-up de génération d'image IA (ALE-68) : prépare d'abord un prompt à partir du
  *  post (gratuit), le montre à l'utilisateur qui peut l'ajuster, puis ne génère
  *  l'image (payante en crédits) qu'après validation explicite. L'image générée
- *  est remontée en data URL via `onGenerated`. */
+ *  est remontée en data URL via `onGenerated`.
+ *  Pendant la génération (2 à 3 min), la pop-up peut être réduite en pastille : la
+ *  génération continue et l'image revient en preview à la fin (ALE-190). Quitter
+ *  ou recharger la page pendant la génération déclenche l'alerte du navigateur ;
+ *  changer d'onglet dans l'app perdrait aussi l'image, d'où « reste sur cette page ». */
 function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; onClose: () => void; onGenerated: (dataUrl: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [loadingPrompt, setLoadingPrompt] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [minimized, setMinimized] = useState(false);
+  const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState("");
+
+  // Garde-fou : alerte native du navigateur si on ferme/recharge la page en pleine génération.
+  useEffect(() => {
+    if (!generating) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [generating]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2120,11 +2134,34 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
       if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
       emitCredits(data.credits);
       onGenerated(data.image_data);
-      onClose();
+      // La pop-up revient (même si elle était réduite) pour montrer le résultat.
+      setPreview(data.image_data);
+      setMinimized(false);
     } catch (err: any) {
       setError(err.message || "Génération d'image impossible.");
+      setMinimized(false);
+    } finally {
       setGenerating(false);
     }
+  }
+
+  // Réduite en pastille : la génération continue, clic pour rouvrir.
+  if (minimized) {
+    return (
+      <button
+        type="button"
+        className="card"
+        onClick={() => setMinimized(false)}
+        title="Rouvrir la génération d'image"
+        style={{
+          position: "fixed", right: 16, bottom: 16, zIndex: 1000, cursor: "pointer",
+          display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
+          fontSize: 13, border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+        }}
+      >
+        <Loader2 size={14} className="spinning" /> Image IA en cours de génération…
+      </button>
+    );
   }
 
   return (
@@ -2133,36 +2170,66 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
       display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
     }}>
       <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
-        <h3 style={{ marginTop: 0, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
-          <ImageIcon size={16} /> Générer une image IA
+        <h3 style={{ marginTop: 0, marginBottom: 2, display: "flex", alignItems: "center", gap: 8 }}>
+          <ImageIcon size={16} /> {preview ? "Image générée" : "Générer une image IA"}
         </h3>
-        <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-          Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour
-          générer l&apos;image (5 crédits). L&apos;image sera jointe au post.
+        <p style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 10px" }}>
+          Générée avec GPT Image 2 — le dernier modèle d&apos;image d&apos;OpenAI
         </p>
-        {loadingPrompt ? (
-          <p style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
-            <Loader2 size={14} className="spinning" /> Préparation du prompt…
-          </p>
+        {preview ? (
+          <>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+              Image jointe au post ✓ — tu la retrouves dans les miniatures sous le post
+              (avec télécharger / retirer).
+            </p>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={preview}
+              alt="Image générée"
+              style={{ width: "100%", maxHeight: 380, objectFit: "contain", borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
+            />
+            <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end" }}>
+              <button className="primary-button" onClick={onClose}>Fermer</button>
+            </div>
+          </>
         ) : (
-          <textarea
-            className="variant-text"
-            value={prompt}
-            rows={5}
-            disabled={generating}
-            onChange={(e) => setPrompt(e.target.value)}
-            style={{ width: "100%", boxSizing: "border-box" }}
-          />
+          <>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+              {generating
+                ? "Génération en cours (2 à 3 min). Tu peux réduire cette fenêtre et continuer à travailler — reste simplement sur cette page, l'image sera jointe au post automatiquement."
+                : "Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour générer l'image (5 crédits). L'image sera jointe au post."}
+            </p>
+            {loadingPrompt ? (
+              <p style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
+                <Loader2 size={14} className="spinning" /> Préparation du prompt…
+              </p>
+            ) : (
+              <textarea
+                className="variant-text"
+                value={prompt}
+                rows={5}
+                disabled={generating}
+                onChange={(e) => setPrompt(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box" }}
+              />
+            )}
+            {error && <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{error}</div>}
+            <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              {generating ? (
+                <button className="secondary-button" onClick={() => setMinimized(true)}>
+                  Réduire — continuer en arrière-plan
+                </button>
+              ) : (
+                <button className="secondary-button" onClick={onClose}>Annuler</button>
+              )}
+              <button className="primary-button" disabled={loadingPrompt || generating || !prompt.trim()} onClick={generate}>
+                {generating
+                  ? <><Loader2 size={13} className="spinning" /> Génération en cours… (2-3 min)</>
+                  : <><Sparkles size={13} /> Générer l&apos;image</>}
+              </button>
+            </div>
+          </>
         )}
-        {error && <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{error}</div>}
-        <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end", flexWrap: "wrap" }}>
-          <button className="secondary-button" onClick={onClose} disabled={generating}>Annuler</button>
-          <button className="primary-button" disabled={loadingPrompt || generating || !prompt.trim()} onClick={generate}>
-            {generating
-              ? <><Loader2 size={13} className="spinning" /> Génération en cours… (~1 min)</>
-              : <><Sparkles size={13} /> Générer l&apos;image</>}
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -3026,11 +3093,13 @@ function DailyIdeasView({
   isAuthed,
   requireAuth,
   onReuse,
+  onRework,
   reservoirOnly = false,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string) => void;
   onReuse: (topic: string) => void;
+  onRework?: (post: string) => void;
   reservoirOnly?: boolean;
 }) {
   const [ideas, setIdeas] = useState<DailyIdea[]>([]);
@@ -3585,6 +3654,15 @@ function DailyIdeasView({
                             title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
                             onClick: () => setImageModalIdea(it),
                           },
+                          ...(onRework
+                            ? [{
+                                key: "rework",
+                                icon: <MessageSquare size={14} />,
+                                label: "Retravailler avec l'Agent IA",
+                                title: "Ouvrir ce post dans l'Agent IA pour le retravailler",
+                                onClick: () => onRework(postTextOf(it)),
+                              } satisfies PostAction]
+                            : []),
                         ]}
                       />
                       {(ideaImages[it.id] || []).length > 0 && (
@@ -3679,7 +3757,7 @@ function DailyIdeasView({
         <div className="daily-reservoir-head">
           <div>
             <h3 className="daily-subtitle" style={{ margin: 0 }}><Lightbulb size={16} /> Mon réservoir d'idées</h3>
-            <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées, ou colle le <strong>lien d'une annonce</strong> : l'idée du jour piochera dedans en priorité. Un lien d'annonce génère un post avec la photo du bien.</p>
+            <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées : l'idée du jour piochera dedans en priorité.</p>
           </div>
           {!reservoirOnly && (
             <label className="daily-switch">
@@ -3697,7 +3775,7 @@ function DailyIdeasView({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
-            placeholder="Une idée de post, ou un lien d'annonce (https://…)"
+            placeholder="Une idée de post…"
             maxLength={2000}
           />
           <button className="primary-button" onClick={addSeed} disabled={adding || draft.trim().length < 3}>
@@ -3806,10 +3884,12 @@ function LibraryView({
   isAuthed,
   requireAuth,
   onReuse,
+  onRework,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string) => void;
   onReuse: (topic: string) => void;
+  onRework?: (post: string) => void;
 }) {
   const [posts, setPosts] = useState<SavedPost[]>([]);
   const [loading, setLoading] = useState(false);
@@ -4252,6 +4332,15 @@ function LibraryView({
                           icon: <Sparkles size={14} />,
                           label: "Régénérer sur ce sujet",
                           onClick: () => onReuse(p.topic!),
+                        } satisfies PostAction]
+                      : []),
+                    ...(onRework
+                      ? [{
+                          key: "rework",
+                          icon: <MessageSquare size={14} />,
+                          label: "Retravailler avec l'Agent IA",
+                          title: "Ouvrir ce post dans l'Agent IA pour le retravailler",
+                          onClick: () => onRework(editedPosts[p.id] ?? p.post),
                         } satisfies PostAction]
                       : []),
                     {
@@ -6107,10 +6196,10 @@ function ContentHub({
         ))}
       </div>
 
-      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />}
+      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />}
       {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} onRework={onRework} />}
       {tab === "library" && (
-        <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
+        <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
       )}
     </div>
   );
