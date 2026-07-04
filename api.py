@@ -511,6 +511,15 @@ def me_linkedin_schedule(
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
     _validate_future_scheduled_at(payload.scheduled_at)
 
+    # Les images sont mises en ligne dès la programmation (URLs publiques) :
+    # le message de validation Slack ne peut afficher que des URLs publiques,
+    # et on évite de stocker des data-URLs base64 en base. Le cron republie
+    # ces items tels quels (prepare_image_media_items est idempotent).
+    try:
+        media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=f"Impossible de préparer les images du post : {exc}") from exc
+
     # ALE-137 — Option A : programmation directe, publiée à l'échéance sans
     # validation Slack (le post naît `validated` pour que le cron le publie).
     if not payload.validate_via_slack:
@@ -518,7 +527,7 @@ def me_linkedin_schedule(
             token,
             payload.content.strip(),
             payload.scheduled_at,
-            media_items=_image_payload(payload.images),
+            media_items=media_items,
             require_slack=False,
         )
         if row is None:
@@ -538,7 +547,7 @@ def me_linkedin_schedule(
         token,
         payload.content.strip(),
         payload.scheduled_at,
-        media_items=_image_payload(payload.images),
+        media_items=media_items,
     )
     if row is None:
         raise HTTPException(status_code=500, detail="Impossible d'enregistrer le post planifié.")
