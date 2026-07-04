@@ -1947,20 +1947,24 @@ def delete_slack_integration(access_token: str) -> bool:
     return bool(resp.data)
 
 
-def get_user_by_slack_id(slack_user_id: str) -> dict | None:
-    """Find user_id + bot token by Slack user ID (service-role, for webhook)."""
+def get_users_by_slack_id(slack_user_id: str) -> list[dict]:
+    """List every app account linked to a Slack user ID (service-role, for webhook).
+
+    Un même utilisateur Slack peut avoir connecté Slack depuis plusieurs comptes
+    app (plusieurs emails) — le webhook doit tester chaque compte pour trouver
+    le propriétaire de l'item ciblé, pas en prendre un au hasard.
+    """
     if not admin_enabled():
-        return None
+        return []
     resp = (
         admin_client()
         .table("user_integrations")
         .select("user_id, access_token, channel_id")
         .eq("service", "slack")
         .eq("service_user_id", slack_user_id)
-        .limit(1)
         .execute()
     )
-    return resp.data[0] if resp.data else None
+    return resp.data or []
 
 
 def get_generated_idea(access_token: str, idea_id: str) -> dict | None:
