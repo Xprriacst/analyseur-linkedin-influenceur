@@ -46,10 +46,11 @@ def _model() -> str:
     return os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7")
 
 
-# Les modèles récents (Opus 4.7/4.8, Fable 5, Mythos 5) ont supprimé les
-# paramètres d'échantillonnage : envoyer `temperature` (ou top_p/top_k) renvoie
-# une erreur 400. On ne le transmet donc qu'aux modèles plus anciens.
-_NO_SAMPLING_TAGS = ("opus-4-7", "opus-4-8", "fable", "mythos")
+# Les modèles récents (Opus 4.7/4.8, Sonnet 5, Fable 5, Mythos 5) ont supprimé
+# les paramètres d'échantillonnage : envoyer `temperature` (ou top_p/top_k)
+# renvoie une erreur 400. On ne le transmet donc qu'aux modèles plus anciens
+# (dont Sonnet 4.6, qui accepte encore `temperature`).
+_NO_SAMPLING_TAGS = ("opus-4-7", "opus-4-8", "sonnet-5", "fable", "mythos")
 
 
 def _accepts_temperature(model: str) -> bool:
