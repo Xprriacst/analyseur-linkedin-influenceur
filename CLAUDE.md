@@ -66,6 +66,11 @@ Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netli
 
 ## Changelog
 
+### 2026-07-04 soir (fix dev : boutons Slack cassés quand un Slack est relié à plusieurs comptes app)
+- **Bug (test Alex)** : « ✏️ Modifier » dans le message Slack d'un post programmé → la pop-up s'ouvre **sans le texte**. Vérifié en base : le Slack d'Alex (`U0B9909K0QM`) est relié à **2 comptes app** (alexandre.errasti@gmail.com + alexandre@clareo-solutions.fr) et le post testé appartient au 2ᵉ.
+- **Cause** : `db.get_user_by_slack_id` faisait `limit(1)` **sans ordre** → le webhook `/slack/webhooks/interactive` prenait un compte arbitraire, cherchait l'item chez le mauvais user, et retombait sur `{"id": item_id}` (modal vide). Même défaut **silencieux sur tous les boutons Slack** (Valider/Refuser idée, post direct, post programmé, soumission des modals d'édition) : l'action ne s'appliquait jamais aux items de l'autre compte.
+- **Fix (PR #170, mergée sur `dev`)** : `db.get_users_by_slack_id` (tous les comptes reliés) + résolveur `_find_slack_owner` dans le webhook — chaque action teste les comptes reliés et agit sur celui qui **possède** l'item. Supprimé le fallback `{"id": item_id}` (pouvait publier un texte vide). Backend-only, aucune migration, aucune env var. ⚠️ **Dev uniquement** — mais l'app Slack pointe son interactivity URL sur **un seul** backend : vérifier lequel avant de tester (si c'est la prod, le fix ne sera actif qu'à la release).
+
 ### 2026-07-04 soir (fix dev : image absente du message Slack d'un post programmé)
 - **Bug (test Alex)** : programmer un post avec image + « Valider via Slack » → le message Slack partait **sans l'image** (upload comme image IA). La publication à l'échéance, elle, joignait bien l'image — seul l'aperçu Slack manquait.
 - **Cause** : `/me/linkedin/schedule` stockait les images au **format brut** du front (`data_url` base64 ou `url` sans `type`) dans `scheduled_posts.media_items`, alors que `slack._image_blocks` n'affiche que des items normalisés `{type: "image", url: https…}`.
