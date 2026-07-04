@@ -45,6 +45,7 @@ import {
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import AuthModal, { type AuthMode } from "./components/AuthModal";
+import PostActionsBar, { type PostAction } from "./components/PostActionsBar";
 import { authHeaders, supabase } from "./lib/supabase";
 
 const API_URL = "/api";
@@ -2074,6 +2075,99 @@ function SchedulePostModal({
   );
 }
 
+/** Pop-up de génération d'image IA (ALE) : prépare d'abord un prompt à partir du
+ *  post (gratuit), le montre à l'utilisateur qui peut l'ajuster, puis ne génère
+ *  l'image (payante en crédits) qu'après validation explicite. L'image générée
+ *  est remontée en data URL via `onGenerated`. */
+function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; onClose: () => void; onGenerated: (dataUrl: string) => void }) {
+  const [prompt, setPrompt] = useState("");
+  const [loadingPrompt, setLoadingPrompt] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/generate-image/prompt`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ post_text: postText }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Préparation du prompt impossible.");
+        if (!cancelled) setPrompt(data.prompt || "");
+      } catch (err: any) {
+        if (!cancelled) setError(err.message || "Préparation du prompt impossible.");
+      } finally {
+        if (!cancelled) setLoadingPrompt(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function generate() {
+    setError("");
+    setGenerating(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post_text: postText, prompt: prompt.trim() || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
+      emitCredits(data.credits);
+      onGenerated(data.image_data);
+      onClose();
+    } catch (err: any) {
+      setError(err.message || "Génération d'image impossible.");
+      setGenerating(false);
+    }
+  }
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+    }}>
+      <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+        <h3 style={{ marginTop: 0, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+          <ImageIcon size={16} /> Générer une image IA
+        </h3>
+        <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+          Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour
+          générer l&apos;image (5 crédits). L&apos;image sera jointe au post.
+        </p>
+        {loadingPrompt ? (
+          <p style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
+            <Loader2 size={14} className="spinning" /> Préparation du prompt…
+          </p>
+        ) : (
+          <textarea
+            className="variant-text"
+            value={prompt}
+            rows={5}
+            disabled={generating}
+            onChange={(e) => setPrompt(e.target.value)}
+            style={{ width: "100%", boxSizing: "border-box" }}
+          />
+        )}
+        {error && <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end", flexWrap: "wrap" }}>
+          <button className="secondary-button" onClick={onClose} disabled={generating}>Annuler</button>
+          <button className="primary-button" disabled={loadingPrompt || generating || !prompt.trim()} onClick={generate}>
+            {generating
+              ? <><Loader2 size={13} className="spinning" /> Génération en cours… (~1 min)</>
+              : <><Sparkles size={13} /> Générer l&apos;image</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Cache module-level : survit aux changements d'onglet dans la même session (ALE-145).
 // Réinitialisé à chaque refresh de page. `appliedJobId` (ALE-141) mémorise le
 // dernier job de génération dont on a injecté le résultat, pour qu'un nouveau
@@ -2108,7 +2202,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   const [confirmXIndex, setConfirmXIndex] = useState<number | null>(null);
   const [publishError, setPublishError] = useState("");
   const [variantImages, setVariantImages] = useState<Record<number, LinkedInImageAttachment[]>>({});
-  const [generatingImage, setGeneratingImage] = useState<number | null>(null);
+  const [imageModal, setImageModal] = useState<{ index: number; text: string } | null>(null);
   const [imageError, setImageError] = useState("");
   const [editedVariants, setEditedVariants] = useState<Record<number, string>>({});
   const [copiedVariant, setCopiedVariant] = useState<number | null>(null);
@@ -2268,33 +2362,18 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     setScheduleModal({ index: i, text, images: variantImages[i] || [] });
   }
 
-  async function generateImage(i: number, postText: string) {
-    setImageError("");
-    setGeneratingImage(i);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_text: postText }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Échec de la génération d'image");
-      emitCredits(data.credits);
-      const attachment: LinkedInImageAttachment = {
-        id: `generated-${Date.now()}`,
-        url: data.image_data,
-        filename: `image-generee-${i + 1}.png`,
-        source: "generated",
-      };
-      setVariantImages((prev) => ({
-        ...prev,
-        [i]: [...(prev[i] || []), attachment],
-      }));
-    } catch (err: any) {
-      setImageError(err.message);
-    } finally {
-      setGeneratingImage(null);
-    }
+  // Image générée via la pop-up ImageGenModal → jointe au variant comme un upload.
+  function attachGeneratedImage(i: number, dataUrl: string) {
+    const attachment: LinkedInImageAttachment = {
+      id: `generated-${Date.now()}`,
+      url: dataUrl,
+      filename: `image-generee-${i + 1}.png`,
+      source: "generated",
+    };
+    setVariantImages((prev) => ({
+      ...prev,
+      [i]: [...(prev[i] || []), attachment],
+    }));
   }
 
   function addUploadedImages(i: number, files: FileList | null) {
@@ -2490,94 +2569,86 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     </button>
                   </div>
                 )}
-                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button
-                    className="primary-button"
-                    disabled={publishing === i}
-                    title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => publishVariant(i, editedVariants[i] ?? v.post)}
-                  >
-                    {publishing === i && published !== i ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
-                    {publishing === i && published !== i ? "Publication…" : published === i ? "Publié ✓" : "Publier sur LinkedIn"}
-                  </button>
-                  {v.id && (
-                    <button
-                      className="secondary-button"
-                      disabled={savingVariant === i}
-                      title="Sauvegarder ce post dans « Mes contenus »"
-                      onClick={() => saveVariant(i, editedVariants[i] ?? v.post, v.id)}
-                    >
-                      {savingVariant === i ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />}
-                      {savedVariant === i ? "Sauvegardé ✓" : "Sauvegarder"}
-                    </button>
-                  )}
-                  <button
-                    className="secondary-button"
-                    disabled={publishing === i || !!scheduledIndices[i]}
-                    title={
-                      linkedin.status?.connected
+                <PostActionsBar
+                  publishBusy={publishing === i && published !== i}
+                  publishLabel={published === i ? "Publié ✓" : publishing === i ? "Publication…" : "Publier"}
+                  publishActions={[
+                    {
+                      key: "linkedin",
+                      icon: <Linkedin size={14} />,
+                      label: published === i ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
+                      disabled: publishing === i,
+                      title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                      onClick: () => publishVariant(i, editedVariants[i] ?? v.post),
+                    },
+                    {
+                      key: "schedule",
+                      icon: <Clock3 size={14} />,
+                      label: scheduledIndices[i] ? "Programmé ✓" : "Programmer…",
+                      disabled: publishing === i || !!scheduledIndices[i],
+                      title: linkedin.status?.connected
                         ? "Programmer : publication directe à une date, ou validation Slack au préalable"
-                        : "Connecte ton compte LinkedIn dans l'onglet Profil"
-                    }
-                    onClick={() => openScheduleModal(i, editedVariants[i] ?? v.post)}
-                  >
-                    <Clock3 size={14} />
-                    {scheduledIndices[i] ? "Programmé ✓" : "Programmer"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    disabled
-                    aria-disabled
-                    title="Génération d'image en cours d'amélioration — bientôt disponible"
-                  >
-                    <ImageIcon size={14} />
-                    Image IA — bientôt
-                  </button>
-                  <label className="secondary-button" style={{ cursor: "pointer" }}>
-                    <ImagePlus size={14} />
-                    Joindre des images
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
-                      multiple
-                      style={{ display: "none" }}
-                      onChange={(e) => {
-                        addUploadedImages(i, e.currentTarget.files);
-                        e.currentTarget.value = "";
-                      }}
-                    />
-                  </label>
-                  {slack.status?.connected && v.id && (
-                    <button
-                      className="secondary-button"
-                      disabled={!!slackSending[i] || !!slackSent[i]}
-                      onClick={() => setConfirmSlackIndex(i)}
-                    >
-                      {slackSending[i] ? <Loader2 size={14} className="spinning" /> : null}
-                      {slackSent[i] ? "Sur Slack ✓" : "Envoyer sur Slack"}
-                    </button>
-                  )}
-                  {twitter.status?.connected && (
-                    <button
-                      className="secondary-button"
-                      disabled={publishingX === i}
-                      title="Publier maintenant sur X (Twitter)"
-                      onClick={() => publishVariantX(i, editedVariants[i] ?? v.post)}
-                    >
-                      {publishingX === i ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
-                      {publishingX === i ? "Publication…" : publishedX === i ? "Publié ✓" : "Publier sur X"}
-                    </button>
-                  )}
-                  {onRework && (
-                    <button
-                      className="secondary-button"
-                      title="Ouvrir ce post dans l'Agent IA pour le retravailler"
-                      onClick={() => onRework(editedVariants[i] ?? v.post)}
-                    >
-                      <MessageSquare size={14} /> Retravailler avec l&apos;Agent IA
-                    </button>
-                  )}
-                </div>
+                        : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                      onClick: () => openScheduleModal(i, editedVariants[i] ?? v.post),
+                    },
+                    ...(slack.status?.connected && v.id
+                      ? [{
+                          key: "slack",
+                          icon: <Send size={14} />,
+                          label: slackSent[i] ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
+                          disabled: !!slackSending[i] || !!slackSent[i],
+                          onClick: () => setConfirmSlackIndex(i),
+                        } satisfies PostAction]
+                      : []),
+                    ...(twitter.status?.connected
+                      ? [{
+                          key: "x",
+                          icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>,
+                          label: publishingX === i ? "Publication…" : publishedX === i ? "Publié sur X ✓" : "Publier sur X",
+                          disabled: publishingX === i,
+                          onClick: () => publishVariantX(i, editedVariants[i] ?? v.post),
+                        } satisfies PostAction]
+                      : []),
+                  ]}
+                  moreActions={[
+                    ...(v.id
+                      ? [{
+                          key: "save",
+                          icon: <Bookmark size={14} />,
+                          label: savedVariant === i ? "Sauvegardé ✓" : "Sauvegarder",
+                          disabled: savingVariant === i,
+                          title: "Sauvegarder ce post dans « Mes contenus »",
+                          onClick: () => saveVariant(i, editedVariants[i] ?? v.post, v.id),
+                        } satisfies PostAction]
+                      : []),
+                    {
+                      key: "attach",
+                      icon: <ImagePlus size={14} />,
+                      label: "Joindre des images",
+                      filePicker: {
+                        accept: "image/png,image/jpeg,image/jpg,image/webp,image/gif",
+                        multiple: true,
+                        onFiles: (files) => addUploadedImages(i, files),
+                      },
+                    },
+                    {
+                      key: "image-ia",
+                      icon: <ImageIcon size={14} />,
+                      label: "Générer une image IA",
+                      title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
+                      onClick: () => setImageModal({ index: i, text: editedVariants[i] ?? v.post }),
+                    },
+                    ...(onRework
+                      ? [{
+                          key: "rework",
+                          icon: <MessageSquare size={14} />,
+                          label: "Retravailler avec l'Agent IA",
+                          title: "Ouvrir ce post dans l'Agent IA pour le retravailler",
+                          onClick: () => onRework(editedVariants[i] ?? v.post),
+                        } satisfies PostAction]
+                      : []),
+                  ]}
+                />
                 {confirmSlackIndex === i && (
                   <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
@@ -2655,6 +2726,14 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       )}
       {publishError && <div className="error" style={{ marginTop: 12 }}>{publishError}</div>}
       {imageError && <div className="error" style={{ marginTop: 12 }}>{imageError}</div>}
+
+      {imageModal && (
+        <ImageGenModal
+          postText={imageModal.text}
+          onClose={() => setImageModal(null)}
+          onGenerated={(dataUrl) => attachGeneratedImage(imageModal.index, dataUrl)}
+        />
+      )}
 
       {confirmIndex !== null && (
         <div style={{
@@ -3015,8 +3094,17 @@ function DailyIdeasView({
   const [publishingXId, setPublishingXId] = useState<string | null>(null);
   const [publishedXId, setPublishedXId] = useState<string | null>(null);
   const [confirmXId, setConfirmXId] = useState<string | null>(null);
+  // Génération d'image IA : pop-up de validation du prompt + images jointes (data URLs) par idée.
+  const [imageModalIdea, setImageModalIdea] = useState<DailyIdea | null>(null);
+  const [ideaImages, setIdeaImages] = useState<Record<string, string[]>>({});
 
   const postTextOf = (it: DailyIdea) => editedPost[it.id] ?? it.post_text ?? "";
+
+  // Images jointes à la publication : photo d'annonce éventuelle + images IA générées.
+  const ideaImagePayload = (it: DailyIdea) => [
+    ...(it.image_url ? [{ url: it.image_url }] : []),
+    ...(ideaImages[it.id] || []).map((u, n) => ({ url: u, filename: `image-ia-${n + 1}.png` })),
+  ];
 
   function copyPost(it: DailyIdea) {
     navigator.clipboard.writeText(postTextOf(it));
@@ -3064,7 +3152,7 @@ function DailyIdeasView({
         body: JSON.stringify({
           content: postTextOf(it),
           draft: false,
-          images: it.image_url ? [{ url: it.image_url }] : [],
+          images: ideaImagePayload(it),
         }),
       });
       const data = await res.json();
@@ -3432,55 +3520,95 @@ function DailyIdeasView({
                           </p>
                         </div>
                       )}
-                      <textarea
-                        className="variant-text"
-                        rows={10}
-                        value={postTextOf(it)}
-                        onChange={(e) => setEditedPost((p) => ({ ...p, [it.id]: e.target.value }))}
-                        style={{ width: "100%", boxSizing: "border-box" }}
-                      />
-                      <div className="idea-footer" style={{ flexWrap: "wrap", gap: 8, marginTop: 10 }}>
-                        <button className="secondary-button" onClick={() => copyPost(it)}>
-                          {copiedId === it.id ? <CheckCircle2 size={14} /> : <Copy size={14} />} {copiedId === it.id ? "Copié ✓" : "Copier"}
-                        </button>
-                        <button className="secondary-button" disabled={savingId === it.id} onClick={() => savePost(it)}>
-                          {savingId === it.id ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />} {savedId === it.id ? "Sauvegardé ✓" : "Sauvegarder"}
-                        </button>
+                      <div className="variant-text-wrap">
+                        <textarea
+                          className="variant-text"
+                          rows={10}
+                          value={postTextOf(it)}
+                          onChange={(e) => setEditedPost((p) => ({ ...p, [it.id]: e.target.value }))}
+                          style={{ width: "100%", boxSizing: "border-box" }}
+                        />
                         <button
-                          className="secondary-button"
-                          disabled={publishingId === it.id}
-                          title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                          onClick={() => setConfirmPublishId(it.id)}
+                          type="button"
+                          className="variant-copy-button"
+                          aria-label={copiedId === it.id ? "Post copié" : "Copier le post"}
+                          title={copiedId === it.id ? "Copié ✓" : "Copier le post"}
+                          onClick={() => copyPost(it)}
                         >
-                          {publishingId === it.id ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />} {publishedId === it.id ? "Publié ✓" : "Publier"}
+                          {copiedId === it.id ? <CheckCircle2 size={16} /> : <Copy size={16} />}
                         </button>
-                        <button
-                          className="secondary-button"
-                          title={linkedin.status?.connected ? "Programmer : publication directe à une date, ou validation Slack au préalable" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                          onClick={() => openSchedule(it)}
-                        >
-                          <Clock3 size={14} /> {scheduledId === it.id ? "Programmé ✓" : "Programmer"}
-                        </button>
-                        <button
-                          className="secondary-button"
-                          disabled
-                          aria-disabled
-                          title="Génération d'image en cours d'amélioration — bientôt disponible"
-                        >
-                          <ImageIcon size={14} /> Image IA — bientôt
-                        </button>
-                        {twitter.status?.connected && (
-                          <button
-                            className="secondary-button"
-                            disabled={publishingXId === it.id}
-                            title="Publier maintenant sur X (Twitter)"
-                            onClick={() => setConfirmXId(it.id)}
-                          >
-                            {publishingXId === it.id ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
-                            {publishedXId === it.id ? "Publié ✓" : "Publier sur X"}
-                          </button>
-                        )}
                       </div>
+                      <PostActionsBar
+                        publishBusy={publishingId === it.id}
+                        publishLabel={publishedId === it.id ? "Publié ✓" : publishingId === it.id ? "Publication…" : "Publier"}
+                        publishActions={[
+                          {
+                            key: "linkedin",
+                            icon: <Linkedin size={14} />,
+                            label: publishedId === it.id ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
+                            disabled: publishingId === it.id,
+                            title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                            onClick: () => setConfirmPublishId(it.id),
+                          },
+                          {
+                            key: "schedule",
+                            icon: <Clock3 size={14} />,
+                            label: scheduledId === it.id ? "Programmé ✓" : "Programmer…",
+                            title: linkedin.status?.connected
+                              ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+                              : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                            onClick: () => openSchedule(it),
+                          },
+                          ...(twitter.status?.connected
+                            ? [{
+                                key: "x",
+                                icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>,
+                                label: publishingXId === it.id ? "Publication…" : publishedXId === it.id ? "Publié sur X ✓" : "Publier sur X",
+                                disabled: publishingXId === it.id,
+                                onClick: () => setConfirmXId(it.id),
+                              } satisfies PostAction]
+                            : []),
+                        ]}
+                        moreActions={[
+                          {
+                            key: "save",
+                            icon: <Bookmark size={14} />,
+                            label: savedId === it.id ? "Sauvegardé ✓" : "Sauvegarder",
+                            disabled: savingId === it.id,
+                            title: "Sauvegarder ce post dans « Mes contenus »",
+                            onClick: () => savePost(it),
+                          },
+                          {
+                            key: "image-ia",
+                            icon: <ImageIcon size={14} />,
+                            label: "Générer une image IA",
+                            title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
+                            onClick: () => setImageModalIdea(it),
+                          },
+                        ]}
+                      />
+                      {(ideaImages[it.id] || []).length > 0 && (
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640, marginTop: 12 }}>
+                          {(ideaImages[it.id] || []).map((u, n) => (
+                            <div key={n} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={u} alt={`Image IA ${n + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                                <a href={u} download={`image-ia-${n + 1}.png`} className="secondary-button" style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}>
+                                  <Download size={12} /> Télécharger
+                                </a>
+                                <button
+                                  className="secondary-button"
+                                  style={{ minHeight: 28, padding: "0 8px", fontSize: 12 }}
+                                  onClick={() => setIdeaImages((prev) => ({ ...prev, [it.id]: (prev[it.id] || []).filter((_, k) => k !== n) }))}
+                                >
+                                  <Trash2 size={12} /> Retirer
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {confirmPublishId === it.id && (
                         <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
                           <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
@@ -3491,7 +3619,7 @@ function DailyIdeasView({
                       {scheduleModalIdea?.id === it.id && (
                         <SchedulePostModal
                           text={postTextOf(it)}
-                          images={it.image_url ? [{ url: it.image_url }] : []}
+                          images={ideaImagePayload(it)}
                           slackConnected={!!slack.status?.connected}
                           onClose={() => setScheduleModalIdea(null)}
                           onScheduled={() => {
@@ -3534,6 +3662,16 @@ function DailyIdeasView({
         </div>
       )}
       {postError && <div className="error" style={{ marginTop: 8 }}>{postError}</div>}
+      {imageModalIdea && (
+        <ImageGenModal
+          postText={postTextOf(imageModalIdea)}
+          onClose={() => setImageModalIdea(null)}
+          onGenerated={(dataUrl) => setIdeaImages((prev) => ({
+            ...prev,
+            [imageModalIdea.id]: [...(prev[imageModalIdea.id] || []), dataUrl],
+          }))}
+        />
+      )}
       </>
       )}
 
@@ -3769,6 +3907,8 @@ function LibraryView({
   // ALE-179 : joindre des images à un post sauvegardé.
   const [attachingPost, setAttachingPost] = useState<string | null>(null);
   const [imageErrorLib, setImageErrorLib] = useState("");
+  // Génération d'image IA : pop-up de validation du prompt sur un post sauvegardé.
+  const [imageModalSaved, setImageModalSaved] = useState<SavedPost | null>(null);
 
   async function publishSavedPost(p: SavedPost) {
     setConfirmPublishPostId(null);
@@ -4045,78 +4185,84 @@ function LibraryView({
                     </button>
                   </div>
                 )}
-                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button
-                    className="primary-button"
-                    disabled={publishingPost === p.id}
-                    title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => setConfirmPublishPostId(p.id)}
-                  >
-                    {publishingPost === p.id ? <><Loader2 size={14} className="spinning" /> Publication…</> : <><Linkedin size={14} /> {publishedPost === p.id ? "Publié ✓" : "Publier sur LinkedIn"}</>}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    disabled={!!scheduledPostIds[p.id]}
-                    title={linkedin.status?.connected ? "Programmer : publication directe à une date, ou validation Slack au préalable" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-                    onClick={() => openSchedulePost(p)}
-                  >
-                    <Clock3 size={14} />
-                    {scheduledPostIds[p.id] ? "Programmé ✓" : "Programmer"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    disabled
-                    aria-disabled
-                    title="Génération d'image en cours d'amélioration — bientôt disponible"
-                  >
-                    <ImageIcon size={14} />
-                    Image IA — bientôt
-                  </button>
-                  <label className="secondary-button" style={{ cursor: attachingPost === p.id ? "wait" : "pointer" }}>
-                    {attachingPost === p.id ? <Loader2 size={14} className="spinning" /> : <ImagePlus size={14} />}
-                    Joindre des images
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
-                      multiple
-                      disabled={attachingPost === p.id}
-                      style={{ display: "none" }}
-                      onChange={(e) => {
-                        attachImagesToSavedPost(p, e.currentTarget.files);
-                        e.currentTarget.value = "";
-                      }}
-                    />
-                  </label>
-                  {slack.status?.connected && (
-                    <button
-                      className="secondary-button"
-                      disabled={!!slackSending[p.id] || !!slackSent[p.id] || p.slack_status === "pending"}
-                      onClick={() => setConfirmSlackPostId(p.id)}
-                    >
-                      {slackSending[p.id] ? <Loader2 size={14} className="spinning" /> : null}
-                      {slackSent[p.id] || p.slack_status === "pending" ? "Sur Slack ✓" : "Envoyer sur Slack"}
-                    </button>
-                  )}
-                  {twitter.status?.connected && (
-                    <button
-                      className="secondary-button"
-                      disabled={publishingXPost === p.id}
-                      title="Publier maintenant sur X (Twitter)"
-                      onClick={() => setConfirmXPostId(p.id)}
-                    >
-                      {publishingXPost === p.id ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
-                      {publishedXPost === p.id ? "Publié ✓" : "Publier sur X"}
-                    </button>
-                  )}
-                  {p.topic && (
-                    <button className="secondary-button" onClick={() => onReuse(p.topic!)}>
-                      <Sparkles size={14} /> Régénérer sur ce sujet
-                    </button>
-                  )}
-                  <button className="secondary-button" style={{ marginLeft: "auto" }} onClick={() => deletePost(p.id)}>
-                    <Trash2 size={14} /> Supprimer
-                  </button>
-                </div>
+                <PostActionsBar
+                  publishBusy={publishingPost === p.id}
+                  publishLabel={publishedPost === p.id ? "Publié ✓" : publishingPost === p.id ? "Publication…" : "Publier"}
+                  publishActions={[
+                    {
+                      key: "linkedin",
+                      icon: <Linkedin size={14} />,
+                      label: publishedPost === p.id ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
+                      disabled: publishingPost === p.id,
+                      title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                      onClick: () => setConfirmPublishPostId(p.id),
+                    },
+                    {
+                      key: "schedule",
+                      icon: <Clock3 size={14} />,
+                      label: scheduledPostIds[p.id] ? "Programmé ✓" : "Programmer…",
+                      disabled: !!scheduledPostIds[p.id],
+                      title: linkedin.status?.connected
+                        ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+                        : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                      onClick: () => openSchedulePost(p),
+                    },
+                    ...(slack.status?.connected
+                      ? [{
+                          key: "slack",
+                          icon: <Send size={14} />,
+                          label: slackSent[p.id] || p.slack_status === "pending" ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
+                          disabled: !!slackSending[p.id] || !!slackSent[p.id] || p.slack_status === "pending",
+                          onClick: () => setConfirmSlackPostId(p.id),
+                        } satisfies PostAction]
+                      : []),
+                    ...(twitter.status?.connected
+                      ? [{
+                          key: "x",
+                          icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>,
+                          label: publishingXPost === p.id ? "Publication…" : publishedXPost === p.id ? "Publié sur X ✓" : "Publier sur X",
+                          disabled: publishingXPost === p.id,
+                          onClick: () => setConfirmXPostId(p.id),
+                        } satisfies PostAction]
+                      : []),
+                  ]}
+                  moreActions={[
+                    {
+                      key: "attach",
+                      icon: attachingPost === p.id ? <Loader2 size={14} className="spinning" /> : <ImagePlus size={14} />,
+                      label: "Joindre des images",
+                      disabled: attachingPost === p.id,
+                      filePicker: {
+                        accept: "image/png,image/jpeg,image/jpg,image/webp,image/gif",
+                        multiple: true,
+                        onFiles: (files) => attachImagesToSavedPost(p, files),
+                      },
+                    },
+                    {
+                      key: "image-ia",
+                      icon: <ImageIcon size={14} />,
+                      label: "Générer une image IA",
+                      disabled: attachingPost === p.id,
+                      title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
+                      onClick: () => setImageModalSaved(p),
+                    },
+                    ...(p.topic
+                      ? [{
+                          key: "regen",
+                          icon: <Sparkles size={14} />,
+                          label: "Régénérer sur ce sujet",
+                          onClick: () => onReuse(p.topic!),
+                        } satisfies PostAction]
+                      : []),
+                    {
+                      key: "delete",
+                      icon: <Trash2 size={14} />,
+                      label: "Supprimer",
+                      danger: true,
+                      onClick: () => deletePost(p.id),
+                    },
+                  ]}
+                />
                 {confirmPublishPostId === p.id && (
                   <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
@@ -4274,6 +4420,22 @@ function LibraryView({
         </div>
       )}
 
+      {imageModalSaved && (
+        <ImageGenModal
+          postText={editedPosts[imageModalSaved.id] ?? imageModalSaved.post}
+          onClose={() => setImageModalSaved(null)}
+          onGenerated={(dataUrl) => {
+            const target = imageModalSaved;
+            // Persistée avec le post (hébergement public côté backend, ALE-179) :
+            // l'image reste jointe après refresh et part avec les publications.
+            void persistSavedPostImages(target, [
+              ...savedPostImagePayload(target),
+              { data_url: dataUrl, filename: `image-ia-${Date.now()}.png` },
+            ]);
+          }}
+        />
+      )}
+
       {editingSchedule !== null && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
           <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
@@ -4326,14 +4488,50 @@ function AssistantMessageActions({
   const [slackSending, setSlackSending] = useState(false);
   const [slackSent, setSlackSent] = useState(false);
   const [confirmSlack, setConfirmSlack] = useState(false);
-  const [generatingImg, setGeneratingImg] = useState(false);
-  const [generatedImg, setGeneratedImg] = useState<string | null>(null);
+  const [imageModalOpen, setImageModalOpen] = useState(false);
+  // Images jointes à la réponse (uploads + image IA générée) : elles partent avec
+  // le post à la publication, programmation, envoi Slack et sauvegarde (ALE-188).
+  const [images, setImages] = useState<LinkedInImageAttachment[]>([]);
   const [err, setErr] = useState("");
 
   const btn = { fontSize: 12, minHeight: 30, padding: "0 10px" } as const;
   const xLogo = (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
   );
+
+  function imagePayload() {
+    return images.map((image) => ({
+      ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
+      filename: image.filename,
+    }));
+  }
+
+  function addUploadedImages(files: FileList | null) {
+    if (!files?.length) return;
+    setErr("");
+    const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length !== files.length) {
+      setErr("Seuls les fichiers image sont acceptés.");
+    }
+    for (const file of imageFiles) {
+      if (file.size > 8 * 1024 * 1024) {
+        setErr("LinkedIn limite chaque image à 8 Mo.");
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : "";
+        if (!result) return;
+        setImages((prev) => [...prev, {
+          id: `upload-${Date.now()}-${file.name}`,
+          url: result,
+          filename: file.name,
+          source: "upload",
+        }]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }
 
   async function copy() {
     try {
@@ -4351,7 +4549,11 @@ function AssistantMessageActions({
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft: false }),
+        body: JSON.stringify({
+          content: text,
+          draft: false,
+          images: imagePayload(),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Publication impossible.");
@@ -4387,14 +4589,14 @@ function AssistantMessageActions({
       const saveRes = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: text }),
+        body: JSON.stringify({ post: text, images: imagePayload() }),
       });
       const saved = await saveRes.json();
       if (!saveRes.ok) throw new Error(saved.detail || "Sauvegarde impossible.");
       const res = await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_id: saved.id, content: text }),
+        body: JSON.stringify({ post_id: saved.id, content: text, images: imagePayload() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi Slack impossible.");
@@ -4408,7 +4610,7 @@ function AssistantMessageActions({
       const res = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: text }),
+        body: JSON.stringify({ post: text, images: imagePayload() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Sauvegarde impossible.");
@@ -4416,67 +4618,81 @@ function AssistantMessageActions({
     } catch (e: any) { setErr(e.message); } finally { setSaving(false); }
   }
 
-  async function generateImageFn() {
-    setErr(""); setGeneratingImg(true); setGeneratedImg(null);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_text: text }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
-      setGeneratedImg(data.image_data);
-      if (data.credits !== undefined) emitCredits(data.credits);
-    } catch (e: any) { setErr(e.message); } finally { setGeneratingImg(false); }
-  }
-
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
-      <button className="secondary-button" style={btn} onClick={copy}>
-        {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />} {copied ? "Copié ✓" : "Copier"}
-      </button>
-      <button className="secondary-button" style={btn} disabled={saving || savedPost} onClick={save}>
-        {saving ? <Loader2 size={13} className="spinning" /> : <BookmarkPlus size={13} />} {savedPost ? "Sauvegardé ✓" : "Sauvegarder"}
-      </button>
-      <button
-        className="secondary-button"
-        style={btn}
-        disabled
-        aria-disabled
-        title="Génération d'image en cours d'amélioration — bientôt disponible"
-        onClick={generateImageFn}
+      <PostActionsBar
+        publishBusy={publishing}
+        publishLabel={published ? "Publié ✓" : publishing ? "Publication…" : "Publier"}
+        publishActions={[
+          {
+            key: "linkedin",
+            icon: <Linkedin size={14} />,
+            label: published ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
+            disabled: publishing,
+            title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
+            onClick: () => setConfirmPub(true),
+          },
+          {
+            key: "schedule",
+            icon: <Clock3 size={14} />,
+            label: scheduled ? "Programmé ✓" : "Programmer…",
+            disabled: scheduled,
+            title: linkedin.status?.connected
+              ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+              : "Connecte ton compte LinkedIn dans l'onglet Profil",
+            onClick: openSchedule,
+          },
+          ...(slack.status?.connected
+            ? [{
+                key: "slack",
+                icon: <Send size={14} />,
+                label: slackSent ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
+                disabled: slackSending || slackSent,
+                onClick: () => setConfirmSlack(true),
+              } satisfies PostAction]
+            : []),
+          ...(twitter.status?.connected
+            ? [{
+                key: "x",
+                icon: xLogo,
+                label: publishingX ? "Publication…" : publishedX ? "Publié sur X ✓" : "Publier sur X",
+                disabled: publishingX,
+                onClick: () => setConfirmX(true),
+              } satisfies PostAction]
+            : []),
+        ]}
+        moreActions={[
+          {
+            key: "save",
+            icon: <BookmarkPlus size={14} />,
+            label: savedPost ? "Sauvegardé ✓" : "Sauvegarder",
+            disabled: saving || savedPost,
+            title: "Sauvegarder ce post dans « Mes contenus »",
+            onClick: save,
+          },
+          {
+            key: "attach",
+            icon: <ImagePlus size={14} />,
+            label: "Joindre des images",
+            filePicker: {
+              accept: "image/png,image/jpeg,image/jpg,image/webp,image/gif",
+              multiple: true,
+              onFiles: addUploadedImages,
+            },
+          },
+          {
+            key: "image-ia",
+            icon: <ImageIcon size={14} />,
+            label: "Générer une image IA",
+            title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
+            onClick: () => setImageModalOpen(true),
+          },
+        ]}
       >
-        <ImageIcon size={13} /> Image IA — bientôt
-      </button>
-      <button
-        className="secondary-button"
-        style={btn}
-        disabled={publishing}
-        title={linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-        onClick={() => setConfirmPub(true)}
-      >
-        {publishing ? <Loader2 size={13} className="spinning" /> : <Linkedin size={13} />} {published ? "Publié ✓" : "Publier sur LinkedIn"}
-      </button>
-      <button
-        className="secondary-button"
-        style={btn}
-        disabled={scheduled}
-        title={linkedin.status?.connected ? "Programmer : publication directe à une date, ou validation Slack au préalable" : "Connecte ton compte LinkedIn dans l'onglet Profil"}
-        onClick={openSchedule}
-      >
-        <Clock3 size={13} /> {scheduled ? "Programmé ✓" : "Programmer"}
-      </button>
-      {twitter.status?.connected && (
-        <button className="secondary-button" style={btn} disabled={publishingX} title="Publier maintenant sur X (Twitter)" onClick={() => setConfirmX(true)}>
-          {publishingX ? <Loader2 size={13} className="spinning" /> : xLogo} {publishedX ? "Publié ✓" : "Publier sur X"}
+        <button className="secondary-button" style={btn} onClick={copy}>
+          {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />} {copied ? "Copié ✓" : "Copier"}
         </button>
-      )}
-      {slack.status?.connected && (
-        <button className="secondary-button" style={btn} disabled={slackSending || slackSent} onClick={() => setConfirmSlack(true)}>
-          {slackSending ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} {slackSent ? "Sur Slack ✓" : "Envoyer sur Slack"}
-        </button>
-      )}
+      </PostActionsBar>
       {confirmPub && (
         <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
           <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
@@ -4487,6 +4703,7 @@ function AssistantMessageActions({
       {scheduleOpen && (
         <SchedulePostModal
           text={text}
+          images={images.map((image) => ({ url: image.url, filename: image.filename }))}
           slackConnected={!!slack.status?.connected}
           onClose={() => setScheduleOpen(false)}
           onScheduled={() => { setScheduled(true); setScheduleOpen(false); }}
@@ -4509,20 +4726,48 @@ function AssistantMessageActions({
           <button className="secondary-button" style={btn} onClick={() => setConfirmSlack(false)}>Annuler</button>
         </div>
       )}
-      {generatedImg && (
+      {imageModalOpen && (
+        <ImageGenModal
+          postText={text}
+          onClose={() => setImageModalOpen(false)}
+          onGenerated={(dataUrl) => setImages((prev) => [...prev, {
+            id: `generated-${Date.now()}`,
+            url: dataUrl,
+            filename: "image-ia.png",
+            source: "generated",
+          }])}
+        />
+      )}
+      {images.length > 0 && (
         <div style={{ width: "100%", marginTop: 8 }}>
-          <img
-            src={`data:image/png;base64,${generatedImg}`}
-            alt="Image générée"
-            style={{ maxWidth: "100%", borderRadius: 8, border: "1px solid var(--border)" }}
-          />
-          <a
-            href={`data:image/png;base64,${generatedImg}`}
-            download="post-image.png"
-            style={{ display: "inline-block", marginTop: 6, fontSize: 12, color: "var(--accent)" }}
-          >
-            Télécharger l'image
-          </a>
+          <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+            {images.length} image{images.length > 1 ? "s" : ""} jointe{images.length > 1 ? "s" : ""} au post LinkedIn.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
+            {images.map((image, imageIndex) => (
+              <div key={image.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                  <a
+                    href={image.url}
+                    download={image.filename || `post-image-${imageIndex + 1}.png`}
+                    className="secondary-button"
+                    style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}
+                  >
+                    <Download size={12} /> Télécharger
+                  </a>
+                  <button
+                    className="secondary-button"
+                    style={{ minHeight: 28, padding: "0 8px", fontSize: 12 }}
+                    onClick={() => setImages((prev) => prev.filter((im) => im.id !== image.id))}
+                  >
+                    <Trash2 size={12} /> Retirer
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {err && <div className="error" style={{ marginTop: 4, fontSize: 12, width: "100%" }}>{err}</div>}

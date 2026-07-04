@@ -7,7 +7,7 @@ from anthropic import Anthropic
 from openai import OpenAI
 
 
-def _build_image_prompt(post_text: str) -> str:
+def build_image_prompt(post_text: str) -> str:
     """Use Claude to generate an image prompt from the post content."""
     client = Anthropic()
     msg = client.messages.create(
@@ -19,6 +19,9 @@ def _build_image_prompt(post_text: str) -> str:
             "for a professional LinkedIn post illustration. "
             "Rules: photorealistic style, NO text or words in the image, "
             "square 1:1 format, clean business/professional aesthetic. "
+            # Le prompt est montré à l'utilisateur (pop-up ALE-68) avant génération :
+            # il doit être rédigé en français pour qu'il puisse le relire/l'ajuster.
+            "Write the prompt in French. "
             "Reply with the prompt only — no explanation."
         ),
         messages=[{"role": "user", "content": f"LinkedIn post:\n{post_text[:800]}"}],
@@ -26,16 +29,18 @@ def _build_image_prompt(post_text: str) -> str:
     return msg.content[0].text.strip()
 
 
-def generate_post_image(post_text: str) -> dict:
+def generate_post_image(post_text: str, prompt: str | None = None) -> dict:
     """Generate an image to accompany a LinkedIn post.
 
+    `prompt` : prompt validé/édité par l'utilisateur ; s'il est vide, un prompt
+    est construit automatiquement depuis le texte du post.
     Returns {"image_data": "data:image/png;base64,...", "prompt_used": str}.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY manquant")
 
-    prompt = _build_image_prompt(post_text)
+    prompt = (prompt or "").strip() or build_image_prompt(post_text)
 
     client = OpenAI(api_key=api_key)
     # Les modèles gpt-image-* renvoient toujours du b64_json (pas de response_format)
