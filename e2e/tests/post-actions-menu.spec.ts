@@ -68,6 +68,48 @@ test("Contenu › Mes contenus : menu Publier + ⋯ sur une carte de post (GET m
   await expect(menu).toHaveCount(0);
 });
 
+test("Agent IA : menu Publier + ⋯ sous une réponse (conversation mockée), avec Joindre des images", async ({ page }) => {
+  // Conversation + réponse mockées : la barre d'actions se rend sans aucune
+  // génération réelle (lecture seule).
+  await page.route("**/chat/conversations", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify([{ id: "e2e-conv", title: "Test ALE-188", created_at: "2026-07-01T10:00:00Z", updated_at: "2026-07-01T10:00:00Z" }]),
+    })
+  );
+  await page.route("**/chat/conversations/e2e-conv/messages", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ messages: [
+        { id: "m1", role: "user", content: "Écris un post de test." },
+        { id: "m2", role: "assistant", content: "Voici un post de test ALE-188." },
+      ] }),
+    })
+  );
+  await gotoTab(page, "Agent IA");
+  // Au montage, seule la liste est chargée : on ouvre la conversation mockée.
+  await page.getByText("Test ALE-188").click();
+  await expect(page.getByText("Voici un post de test ALE-188.")).toBeVisible();
+  await checkActionsBar(page, { expectDelete: false });
+
+  // Le menu « ⋯ » de l'Agent IA porte : Sauvegarder, Joindre des images, Image IA.
+  const bar = page.locator(".post-actions-bar").first();
+  await bar.getByRole("button", { name: "Plus d'actions" }).click();
+  const menu = page.locator(".action-menu");
+  await expect(menu.getByRole("menuitem", { name: /Sauvegarder/ })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /Joindre des images/ })).toBeVisible();
+
+  // Upload réel d'un PNG 1×1 : la miniature apparaît, « Retirer » la supprime.
+  const onePxPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64"
+  );
+  await menu.locator('input[type="file"]').setInputFiles({ name: "test-ale-188.png", mimeType: "image/png", buffer: onePxPng });
+  await expect(page.getByText(/1 image jointe au post LinkedIn/)).toBeVisible();
+  await page.getByRole("button", { name: /Retirer/ }).click();
+  await expect(page.getByText(/image jointe au post LinkedIn/)).toHaveCount(0);
+});
+
 test("Contenu › Idée du jour : menu Publier + ⋯ sur le post du jour", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Idée du jour");
