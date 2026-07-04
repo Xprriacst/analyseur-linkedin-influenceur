@@ -66,6 +66,11 @@ Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netli
 
 ## Changelog
 
+### 2026-07-04 soir (fix dev : image absente du message Slack d'un post programmé)
+- **Bug (test Alex)** : programmer un post avec image + « Valider via Slack » → le message Slack partait **sans l'image** (upload comme image IA). La publication à l'échéance, elle, joignait bien l'image — seul l'aperçu Slack manquait.
+- **Cause** : `/me/linkedin/schedule` stockait les images au **format brut** du front (`data_url` base64 ou `url` sans `type`) dans `scheduled_posts.media_items`, alors que `slack._image_blocks` n'affiche que des items normalisés `{type: "image", url: https…}`.
+- **Fix (PR #169, mergée sur `dev`)** : les images sont mises en ligne **dès la programmation** via `zernio.prepare_image_media_items` (même mécanisme que « Publier maintenant ») → visibles dans le message de validation Slack et le message mis à jour après validation/refus ; le cron republie ces URLs telles quelles (idempotent) ; plus de base64 stocké en base. Backend-only, aucune migration, aucune env var. ⚠️ **Dev uniquement** — à embarquer dans la prochaine release `dev → main`. Les posts déjà programmés avant le fix gardent l'ancien format (publiés correctement, mais toujours sans image dans Slack).
+
 ### 2026-07-04 après-midi (release prod 2ᵉ vague : rework partout + UX pop-up image — ALE-189/190/191)
 - **ALE-189** (PR #163) : « Retravailler avec l'Agent IA » disponible aussi dans le menu « ⋯ » du **post du jour** (Idée du jour) et des **posts sauvegardés** (Mes contenus) — le mécanisme `onRework` (ouvre l'Assistant avec le post en contexte) existait mais n'était branché que sur le Générateur.
 - **ALE-190** (PR #164 + #165) : pop-up d'image IA **réductible en pastille** pendant la génération (elle continue, l'image se joint automatiquement), **alerte native du navigateur** si on ferme/recharge la page en pleine génération, et **preview de l'image** dans la pop-up à la fin (revient même si réduite). Durée affichée corrigée : « 2 à 3 min » (~2 min 30 mesurés dans les logs Render ; l'ancien « ~1 min » faisait croire à un échec). ⚠️ **Limite connue** : changer d'onglet **dans l'app** pendant la génération perd le résultat (le composant démonte) — la vraie file d'attente serveur = ALE-141.
