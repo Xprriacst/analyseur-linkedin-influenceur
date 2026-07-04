@@ -4489,13 +4489,49 @@ function AssistantMessageActions({
   const [slackSent, setSlackSent] = useState(false);
   const [confirmSlack, setConfirmSlack] = useState(false);
   const [imageModalOpen, setImageModalOpen] = useState(false);
-  const [generatedImg, setGeneratedImg] = useState<string | null>(null); // data URL
+  // Images jointes à la réponse (uploads + image IA générée) : elles partent avec
+  // le post à la publication, programmation, envoi Slack et sauvegarde (ALE-188).
+  const [images, setImages] = useState<LinkedInImageAttachment[]>([]);
   const [err, setErr] = useState("");
 
   const btn = { fontSize: 12, minHeight: 30, padding: "0 10px" } as const;
   const xLogo = (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
   );
+
+  function imagePayload() {
+    return images.map((image) => ({
+      ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
+      filename: image.filename,
+    }));
+  }
+
+  function addUploadedImages(files: FileList | null) {
+    if (!files?.length) return;
+    setErr("");
+    const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length !== files.length) {
+      setErr("Seuls les fichiers image sont acceptés.");
+    }
+    for (const file of imageFiles) {
+      if (file.size > 8 * 1024 * 1024) {
+        setErr("LinkedIn limite chaque image à 8 Mo.");
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : "";
+        if (!result) return;
+        setImages((prev) => [...prev, {
+          id: `upload-${Date.now()}-${file.name}`,
+          url: result,
+          filename: file.name,
+          source: "upload",
+        }]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }
 
   async function copy() {
     try {
@@ -4516,7 +4552,7 @@ function AssistantMessageActions({
         body: JSON.stringify({
           content: text,
           draft: false,
-          images: generatedImg ? [{ data_url: generatedImg, filename: "image-ia.png" }] : [],
+          images: imagePayload(),
         }),
       });
       const data = await res.json();
@@ -4553,14 +4589,14 @@ function AssistantMessageActions({
       const saveRes = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: text }),
+        body: JSON.stringify({ post: text, images: imagePayload() }),
       });
       const saved = await saveRes.json();
       if (!saveRes.ok) throw new Error(saved.detail || "Sauvegarde impossible.");
       const res = await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_id: saved.id, content: text }),
+        body: JSON.stringify({ post_id: saved.id, content: text, images: imagePayload() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi Slack impossible.");
@@ -4574,7 +4610,7 @@ function AssistantMessageActions({
       const res = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: text }),
+        body: JSON.stringify({ post: text, images: imagePayload() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Sauvegarde impossible.");
@@ -4635,6 +4671,16 @@ function AssistantMessageActions({
             onClick: save,
           },
           {
+            key: "attach",
+            icon: <ImagePlus size={14} />,
+            label: "Joindre des images",
+            filePicker: {
+              accept: "image/png,image/jpeg,image/jpg,image/webp,image/gif",
+              multiple: true,
+              onFiles: addUploadedImages,
+            },
+          },
+          {
             key: "image-ia",
             icon: <ImageIcon size={14} />,
             label: "Générer une image IA",
@@ -4657,7 +4703,7 @@ function AssistantMessageActions({
       {scheduleOpen && (
         <SchedulePostModal
           text={text}
-          images={generatedImg ? [{ url: generatedImg, filename: "image-ia.png" }] : []}
+          images={images.map((image) => ({ url: image.url, filename: image.filename }))}
           slackConnected={!!slack.status?.connected}
           onClose={() => setScheduleOpen(false)}
           onScheduled={() => { setScheduled(true); setScheduleOpen(false); }}
@@ -4684,28 +4730,43 @@ function AssistantMessageActions({
         <ImageGenModal
           postText={text}
           onClose={() => setImageModalOpen(false)}
-          onGenerated={(dataUrl) => setGeneratedImg(dataUrl)}
+          onGenerated={(dataUrl) => setImages((prev) => [...prev, {
+            id: `generated-${Date.now()}`,
+            url: dataUrl,
+            filename: "image-ia.png",
+            source: "generated",
+          }])}
         />
       )}
-      {generatedImg && (
+      {images.length > 0 && (
         <div style={{ width: "100%", marginTop: 8 }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={generatedImg}
-            alt="Image générée"
-            style={{ maxWidth: 280, width: "100%", borderRadius: 8, border: "1px solid var(--border)" }}
-          />
-          <div style={{ display: "flex", gap: 10, marginTop: 6, alignItems: "center" }}>
-            <a href={generatedImg} download="post-image.png" style={{ fontSize: 12, color: "var(--accent)" }}>
-              Télécharger l&apos;image
-            </a>
-            <button
-              className="secondary-button"
-              style={{ minHeight: 26, padding: "0 8px", fontSize: 12 }}
-              onClick={() => setGeneratedImg(null)}
-            >
-              <Trash2 size={12} /> Retirer
-            </button>
+          <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+            {images.length} image{images.length > 1 ? "s" : ""} jointe{images.length > 1 ? "s" : ""} au post LinkedIn.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
+            {images.map((image, imageIndex) => (
+              <div key={image.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                  <a
+                    href={image.url}
+                    download={image.filename || `post-image-${imageIndex + 1}.png`}
+                    className="secondary-button"
+                    style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}
+                  >
+                    <Download size={12} /> Télécharger
+                  </a>
+                  <button
+                    className="secondary-button"
+                    style={{ minHeight: 28, padding: "0 8px", fontSize: 12 }}
+                    onClick={() => setImages((prev) => prev.filter((im) => im.id !== image.id))}
+                  >
+                    <Trash2 size={12} /> Retirer
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
