@@ -2079,7 +2079,7 @@ function SchedulePostModal({
  *  post (gratuit), le montre à l'utilisateur qui peut l'ajuster, puis ne génère
  *  l'image (payante en crédits) qu'après validation explicite. L'image générée
  *  est remontée en data URL via `onGenerated`.
- *  Pendant la génération (~1 min), la pop-up peut être réduite en pastille : la
+ *  Pendant la génération (2 à 3 min), la pop-up peut être réduite en pastille : la
  *  génération continue et l'image revient en preview à la fin (ALE-190). Quitter
  *  ou recharger la page pendant la génération déclenche l'alerte du navigateur ;
  *  changer d'onglet dans l'app perdrait aussi l'image, d'où « reste sur cette page ». */
@@ -2193,7 +2193,7 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
           <>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
               {generating
-                ? "Génération en cours (~1 min). Tu peux réduire cette fenêtre et continuer à travailler — reste simplement sur cette page, l'image sera jointe au post automatiquement."
+                ? "Génération en cours (2 à 3 min). Tu peux réduire cette fenêtre et continuer à travailler — reste simplement sur cette page, l'image sera jointe au post automatiquement."
                 : "Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour générer l'image (5 crédits). L'image sera jointe au post."}
             </p>
             {loadingPrompt ? (
@@ -2221,7 +2221,7 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
               )}
               <button className="primary-button" disabled={loadingPrompt || generating || !prompt.trim()} onClick={generate}>
                 {generating
-                  ? <><Loader2 size={13} className="spinning" /> Génération en cours… (~1 min)</>
+                  ? <><Loader2 size={13} className="spinning" /> Génération en cours… (2-3 min)</>
                   : <><Sparkles size={13} /> Générer l&apos;image</>}
               </button>
             </div>
