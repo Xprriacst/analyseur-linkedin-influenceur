@@ -23,6 +23,14 @@ la file de jobs (`src/jobs.py`).
 - **Pas de RAG au MVP.** La FAQ (quelques dizaines de Q/R) tient dans le prompt → **prompt-stuffing**. Cohérent avec la
   « Règle d'or » du projet (tant que ça tient dans le prompt, le prompt suffit). Le RAG ne revient que **si** la FAQ dépasse
   ~quelques centaines d'entrées, ou si on veut fouiller par le sens tout l'historique de conversations.
+- **Détection « elle sait / elle ne sait pas » en v1** — pas une 2ᵉ IA : **même appel Claude**, sortie structurée
+  `{ réponse, confiance, besoin_humain, raison }`. « Sait » = **couvert par la FAQ/objectif** (jugement de couverture, fiable),
+  pas « connaît le fait » (mal jugé par un LLM). Consigne : si la réponse n'est pas ancrée dans la FAQ → `besoin_humain=true`.
+- **Autopilot en v1** — petite couche au-dessus du garde-fou : vert → envoie direct (au lieu de suggérer) ; rouge → escalade + alerte.
+  Seuil conservateur, **kill-switch** global « tout en supervisé », autopilot d'abord sur le vert « couvert par la FAQ ».
+- **UI des réponses suggérées = inbox/chatbot in-app** (réutilise l'onglet Assistant, `page.tsx`, chat streamé + markdown).
+  Une qualif est multi-tours → mieux qu'un fil Slack. **Slack = canal d'alerte optionnel** (ping « nouveau DM » / « l'agent ne sait pas ») ;
+  le travail (valider/éditer/envoyer, toggle supervisé↔autopilot) se fait in-app.
 
 ---
 
@@ -49,8 +57,9 @@ Sources recherche (juillet 2026) : developers.facebook.com (policy Messenger/IG)
 
 ## MVP retaillé (périmètre minimal)
 
-> DM entrant → Claude avec **{FAQ collée + objectif}** dans le prompt → suggestion → (supervisé) validation Slack → envoi.
-> Si Claude ne sait pas → **escalade/alerte** au lieu d'envoyer.
+> DM entrant → Claude avec **{FAQ collée + objectif}** → sortie `{réponse, confiance, besoin_humain}` →
+> **supervisé** : suggestion affichée dans l'inbox in-app → valider/éditer/envoyer ; **autopilot** : si vert, envoi direct.
+> Si `besoin_humain` (elle ne sait pas) → **escalade/alerte** (badge in-app + ping Slack), jamais d'envoi auto.
 
 Élimine du MVP : tables base de connaissance, RAG/pgvector, sandbox, app-review Meta.
 
@@ -65,19 +74,22 @@ Sources recherche (juillet 2026) : developers.facebook.com (policy Messenger/IG)
 - Sortie structurée : `{ reponse, confiance: 0..1, besoin_humain: bool, raison }`.
 **DoD** : sur un jeu de messages test, réponses cohérentes ; messages hors sujet → `besoin_humain=true`.
 
-### ALE-XXX · [MVP] Mode supervisé (validation Slack) + garde-fou/alerte
-- Réutiliser le patron `src/slack.py` : suggestion → ✅/❌/✏️ → envoi seulement après action humaine.
-- Si `besoin_humain` ou `confiance < seuil` → **alerte** (DM Slack), aucune réponse auto.
-- Persistance minimale des conversations/décisions (Supabase, RLS `auth.uid()=user_id`) — tables légères.
-**DoD** : bout-en-bout supervisé sur une vraie conversation, zéro envoi sans validation.
+### ALE-XXX · [MVP] Inbox in-app (chatbot) — réponses suggérées + supervisé
+- Inbox in-app : liste des conversations + fil du prospect ; la réponse suggérée s'affiche **dans le chat**.
+- Actions : valider / éditer / envoyer ; toggle **supervisé ↔ autopilot** par conversation.
+- Réutilise l'onglet Assistant (`page.tsx`, chat streamé + markdown) comme base d'UI.
+- Persistance conversations/messages/décisions (Supabase, RLS `auth.uid()=user_id`) — tables légères.
+**DoD** : bout-en-bout supervisé sur une vraie conversation depuis l'inbox, zéro envoi sans validation.
+
+### ALE-XXX · [MVP] Garde-fou + autopilot conditionnel
+- Garde-fou : `besoin_humain` ou `confiance < seuil` → **aucun envoi auto** → **alerte** (badge in-app + ping Slack optionnel).
+- Autopilot : quand activé et garde-fou **vert**, envoi direct ; sinon retombe en supervisé + alerte.
+- Seuil conservateur, **kill-switch** global « tout en supervisé », respect fenêtre 24 h + quota ~200 msg/h.
+**DoD** : messages hors FAQ 100 % escaladés ; autopilot n'envoie que sur le vert ; kill-switch testé.
 
 ---
 
 ## Post-MVP (à activer si besoin)
-
-### ALE-XXX · Autopilot conditionnel (bascule par thème)
-Auto-envoi si garde-fou vert, sinon retombe en supervisé + alerte. Kill-switch global « tout en supervisé ».
-Prérequis : assez de recul en supervisé pour avoir confiance sur un thème donné.
 
 ### ALE-XXX · Base de connaissance dans l'appli + RAG *(seulement si la FAQ grossit)*
 Sortir la FAQ du fichier externe vers des tables Supabase alimentées par les validations ; activer **pgvector** + embeddings
