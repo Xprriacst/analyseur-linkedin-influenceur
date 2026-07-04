@@ -63,6 +63,8 @@ test("Contenu › Mes contenus : menu Publier + ⋯ sur une carte de post (GET m
   const menu = page.locator(".action-menu");
   await expect(menu.getByRole("menuitem", { name: /Joindre des images/ })).toBeVisible();
   await expect(menu.getByRole("menuitem", { name: /Régénérer sur ce sujet/ })).toBeVisible();
+  // ALE-189 : retravailler avec l'Agent IA disponible aussi hors Générateur.
+  await expect(menu.getByRole("menuitem", { name: /Retravailler avec l'Agent IA/ })).toBeVisible();
   // Clic hors du menu → fermeture (comportement Cursor-like).
   await page.getByRole("heading", { name: /Mes contenus sauvegardés/i }).click();
   await expect(menu).toHaveCount(0);
