@@ -2170,9 +2170,12 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
       display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
     }}>
       <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
-        <h3 style={{ marginTop: 0, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+        <h3 style={{ marginTop: 0, marginBottom: 2, display: "flex", alignItems: "center", gap: 8 }}>
           <ImageIcon size={16} /> {preview ? "Image générée" : "Générer une image IA"}
         </h3>
+        <p style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 10px" }}>
+          Générée avec GPT Image 2 — le dernier modèle d&apos;image d&apos;OpenAI
+        </p>
         {preview ? (
           <>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
@@ -3754,7 +3757,7 @@ function DailyIdeasView({
         <div className="daily-reservoir-head">
           <div>
             <h3 className="daily-subtitle" style={{ margin: 0 }}><Lightbulb size={16} /> Mon réservoir d'idées</h3>
-            <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées, ou colle le <strong>lien d'une annonce</strong> : l'idée du jour piochera dedans en priorité. Un lien d'annonce génère un post avec la photo du bien.</p>
+            <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées : l'idée du jour piochera dedans en priorité.</p>
           </div>
           {!reservoirOnly && (
             <label className="daily-switch">
@@ -3772,7 +3775,7 @@ function DailyIdeasView({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
-            placeholder="Une idée de post, ou un lien d'annonce (https://…)"
+            placeholder="Une idée de post…"
             maxLength={2000}
           />
           <button className="primary-button" onClick={addSeed} disabled={adding || draft.trim().length < 3}>
