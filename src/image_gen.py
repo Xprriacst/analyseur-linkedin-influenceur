@@ -19,6 +19,9 @@ def build_image_prompt(post_text: str) -> str:
             "for a professional LinkedIn post illustration. "
             "Rules: photorealistic style, NO text or words in the image, "
             "square 1:1 format, clean business/professional aesthetic. "
+            # Le prompt est montré à l'utilisateur (pop-up ALE-68) avant génération :
+            # il doit être rédigé en français pour qu'il puisse le relire/l'ajuster.
+            "Write the prompt in French. "
             "Reply with the prompt only — no explanation."
         ),
         messages=[{"role": "user", "content": f"LinkedIn post:\n{post_text[:800]}"}],
