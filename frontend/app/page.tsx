@@ -3026,11 +3026,13 @@ function DailyIdeasView({
   isAuthed,
   requireAuth,
   onReuse,
+  onRework,
   reservoirOnly = false,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string) => void;
   onReuse: (topic: string) => void;
+  onRework?: (post: string) => void;
   reservoirOnly?: boolean;
 }) {
   const [ideas, setIdeas] = useState<DailyIdea[]>([]);
@@ -3585,6 +3587,15 @@ function DailyIdeasView({
                             title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
                             onClick: () => setImageModalIdea(it),
                           },
+                          ...(onRework
+                            ? [{
+                                key: "rework",
+                                icon: <MessageSquare size={14} />,
+                                label: "Retravailler avec l'Agent IA",
+                                title: "Ouvrir ce post dans l'Agent IA pour le retravailler",
+                                onClick: () => onRework(postTextOf(it)),
+                              } satisfies PostAction]
+                            : []),
                         ]}
                       />
                       {(ideaImages[it.id] || []).length > 0 && (
@@ -3806,10 +3817,12 @@ function LibraryView({
   isAuthed,
   requireAuth,
   onReuse,
+  onRework,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string) => void;
   onReuse: (topic: string) => void;
+  onRework?: (post: string) => void;
 }) {
   const [posts, setPosts] = useState<SavedPost[]>([]);
   const [loading, setLoading] = useState(false);
@@ -4252,6 +4265,15 @@ function LibraryView({
                           icon: <Sparkles size={14} />,
                           label: "Régénérer sur ce sujet",
                           onClick: () => onReuse(p.topic!),
+                        } satisfies PostAction]
+                      : []),
+                    ...(onRework
+                      ? [{
+                          key: "rework",
+                          icon: <MessageSquare size={14} />,
+                          label: "Retravailler avec l'Agent IA",
+                          title: "Ouvrir ce post dans l'Agent IA pour le retravailler",
+                          onClick: () => onRework(editedPosts[p.id] ?? p.post),
                         } satisfies PostAction]
                       : []),
                     {
@@ -6107,10 +6129,10 @@ function ContentHub({
         ))}
       </div>
 
-      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />}
+      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />}
       {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} onRework={onRework} />}
       {tab === "library" && (
-        <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
+        <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
       )}
     </div>
   );
