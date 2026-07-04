@@ -511,6 +511,15 @@ def me_linkedin_schedule(
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
     _validate_future_scheduled_at(payload.scheduled_at)
 
+    # Les images sont mises en ligne dès la programmation (URLs publiques) :
+    # le message de validation Slack ne peut afficher que des URLs publiques,
+    # et on évite de stocker des data-URLs base64 en base. Le cron republie
+    # ces items tels quels (prepare_image_media_items est idempotent).
+    try:
+        media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=f"Impossible de préparer les images du post : {exc}") from exc
+
     # ALE-137 — Option A : programmation directe, publiée à l'échéance sans
     # validation Slack (le post naît `validated` pour que le cron le publie).
     if not payload.validate_via_slack:
@@ -518,7 +527,7 @@ def me_linkedin_schedule(
             token,
             payload.content.strip(),
             payload.scheduled_at,
-            media_items=_image_payload(payload.images),
+            media_items=media_items,
             require_slack=False,
         )
         if row is None:
@@ -538,7 +547,7 @@ def me_linkedin_schedule(
         token,
         payload.content.strip(),
         payload.scheduled_at,
-        media_items=_image_payload(payload.images),
+        media_items=media_items,
     )
     if row is None:
         raise HTTPException(status_code=500, detail="Impossible d'enregistrer le post planifié.")
@@ -1803,6 +1812,21 @@ def slack_send_post(
     return {"sent": True}
 
 
+def _find_slack_owner(slack_user_id: str, fetch) -> tuple[dict | None, dict | None]:
+    """Resolve which linked app account owns the item targeted by a Slack action.
+
+    `user_integrations` n'est pas unique par utilisateur Slack : un même compte
+    Slack peut être relié à plusieurs comptes app (plusieurs emails). On teste
+    chaque compte relié et on retourne (intégration, item) du propriétaire —
+    sinon la pop-up d'édition s'ouvre vide et les validations tombent dans le vide.
+    """
+    for integration in db.get_users_by_slack_id(slack_user_id):
+        item = fetch(integration["user_id"])
+        if item:
+            return integration, item
+    return None, None
+
+
 @app.post("/slack/webhooks/interactive")
 async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
     """Receive Slack interactive component payloads (button clicks).
@@ -1836,7 +1860,6 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
         if callback_id not in ("edit_scheduled_post_modal", "edit_post_modal"):
             return {"response_action": "clear"}
         slack_user_id = (data.get("user") or {}).get("id", "")
-        integration = db.get_user_by_slack_id(slack_user_id)
         try:
             meta = json.loads(view.get("private_metadata") or "{}")
         except Exception:
@@ -1848,7 +1871,17 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
         new_text = (
             ((values.get("post_text_block") or {}).get("post_text_input") or {}).get("value") or ""
         ).strip()
-        if not (integration and post_id and new_text):
+        if not (post_id and new_text):
+            return {"response_action": "clear"}
+        if callback_id == "edit_scheduled_post_modal":
+            integration, _item = _find_slack_owner(
+                slack_user_id, lambda uid: db.get_scheduled_post_for_user(post_id, uid)
+            )
+        else:
+            integration, _item = _find_slack_owner(
+                slack_user_id, lambda uid: db.get_generated_post_for_user(post_id, uid)
+            )
+        if not integration:
             return {"response_action": "clear"}
         bot_token_w = integration.get("access_token", "")
         if callback_id == "edit_scheduled_post_modal":
@@ -1893,13 +1926,16 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
     if not item_id:
         return {"ok": True}
 
-    # Lookup user by Slack user ID (service-role, no JWT available here)
-    integration = db.get_user_by_slack_id(slack_user_id)
-
+    # Un utilisateur Slack peut être relié à plusieurs comptes app : chaque
+    # branche résout le compte propriétaire de l'item via _find_slack_owner.
     if action_id in ("validate_idea", "decline_idea"):
         status = "validated" if action_id == "validate_idea" else "declined"
+        integration = None
+        for candidate in db.get_users_by_slack_id(slack_user_id):
+            if db.update_idea_slack_status(item_id, candidate["user_id"], status):
+                integration = candidate
+                break
         if integration:
-            db.update_idea_slack_status(item_id, integration["user_id"], status)
             bot_token_w: str = integration.get("access_token", "")
             channel_id_w: str = (data.get("channel") or {}).get("id", "")
             ts_w: str = (data.get("message") or {}).get("ts", "")
@@ -1914,7 +1950,10 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
                     pass
 
     elif action_id in ("validate_post", "reject_post"):
-        if integration:
+        integration, post = _find_slack_owner(
+            slack_user_id, lambda uid: db.get_generated_post_for_user(item_id, uid)
+        )
+        if integration and post:
             user_id_w = integration["user_id"]
             bot_token_w = integration.get("access_token", "")
             channel_id_w = (data.get("channel") or {}).get("id", "")
@@ -1922,7 +1961,6 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
 
             if action_id == "reject_post":
                 db.update_post_slack_status(item_id, user_id_w, "rejected")
-                post = db.get_generated_post_for_user(item_id, user_id_w) or {"id": item_id}
                 if bot_token_w and channel_id_w and ts_w:
                     try:
                         slack_client.update_post_message(bot_token_w, channel_id_w, ts_w, post, "rejected")
@@ -1934,7 +1972,6 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
                 # programmés. Sans ce câblage, la validation ne faisait que poser
                 # un badge et le post ne partait jamais.
                 db.update_post_slack_status(item_id, user_id_w, "validated")
-                post = db.get_generated_post_for_user(item_id, user_id_w) or {"id": item_id}
                 display_status = "published"
                 error_detail = ""
                 if post.get("zernio_post_id"):
@@ -1972,12 +2009,14 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
 
     elif action_id == "edit_post":
         # Ouvre la modal d'édition immédiatement — le trigger_id expire en ~3 s.
-        if integration:
+        integration, post = _find_slack_owner(
+            slack_user_id, lambda uid: db.get_generated_post_for_user(item_id, uid)
+        )
+        if integration and post:
             bot_token_w = integration.get("access_token", "")
             trigger_id = data.get("trigger_id", "")
             channel_id_w = (data.get("channel") or {}).get("id", "")
             ts_w = (data.get("message") or {}).get("ts", "")
-            post = db.get_generated_post_for_user(item_id, integration["user_id"]) or {"id": item_id}
             if bot_token_w and trigger_id:
                 try:
                     slack_client.open_generated_post_edit_modal(bot_token_w, trigger_id, post, channel_id_w, ts_w)
@@ -1986,12 +2025,14 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
 
     elif action_id == "edit_scheduled_post":
         # Open the edit modal immediately — the trigger_id expires in ~3 s (ALE-149).
-        if integration:
+        integration, scheduled = _find_slack_owner(
+            slack_user_id, lambda uid: db.get_scheduled_post_for_user(item_id, uid)
+        )
+        if integration and scheduled:
             bot_token_w = integration.get("access_token", "")
             trigger_id: str = data.get("trigger_id", "")
             channel_id_w = (data.get("channel") or {}).get("id", "")
             ts_w = (data.get("message") or {}).get("ts", "")
-            scheduled = db.get_scheduled_post_for_user(item_id, integration["user_id"]) or {"id": item_id}
             if bot_token_w and trigger_id:
                 try:
                     slack_client.open_post_edit_modal(bot_token_w, trigger_id, scheduled, channel_id_w, ts_w)
@@ -2000,8 +2041,10 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
 
     elif action_id in ("validate_scheduled_post", "decline_scheduled_post"):
         status = "validated" if action_id == "validate_scheduled_post" else "declined"
-        if integration:
-            scheduled = db.get_scheduled_post_for_user(item_id, integration["user_id"]) or {"id": item_id}
+        integration, scheduled = _find_slack_owner(
+            slack_user_id, lambda uid: db.get_scheduled_post_for_user(item_id, uid)
+        )
+        if integration and scheduled:
             db.update_scheduled_post_slack_status(item_id, integration["user_id"], status)
             bot_token_w = integration.get("access_token", "")
             channel_id_w = (data.get("channel") or {}).get("id", "")

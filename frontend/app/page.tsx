@@ -2090,6 +2090,20 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
   const [minimized, setMinimized] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const postBoxRef = useRef<HTMLDivElement | null>(null);
+
+  // Reprend le texte du post (ou le passage sélectionné à la souris dans le bloc
+  // ci-dessous) à la suite du prompt (ALE-192).
+  function insertPostText() {
+    const sel = window.getSelection();
+    const selected =
+      sel && !sel.isCollapsed && postBoxRef.current && sel.anchorNode && postBoxRef.current.contains(sel.anchorNode)
+        ? sel.toString().trim()
+        : "";
+    const toInsert = selected || postText.trim();
+    if (!toInsert) return;
+    setPrompt((p) => (p.trim() ? `${p.trimEnd()}\n\n${toInsert}` : toInsert));
+  }
 
   // Garde-fou : alerte native du navigateur si on ferme/recharge la page en pleine génération.
   useEffect(() => {
@@ -2212,6 +2226,39 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
                 onChange={(e) => setPrompt(e.target.value)}
                 style={{ width: "100%", boxSizing: "border-box" }}
               />
+            )}
+            {!loadingPrompt && (
+              <details style={{ marginTop: 10 }}>
+                <summary style={{ fontSize: 12, color: "var(--muted)", cursor: "pointer" }}>
+                  Reprendre des éléments du post
+                </summary>
+                <div
+                  ref={postBoxRef}
+                  style={{
+                    maxHeight: 160, overflowY: "auto", fontSize: 12, whiteSpace: "pre-wrap",
+                    border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginTop: 8,
+                  }}
+                >
+                  {postText}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={generating}
+                    // preventDefault sur mousedown : sans ça, le clic effacerait la
+                    // sélection dans le bloc de post avant qu'on puisse la lire.
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={insertPostText}
+                    style={{ fontSize: 12 }}
+                  >
+                    Insérer dans le prompt
+                  </button>
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                    Sélectionne un passage pour n&apos;insérer que lui, sinon tout le post est ajouté.
+                  </span>
+                </div>
+              </details>
             )}
             {error && <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{error}</div>}
             <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end", flexWrap: "wrap" }}>
