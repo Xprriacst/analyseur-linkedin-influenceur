@@ -30,7 +30,9 @@ async function checkActionsBar(page: Page, { expectDelete }: { expectDelete: boo
   if (expectDelete) {
     await expect(menu.getByRole("menuitem", { name: /Supprimer/ })).toBeVisible();
   }
-  await expect(menu.getByRole("menuitem", { name: /Image IA/ })).toBeDisabled();
+  // ALE-68 : la génération d'image IA est active (pop-up de prompt) — on vérifie
+  // sa présence sans cliquer (le clic préparerait un prompt = appel LLM).
+  await expect(menu.getByRole("menuitem", { name: /Générer une image IA/ })).toBeEnabled();
   await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
 }

@@ -2075,6 +2075,99 @@ function SchedulePostModal({
   );
 }
 
+/** Pop-up de génération d'image IA (ALE) : prépare d'abord un prompt à partir du
+ *  post (gratuit), le montre à l'utilisateur qui peut l'ajuster, puis ne génère
+ *  l'image (payante en crédits) qu'après validation explicite. L'image générée
+ *  est remontée en data URL via `onGenerated`. */
+function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; onClose: () => void; onGenerated: (dataUrl: string) => void }) {
+  const [prompt, setPrompt] = useState("");
+  const [loadingPrompt, setLoadingPrompt] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/generate-image/prompt`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ post_text: postText }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Préparation du prompt impossible.");
+        if (!cancelled) setPrompt(data.prompt || "");
+      } catch (err: any) {
+        if (!cancelled) setError(err.message || "Préparation du prompt impossible.");
+      } finally {
+        if (!cancelled) setLoadingPrompt(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function generate() {
+    setError("");
+    setGenerating(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post_text: postText, prompt: prompt.trim() || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
+      emitCredits(data.credits);
+      onGenerated(data.image_data);
+      onClose();
+    } catch (err: any) {
+      setError(err.message || "Génération d'image impossible.");
+      setGenerating(false);
+    }
+  }
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+    }}>
+      <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+        <h3 style={{ marginTop: 0, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+          <ImageIcon size={16} /> Générer une image IA
+        </h3>
+        <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+          Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour
+          générer l&apos;image (5 crédits). L&apos;image sera jointe au post.
+        </p>
+        {loadingPrompt ? (
+          <p style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
+            <Loader2 size={14} className="spinning" /> Préparation du prompt…
+          </p>
+        ) : (
+          <textarea
+            className="variant-text"
+            value={prompt}
+            rows={5}
+            disabled={generating}
+            onChange={(e) => setPrompt(e.target.value)}
+            style={{ width: "100%", boxSizing: "border-box" }}
+          />
+        )}
+        {error && <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end", flexWrap: "wrap" }}>
+          <button className="secondary-button" onClick={onClose} disabled={generating}>Annuler</button>
+          <button className="primary-button" disabled={loadingPrompt || generating || !prompt.trim()} onClick={generate}>
+            {generating
+              ? <><Loader2 size={13} className="spinning" /> Génération en cours… (~1 min)</>
+              : <><Sparkles size={13} /> Générer l&apos;image</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Cache module-level : survit aux changements d'onglet dans la même session (ALE-145).
 // Réinitialisé à chaque refresh de page. `appliedJobId` (ALE-141) mémorise le
 // dernier job de génération dont on a injecté le résultat, pour qu'un nouveau
@@ -2109,7 +2202,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   const [confirmXIndex, setConfirmXIndex] = useState<number | null>(null);
   const [publishError, setPublishError] = useState("");
   const [variantImages, setVariantImages] = useState<Record<number, LinkedInImageAttachment[]>>({});
-  const [generatingImage, setGeneratingImage] = useState<number | null>(null);
+  const [imageModal, setImageModal] = useState<{ index: number; text: string } | null>(null);
   const [imageError, setImageError] = useState("");
   const [editedVariants, setEditedVariants] = useState<Record<number, string>>({});
   const [copiedVariant, setCopiedVariant] = useState<number | null>(null);
@@ -2269,33 +2362,18 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     setScheduleModal({ index: i, text, images: variantImages[i] || [] });
   }
 
-  async function generateImage(i: number, postText: string) {
-    setImageError("");
-    setGeneratingImage(i);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_text: postText }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Échec de la génération d'image");
-      emitCredits(data.credits);
-      const attachment: LinkedInImageAttachment = {
-        id: `generated-${Date.now()}`,
-        url: data.image_data,
-        filename: `image-generee-${i + 1}.png`,
-        source: "generated",
-      };
-      setVariantImages((prev) => ({
-        ...prev,
-        [i]: [...(prev[i] || []), attachment],
-      }));
-    } catch (err: any) {
-      setImageError(err.message);
-    } finally {
-      setGeneratingImage(null);
-    }
+  // Image générée via la pop-up ImageGenModal → jointe au variant comme un upload.
+  function attachGeneratedImage(i: number, dataUrl: string) {
+    const attachment: LinkedInImageAttachment = {
+      id: `generated-${Date.now()}`,
+      url: dataUrl,
+      filename: `image-generee-${i + 1}.png`,
+      source: "generated",
+    };
+    setVariantImages((prev) => ({
+      ...prev,
+      [i]: [...(prev[i] || []), attachment],
+    }));
   }
 
   function addUploadedImages(i: number, files: FileList | null) {
@@ -2556,9 +2634,9 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     {
                       key: "image-ia",
                       icon: <ImageIcon size={14} />,
-                      label: "Image IA — bientôt",
-                      disabled: true,
-                      title: "Génération d'image en cours d'amélioration — bientôt disponible",
+                      label: "Générer une image IA",
+                      title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
+                      onClick: () => setImageModal({ index: i, text: editedVariants[i] ?? v.post }),
                     },
                     ...(onRework
                       ? [{
@@ -2648,6 +2726,14 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       )}
       {publishError && <div className="error" style={{ marginTop: 12 }}>{publishError}</div>}
       {imageError && <div className="error" style={{ marginTop: 12 }}>{imageError}</div>}
+
+      {imageModal && (
+        <ImageGenModal
+          postText={imageModal.text}
+          onClose={() => setImageModal(null)}
+          onGenerated={(dataUrl) => attachGeneratedImage(imageModal.index, dataUrl)}
+        />
+      )}
 
       {confirmIndex !== null && (
         <div style={{
@@ -3008,8 +3094,17 @@ function DailyIdeasView({
   const [publishingXId, setPublishingXId] = useState<string | null>(null);
   const [publishedXId, setPublishedXId] = useState<string | null>(null);
   const [confirmXId, setConfirmXId] = useState<string | null>(null);
+  // Génération d'image IA : pop-up de validation du prompt + images jointes (data URLs) par idée.
+  const [imageModalIdea, setImageModalIdea] = useState<DailyIdea | null>(null);
+  const [ideaImages, setIdeaImages] = useState<Record<string, string[]>>({});
 
   const postTextOf = (it: DailyIdea) => editedPost[it.id] ?? it.post_text ?? "";
+
+  // Images jointes à la publication : photo d'annonce éventuelle + images IA générées.
+  const ideaImagePayload = (it: DailyIdea) => [
+    ...(it.image_url ? [{ url: it.image_url }] : []),
+    ...(ideaImages[it.id] || []).map((u, n) => ({ url: u, filename: `image-ia-${n + 1}.png` })),
+  ];
 
   function copyPost(it: DailyIdea) {
     navigator.clipboard.writeText(postTextOf(it));
@@ -3057,7 +3152,7 @@ function DailyIdeasView({
         body: JSON.stringify({
           content: postTextOf(it),
           draft: false,
-          images: it.image_url ? [{ url: it.image_url }] : [],
+          images: ideaImagePayload(it),
         }),
       });
       const data = await res.json();
@@ -3486,12 +3581,34 @@ function DailyIdeasView({
                           {
                             key: "image-ia",
                             icon: <ImageIcon size={14} />,
-                            label: "Image IA — bientôt",
-                            disabled: true,
-                            title: "Génération d'image en cours d'amélioration — bientôt disponible",
+                            label: "Générer une image IA",
+                            title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
+                            onClick: () => setImageModalIdea(it),
                           },
                         ]}
                       />
+                      {(ideaImages[it.id] || []).length > 0 && (
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640, marginTop: 12 }}>
+                          {(ideaImages[it.id] || []).map((u, n) => (
+                            <div key={n} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={u} alt={`Image IA ${n + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                                <a href={u} download={`image-ia-${n + 1}.png`} className="secondary-button" style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}>
+                                  <Download size={12} /> Télécharger
+                                </a>
+                                <button
+                                  className="secondary-button"
+                                  style={{ minHeight: 28, padding: "0 8px", fontSize: 12 }}
+                                  onClick={() => setIdeaImages((prev) => ({ ...prev, [it.id]: (prev[it.id] || []).filter((_, k) => k !== n) }))}
+                                >
+                                  <Trash2 size={12} /> Retirer
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {confirmPublishId === it.id && (
                         <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
                           <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
@@ -3502,7 +3619,7 @@ function DailyIdeasView({
                       {scheduleModalIdea?.id === it.id && (
                         <SchedulePostModal
                           text={postTextOf(it)}
-                          images={it.image_url ? [{ url: it.image_url }] : []}
+                          images={ideaImagePayload(it)}
                           slackConnected={!!slack.status?.connected}
                           onClose={() => setScheduleModalIdea(null)}
                           onScheduled={() => {
@@ -3545,6 +3662,16 @@ function DailyIdeasView({
         </div>
       )}
       {postError && <div className="error" style={{ marginTop: 8 }}>{postError}</div>}
+      {imageModalIdea && (
+        <ImageGenModal
+          postText={postTextOf(imageModalIdea)}
+          onClose={() => setImageModalIdea(null)}
+          onGenerated={(dataUrl) => setIdeaImages((prev) => ({
+            ...prev,
+            [imageModalIdea.id]: [...(prev[imageModalIdea.id] || []), dataUrl],
+          }))}
+        />
+      )}
       </>
       )}
 
@@ -3780,6 +3907,8 @@ function LibraryView({
   // ALE-179 : joindre des images à un post sauvegardé.
   const [attachingPost, setAttachingPost] = useState<string | null>(null);
   const [imageErrorLib, setImageErrorLib] = useState("");
+  // Génération d'image IA : pop-up de validation du prompt sur un post sauvegardé.
+  const [imageModalSaved, setImageModalSaved] = useState<SavedPost | null>(null);
 
   async function publishSavedPost(p: SavedPost) {
     setConfirmPublishPostId(null);
@@ -4112,9 +4241,10 @@ function LibraryView({
                     {
                       key: "image-ia",
                       icon: <ImageIcon size={14} />,
-                      label: "Image IA — bientôt",
-                      disabled: true,
-                      title: "Génération d'image en cours d'amélioration — bientôt disponible",
+                      label: "Générer une image IA",
+                      disabled: attachingPost === p.id,
+                      title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
+                      onClick: () => setImageModalSaved(p),
                     },
                     ...(p.topic
                       ? [{
@@ -4290,6 +4420,22 @@ function LibraryView({
         </div>
       )}
 
+      {imageModalSaved && (
+        <ImageGenModal
+          postText={editedPosts[imageModalSaved.id] ?? imageModalSaved.post}
+          onClose={() => setImageModalSaved(null)}
+          onGenerated={(dataUrl) => {
+            const target = imageModalSaved;
+            // Persistée avec le post (hébergement public côté backend, ALE-179) :
+            // l'image reste jointe après refresh et part avec les publications.
+            void persistSavedPostImages(target, [
+              ...savedPostImagePayload(target),
+              { data_url: dataUrl, filename: `image-ia-${Date.now()}.png` },
+            ]);
+          }}
+        />
+      )}
+
       {editingSchedule !== null && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
           <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
@@ -4342,8 +4488,8 @@ function AssistantMessageActions({
   const [slackSending, setSlackSending] = useState(false);
   const [slackSent, setSlackSent] = useState(false);
   const [confirmSlack, setConfirmSlack] = useState(false);
-  const [generatingImg, setGeneratingImg] = useState(false);
-  const [generatedImg, setGeneratedImg] = useState<string | null>(null);
+  const [imageModalOpen, setImageModalOpen] = useState(false);
+  const [generatedImg, setGeneratedImg] = useState<string | null>(null); // data URL
   const [err, setErr] = useState("");
 
   const btn = { fontSize: 12, minHeight: 30, padding: "0 10px" } as const;
@@ -4367,7 +4513,11 @@ function AssistantMessageActions({
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft: false }),
+        body: JSON.stringify({
+          content: text,
+          draft: false,
+          images: generatedImg ? [{ data_url: generatedImg, filename: "image-ia.png" }] : [],
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Publication impossible.");
@@ -4432,21 +4582,6 @@ function AssistantMessageActions({
     } catch (e: any) { setErr(e.message); } finally { setSaving(false); }
   }
 
-  async function generateImageFn() {
-    setErr(""); setGeneratingImg(true); setGeneratedImg(null);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_text: text }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
-      setGeneratedImg(data.image_data);
-      if (data.credits !== undefined) emitCredits(data.credits);
-    } catch (e: any) { setErr(e.message); } finally { setGeneratingImg(false); }
-  }
-
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
       <PostActionsBar
@@ -4502,10 +4637,9 @@ function AssistantMessageActions({
           {
             key: "image-ia",
             icon: <ImageIcon size={14} />,
-            label: "Image IA — bientôt",
-            disabled: true,
-            title: "Génération d'image en cours d'amélioration — bientôt disponible",
-            onClick: generateImageFn,
+            label: "Générer une image IA",
+            title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
+            onClick: () => setImageModalOpen(true),
           },
         ]}
       >
@@ -4523,6 +4657,7 @@ function AssistantMessageActions({
       {scheduleOpen && (
         <SchedulePostModal
           text={text}
+          images={generatedImg ? [{ url: generatedImg, filename: "image-ia.png" }] : []}
           slackConnected={!!slack.status?.connected}
           onClose={() => setScheduleOpen(false)}
           onScheduled={() => { setScheduled(true); setScheduleOpen(false); }}
@@ -4545,20 +4680,33 @@ function AssistantMessageActions({
           <button className="secondary-button" style={btn} onClick={() => setConfirmSlack(false)}>Annuler</button>
         </div>
       )}
+      {imageModalOpen && (
+        <ImageGenModal
+          postText={text}
+          onClose={() => setImageModalOpen(false)}
+          onGenerated={(dataUrl) => setGeneratedImg(dataUrl)}
+        />
+      )}
       {generatedImg && (
         <div style={{ width: "100%", marginTop: 8 }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={`data:image/png;base64,${generatedImg}`}
+            src={generatedImg}
             alt="Image générée"
-            style={{ maxWidth: "100%", borderRadius: 8, border: "1px solid var(--border)" }}
+            style={{ maxWidth: 280, width: "100%", borderRadius: 8, border: "1px solid var(--border)" }}
           />
-          <a
-            href={`data:image/png;base64,${generatedImg}`}
-            download="post-image.png"
-            style={{ display: "inline-block", marginTop: 6, fontSize: 12, color: "var(--accent)" }}
-          >
-            Télécharger l'image
-          </a>
+          <div style={{ display: "flex", gap: 10, marginTop: 6, alignItems: "center" }}>
+            <a href={generatedImg} download="post-image.png" style={{ fontSize: 12, color: "var(--accent)" }}>
+              Télécharger l&apos;image
+            </a>
+            <button
+              className="secondary-button"
+              style={{ minHeight: 26, padding: "0 8px", fontSize: 12 }}
+              onClick={() => setGeneratedImg(null)}
+            >
+              <Trash2 size={12} /> Retirer
+            </button>
+          </div>
         </div>
       )}
       {err && <div className="error" style={{ marginTop: 4, fontSize: 12, width: "100%" }}>{err}</div>}

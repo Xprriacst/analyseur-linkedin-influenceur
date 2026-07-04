@@ -1037,6 +1037,8 @@ class GenerateRequest(BaseModel):
 
 class GenerateImageRequest(BaseModel):
     post_text: str = Field(..., min_length=10)
+    # Prompt validé/édité par l'utilisateur dans la pop-up ; absent = prompt auto.
+    prompt: Optional[str] = Field(default=None, max_length=4000)
 
 
 class ChatRequest(BaseModel):
@@ -2013,6 +2015,20 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.post("/generate-image/prompt")
+def generate_image_prompt(payload: GenerateImageRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
+    """Prépare le prompt d'illustration proposé à l'utilisateur avant génération.
+
+    Étape 1 du flux : le prompt est affiché dans une pop-up, l'utilisateur peut
+    l'ajuster puis valider (l'image n'est générée — et débitée — qu'à l'étape 2).
+    """
+    try:
+        from src.image_gen import build_image_prompt
+        return {"prompt": build_image_prompt(payload.post_text)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/generate-image")
 def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
     """Generate an image to accompany a LinkedIn post (GPT Image 2)."""
@@ -2029,7 +2045,7 @@ def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends
         # au niveau module ferait planter tout le démarrage de l'API si la
         # dépendance (ou le module) manque — on l'isole donc à cet endpoint.
         from src.image_gen import generate_post_image
-        result = generate_post_image(payload.post_text)
+        result = generate_post_image(payload.post_text, prompt=payload.prompt)
         if isinstance(result, dict):
             result["credits"] = credits
         return result
