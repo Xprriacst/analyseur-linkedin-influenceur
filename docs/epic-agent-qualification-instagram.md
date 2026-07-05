@@ -23,6 +23,11 @@ la file de jobs (`src/jobs.py`).
 - **Pas de RAG au MVP.** La FAQ (quelques dizaines de Q/R) tient dans le prompt → **prompt-stuffing**. Cohérent avec la
   « Règle d'or » du projet (tant que ça tient dans le prompt, le prompt suffit). Le RAG ne revient que **si** la FAQ dépasse
   ~quelques centaines d'entrées, ou si on veut fouiller par le sens tout l'historique de conversations.
+- **Vocaux gérés** — les prospects IG envoient souvent des **notes vocales**. ManyChat expose l'audio entrant via le champ
+  « Last Text Input » → action « External Request » qui passe **l'URL du fichier audio** au backend. On transcrit via
+  **OpenAI Whisper** (`OPENAI_API_KEY` déjà présent, FR OK, ~0,006 $/min) → texte → même pipeline. Claude n'ingère pas
+  l'audio nativement, donc l'étape STT est **obligatoire** quel que soit le middleware. (Limite ManyChat = envoi de vocaux
+  *sortants* IG, non nécessaire : l'agent répond en texte.)
 - **Détection « elle sait / elle ne sait pas » en v1** — pas une 2ᵉ IA : **même appel Claude**, sortie structurée
   `{ réponse, confiance, besoin_humain, raison }`. « Sait » = **couvert par la FAQ/objectif** (jugement de couverture, fiable),
   pas « connaît le fait » (mal jugé par un LLM). Consigne : si la réponse n'est pas ancrée dans la FAQ → `besoin_humain=true`.
@@ -62,6 +67,11 @@ Sources recherche (juillet 2026) : developers.facebook.com (policy Messenger/IG)
 > Si `besoin_humain` (elle ne sait pas) → **escalade/alerte** (badge in-app + ping Slack), jamais d'envoi auto.
 
 Élimine du MVP : tables base de connaissance, RAG/pgvector, sandbox, app-review Meta.
+
+### ALE-XXX · [MVP] Transcription des vocaux (Speech-to-Text)
+- Audio entrant (URL fournie par ManyChat via External Request) → **OpenAI Whisper** → texte → injecté dans le pipeline Claude comme un DM texte.
+- Réutilise `OPENAI_API_KEY` (déjà sur Render). Coût ~0,006 $/min, négligeable.
+**DoD** : un DM vocal est transcrit puis traité exactement comme un DM texte.
 
 ### ALE-XXX · [MVP] Brancher ManyChat ↔ backend (transport)
 - Compte IG Business + ManyChat Pro configurés.
