@@ -5052,6 +5052,15 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   const active = conversations.find((c) => c.id === activeId) || null;
   // La suggestion à traiter = le draft pending le plus récent (créé après le dernier DM prospect).
   const pendingDraft = drafts.find((d) => d.status === "pending") || null;
+  // Échec de génération : le dernier message du prospect n'a produit aucune
+  // suggestion (aucun draft ne le référence) alors qu'elle aurait dû aboutir.
+  // Cause typique en dev : thread de fond tué (Render free) ou hoquet LLM —
+  // l'erreur est avalée côté serveur, on la rend au moins visible ici. Délai de
+  // grâce (25 s) pour ne pas alerter pendant la génération encore en cours.
+  const lastInbound = [...messages].reverse().find((m) => m.role === "in") || null;
+  const lastInboundHasDraft = lastInbound ? drafts.some((d) => d.message_id === lastInbound.id) : true;
+  const lastInboundAgeMs = lastInbound?.created_at ? Date.now() - new Date(lastInbound.created_at).getTime() : 0;
+  const suggestionFailed = !!lastInbound && !lastInboundHasDraft && !pendingDraft && lastInboundAgeMs > 25000;
 
   async function loadConversations() {
     if (!isAuthed) return;
@@ -5550,6 +5559,23 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
                   </div>
                   <div style={{ fontSize: 10, opacity: 0.5, textAlign: "right", marginTop: 2 }}>
                     suggestion — modifiable avant envoi
+                  </div>
+                </div>
+              )}
+
+              {suggestionFailed && (
+                <div style={{ alignSelf: "flex-end", width: "78%", maxWidth: "78%" }}>
+                  <div style={{
+                    padding: "10px 12px", borderRadius: 12,
+                    border: "1.5px dashed rgba(224,108,0,0.55)", background: "rgba(224,108,0,0.07)",
+                  }}>
+                    <div style={{ fontSize: 12, color: "#e06c00", fontWeight: 600, marginBottom: 4 }}>
+                      ⚠️ Aucune suggestion n'a pu être générée pour ce message
+                    </div>
+                    <div style={{ fontSize: 11, opacity: 0.7 }}>
+                      La génération a échoué (erreur temporaire). Réponds à la main,
+                      ou attends le prochain message du prospect pour relancer l'agent.
+                    </div>
                   </div>
                 </div>
               )}
