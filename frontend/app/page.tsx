@@ -5221,11 +5221,22 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
+  // La liste des conversations se rafraîchit en continu tant qu'on est connecté,
+  // même quand l'Inbox est vide : une nouvelle conversation créée côté serveur
+  // (DM entrant via le webhook ManyChat, ou Simulateur) doit apparaître sans
+  // recharger la page. Ce composant n'est monté que sur l'écran Inbox.
+  useEffect(() => {
+    if (!isAuthed) return;
+    const t = setInterval(loadConversations, 6000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
   // Le webhook persiste messages/drafts de façon asynchrone → on rafraîchit le
   // fil ouvert toutes les 6 s pour voir arriver les nouveaux DM et suggestions.
   useEffect(() => {
     if (!activeId) return;
-    const t = setInterval(() => { loadThread(activeId); loadConversations(); }, 6000);
+    const t = setInterval(() => loadThread(activeId), 6000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
