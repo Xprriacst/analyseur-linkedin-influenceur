@@ -5030,6 +5030,195 @@ const MANYCHAT_BODY_TEMPLATE = `{
   "text": "{{Last Text Input}}"
 }`;
 
+// Connexion ManyChat (par client), affichée dans le profil à côté des autres
+// connexions (LinkedIn/X/Slack). ManyChat est le pont d'envoi vers les DM
+// Instagram : clé API + webhook à coller côté ManyChat. C'est une étape de
+// paramétrage ponctuel, d'où sa place dans le profil plutôt que l'Inbox.
+function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
+  const [status, setStatus] = useState<IgManychatStatus | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [copied, setCopied] = useState("");
+  const [setupOpen, setSetupOpen] = useState(false);
+  // Vrai quand l'utilisateur veut ressaisir une clé alors qu'un compte est déjà
+  // relié : on repasse en mode saisie sans perdre le status côté serveur.
+  const [editingKey, setEditingKey] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthed) { setStatus(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (res.ok) setStatus(data);
+      } catch { /* non bloquant */ }
+    })();
+  }, [isAuthed]);
+
+  async function connect() {
+    if (!apiKey.trim()) return;
+    setBusy(true); setNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ api_token: apiKey.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion impossible");
+      setStatus(data);
+      setApiKey("");
+      setEditingKey(false);
+      setSetupOpen(true);
+      setNotice("✓ Compte ManyChat relié. Copie l'URL et le secret ci-dessous dans ton flow ManyChat.");
+    } catch (err: any) {
+      setNotice(`Erreur : ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!window.confirm("Délier le compte ManyChat ?")) return;
+    setBusy(true); setNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, { method: "DELETE", headers: await authHeaders() });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Déconnexion impossible"); }
+      setStatus({ connected: false });
+      setSetupOpen(false);
+      setNotice("Compte ManyChat délié.");
+    } catch (err: any) {
+      setNotice(`Erreur : ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copy(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+      setTimeout(() => setCopied(""), 1500);
+    } catch { /* clipboard indisponible */ }
+  }
+
+  const connected = !!status?.connected && !editingKey;
+
+  return (
+    <>
+      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <MessageSquare size={20} style={{ flexShrink: 0, color: "#2563eb" }} />
+          <div>
+            <strong>Répondre aux DM Instagram (ManyChat)</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              {connected
+                ? "Compte ManyChat relié — l'agent peut envoyer ses réponses à tes prospects sur Instagram."
+                : "Connecte ManyChat pour recevoir les DM Instagram dans l'Inbox et laisser l'agent y répondre."}
+            </p>
+          </div>
+        </div>
+        {connected ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+            <button className="secondary-button" onClick={() => setSetupOpen((v) => !v)} style={{ fontSize: 12 }}>
+              {setupOpen ? "Masquer le webhook" : "Configurer le webhook"}
+            </button>
+            <button className="secondary-button" onClick={disconnect} disabled={busy} style={{ fontSize: 12 }}>
+              {busy ? <Loader2 size={12} className="spinning" /> : null}
+              Délier
+            </button>
+          </div>
+        ) : null}
+      </section>
+
+      {!connected && (
+        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
+          <p style={{ fontSize: 13, marginBottom: 8 }}>
+            <strong>Connecter ton compte ManyChat.</strong> Colle ta clé API ManyChat
+            (ManyChat → Settings → API → Generate your token). Elle sert à envoyer les
+            réponses de l'agent à tes prospects. Après connexion, tu recevras une URL de
+            webhook et un secret à coller dans un flow ManyChat pour recevoir les DM.
+          </p>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="Clé API ManyChat (0123456789:abcdef…)"
+              style={{ flex: 1, padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13 }}
+            />
+            <button className="primary-button" onClick={connect} disabled={busy || !apiKey.trim()} style={{ fontSize: 13, whiteSpace: "nowrap" }}>
+              {busy ? "Vérification…" : "Connecter"}
+            </button>
+            {status?.connected && (
+              <button className="secondary-button" onClick={() => { setEditingKey(false); setApiKey(""); setNotice(""); }} disabled={busy} style={{ fontSize: 13, whiteSpace: "nowrap" }}>
+                Annuler
+              </button>
+            )}
+          </div>
+          {notice && <div style={{ fontSize: 12, marginTop: 10, opacity: 0.85 }}>{notice}</div>}
+        </section>
+      )}
+
+      {connected && setupOpen && (
+        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
+          <p style={{ fontSize: 13, marginBottom: 6 }}>
+            <strong>✓ Compte ManyChat relié</strong>
+            {status?.api_token_masked && <span style={{ opacity: 0.7 }}> (clé {status.api_token_masked})</span>}.
+          </p>
+          <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
+            Dans ManyChat (plan <strong>Pro</strong> requis), crée une automatisation
+            déclenchée par <strong>Instagram → « Default Reply »</strong> (attrape tous les DM),
+            avec une action <strong>« External Request »</strong> configurée avec l'URL, l'en-tête
+            et le corps ci-dessous. Pas besoin de mapper la réponse : l'agent répond via l'API.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>Méthode & URL (POST)</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <code style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, wordBreak: "break-all" }}>{status?.webhook_url}</code>
+                <button className="secondary-button" onClick={() => copy(status?.webhook_url || "", "url")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                  {copied === "url" ? "Copié ✓" : "Copier"}
+                </button>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>En-tête <code>X-ManyChat-Secret</code></div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <code style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, wordBreak: "break-all" }}>{status?.webhook_secret}</code>
+                <button className="secondary-button" onClick={() => copy(status?.webhook_secret || "", "secret")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                  {copied === "secret" ? "Copié ✓" : "Copier"}
+                </button>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>Corps (JSON, Content-Type application/json)</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <pre style={{ flex: 1, margin: 0, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{MANYCHAT_BODY_TEMPLATE}</pre>
+                <button className="secondary-button" onClick={() => copy(MANYCHAT_BODY_TEMPLATE, "body")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                  {copied === "body" ? "Copié ✓" : "Copier"}
+                </button>
+              </div>
+              <p style={{ fontSize: 11, opacity: 0.65, margin: "4px 0 0" }}>
+                Remplace les valeurs par les champs système ManyChat correspondants
+                (Contact ID, Full Name, Last Text Input) via le sélecteur de champs.
+              </p>
+            </div>
+            <div>
+              <button className="secondary-button" onClick={() => { setEditingKey(true); setSetupOpen(false); setNotice(""); }} disabled={busy} style={{ fontSize: 12 }}>
+                Changer la clé API
+              </button>
+            </div>
+          </div>
+          {notice && <div style={{ fontSize: 12, marginTop: 10, opacity: 0.85 }}>{notice}</div>}
+        </section>
+      )}
+    </>
+  );
+}
+
 function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
   // Faux tant que le premier /me/ig/conversations n'a pas répondu : évite d'afficher
@@ -5050,13 +5239,7 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   const [faqLoaded, setFaqLoaded] = useState(false);
   const [faqSaving, setFaqSaving] = useState(false);
   const [faqNotice, setFaqNotice] = useState("");
-  // Connexion ManyChat par utilisateur (multi-client).
-  const [showManychat, setShowManychat] = useState(false);
-  const [mcStatus, setMcStatus] = useState<IgManychatStatus | null>(null);
-  const [mcKey, setMcKey] = useState("");
-  const [mcBusy, setMcBusy] = useState(false);
-  const [mcNotice, setMcNotice] = useState("");
-  const [mcCopied, setMcCopied] = useState<string>("");
+  // La connexion ManyChat a été déplacée dans le profil (composant ManychatConnect).
   const endRef = useRef<HTMLDivElement | null>(null);
   // Conversation réellement affichée : sert à ignorer les réponses de chargement
   // de fil arrivées hors-séquence (l'utilisateur a changé de conversation entre
@@ -5184,64 +5367,6 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
     } finally {
       setFaqSaving(false);
     }
-  }
-
-  async function toggleManychat() {
-    const next = !showManychat;
-    setShowManychat(next);
-    setMcNotice("");
-    if (next && mcStatus === null) {
-      try {
-        const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, { headers: await authHeaders() });
-        const data = await res.json();
-        if (res.ok) setMcStatus(data);
-      } catch { /* non bloquant */ }
-    }
-  }
-
-  async function connectManychat() {
-    if (!mcKey.trim()) return;
-    setMcBusy(true); setMcNotice("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ api_token: mcKey.trim() }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Connexion impossible");
-      setMcStatus(data);
-      setMcKey("");
-      setMcNotice("✓ Compte ManyChat relié. Copie l'URL et le secret ci-dessous dans ton flow ManyChat.");
-    } catch (err: any) {
-      setMcNotice(`Erreur : ${err.message}`);
-    } finally {
-      setMcBusy(false);
-    }
-  }
-
-  async function disconnectManychat() {
-    setMcBusy(true); setMcNotice("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, {
-        method: "DELETE", headers: await authHeaders(),
-      });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Déconnexion impossible"); }
-      setMcStatus({ connected: false });
-      setMcNotice("Compte ManyChat délié.");
-    } catch (err: any) {
-      setMcNotice(`Erreur : ${err.message}`);
-    } finally {
-      setMcBusy(false);
-    }
-  }
-
-  async function copyToClipboard(value: string, label: string) {
-    try {
-      await navigator.clipboard.writeText(value);
-      setMcCopied(label);
-      setTimeout(() => setMcCopied(""), 1500);
-    } catch { /* clipboard indisponible */ }
   }
 
   useEffect(() => {
@@ -5395,9 +5520,6 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
         <a href="/manychat-test" className="secondary-button" style={{ fontSize: 12, whiteSpace: "nowrap", textDecoration: "none" }}>
           🧪 Simulateur
         </a>
-        <button className="secondary-button" onClick={toggleManychat} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-          {showManychat ? "Fermer ManyChat" : (mcStatus?.connected ? "🔌 ManyChat ✓" : "🔌 Connecter ManyChat")}
-        </button>
         <button className="secondary-button" onClick={toggleFaq} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
           {showFaq ? "Fermer la FAQ" : "📚 FAQ de l'agent"}
         </button>
@@ -5406,87 +5528,6 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
         </button>
       </div>
     </div>
-    {showManychat && (
-      <div className="card" style={{ marginBottom: 12, padding: 14, flex: "none" }}>
-        {!mcStatus?.connected ? (
-          <>
-            <p style={{ fontSize: 13, marginBottom: 8 }}>
-              <strong>Connecter ton compte ManyChat.</strong> Colle ta clé API ManyChat
-              (ManyChat → Settings → API → Generate your token). Elle sert à envoyer les
-              réponses de l'agent à tes prospects. Après connexion, tu recevras une URL de
-              webhook et un secret à coller dans un flow ManyChat pour recevoir les DM.
-            </p>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <input
-                type="password"
-                value={mcKey}
-                onChange={(e) => setMcKey(e.target.value)}
-                placeholder="Clé API ManyChat (0123456789:abcdef…)"
-                style={{ flex: 1, padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13 }}
-              />
-              <button className="primary-button" onClick={connectManychat} disabled={mcBusy || !mcKey.trim()} style={{ fontSize: 13, whiteSpace: "nowrap" }}>
-                {mcBusy ? "Vérification…" : "Connecter"}
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <p style={{ fontSize: 13, marginBottom: 6 }}>
-              <strong>✓ Compte ManyChat relié</strong>
-              {mcStatus.api_token_masked && <span style={{ opacity: 0.7 }}> (clé {mcStatus.api_token_masked})</span>}.
-            </p>
-            <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
-              Dans ManyChat (plan <strong>Pro</strong> requis), crée une automatisation
-              déclenchée par <strong>Instagram → « Default Reply »</strong> (attrape tous les DM),
-              avec une action <strong>« External Request »</strong> configurée avec l'URL, l'en-tête
-              et le corps ci-dessous. Pas besoin de mapper la réponse : l'agent répond via l'API.
-            </p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <div>
-                <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>Méthode & URL (POST)</div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <code style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, wordBreak: "break-all" }}>{mcStatus.webhook_url}</code>
-                  <button className="secondary-button" onClick={() => copyToClipboard(mcStatus.webhook_url || "", "url")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                    {mcCopied === "url" ? "Copié ✓" : "Copier"}
-                  </button>
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>En-tête <code>X-ManyChat-Secret</code></div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <code style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, wordBreak: "break-all" }}>{mcStatus.webhook_secret}</code>
-                  <button className="secondary-button" onClick={() => copyToClipboard(mcStatus.webhook_secret || "", "secret")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                    {mcCopied === "secret" ? "Copié ✓" : "Copier"}
-                  </button>
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>Corps (JSON, Content-Type application/json)</div>
-                <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                  <pre style={{ flex: 1, margin: 0, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{MANYCHAT_BODY_TEMPLATE}</pre>
-                  <button className="secondary-button" onClick={() => copyToClipboard(MANYCHAT_BODY_TEMPLATE, "body")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                    {mcCopied === "body" ? "Copié ✓" : "Copier"}
-                  </button>
-                </div>
-                <p style={{ fontSize: 11, opacity: 0.65, margin: "4px 0 0" }}>
-                  Remplace les valeurs par les champs système ManyChat correspondants
-                  (Contact ID, Full Name, Last Text Input) via le sélecteur de champs.
-                </p>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="secondary-button" onClick={disconnectManychat} disabled={mcBusy} style={{ fontSize: 12 }}>
-                  Délier ce compte
-                </button>
-                <button className="secondary-button" onClick={() => setMcStatus({ connected: false })} disabled={mcBusy} style={{ fontSize: 12 }}>
-                  Changer la clé API
-                </button>
-              </div>
-            </div>
-          </>
-        )}
-        {mcNotice && <div style={{ fontSize: 12, marginTop: 10, opacity: 0.85 }}>{mcNotice}</div>}
-      </div>
-    )}
     {showFaq && (
       <div className="card" style={{ marginBottom: 12, padding: 14, flex: "none" }}>
         <p style={{ fontSize: 13, marginBottom: 8 }}>
@@ -6327,6 +6368,8 @@ function ProfileView({
         ) : null}
       </section>
       {slack.error ? <div className="error" style={{ marginBottom: 12 }}>{slack.error}</div> : null}
+
+      <ManychatConnect isAuthed={isAuthed} />
 
       <section className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
