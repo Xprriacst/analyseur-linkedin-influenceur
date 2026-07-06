@@ -9,10 +9,16 @@
 > - **Verrouillage anti-chevauchement** : via un **fichier-verrou git** (`docs/.routine-lock`) avec TTL,
 >   best-effort. N'utilise que git (les outils de trigger `update_trigger`/`list_triggers` ne sont PAS
 >   exposés à la session de la routine — vérifié le 2026-07-06, ne PAS les rappeler).
+> - **Sélection pilotée par le label** « à lancer par un agent » (équipe entière, plus un seul projet)
+>   + **respect des dépendances `blockedBy`**. Avant, la routine prenait « la plus prioritaire du projet »
+>   → elle ignorait le label et faisait des issues sans rapport (ex. ALE-181 le 2026-07-06). Le label est
+>   désormais l'interrupteur qu'Alex contrôle.
 
 ---
 
-Tu travailles sur le projet Linear « 📊 Analyse influenceurs LinkedIn + Génération de posts ».
+Tu travailles sur l'équipe Linear **Alexclareo**. Tu ne traites QUE les issues portant le label
+**« à lancer par un agent »** (le contrat de sélection — détaillé à l'étape 1), quel que soit leur
+projet. Ne te limite PAS à un seul projet Linear.
 
 VERROUILLAGE ANTI-CHEVAUCHEMENT (À FAIRE EN TOUT PREMIER — avant toute autre étape, avant
 même de lire le journal)
@@ -85,12 +91,27 @@ Boucle SÉRIE : issue → branche → PR → (merge ou stop) → rebranche depui
 → issue suivante. Presque tout touche `frontend/app/page.tsx` : deux branches en parallèle
 = conflits garantis.
 
-BOUCLE PRINCIPALE — répète tant qu'il reste des issues Backlog/Todo éligibles (max 6) :
+BOUCLE PRINCIPALE — répète tant qu'il reste des issues éligibles (label « à lancer par un agent »,
+Backlog/Todo, non bloquées) — max 6 :
 
-1. CHOIX DE L'ISSUE
-   - La plus prioritaire parmi Backlog/Todo UNIQUEMENT.
-   - Ignore Done / In Review / Cancelled / Duplicate + labels « manque d'info d'Alex » / « à arbitrer ».
-   - À priorité égale : d'abord les Bugs, puis la plus petite.
+1. CHOIX DE L'ISSUE — PILOTÉ PAR LE LABEL « à lancer par un agent » (le contrat)
+   - **Périmètre = équipe `Alexclareo` ENTIÈRE**, pas un projet précis. Récupère les candidates
+     via `list_issues(team:"Alexclareo", label:"à lancer par un agent", state:"Backlog")` puis
+     idem avec `state:"Todo"`. **Ce label est le seul critère d'entrée** : Alex l'appose sur ce
+     qu'il veut voir traité en autonome, l'enlève sinon. Ne prends JAMAIS une issue sans ce label,
+     même si elle paraît prioritaire (c'est l'erreur du run du 2026-07-06 08h34 : ALE-181, non
+     labellée, a été prise parce que la sélection se faisait par priorité de projet — corrigé).
+   - Ignore Done / In Review / In Progress / Cancelled / Duplicate + labels « manque d'info
+     d'Alex » / « à arbitrer » (ces derniers priment : une issue « à arbitrer » n'est jamais prise
+     même si elle a aussi « à lancer par un agent »).
+   - **RESPECTE LES DÉPENDANCES** : pour chaque candidate, `get_issue(id, includeRelations:true)`
+     et regarde `blockedBy`. Si elle est bloquée par une issue **encore ouverte** (statut ≠ Done
+     et ≠ Cancelled) → **NE LA PRENDS PAS ce run** : elle se débloquera quand son bloquant sera
+     terminé. (Ex. epic Agent IG : ALE-201 est non bloquée → OK ; ALE-202/203/204/205 sont
+     `blockedBy` ALE-201 → à ignorer tant qu'ALE-201 n'est pas Done.)
+   - Parmi les candidates **non bloquées** : priorité la plus haute d'abord ; à priorité égale,
+     d'abord les Bugs, puis la plus petite ; puis le plus petit numéro d'ALE (ordre stable et
+     prévisible).
    - Issue floue / info manquante → passe-la (commente sur Linear si dispo, sinon note-le
      dans le rapport final), ne devine pas.
 
