@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from src import db
+from src import db, transcription
 from src.llm import qualify_prospect
 
 _DEFAULT_FAQ_PATH = "docs/faq-qualification-instagram.template.md"
@@ -94,5 +94,41 @@ def generate_draft_async(
             import logging
 
             logging.error("Génération draft IG échouée (conv=%s): %s", conversation_id, exc)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def handle_inbound_voice_async(
+    user_id: str,
+    conversation_id: str,
+    audio_url: str,
+) -> None:
+    """Transcrire une note vocale entrante puis alimenter le même pipeline (ALE-203).
+
+    En tâche de fond (transcription + LLM peuvent être longs → ne bloque pas le
+    webhook ManyChat) : Whisper → persiste le texte comme un `ig_messages` normal
+    (source=prospect, kind=voice) → génère le draft. Indistinguable d'un DM texte
+    pour la suite du pipeline. Best-effort : tout échec est loggé.
+    """
+    def _run() -> None:
+        import logging
+
+        try:
+            text = transcription.transcribe_audio_url(audio_url)
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Transcription vocale IG échouée (conv=%s): %s", conversation_id, exc)
+            return
+        if not text:
+            logging.warning("Transcription vocale IG vide (conv=%s)", conversation_id)
+            return
+        msg = db.add_ig_message_admin(
+            user_id, conversation_id, role="in", source="prospect", text=text, kind="voice"
+        )
+        if not msg:
+            return
+        try:
+            generate_draft(user_id, conversation_id, msg["id"], text)
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Génération draft (vocal) IG échouée (conv=%s): %s", conversation_id, exc)
 
     threading.Thread(target=_run, daemon=True).start()

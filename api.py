@@ -2521,7 +2521,9 @@ async def manychat_inbound_webhook(request: Request) -> dict[str, Any]:
         return {"ok": True, "conversation_id": conv["id"]}
 
     if parsed["audio_url"]:
-        # Transcription = ALE-203 : on ne persiste pas de message ici.
+        # Note vocale : transcription Whisper en tâche de fond → persiste comme
+        # message texte → génère le draft (ALE-203). Ne bloque pas l'accusé ManyChat.
+        ig_agent.handle_inbound_voice_async(owner, conv["id"], parsed["audio_url"])
         return {"ok": True, "conversation_id": conv["id"], "pending_audio": True}
 
     raise HTTPException(status_code=400, detail="Message vide (ni texte ni audio).")
