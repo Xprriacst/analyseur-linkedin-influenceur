@@ -1841,6 +1841,37 @@ def daily_idea_exists(user_id: str, idea_date: str) -> bool:
     return bool(resp.data)
 
 
+def get_recent_daily_idea_topics(user_id: str, days: int = 14, limit: int = 14) -> list[str]:
+    """Compact snippets of the user's recent daily ideas (service-role, newest first).
+
+    ALE-181 : mémoire anti-répétition des sujets en génération à froid. On relit
+    les `daily_ideas` des `days` derniers jours et on renvoie un extrait court du
+    texte de chaque post (assez pour identifier le SUJET récurrent), afin de le
+    passer à `generate_posts(avoid_topics=…)`. Aucune écriture, aucun coût LLM.
+    """
+    if not admin_enabled():
+        return []
+    since = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+    db = admin_client()
+    resp = (
+        db.table("daily_ideas")
+        .select("idea_date, post_text, idea_markdown")
+        .eq("user_id", user_id)
+        .gte("idea_date", since)
+        .order("idea_date", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    topics: list[str] = []
+    for row in resp.data or []:
+        text = (row.get("post_text") or row.get("idea_markdown") or "").strip()
+        if not text:
+            continue
+        snippet = " ".join(text.split())[:220]
+        topics.append(snippet)
+    return topics
+
+
 def insert_daily_idea(
     user_id: str,
     idea_markdown: str,

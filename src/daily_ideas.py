@@ -90,6 +90,13 @@ def _generate_for_user(user_id: str, today: str) -> bool:
     _roles = list(ROLE_SPECS.keys())
     daily_role = _roles[datetime.date.fromisoformat(today).toordinal() % len(_roles)]
 
+    # ALE-181 : en génération à froid (aucun sujet imposé par une seed), on passe
+    # l'historique des sujets récents pour éviter de reproposer le même thème jour
+    # après jour. Avec une seed le sujet est imposé → on ne filtre pas.
+    avoid_topics = None
+    if not seed_text:
+        avoid_topics = db.get_recent_daily_idea_topics(user_id)
+
     # ALE-136 : on génère un VRAI post complet (postable), plus un simple concept.
     posts = generate_posts(
         seed_text,
@@ -98,6 +105,7 @@ def _generate_for_user(user_id: str, today: str) -> bool:
         user_context=context,
         editorial_role=daily_role,
         count=1,
+        avoid_topics=avoid_topics,
     )
     if not posts:
         print(f"  · {user_id}: génération vide, skip")

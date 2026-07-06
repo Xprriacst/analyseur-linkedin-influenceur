@@ -824,6 +824,7 @@ def generate_posts(
     web_search: bool = False,
     count: int = 1,
     on_web_search: Callable[[dict[str, Any]], None] | None = None,
+    avoid_topics: list[str] | None = None,
 ) -> list[dict]:
     """Generate LinkedIn post variants (default 1) covering editorial roles.
 
@@ -884,8 +885,21 @@ def generate_posts(
             "Varie les sujets entre les variants.\n\n"
         )
     )
+    # ALE-181 : mémoire anti-répétition. En génération à froid (aucun sujet imposé),
+    # on liste les posts déjà servis récemment pour forcer un thème/angle différent.
+    avoid_block = ""
+    if not topic_clean and avoid_topics:
+        recent = "\n".join(f"- {t}" for t in avoid_topics if t)
+        if recent:
+            avoid_block = (
+                "Sujets déjà traités les jours précédents, à NE PAS reproduire "
+                "(change franchement de thème ET d'angle, ne reformule pas les mêmes idées) :\n"
+                + recent
+                + "\n\n"
+            )
     user = (
         topic_directive
+        + avoid_block
         + "Contexte client à respecter EN PRIORITÉ (prime sur les patterns viraux) :\n"
         + context_text
         + "\n\nBenchmarks issus de l'analyse d'influenceurs LinkedIn "
