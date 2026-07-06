@@ -48,13 +48,19 @@ class ManyChatError(RuntimeError):
 
 
 def enabled() -> bool:
+    """True si un token ManyChat global est configuré (compte propriétaire/legacy).
+
+    En multi-client, chaque utilisateur fournit SA clé (cf. `send_text(api_token=…)`) ;
+    ce global sert de repli pour le compte propriétaire mono-compte historique.
+    """
     return bool(os.environ.get("MANYCHAT_API_TOKEN"))
 
 
-def _api_token() -> str:
-    token = os.environ.get("MANYCHAT_API_TOKEN")
+def _api_token(api_token: str | None = None) -> str:
+    """Token à utiliser : celui fourni (clé du client) sinon le global d'environnement."""
+    token = api_token or os.environ.get("MANYCHAT_API_TOKEN")
     if not token:
-        raise ManyChatError("MANYCHAT_API_TOKEN manquant dans l'environnement serveur.")
+        raise ManyChatError("Aucune clé API ManyChat (ni utilisateur ni globale).")
     return token
 
 
@@ -79,13 +85,14 @@ def _throttle() -> None:
         _send_times.append(time.monotonic())
 
 
-def _request(method: str, path: str, *, body: dict | None = None) -> Any:
+def _request(method: str, path: str, *, body: dict | None = None, api_token: str | None = None) -> Any:
     url = f"{BASE_URL}{path}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
+    token = _api_token(api_token)
     last_error: Exception | None = None
     for attempt in range(_MAX_RETRIES):
         req = urllib.request.Request(url, data=data, method=method)
-        req.add_header("Authorization", f"Bearer {_api_token()}")
+        req.add_header("Authorization", f"Bearer {token}")
         req.add_header("Accept", "application/json")
         if data is not None:
             req.add_header("Content-Type", "application/json")
@@ -109,11 +116,12 @@ def _request(method: str, path: str, *, body: dict | None = None) -> Any:
     raise last_error or ManyChatError("ManyChat: échec après plusieurs tentatives.")
 
 
-def send_text(subscriber_id: str, text: str) -> dict:
+def send_text(subscriber_id: str, text: str, *, api_token: str | None = None) -> dict:
     """Envoyer un message texte à un prospect via ManyChat (`sendContent`).
 
     `subscriber_id` = identifiant ManyChat du prospect (stocké en
-    `ig_conversations.prospect_id`). Respecte le throttle horaire + backoff.
+    `ig_conversations.prospect_id`). `api_token` = clé du client (multi-client) ;
+    sinon repli sur la clé globale. Respecte le throttle horaire + backoff.
     """
     text = (text or "").strip()
     if not text:
@@ -130,7 +138,20 @@ def send_text(subscriber_id: str, text: str) -> dict:
         # Réponse dans la fenêtre 24 h : tag standard hors-promotion.
         "message_tag": os.environ.get("MANYCHAT_MESSAGE_TAG", "ACCOUNT_UPDATE"),
     }
-    return _request("POST", "/fb/sending/sendContent", body=payload)
+    return _request("POST", "/fb/sending/sendContent", body=payload, api_token=api_token)
+
+
+def validate_token(api_token: str) -> dict:
+    """Vérifier qu'une clé API ManyChat est valide en appelant `getInfo`.
+
+    Renvoie les infos de page côté ManyChat, ou lève `ManyChatError` si la clé
+    est invalide/refusée (401/403) — utilisé au moment où le client relie son
+    compte, pour attraper une faute de frappe plutôt que d'échouer au 1er envoi.
+    """
+    token = (api_token or "").strip()
+    if not token:
+        raise ManyChatError("Clé API ManyChat vide.")
+    return _request("GET", "/fb/page/getInfo", api_token=token)
 
 
 def parse_inbound(payload: dict) -> dict:

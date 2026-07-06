@@ -4965,6 +4965,13 @@ type IgDraft = {
   status: string;
   created_at: string;
 };
+type IgManychatStatus = {
+  connected: boolean;
+  api_token_masked?: string | null;
+  webhook_url?: string;
+  webhook_secret?: string;
+  connected_at?: string | null;
+};
 
 function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
@@ -4983,6 +4990,13 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   const [faqLoaded, setFaqLoaded] = useState(false);
   const [faqSaving, setFaqSaving] = useState(false);
   const [faqNotice, setFaqNotice] = useState("");
+  // Connexion ManyChat par utilisateur (multi-client).
+  const [showManychat, setShowManychat] = useState(false);
+  const [mcStatus, setMcStatus] = useState<IgManychatStatus | null>(null);
+  const [mcKey, setMcKey] = useState("");
+  const [mcBusy, setMcBusy] = useState(false);
+  const [mcNotice, setMcNotice] = useState("");
+  const [mcCopied, setMcCopied] = useState<string>("");
   const endRef = useRef<HTMLDivElement | null>(null);
 
   const active = conversations.find((c) => c.id === activeId) || null;
@@ -5087,6 +5101,64 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
     } finally {
       setFaqSaving(false);
     }
+  }
+
+  async function toggleManychat() {
+    const next = !showManychat;
+    setShowManychat(next);
+    setMcNotice("");
+    if (next && mcStatus === null) {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (res.ok) setMcStatus(data);
+      } catch { /* non bloquant */ }
+    }
+  }
+
+  async function connectManychat() {
+    if (!mcKey.trim()) return;
+    setMcBusy(true); setMcNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ api_token: mcKey.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion impossible");
+      setMcStatus(data);
+      setMcKey("");
+      setMcNotice("✓ Compte ManyChat relié. Copie l'URL et le secret ci-dessous dans ton flow ManyChat.");
+    } catch (err: any) {
+      setMcNotice(`Erreur : ${err.message}`);
+    } finally {
+      setMcBusy(false);
+    }
+  }
+
+  async function disconnectManychat() {
+    setMcBusy(true); setMcNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, {
+        method: "DELETE", headers: await authHeaders(),
+      });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Déconnexion impossible"); }
+      setMcStatus({ connected: false });
+      setMcNotice("Compte ManyChat délié.");
+    } catch (err: any) {
+      setMcNotice(`Erreur : ${err.message}`);
+    } finally {
+      setMcBusy(false);
+    }
+  }
+
+  async function copyToClipboard(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setMcCopied(label);
+      setTimeout(() => setMcCopied(""), 1500);
+    } catch { /* clipboard indisponible */ }
   }
 
   useEffect(() => {
@@ -5211,6 +5283,9 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
         <a href="/manychat-test" className="secondary-button" style={{ fontSize: 12, whiteSpace: "nowrap", textDecoration: "none" }}>
           🧪 Simulateur
         </a>
+        <button className="secondary-button" onClick={toggleManychat} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+          {showManychat ? "Fermer ManyChat" : (mcStatus?.connected ? "🔌 ManyChat ✓" : "🔌 Connecter ManyChat")}
+        </button>
         <button className="secondary-button" onClick={toggleFaq} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
           {showFaq ? "Fermer la FAQ" : "📚 FAQ de l'agent"}
         </button>
@@ -5219,6 +5294,74 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
         </button>
       </div>
     </div>
+    {showManychat && (
+      <div className="card" style={{ marginBottom: 12, padding: 14, flex: "none" }}>
+        {!mcStatus?.connected ? (
+          <>
+            <p style={{ fontSize: 13, marginBottom: 8 }}>
+              <strong>Connecter ton compte ManyChat.</strong> Colle ta clé API ManyChat
+              (ManyChat → Settings → API → Generate your token). Elle sert à envoyer les
+              réponses de l'agent à tes prospects. Après connexion, tu recevras une URL de
+              webhook et un secret à coller dans un flow ManyChat pour recevoir les DM.
+            </p>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="password"
+                value={mcKey}
+                onChange={(e) => setMcKey(e.target.value)}
+                placeholder="Clé API ManyChat (0123456789:abcdef…)"
+                style={{ flex: 1, padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13 }}
+              />
+              <button className="primary-button" onClick={connectManychat} disabled={mcBusy || !mcKey.trim()} style={{ fontSize: 13, whiteSpace: "nowrap" }}>
+                {mcBusy ? "Vérification…" : "Connecter"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p style={{ fontSize: 13, marginBottom: 10 }}>
+              <strong>✓ Compte ManyChat relié</strong>
+              {mcStatus.api_token_masked && <span style={{ opacity: 0.7 }}> (clé {mcStatus.api_token_masked})</span>}.
+              Pour recevoir les DM, crée dans ManyChat un flow déclenché à chaque message,
+              avec une action <strong>« External Request »</strong> configurée ainsi :
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>Méthode & URL (POST)</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <code style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, wordBreak: "break-all" }}>{mcStatus.webhook_url}</code>
+                  <button className="secondary-button" onClick={() => copyToClipboard(mcStatus.webhook_url || "", "url")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                    {mcCopied === "url" ? "Copié ✓" : "Copier"}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>En-tête <code>X-ManyChat-Secret</code></div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <code style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, wordBreak: "break-all" }}>{mcStatus.webhook_secret}</code>
+                  <button className="secondary-button" onClick={() => copyToClipboard(mcStatus.webhook_secret || "", "secret")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                    {mcCopied === "secret" ? "Copié ✓" : "Copier"}
+                  </button>
+                </div>
+              </div>
+              <p style={{ fontSize: 12, opacity: 0.7, margin: 0 }}>
+                Corps (JSON) à envoyer : au minimum <code>{"{ \"subscriber_id\": \"...\", \"text\": \"...\" }"}</code>{" "}
+                (mappe les champs ManyChat correspondants au contact et à son dernier message).
+              </p>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="secondary-button" onClick={disconnectManychat} disabled={mcBusy} style={{ fontSize: 12 }}>
+                  Délier ce compte
+                </button>
+                <button className="secondary-button" onClick={() => setMcStatus({ connected: false })} disabled={mcBusy} style={{ fontSize: 12 }}>
+                  Changer la clé API
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+        {mcNotice && <div style={{ fontSize: 12, marginTop: 10, opacity: 0.85 }}>{mcNotice}</div>}
+      </div>
+    )}
     {showFaq && (
       <div className="card" style={{ marginBottom: 12, padding: 14, flex: "none" }}>
         <p style={{ fontSize: 13, marginBottom: 8 }}>

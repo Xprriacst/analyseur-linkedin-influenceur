@@ -126,7 +126,9 @@ def _route_draft(
     if mode == "autopilot" and green and not kill and window_open and draft:
         try:
             if not is_test_prospect(conv.get("prospect_id")):
-                manychat.send_text(conv["prospect_id"], draft.get("reply", ""))
+                # Multi-client : envoi avec la clé ManyChat de l'utilisateur (repli global).
+                api_token = db.get_ig_manychat_token_admin(user_id)
+                manychat.send_text(conv["prospect_id"], draft.get("reply", ""), api_token=api_token)
             db.add_ig_message_admin(
                 user_id, conversation_id, role="out", source="agent",
                 text=draft.get("reply", ""), kind="text",

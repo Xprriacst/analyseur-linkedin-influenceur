@@ -13,6 +13,7 @@ test("Inbox : layout plein écran + boutons Simulateur / FAQ / kill-switch", asy
   await expect(page.getByText("Conversations", { exact: false }).first()).toBeVisible();
   // Nouveaux points d'entrée de la barre du haut.
   await expect(page.getByRole("link", { name: /Simulateur/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /ManyChat/i }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: /FAQ de l'agent/i })).toBeVisible();
   // Kill-switch : l'un des deux libellés selon l'état courant.
   const killOff = page.getByRole("button", { name: /Tout repasser en supervisé/i });
@@ -28,6 +29,14 @@ test("Inbox : l'éditeur FAQ s'ouvre et se referme (sans enregistrer)", async ({
   await expect(page.getByRole("button", { name: /Enregistrer la FAQ/i })).toBeVisible();
   await page.getByRole("button", { name: /Fermer la FAQ/i }).click();
   await expect(page.getByRole("button", { name: /Enregistrer la FAQ/i })).toHaveCount(0);
+});
+
+test("Inbox : le panneau de connexion ManyChat s'ouvre (sans connecter)", async ({ page }) => {
+  await gotoTab(page, "Inbox");
+  await page.getByRole("button", { name: /ManyChat/i }).first().click();
+  // Compte de test non relié → l'écran de saisie de la clé API doit apparaître.
+  await expect(page.getByPlaceholder(/Clé API ManyChat/i)).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Connecter$/i })).toBeVisible();
 });
 
 test("Simulateur ManyChat : la page /manychat-test se rend connecté (sans envoyer)", async ({ page }) => {
