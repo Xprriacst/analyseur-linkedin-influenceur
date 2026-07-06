@@ -2952,3 +2952,51 @@ def add_ig_message(
         conv_update["window_expires_at"] = expires.isoformat()
     db.table("ig_conversations").update(conv_update).eq("id", conversation_id).execute()
     return msg.data[0] if msg.data else None
+
+
+def list_ig_messages_admin(user_id: str, conversation_id: str, limit: int = 40) -> list[dict]:
+    """Historique d'une conversation (service-role, scellé user_id) — pour le cerveau agent."""
+    if not admin_enabled():
+        return []
+    resp = (
+        admin_client()
+        .table("ig_messages")
+        .select("role, source, text, kind, created_at")
+        .eq("user_id", user_id)
+        .eq("conversation_id", conversation_id)
+        .order("created_at", desc=False)
+        .limit(max(1, min(limit, 200)))
+        .execute()
+    )
+    return resp.data or []
+
+
+def create_ig_draft_admin(
+    user_id: str,
+    conversation_id: str,
+    message_id: str,
+    *,
+    reply: str,
+    confidence,
+    needs_human: bool,
+    reason,
+) -> dict | None:
+    """Persister une réponse suggérée (statut pending), service-role scellé user_id (ALE-202)."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("ig_drafts")
+        .insert({
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "reply": reply or "",
+            "confidence": confidence,
+            "needs_human": bool(needs_human),
+            "reason": reason,
+            "status": "pending",
+        })
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
