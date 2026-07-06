@@ -5119,18 +5119,23 @@ function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
             </p>
           </div>
         </div>
-        {connected ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
-            <button className="secondary-button" onClick={() => setSetupOpen((v) => !v)} style={{ fontSize: 12 }}>
-              {setupOpen ? "Masquer le webhook" : "Configurer le webhook"}
-            </button>
-            <button className="secondary-button" onClick={disconnect} disabled={busy} style={{ fontSize: 12 }}>
-              {busy ? <Loader2 size={12} className="spinning" /> : null}
-              Délier
-            </button>
-          </div>
-        ) : null}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <a href="/manychat-test" className="secondary-button" style={{ fontSize: 12, whiteSpace: "nowrap", textDecoration: "none" }} title="Tester l'agent avec un faux DM entrant">
+            🧪 Simulateur
+          </a>
+          {connected ? (
+            <>
+              <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+              <button className="secondary-button" onClick={() => setSetupOpen((v) => !v)} style={{ fontSize: 12 }}>
+                {setupOpen ? "Masquer le webhook" : "Configurer le webhook"}
+              </button>
+              <button className="secondary-button" onClick={disconnect} disabled={busy} style={{ fontSize: 12 }}>
+                {busy ? <Loader2 size={12} className="spinning" /> : null}
+                Délier
+              </button>
+            </>
+          ) : null}
+        </div>
       </section>
 
       {!connected && (
@@ -5219,6 +5224,86 @@ function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
   );
 }
 
+// Cerveau de l'agent DM (FAQ + objectif) : la seule source de vérité utilisée
+// par l'agent Instagram. Édité ponctuellement → placé dans le profil, à côté de
+// la config ManyChat, plutôt que dans le header de l'Inbox.
+function AgentFaqEditor({ isAuthed }: { isAuthed: boolean }) {
+  const [text, setText] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthed || loaded || !open) return;
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/ig/faq`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (res.ok) { setText(data.content || ""); setLoaded(true); }
+      } catch { /* non bloquant */ }
+    })();
+  }, [isAuthed, open, loaded]);
+
+  async function save() {
+    setSaving(true); setNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/faq`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
+      setNotice("✓ FAQ enregistrée — l'agent l'utilise dès le prochain message.");
+    } catch (err: any) {
+      setNotice(`Erreur : ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="card" style={{ marginBottom: 16, padding: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Lightbulb size={20} style={{ flexShrink: 0, color: "var(--coral)" }} />
+          <div>
+            <strong>Cerveau de l'agent (FAQ + objectif)</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              La seule source de vérité de l'agent DM : il ne répond seul que si la réponse est couverte ici, sinon il te passe la main.
+            </p>
+          </div>
+        </div>
+        <button className="secondary-button" onClick={() => setOpen((v) => !v)} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+          {open ? "Masquer" : "Éditer la FAQ"}
+        </button>
+      </div>
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
+            Décris ton offre, tes prix, tes questions/réponses fréquentes et l'objectif de la conversation
+            (ex. proposer un appel découverte).
+          </p>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={loaded ? "Ex. : Qui es-tu ? / Quels sont tes tarifs ? / Objectif : qualifier puis proposer un appel…" : "Chargement…"}
+            rows={10}
+            style={{ width: "100%", resize: "vertical", padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13, fontFamily: "inherit" }}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
+            <button className="primary-button" onClick={save} disabled={saving || !loaded} style={{ fontSize: 13 }}>
+              {saving ? "Enregistrement…" : "Enregistrer la FAQ"}
+            </button>
+            {notice && <span style={{ fontSize: 12, opacity: 0.8 }}>{notice}</span>}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
   // Faux tant que le premier /me/ig/conversations n'a pas répondu : évite d'afficher
@@ -5233,13 +5318,9 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [killSwitch, setKillSwitch] = useState(false);
-  // Éditeur FAQ + objectif de l'agent (source de vérité du cerveau).
-  const [showFaq, setShowFaq] = useState(false);
-  const [faqText, setFaqText] = useState("");
-  const [faqLoaded, setFaqLoaded] = useState(false);
-  const [faqSaving, setFaqSaving] = useState(false);
-  const [faqNotice, setFaqNotice] = useState("");
-  // La connexion ManyChat a été déplacée dans le profil (composant ManychatConnect).
+  // La FAQ/objectif de l'agent et la connexion ManyChat ont été déplacées dans
+  // le profil (composants AgentFaqEditor + ManychatConnect) — l'Inbox reste
+  // focalisée sur les conversations.
   const endRef = useRef<HTMLDivElement | null>(null);
   // Conversation réellement affichée : sert à ignorer les réponses de chargement
   // de fil arrivées hors-séquence (l'utilisateur a changé de conversation entre
@@ -5282,24 +5363,8 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
     } catch { /* non bloquant */ }
   }
 
-  async function toggleKillSwitch() {
-    setBusy(true); setError("");
-    try {
-      const next = !killSwitch;
-      const res = await fetch(`${DIRECT_API_URL}/me/ig/autopilot/kill-switch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ active: next }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Bascule impossible");
-      setKillSwitch(next);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
+  // toggleKillSwitch retiré : le bouton « Désactiver l'autopilot partout » est
+  // grisé tant que la feature n'est pas disponible (l'endpoint reste en place).
 
   async function loadThread(conversationId: string) {
     setLoading(true);
@@ -5334,39 +5399,6 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
     setMessages([]);
     setDrafts([]);
     loadThread(id);
-  }
-
-  async function toggleFaq() {
-    const next = !showFaq;
-    setShowFaq(next);
-    if (next && !faqLoaded) {
-      try {
-        const res = await fetch(`${DIRECT_API_URL}/me/ig/faq`, { headers: await authHeaders() });
-        const data = await res.json();
-        if (res.ok) {
-          setFaqText(data.content || "");
-          setFaqLoaded(true);
-        }
-      } catch { /* non bloquant */ }
-    }
-  }
-
-  async function saveFaq() {
-    setFaqSaving(true); setFaqNotice("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/ig/faq`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: faqText }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
-      setFaqNotice("✓ FAQ enregistrée — l'agent l'utilise dès le prochain message.");
-    } catch (err: any) {
-      setFaqNotice(`Erreur : ${err.message}`);
-    } finally {
-      setFaqSaving(false);
-    }
   }
 
   useEffect(() => {
@@ -5517,40 +5549,18 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
           : "🙋 Mode supervisé — l'autopilot est temporairement désactivé, chaque réponse est validée à la main avant envoi."}
       </span>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flex: "none" }}>
-        <a href="/manychat-test" className="secondary-button" style={{ fontSize: 12, whiteSpace: "nowrap", textDecoration: "none" }}>
-          🧪 Simulateur
-        </a>
-        <button className="secondary-button" onClick={toggleFaq} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-          {showFaq ? "Fermer la FAQ" : "📚 FAQ de l'agent"}
-        </button>
-        <button className="secondary-button" onClick={toggleKillSwitch} disabled={busy} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-          {killSwitch ? "Réactiver l'autopilot" : "Tout repasser en supervisé"}
+        {/* Désactive l'autopilot (envoi automatique) sur TOUTES les conversations
+            d'un coup. Feature pas encore disponible → bouton grisé. */}
+        <button
+          className="secondary-button"
+          disabled
+          title="Bientôt disponible"
+          style={{ fontSize: 12, whiteSpace: "nowrap", opacity: 0.5, cursor: "not-allowed" }}
+        >
+          🛑 Désactiver l'autopilot partout — bientôt
         </button>
       </div>
     </div>
-    {showFaq && (
-      <div className="card" style={{ marginBottom: 12, padding: 14, flex: "none" }}>
-        <p style={{ fontSize: 13, marginBottom: 8 }}>
-          <strong>FAQ + objectif de l'agent.</strong> C'est la seule source de vérité du cerveau :
-          il ne répond seul que si la réponse est couverte ici, sinon il te passe la main.
-          Décris ton offre, tes prix, tes questions/réponses fréquentes et l'objectif de la conversation
-          (ex. proposer un appel découverte).
-        </p>
-        <textarea
-          value={faqText}
-          onChange={(e) => setFaqText(e.target.value)}
-          placeholder={faqLoaded ? "Ex. : Qui es-tu ? / Quels sont tes tarifs ? / Objectif : qualifier puis proposer un appel…" : "Chargement…"}
-          rows={10}
-          style={{ width: "100%", resize: "vertical", padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13, fontFamily: "inherit" }}
-        />
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
-          <button className="primary-button" onClick={saveFaq} disabled={faqSaving || !faqLoaded} style={{ fontSize: 13 }}>
-            {faqSaving ? "Enregistrement…" : "Enregistrer la FAQ"}
-          </button>
-          {faqNotice && <span style={{ fontSize: 12, opacity: 0.8 }}>{faqNotice}</span>}
-        </div>
-      </div>
-    )}
     <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
       <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
         <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
@@ -6370,6 +6380,8 @@ function ProfileView({
       {slack.error ? <div className="error" style={{ marginBottom: 12 }}>{slack.error}</div> : null}
 
       <ManychatConnect isAuthed={isAuthed} />
+
+      <AgentFaqEditor isAuthed={isAuthed} />
 
       <section className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
