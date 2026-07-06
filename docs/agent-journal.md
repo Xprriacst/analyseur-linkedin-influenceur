@@ -20,6 +20,19 @@
 
 ---
 
+## 2026-07-06 09h01 UTC — routine issues Linear (aucune issue éligible — 0 PR)
+**Issues traitées** : aucune. Verrou git posé/retiré normalement (étape A + Z OK, `docs/.routine-lock` absent au démarrage → posé, push dev OK).
+**Ce qui a été fait** : triage complet du backlog Backlog/Todo. Confirmé l'état de la seule PR ouverte laissée par le run précédent : **PR #176 (ALE-181) toujours open, en attente de validation Alex** (catégorie comportement/génération, ne se merge pas en autonome). Rien de nouveau à shipper.
+**Difficultés / constats (pourquoi 0 PR)** : aucun candidat n'offre de PR minimale propre, unblocked et non-arbitrer :
+- **ALE-142** (P3, Slack testable en dev) : nécessite des changements **infra Render** (secrets `SLACK_*` + `SUPABASE_SERVICE_ROLE_KEY` sur le service dev, création d'un cron scheduler dev) + config d'une **app Slack** + arbitrage **Option A vs B** → pas code-only, décisions Alex requises.
+- **ALE-110** (P3, matching influenceurs onboarding) : **explicitement bloquée par ALE-109** (cache cross-user non livré — ALE-109 rouverte, re-scrape toujours actif) + questions ouvertes à trancher (méthode de matching, signal d'entrée). Bloquée + design non arbitré.
+- **ALE-183** (Posts publiés) : différée au run précédent (migration structurante + money-path publication live) — inchangé.
+- Reste du backlog éligible = features larges / pièces d'epics avec dépendances (Récap ALE-196→200 avec HeyReach, Outreach ALE-170→174), refactor méga (ALE-148 monolithe page.tsx), cleanup destructif (ALE-87 décommission Polaris), connecteurs externes (ALE-76/77 Substack, ALE-60 X), ou labels « à arbitrer » / « manque d'info d'Alex ». Aucune PR minimale propre à faire.
+- **ALE-175** reste sautée (prémisse caduque, ALE-127 revertée — cf. run 08h34).
+**Leçons / à savoir pour le prochain run** :
+- Le backlog est **essentiellement vidé de ses PR minimales autonomes**. Les prochains candidats réels (ALE-183, ALE-142, ALE-110, épics Récap/Outreach) demandent tous soit une **décision produit/infra d'Alex**, soit le **déblocage d'une dépendance** (ALE-109). Tant que ça ne bouge pas côté Alex, les runs trouveront 0 issue — c'est **normal**, pas un bug de la routine (à distinguer du blocage `update_trigger` du 10h15).
+- État en suspens inchangé : **PR #176 (ALE-181) ouverte, CI verte, attend Alex**.
+
 ## 2026-07-06 08h34 UTC — routine issues Linear (1 PR ouverte, verrou git OK)
 **Issues traitées** : ALE-181 (PR #176, In Review — à valider par Alex) · ALE-175 (sautée, prémisse caduque) · ALE-183 (différée, migration structurante + money-path).
 **Ce qui a été fait** :
