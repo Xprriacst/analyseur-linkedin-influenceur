@@ -20,6 +20,22 @@
 
 ---
 
+## 2026-07-06 (bis) — (hors routine) Verrouillage anti-chevauchement des runs
+**Contexte** : le trigger « Projet Cibl » (`trig_01TsJXTZXGkemc485quuEMeN`) est un **cron horaire**
+(`0 * * * *`), mais une boucle complète (jusqu'à 6 issues, chacune avec une attente CI de
+~20 min max) peut dépasser 1-2h → un run pouvait encore tourner quand l'heure suivante
+sonnait, avec risque de course (deux runs concurrents dans le même environnement : checkout/
+commit/push simultanés = état git corrompu possible, ou doublon si les deux runs choisissent
+la même issue avant que l'un ait poussé).
+**Fix** : le prompt (`docs/routine-agent-issues.prompt.md`) s'auto-verrouille désormais —
+`update_trigger(enabled:false)` en toute première action, `update_trigger(enabled:true)` en
+toute dernière action (même après échec). Si le run plante avant de se réactiver, le trigger
+reste désactivé (fail-closed, volontaire).
+**À savoir pour le prochain run** : si tu découvres que le trigger « Projet Cibl » est
+**désactivé** en démarrant, c'est probablement le signe qu'un run précédent a planté avant
+sa réactivation — va lire les dernières entrées de ce journal + les PR ouvertes avant de
+demander à Alex de le réactiver, plutôt que de le réactiver silencieusement toi-même.
+
 ## 2026-07-06 — (entrée initiale, hors routine) Diagnostic & outillage de l'autonomie
 **Contexte** : la routine « traiter les issues Linear » ne créait jamais de PR ni ne lançait les tests.
 **Causes identifiées (vérifiées)** :
