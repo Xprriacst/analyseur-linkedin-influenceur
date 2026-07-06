@@ -4,6 +4,9 @@ name: PR guardrails
 # 1. Aucune PR ne doit contenir de marqueur de conflit Git non résolu.
 # 2. Les features ciblent `dev`. Seule une PR `dev → main` est autorisée vers `main`
 #    (release). Toute autre PR vers `main` est bloquée.
+# 3. Tests obligatoires en CI : compile Python (api.py + src/) et build frontend.
+#    But : le « vert » ne dépend plus de la bonne foi de l'agent qui ouvre la PR —
+#    une PR ne peut être mergée que si la machine a compilé et buildé.
 
 on:
   pull_request:
@@ -46,3 +49,21 @@ jobs:
             exit 1
           fi
           echo "Aucun marqueur de conflit."
+
+      - name: Python compile (api.py + src/)
+        run: |
+          python3 -m py_compile api.py src/*.py
+          echo "py_compile OK."
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend build
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
