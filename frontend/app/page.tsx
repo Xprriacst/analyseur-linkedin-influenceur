@@ -1021,6 +1021,7 @@ function Sidebar({
   onToggleView,
   jobBadges,
   credits,
+  igUnread,
   platform,
   onNavigate,
   onLoadReport,
@@ -1037,6 +1038,7 @@ function Sidebar({
   onToggleView: () => void;
   jobBadges: { linkedin: { completed: number; total: number } | null; instagram: { completed: number; total: number } | null };
   credits: number | null;
+  igUnread: number;
   platform: Platform;
   onNavigate: (v: MainView) => void;
   onLoadReport: (report: Report) => void;
@@ -1204,6 +1206,11 @@ function Sidebar({
                   >
                     <InboxIcon size={14} />
                     {!collapsed && <span>Inbox</span>}
+                    {!locked && igUnread > 0 ? (
+                      collapsed
+                        ? <span className="nav-alert-badge nav-alert-badge-dot" aria-label={`${igUnread} nouveau(x) message(s)`} />
+                        : <span className="nav-alert-badge">{igUnread > 9 ? "9+" : igUnread}</span>
+                    ) : null}
                     {locked ? <Lock size={12} className="lock-ico" /> : null}
                   </button>
                 );
@@ -5360,7 +5367,7 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
       <span style={{ fontSize: 13 }}>
         {killSwitch
           ? "🛑 Kill-switch actif — tout est en supervisé, aucun envoi automatique."
-          : "L'autopilot peut envoyer seul sur les conversations en mode autopilot, uniquement quand l'agent sait (vert)."}
+          : "🙋 Mode supervisé — l'autopilot est temporairement désactivé, chaque réponse est validée à la main avant envoi."}
       </span>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flex: "none" }}>
         <a href="/manychat-test" className="secondary-button" style={{ fontSize: 12, whiteSpace: "nowrap", textDecoration: "none" }}>
@@ -5518,8 +5525,15 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
                     : "fenêtre 24 h ouverte"}
                 </span>
               </div>
-              <button className="secondary-button" onClick={toggleMode} disabled={busy} style={{ fontSize: 12 }}>
-                {active.mode === "autopilot" ? "Repasser en supervisé" : "Activer l'autopilot"}
+              {/* Autopilot temporairement grisé : chaque réponse reste validée à la main. */}
+              <button
+                className="secondary-button"
+                onClick={toggleMode}
+                disabled
+                title="L'autopilot sera bientôt disponible"
+                style={{ fontSize: 12, opacity: 0.5, cursor: "not-allowed" }}
+              >
+                🤖 Autopilot — bientôt
               </button>
             </header>
 
@@ -7324,6 +7338,9 @@ export default function Home() {
   const [authReason, setAuthReason] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [credits, setCredits] = useState<number | null>(null);
+  // Nombre de conversations Inbox avec un message plus récent que la dernière
+  // visite → pastille d'alerte dans la sidebar (poll global, cf. effet plus bas).
+  const [igUnread, setIgUnread] = useState(0);
   const [showOnboarding, setShowOnboarding] = useState(false);
   // Le temps de vérifier (côté serveur) si le profil est vide, on affiche un
   // écran de chargement neutre plutôt que l'app qui "flashe" puis l'onboarding.
@@ -7526,6 +7543,42 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anyJobActive, isAuthed]);
 
+  // Pastille d'alerte Inbox : poll léger et global (indépendant de l'écran actif,
+  // contrairement au poll interne de l'Inbox qui ne tourne que quand elle est
+  // ouverte). Une conversation est « non lue » si son dernier message est plus
+  // récent que le repère de dernière visite (max des last_message_at vus, stocké
+  // par utilisateur dans localStorage → pas de fuite cross-user, cf. clé keyée).
+  // Sur l'écran Inbox on considère tout comme vu et on met à jour le repère.
+  useEffect(() => {
+    if (!isAuthed) { setIgUnread(0); return; }
+    const uid = session?.user?.id ?? "anon";
+    const seenKey = `ig_inbox_seen_at:${uid}`;
+    const ts = (c: { last_message_at?: string | null }) =>
+      c?.last_message_at ? new Date(c.last_message_at).getTime() : 0;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations`, { headers: await authHeaders() });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (cancelled || !Array.isArray(data)) return;
+        const latest = data.reduce((m: number, c: { last_message_at?: string | null }) => Math.max(m, ts(c)), 0);
+        if (view === "inbox") {
+          try { localStorage.setItem(seenKey, String(latest)); } catch { /* ignore */ }
+          setIgUnread(0);
+        } else {
+          let seen = 0;
+          try { seen = Number(localStorage.getItem(seenKey) || 0); } catch { /* ignore */ }
+          setIgUnread(data.filter((c: { last_message_at?: string | null }) => ts(c) > seen).length);
+        }
+      } catch { /* non bloquant */ }
+    };
+    tick();
+    const t = setInterval(tick, 25000);
+    return () => { cancelled = true; clearInterval(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.access_token, view]);
+
   async function persistAnonResult(anon: Analysis) {
     try {
       await fetch(`${DIRECT_API_URL}/analyses/persist`, {
@@ -7578,6 +7631,7 @@ export default function Home() {
       setLoadedReport(null);
       setJobs([]);
       setGenerationJobs([]);
+      setIgUnread(0);
       // ALE-145 : purge le cache générateur quand l'utilisateur change (anti fuite cross-user).
       _genCache.variants = [];
       _genCache.topic = "";
@@ -7777,6 +7831,7 @@ export default function Home() {
             instagram: activeIgJob ? { completed: activeIgJob.completed, total: activeIgJob.total } : null,
           }}
           credits={credits}
+          igUnread={igUnread}
           platform={platform}
           onNavigate={(v) => {
             setView(v);
