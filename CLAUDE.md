@@ -64,6 +64,9 @@ Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netli
 - **Pièges** : Playwright **pinné `1.49.1`** (1.61 cassé avec Node 22). Création SQL d'un user GoTrue → colonnes token à `''` (pas `NULL`), `auth.identities.email` est générée.
 - **Génération réelle** (post/idée/analyse) : non couverte (coûteuse) — testée manuellement par Alex via la checklist `e2e/MANUAL-CHECKLIST.md` (génération, publication LinkedIn/image, persistance après refresh, isolation cross-user).
 
+## Journal des routines agent
+Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-journal.md` (sur `dev`, entrée la plus récente en haut). Chaque run y consigne : issues traitées + PR + statuts, difficultés rencontrées (erreurs exactes), leçons et états en suspens. **Tout agent qui démarre une routine doit lire les dernières entrées d'abord** ; tout run doit en ajouter une à la fin (seul cas de push direct autorisé sur `dev` : ce fichier de docs uniquement). Prompt de routine de référence : `docs/routine-agent-issues.prompt.md`.
+
 ## Changelog
 
 ### 2026-07-06 (autonomisation des routines agent : CI de build + hook SessionStart + prompt corrigé)
@@ -72,6 +75,7 @@ Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netli
 - **Hook SessionStart** (`.claude/hooks/session-start.sh`, enregistré dans `.claude/settings.json`) : `npm install` dans `frontend/` au démarrage des sessions distantes (`CLAUDE_CODE_REMOTE` only, idempotent, synchrone). Validé : hook OK (416 packages/17 s), `py_compile` OK, `npm run build` OK sans secret. **Actif pour toutes les sessions une fois mergé dans la branche par défaut.**
 - **Allowlist** (`.claude/settings.json`) : `git fetch/checkout/push/…`, `npm ci/install/run build`, `python(3) -m py_compile` pré-autorisés pour les sessions headless.
 - **Prompt de routine corrigé** : `docs/routine-agent-issues.prompt.md` — MCP GitHub au lieu de `gh`, branche depuis `origin/dev`, portes de contrôle locales + CI, gating cosmétique (auto-merge dev) vs comportement/données (In Review pour Alex), Linear best-effort, **règle anti-silence** (tout échec est rapporté avec l'erreur exacte). À coller dans la config de la routine.
+- **Journal de bord des routines** : `docs/agent-journal.md` — chaque run lit les dernières entrées au début (mémoire inter-runs) et en ajoute une à la fin (fait/difficultés/leçons, poussée directement sur `dev`, docs uniquement). Voir section « Journal des routines agent » ci-dessus.
 
 ### 2026-07-04 (passage du modèle IA à Sonnet 5 — prod + dev)
 - **Objectif (demande Alex)** : passer le modèle IA de **Sonnet 4.6 → Sonnet 5** (`claude-sonnet-5`), piloté par la var d'env `ANTHROPIC_MODEL` sur Render.
