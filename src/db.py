@@ -3159,3 +3159,59 @@ def log_ig_decision_admin(
         "needs_human": needs_human,
         "reason": reason,
     }).execute()
+
+
+def get_ig_faq(access_token: str) -> dict | None:
+    """FAQ + objectif de l'utilisateur (RLS) — pour l'éditeur in-app.
+
+    Fail-safe si la table n'existe pas encore (migration 0034 non appliquée).
+    """
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    try:
+        resp = db.table("ig_faqs").select("*").limit(1).execute()
+    except Exception:
+        return None
+    return resp.data[0] if resp.data else None
+
+
+def set_ig_faq(access_token: str, content: str) -> dict | None:
+    """Créer/mettre à jour la FAQ de l'utilisateur (RLS, une ligne par user)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_faqs")
+        .upsert(
+            {"user_id": user["id"], "content": content or "", "updated_at": "now()"},
+            on_conflict="user_id",
+        )
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_ig_faq_admin(user_id: str) -> str:
+    """Contenu FAQ de l'utilisateur (service-role) — pour le cerveau agent.
+
+    Chaîne vide si absent : l'appelant retombe sur le fichier de config serveur.
+    """
+    if not admin_enabled():
+        return ""
+    try:
+        resp = (
+            admin_client()
+            .table("ig_faqs")
+            .select("content")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        # Table absente (migration 0034 non appliquée) → repli fichier.
+        return ""
+    if not resp.data:
+        return ""
+    return (resp.data[0].get("content") or "").strip()

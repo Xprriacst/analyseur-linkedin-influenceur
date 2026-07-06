@@ -2583,12 +2583,15 @@ def _ig_send_to_conversation(token: str, conv: dict, text: str) -> dict | None:
                 )
         except (ValueError, TypeError):
             pass
-    if not manychat.enabled():
-        raise HTTPException(status_code=503, detail="MANYCHAT_API_TOKEN non configuré.")
-    try:
-        manychat.send_text(conv["prospect_id"], text)
-    except manychat.ManyChatError as exc:
-        raise HTTPException(status_code=502, detail=f"Envoi ManyChat échoué : {exc}")
+    # Conversation de simulation (page de test ManyChat) : on persiste sans
+    # appeler l'API ManyChat — le prospect n'existe pas côté middleware.
+    if not ig_agent.is_test_prospect(conv.get("prospect_id")):
+        if not manychat.enabled():
+            raise HTTPException(status_code=503, detail="MANYCHAT_API_TOKEN non configuré.")
+        try:
+            manychat.send_text(conv["prospect_id"], text)
+        except manychat.ManyChatError as exc:
+            raise HTTPException(status_code=502, detail=f"Envoi ManyChat échoué : {exc}")
     return db.add_ig_message(
         token, conv["id"], role="out", source="human", text=text, kind="text"
     )
@@ -2682,3 +2685,70 @@ def me_ig_kill_switch_set(
     if not ok:
         raise HTTPException(status_code=400, detail="Profil éditorial requis pour le kill-switch.")
     return {"ok": True, "active": payload.active}
+
+
+@app.get("/me/ig/faq")
+def me_ig_faq_get(token: str = Depends(require_token)) -> dict[str, Any]:
+    """FAQ + objectif de l'agent IG, remplis par l'utilisateur (RLS).
+
+    `source` indique d'où viendrait le texte utilisé par le cerveau : `user`
+    (base) ou `file` (repli fichier serveur si la FAQ user est vide).
+    """
+    row = db.get_ig_faq(token)
+    content = (row or {}).get("content") or ""
+    return {
+        "content": content,
+        "updated_at": (row or {}).get("updated_at"),
+        "source": "user" if content.strip() else "file",
+    }
+
+
+class IgFaqRequest(BaseModel):
+    content: str = Field(default="", max_length=40000)
+
+
+@app.put("/me/ig/faq")
+def me_ig_faq_set(payload: IgFaqRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Enregistrer la FAQ + objectif de l'agent IG (RLS, une ligne par utilisateur)."""
+    row = db.set_ig_faq(token, payload.content)
+    if row is None:
+        raise HTTPException(status_code=500, detail="Enregistrement de la FAQ impossible.")
+    return {"ok": True, "content": row.get("content", ""), "updated_at": row.get("updated_at")}
+
+
+class IgTestInboundRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=4000)
+    prospect_name: str = Field(default="Prospect Test", max_length=120)
+
+
+@app.post("/me/ig/test/inbound")
+def me_ig_test_inbound(
+    payload: IgTestInboundRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Simuler un DM Instagram entrant (page de test ManyChat).
+
+    Rejoue exactement le pipeline du webhook `/manychat/webhooks/inbound`, mais
+    sur le compte de l'utilisateur authentifié et avec un prospect fictif
+    (`prospect_id` préfixé `test:`) : message persisté, réponse suggérée générée
+    en tâche de fond, garde-fou/autopilot appliqués. Aucun appel ManyChat ne
+    part jamais pour ces conversations.
+    """
+    user = db.get_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Utilisateur introuvable.")
+    if not db.admin_enabled():
+        raise HTTPException(status_code=503, detail="Service-role Supabase indisponible.")
+
+    slug = "".join(
+        ch for ch in payload.prospect_name.lower().replace(" ", "-") if ch.isalnum() or ch == "-"
+    ) or "demo"
+    prospect_id = f"{ig_agent.TEST_PROSPECT_PREFIX}{slug}"
+    conv = db.get_or_create_ig_conversation_admin(user["id"], prospect_id, payload.prospect_name)
+    if not conv:
+        raise HTTPException(status_code=500, detail="Impossible de créer la conversation de test.")
+    msg = db.add_ig_message_admin(
+        user["id"], conv["id"], role="in", source="prospect", text=payload.text, kind="text"
+    )
+    if msg:
+        ig_agent.generate_draft_async(user["id"], conv["id"], msg["id"], payload.text)
+    return {"ok": True, "conversation_id": conv["id"], "message": msg}

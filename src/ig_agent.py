@@ -1,12 +1,13 @@
 """Orchestration de l'agent de qualification Instagram (ALE-195 / 202).
 
 Fait le lien entre un message prospect persisté (ALE-201) et le cerveau Claude
-(`llm.qualify_prospect`) : charge la FAQ depuis un fichier de config externe,
-reconstruit l'historique, génère la réponse suggérée structurée, et persiste un
-`ig_drafts` (statut pending) rattaché au message. N'ENVOIE rien (envoi = 204/205).
+(`llm.qualify_prospect`) : charge la FAQ, reconstruit l'historique, génère la
+réponse suggérée structurée, et persiste un `ig_drafts` (statut pending)
+rattaché au message. N'ENVOIE rien (envoi = 204/205).
 
-La FAQ vit dans un fichier externe (pas de table en v1) : chemin via l'env
-`IG_FAQ_PATH`, sinon le gabarit versionné `docs/faq-qualification-instagram.template.md`.
+La FAQ est remplie par l'utilisateur dans l'app (table `ig_faqs`, RLS). Repli
+si vide : fichier de config serveur via l'env `IG_FAQ_PATH`, sinon le gabarit
+versionné `docs/faq-qualification-instagram.template.md`.
 """
 from __future__ import annotations
 
@@ -20,6 +21,15 @@ from src.llm import qualify_prospect
 
 _DEFAULT_FAQ_PATH = "docs/faq-qualification-instagram.template.md"
 
+# Les conversations de simulation (page de test ManyChat) ont un prospect_id
+# préfixé "test:" : tout le pipeline tourne normalement mais rien ne part vers
+# l'API ManyChat — le message sortant est seulement persisté.
+TEST_PROSPECT_PREFIX = "test:"
+
+
+def is_test_prospect(prospect_id) -> bool:
+    return str(prospect_id or "").startswith(TEST_PROSPECT_PREFIX)
+
 # Seuil de confiance conservateur pour l'autopilot (surchargeable).
 _AUTOPILOT_THRESHOLD = float(os.environ.get("IG_AUTOPILOT_CONFIDENCE_THRESHOLD", "0.85"))
 
@@ -31,13 +41,17 @@ def faq_path() -> str:
     return os.environ.get("IG_FAQ_PATH") or _DEFAULT_FAQ_PATH
 
 
-def load_faq() -> str:
-    """Charger le texte FAQ+objectif depuis le fichier de config externe.
+def load_faq(user_id: str | None = None) -> str:
+    """Charger le texte FAQ+objectif : d'abord celui de l'utilisateur (base), sinon fichier.
 
-    Renvoie une chaîne vide si le fichier est absent (l'appelant décide : sans
+    Renvoie une chaîne vide si rien n'est configuré (l'appelant décide : sans
     FAQ, le cerveau escalade tout → `besoin_humain=true`, ce qui est le bon
-    comportement fail-safe). Cache invalidé au changement de mtime.
+    comportement fail-safe). Cache fichier invalidé au changement de mtime.
     """
+    if user_id:
+        user_faq = db.get_ig_faq_admin(user_id)
+        if user_faq:
+            return user_faq
     path = faq_path()
     try:
         p = Path(path)
@@ -64,7 +78,7 @@ def generate_draft(
     cerveau Claude, écrit un `ig_drafts` pending. Best-effort : toute erreur est
     remontée à l'appelant (qui l'avale en tâche de fond). Renvoie le draft créé.
     """
-    faq = load_faq()
+    faq = load_faq(user_id)
     history = db.list_ig_messages_admin(user_id, conversation_id)
     result = qualify_prospect(faq, history, latest_message)
     draft = db.create_ig_draft_admin(
@@ -111,7 +125,8 @@ def _route_draft(
 
     if mode == "autopilot" and green and not kill and window_open and draft:
         try:
-            manychat.send_text(conv["prospect_id"], draft.get("reply", ""))
+            if not is_test_prospect(conv.get("prospect_id")):
+                manychat.send_text(conv["prospect_id"], draft.get("reply", ""))
             db.add_ig_message_admin(
                 user_id, conversation_id, role="out", source="agent",
                 text=draft.get("reply", ""), kind="text",
