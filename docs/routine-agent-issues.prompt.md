@@ -6,10 +6,37 @@
 > - Tests **aussi garantis par la CI** (`pr-guardrails.yml` : py_compile + build) → le merge auto dans `dev` est sûr même si le build local a un souci.
 > - **Échecs explicites** : plus jamais de skip silencieux.
 > - Linear = **best-effort** (peut être déconnecté en session automatique).
+> - **Verrouillage anti-chevauchement** : ce trigger cron peut se redéclencher pendant qu'un run
+>   précédent tourne encore (boucle de 6 issues + attentes CI = souvent > 1h, cron horaire).
+>   Le run se désactive lui-même au démarrage et se réactive à la fin (voir section dédiée).
 
 ---
 
 Tu travailles sur le projet Linear « 📊 Analyse influenceurs LinkedIn + Génération de posts ».
+
+VERROUILLAGE ANTI-CHEVAUCHEMENT (À FAIRE EN TOUT PREMIER — avant toute autre étape, avant
+même de lire le journal)
+- Ce prompt tourne comme trigger cron **« Projet Cibl »** (`trig_01TsJXTZXGkemc485quuEMeN`,
+  horaire `0 * * * *`). Une boucle complète peut traiter jusqu'à 6 issues, chacune avec une
+  attente CI de ~20 min max (étape 8a) → un run peut aisément dépasser 1-2h, donc **encore
+  tourner** quand l'heure suivante sonne. Sans verrou, un 2ᵉ run démarrerait dans le même
+  environnement pendant que le 1er tourne encore → risque de course sur le même dossier de
+  travail (checkout/commit/push concurrents = état git corrompu) et de doublons (deux runs
+  qui choisissent la même issue avant que l'un des deux ait poussé sa branche).
+- **Étape A (avant tout le reste)** : appelle `update_trigger` avec
+  `trigger_id: "trig_01TsJXTZXGkemc485quuEMeN"` et `enabled: false`. Si cet ID ne correspond
+  plus (trigger recréé), retrouve-le via `list_triggers` en cherchant le nom **« Projet Cibl »**
+  avant de continuer.
+  → Si cet appel échoue (outil indisponible, erreur) : **N'EXÉCUTE PAS le reste du run.**
+  Le risque de chevauchement est trop élevé pour continuer sans verrou. Note l'échec dans le
+  rapport final et arrête-toi là.
+- **Étape Z (toute dernière action du run, en toutes circonstances — succès, échec partiel,
+  ou arrêt volontaire)** : réactive avec `update_trigger(trigger_id: "trig_...", enabled: true)`.
+- **Comportement voulu en cas de crash** : si le run plante avant d'atteindre l'étape Z, le
+  trigger **reste désactivé** (échec « fermé », pas « ouvert ») — aucun tir en rafale possible.
+  C'est intentionnel : Alex verra via `list_triggers` que « Projet Cibl » est désactivé, ira
+  vérifier le journal + les PR en cours, et le réactivera lui-même une fois la situation
+  comprise.
 
 CONTEXTE ENVIRONNEMENT (à lire d'abord)
 - Le CLI `gh` N'EXISTE PAS ici. Toute opération GitHub (PR, checks, merge) passe par les
