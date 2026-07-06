@@ -4974,6 +4974,7 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [killSwitch, setKillSwitch] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
 
   const active = conversations.find((c) => c.id === activeId) || null;
@@ -4989,6 +4990,34 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
       setConversations(Array.isArray(data) ? data : []);
     } catch (err: any) {
       setError(err.message);
+    }
+  }
+
+  async function loadKillSwitch() {
+    if (!isAuthed) return;
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/autopilot/kill-switch`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setKillSwitch(!!data.active);
+    } catch { /* non bloquant */ }
+  }
+
+  async function toggleKillSwitch() {
+    setBusy(true); setError("");
+    try {
+      const next = !killSwitch;
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/autopilot/kill-switch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ active: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Bascule impossible");
+      setKillSwitch(next);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -5024,6 +5053,7 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
       return;
     }
     loadConversations();
+    loadKillSwitch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
@@ -5128,6 +5158,17 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   }
 
   return (
+    <>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: killSwitch ? "rgba(224,108,0,0.12)" : "rgba(128,128,128,0.08)" }}>
+      <span style={{ fontSize: 13 }}>
+        {killSwitch
+          ? "🛑 Kill-switch actif — tout est en supervisé, aucun envoi automatique."
+          : "L'autopilot peut envoyer seul sur les conversations en mode autopilot, uniquement quand l'agent sait (vert)."}
+      </span>
+      <button className="secondary-button" onClick={toggleKillSwitch} disabled={busy} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+        {killSwitch ? "Réactiver l'autopilot" : "Tout repasser en supervisé"}
+      </button>
+    </div>
     <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16, minHeight: 520 }}>
       <aside className="card" style={{ padding: 8, overflowY: "auto", maxHeight: "72vh" }}>
         <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
@@ -5231,6 +5272,7 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
         )}
       </section>
     </div>
+    </>
   );
 }
 

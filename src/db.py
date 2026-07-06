@@ -3055,3 +3055,107 @@ def set_ig_conversation_mode(access_token: str, conversation_id: str, mode: str)
         .execute()
     )
     return resp.data[0] if resp.data else None
+
+
+# --- Garde-fou + autopilot (ALE-205) ---------------------------------------
+
+def get_ig_conversation_admin(user_id: str, conversation_id: str) -> dict | None:
+    """Lire une conversation (service-role, scellé user_id) — pour le routage agent."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("ig_conversations")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("id", conversation_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_ig_kill_switch_admin(user_id: str) -> bool:
+    """Kill-switch global de l'utilisateur (service-role). Défaut True (fail-safe)
+    si le profil est introuvable : on préfère NE PAS auto-envoyer par défaut."""
+    if not admin_enabled():
+        return True
+    resp = (
+        admin_client()
+        .table("user_editorial_profiles")
+        .select("ig_autopilot_kill_switch")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        return True
+    return bool(resp.data[0].get("ig_autopilot_kill_switch", False))
+
+
+def get_ig_kill_switch(access_token: str) -> bool:
+    """Kill-switch global de l'utilisateur (RLS) — pour l'UI."""
+    if not supabase_enabled():
+        return True
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_editorial_profiles")
+        .select("ig_autopilot_kill_switch")
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        return False
+    return bool(resp.data[0].get("ig_autopilot_kill_switch", False))
+
+
+def set_ig_kill_switch(access_token: str, active: bool) -> bool:
+    """Basculer le kill-switch global (RLS)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_editorial_profiles")
+        .update({"ig_autopilot_kill_switch": bool(active), "updated_at": "now()"})
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def update_ig_draft_status_admin(draft_id: str, status: str, reply: str | None = None) -> dict | None:
+    """Mettre à jour le statut d'un draft (service-role) — pour l'envoi autopilot."""
+    if not admin_enabled():
+        return None
+    payload: dict[str, Any] = {"status": status, "updated_at": "now()"}
+    if reply is not None:
+        payload["reply"] = reply
+    resp = admin_client().table("ig_drafts").update(payload).eq("id", draft_id).execute()
+    return resp.data[0] if resp.data else None
+
+
+def log_ig_decision_admin(
+    user_id: str,
+    conversation_id: str,
+    message_id: str | None,
+    draft_id: str | None,
+    *,
+    decision: str,
+    confidence,
+    needs_human,
+    reason,
+) -> None:
+    """Journaliser une décision du garde-fou (service-role) pour tuner le seuil (ALE-205)."""
+    if not admin_enabled():
+        return
+    admin_client().table("ig_decisions").insert({
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+        "message_id": message_id,
+        "draft_id": draft_id,
+        "decision": decision,
+        "confidence": confidence,
+        "needs_human": needs_human,
+        "reason": reason,
+    }).execute()
