@@ -20,6 +20,20 @@
 
 ---
 
+## 2026-07-06 08h34 UTC — routine issues Linear (1 PR ouverte, verrou git OK)
+**Issues traitées** : ALE-181 (PR #176, In Review — à valider par Alex) · ALE-175 (sautée, prémisse caduque) · ALE-183 (différée, migration structurante + money-path).
+**Ce qui a été fait** :
+- **Verrou git enfin opérationnel** : `docs/.routine-lock` absent au démarrage → posé (commit `routine: lock`, push dev OK) ; retiré en fin de run. Le mécanisme de l'entrée « (ter) » fonctionne — plus aucune dépendance à `update_trigger`/`list_triggers`. La routine n'est plus bloquée à l'étape A.
+- **ALE-181** (High, Improvement) : mémoire anti-répétition des sujets de l'« Idée du jour » en génération à froid. `db.get_recent_daily_idea_topics()` (relit ~14 derniers `daily_ideas`, service-role, lecture seule) → `generate_posts(avoid_topics=…)` injecte un bloc « sujets à ne pas reproduire » **uniquement si aucune seed n'impose le sujet**. Backend-only, aucune migration, même coût LLM. Portes de contrôle vertes (py_compile + npm build), CI PR #176 `guardrails` verte (`mergeable_state: clean`). **Non mergée** : catégorie comportement/génération → In Review pour Alex. Linear màj (In Review + commentaire).
+**Difficultés / constats** :
+- **ALE-175 sautée (prémisse caduque)** : l'issue veut rendre *optionnelle* la perso des hooks IG par le corpus (ALE-127/PR #130). Or ALE-127 a été **revertée de `dev`** (commit `9f5259b`, « non validé par Alex », ALE-127 reste In Review). Le corpus n'est donc plus lu par `select_hooks` aujourd'hui → « rendre optionnel » n'a pas d'objet tant qu'ALE-127 n'est pas ré-appliquée. Commenté sur Linear (2 chemins proposés à Alex). Pas deviné, pas ré-introduit une feature revertée.
+- **ALE-183 différée** (Medium, la plus prioritaire restante réellement implémentable) : « Espace Posts publiés V1 » = **nouvelle table `published_posts` (migration structurante)** + câblage des chemins de publication **live LinkedIn/X** (money-path) + endpoint + onglet front. Trop risqué à shipper en autonome aveugle (DB partagée prod/dev, publication réelle non testable ici) → réservé à une session supervisée. Bon prochain candidat pour Alex.
+- Le reste du backlog éligible = features larges / pièces d'epics avec dépendances (Outreach ALE-170/171/172/173/174, Récap ALE-196→200), refactor méga (ALE-148 monolithe page.tsx), infra/test (ALE-142 Slack en dev), « à arbitrer » (ALE-55/70/37/82), ou exploration/scoping (ALE-17/115). Aucun autre PR minimal propre à faire ce run.
+**Leçons / à savoir pour le prochain run** :
+- **Toujours vérifier l'état RÉEL de `dev` avant d'implémenter une issue qui référence une PR « faite »** : les reverts au release (comme `9f5259b` pour ALE-127) rendent des issues de suivi caduques. `git log -- <fichier>` a évité de ré-introduire du code reverté.
+- État en suspens : **PR #176 (ALE-181) ouverte, CI verte, en attente validation Alex**. ALE-175 et ALE-183 restent en Backlog/Todo avec commentaires/notes explicatifs.
+- Verrou : le fichier `docs/.routine-lock` a bien un TTL 3h (fail-safe). Rien resté verrouillé (retiré en fin de run).
+
 ## 2026-07-06 (ter) — (hors routine) Correction du verrou : fichier-verrou git au lieu de update_trigger
 **Déclencheur** : le run de 10h15 (entrée ci-dessous) a parfaitement diagnostiqué que le verrou
 « 2026-07-06 (bis) » était INEXÉCUTABLE — `update_trigger`/`list_triggers` ne sont pas exposés à
