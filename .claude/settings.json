@@ -4,11 +4,43 @@
       "Bash(python -m uvicorn api:app --reload --port 8000)",
       "Bash(echo \"Backend PID: $!\")",
       "Bash(echo \"Frontend PID: $!\")",
-      "Bash(lsof -ti:8000)"
+      "Bash(lsof -ti:8000)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git branch:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git diff:*)",
+      "Bash(git grep:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(npm ci:*)",
+      "Bash(npm ci)",
+      "Bash(npm install)",
+      "Bash(npm install:*)",
+      "Bash(npm run build)",
+      "Bash(npm run build:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python3 -m py_compile:*)"
     ],
     "additionalDirectories": [
       "/Users/alexandreerrasti/CascadeProjects/windsurf-project-8/frontend/.next",
       "/tmp"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh"
+          }
+        ]
+      }
     ]
   }
 }
