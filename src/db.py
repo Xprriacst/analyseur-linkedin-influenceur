@@ -2769,3 +2769,186 @@ def weekly_post_exists(user_id: str, utc_date: str) -> bool:
         .execute()
     )
     return bool(resp.data)
+
+
+# ---------------------------------------------------------------------------
+# Agent de qualification Instagram (ALE-195 / 201)
+#
+# Le webhook ManyChat entrant n'a pas de session utilisateur → écritures
+# service-role STRICTEMENT scellées sur le user_id propriétaire du compte IG
+# (patron du cron daily_ideas). En v1 mono-compte, ce propriétaire est résolu
+# via l'env IG_OWNER_USER_ID. Les lectures UI (204) passent par le JWT (RLS).
+# ---------------------------------------------------------------------------
+
+def ig_owner_user_id() -> str | None:
+    """App user_id propriétaire du compte Instagram (v1 mono-compte)."""
+    return os.environ.get("IG_OWNER_USER_ID") or None
+
+
+def get_or_create_ig_conversation_admin(
+    user_id: str, prospect_id: str, prospect_name: str | None = None
+) -> dict | None:
+    """Retrouver ou créer la conversation d'un prospect (service-role, scellé user_id)."""
+    if not admin_enabled():
+        return None
+    db = admin_client()
+    existing = (
+        db.table("ig_conversations")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("prospect_id", prospect_id)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        row = existing.data[0]
+        if prospect_name and not row.get("prospect_name"):
+            upd = (
+                db.table("ig_conversations")
+                .update({"prospect_name": prospect_name, "updated_at": "now()"})
+                .eq("id", row["id"])
+                .execute()
+            )
+            return upd.data[0] if upd.data else row
+        return row
+    resp = (
+        db.table("ig_conversations")
+        .insert({
+            "user_id": user_id,
+            "prospect_id": prospect_id,
+            "prospect_name": prospect_name,
+        })
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def add_ig_message_admin(
+    user_id: str,
+    conversation_id: str,
+    *,
+    role: str,
+    source: str,
+    text: str,
+    kind: str = "text",
+) -> dict | None:
+    """Persister un message IG + rafraîchir les horodatages/fenêtre 24 h de la conversation.
+
+    `role` in|out, `source` prospect|agent|human. Un message entrant (in) remet à
+    zéro la fenêtre de réponse conforme (24 h après le dernier message du prospect).
+    """
+    if not admin_enabled():
+        return None
+    db = admin_client()
+    msg = (
+        db.table("ig_messages")
+        .insert({
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "role": role,
+            "source": source,
+            "text": text or "",
+            "kind": kind,
+        })
+        .execute()
+    )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    conv_update: dict[str, Any] = {
+        "last_message_at": now.isoformat(),
+        "updated_at": "now()",
+    }
+    if role == "in":
+        expires = now + datetime.timedelta(hours=24)
+        conv_update["last_inbound_at"] = now.isoformat()
+        conv_update["window_expires_at"] = expires.isoformat()
+    db.table("ig_conversations").update(conv_update).eq("id", conversation_id).execute()
+    return msg.data[0] if msg.data else None
+
+
+def list_ig_conversations(access_token: str, limit: int = 100) -> list[dict]:
+    """Lister les conversations IG de l'utilisateur (RLS), plus récentes d'abord."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_conversations")
+        .select("*")
+        .order("last_message_at", desc=True)
+        .limit(max(1, min(limit, 200)))
+        .execute()
+    )
+    return resp.data or []
+
+
+def list_ig_messages(access_token: str, conversation_id: str, limit: int = 200) -> list[dict]:
+    """Lister les messages d'une conversation IG de l'utilisateur (RLS), chronologique."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_messages")
+        .select("*")
+        .eq("conversation_id", conversation_id)
+        .order("created_at", desc=False)
+        .limit(max(1, min(limit, 500)))
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_ig_conversation(access_token: str, conversation_id: str) -> dict | None:
+    """Récupérer une conversation IG de l'utilisateur (RLS garantit la propriété)."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_conversations")
+        .select("*")
+        .eq("id", conversation_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def add_ig_message(
+    access_token: str,
+    conversation_id: str,
+    *,
+    role: str,
+    source: str,
+    text: str,
+    kind: str = "text",
+) -> dict | None:
+    """Insérer un message IG + rafraîchir la conversation, côté utilisateur (RLS).
+
+    Variante token-scoped d'`add_ig_message_admin`, utilisée par les actions UI
+    (envoi supervisé). RLS empêche l'écriture sur la conversation d'un autre user.
+    """
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    msg = (
+        db.table("ig_messages")
+        .insert({
+            "user_id": user["id"],
+            "conversation_id": conversation_id,
+            "role": role,
+            "source": source,
+            "text": text or "",
+            "kind": kind,
+        })
+        .execute()
+    )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    conv_update: dict[str, Any] = {
+        "last_message_at": now.isoformat(),
+        "updated_at": "now()",
+    }
+    if role == "in":
+        expires = now + datetime.timedelta(hours=24)
+        conv_update["last_inbound_at"] = now.isoformat()
+        conv_update["window_expires_at"] = expires.isoformat()
+    db.table("ig_conversations").update(conv_update).eq("id", conversation_id).execute()
+    return msg.data[0] if msg.data else None

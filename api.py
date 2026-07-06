@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from src import db, slack as slack_client, zernio
+from src import db, slack as slack_client, zernio, manychat
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -34,6 +34,13 @@ load_dotenv()
 if slack_client.enabled() and not os.environ.get("SLACK_SIGNING_SECRET"):
     print(
         "⚠️  SLACK_SIGNING_SECRET absent : les webhooks Slack seront refusés (fail-closed). "
+        "Ajoutez-le dans les variables d'environnement.",
+        file=sys.stderr,
+    )
+
+if manychat.enabled() and not os.environ.get("MANYCHAT_WEBHOOK_SECRET"):
+    print(
+        "⚠️  MANYCHAT_WEBHOOK_SECRET absent : le webhook DM Instagram sera refusé (fail-closed). "
         "Ajoutez-le dans les variables d'environnement.",
         file=sys.stderr,
     )
@@ -2449,3 +2456,124 @@ def instagram_hooks(
         pass
     hooks = select_hooks(user_context, count=max(1, min(payload.count, 20)), topic=payload.topic)
     return {"hooks": hooks}
+
+
+# ---------------------------------------------------------------------------
+# Agent de qualification Instagram — transport ManyChat (ALE-195 / 201)
+# ---------------------------------------------------------------------------
+
+def _verify_manychat_secret(request: Request) -> None:
+    """Fail-closed : le webhook n'accepte que les appels portant le secret partagé.
+
+    Le secret peut arriver en en-tête `X-ManyChat-Secret` ou en query `?secret=`
+    (l'action « External Request » ManyChat permet les deux). Si le secret n'est
+    pas configuré côté serveur, on refuse tout (pas de webhook ouvert par défaut).
+    """
+    expected = os.environ.get("MANYCHAT_WEBHOOK_SECRET")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Webhook ManyChat non configuré.")
+    provided = request.headers.get("X-ManyChat-Secret") or request.query_params.get("secret") or ""
+    if not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=403, detail="Secret ManyChat invalide.")
+
+
+@app.post("/manychat/webhooks/inbound")
+async def manychat_inbound_webhook(request: Request) -> dict[str, Any]:
+    """Recevoir un DM Instagram entrant (ManyChat « External Request »).
+
+    Persiste le message dans la bonne conversation du compte propriétaire (v1
+    mono-compte via IG_OWNER_USER_ID, écriture service-role scellée sur ce user).
+    Pas d'auth utilisateur — appelé par ManyChat, vérifié par secret partagé.
+    Les vocaux (audio_url sans texte) sont pris en charge par ALE-203 ; ici on
+    crée la conversation et on signale `pending_audio`.
+    """
+    _verify_manychat_secret(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Corps JSON invalide.")
+
+    parsed = manychat.parse_inbound(payload if isinstance(payload, dict) else {})
+    if not parsed["prospect_id"]:
+        raise HTTPException(status_code=400, detail="prospect_id (subscriber_id) manquant.")
+
+    owner = db.ig_owner_user_id()
+    if not owner:
+        raise HTTPException(status_code=503, detail="IG_OWNER_USER_ID non configuré.")
+    if not db.admin_enabled():
+        raise HTTPException(status_code=503, detail="Service-role Supabase indisponible.")
+
+    conv = db.get_or_create_ig_conversation_admin(
+        owner, parsed["prospect_id"], parsed["prospect_name"] or None
+    )
+    if not conv:
+        raise HTTPException(status_code=500, detail="Impossible de créer la conversation.")
+
+    if parsed["text"]:
+        db.add_ig_message_admin(
+            owner, conv["id"], role="in", source="prospect", text=parsed["text"], kind="text"
+        )
+        return {"ok": True, "conversation_id": conv["id"]}
+
+    if parsed["audio_url"]:
+        # Transcription = ALE-203 : on ne persiste pas de message ici.
+        return {"ok": True, "conversation_id": conv["id"], "pending_audio": True}
+
+    raise HTTPException(status_code=400, detail="Message vide (ni texte ni audio).")
+
+
+class IgSendRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=4000)
+
+
+@app.get("/me/ig/conversations")
+def me_ig_conversations(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """Lister les conversations IG de l'utilisateur (RLS)."""
+    return db.list_ig_conversations(token)
+
+
+@app.get("/me/ig/conversations/{conversation_id}/messages")
+def me_ig_messages(
+    conversation_id: str, token: str = Depends(require_token)
+) -> list[dict[str, Any]]:
+    """Lister les messages d'une conversation IG de l'utilisateur (RLS)."""
+    if not db.get_ig_conversation(token, conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation introuvable.")
+    return db.list_ig_messages(token, conversation_id)
+
+
+@app.post("/me/ig/conversations/{conversation_id}/send")
+def me_ig_send(
+    conversation_id: str,
+    payload: IgSendRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Envoyer un message texte au prospect (envoi supervisé) + le persister.
+
+    Vérifie la propriété (RLS) et la fenêtre de réponse 24 h avant d'appeler
+    ManyChat. Point d'entrée réutilisé par l'inbox in-app (ALE-204).
+    """
+    conv = db.get_ig_conversation(token, conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation introuvable.")
+    expires = conv.get("window_expires_at")
+    if expires:
+        try:
+            exp_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+            if exp_dt < datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Fenêtre de réponse 24 h expirée : envoi non conforme.",
+                )
+        except (ValueError, TypeError):
+            pass
+    if not manychat.enabled():
+        raise HTTPException(status_code=503, detail="MANYCHAT_API_TOKEN non configuré.")
+    try:
+        manychat.send_text(conv["prospect_id"], payload.text)
+    except manychat.ManyChatError as exc:
+        raise HTTPException(status_code=502, detail=f"Envoi ManyChat échoué : {exc}")
+    msg = db.add_ig_message(
+        token, conversation_id, role="out", source="human", text=payload.text, kind="text"
+    )
+    return {"ok": True, "message": msg}
