@@ -7,7 +7,7 @@
  * webhook ManyChat (persistance, réponse suggérée, garde-fou/autopilot) sur une
  * conversation fictive (`prospect_id` préfixé test:). Aucun appel réel à
  * l'API ManyChat ne part pour ces conversations — zéro risque d'envoi à un
- * vrai prospect. La conversation apparaît normalement dans l'Inbox Instagram.
+ * vrai prospect. La conversation apparaît normalement dans l'Inbox.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -126,7 +126,7 @@ export default function ManyChatTestPage() {
         <p style={{ fontSize: 13, opacity: 0.75, marginTop: 6 }}>
           Tu joues le <strong>prospect Instagram</strong> : chaque message passe par le même pipeline
           que ManyChat (persistance, réponse de l&apos;agent, garde-fou/autopilot). Rien ne part vers
-          la vraie API ManyChat. La conversation apparaît dans l&apos;<a href="/" style={{ textDecoration: "underline" }}>Inbox Instagram</a> —
+          la vraie API ManyChat. La conversation apparaît dans l&apos;<a href="/" style={{ textDecoration: "underline" }}>Inbox</a> —
           c&apos;est là que tu valides les suggestions ou actives l&apos;autopilot.
         </p>
         <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 13 }}>
@@ -163,7 +163,7 @@ export default function ManyChatTestPage() {
         {pendingDraft && (
           <div style={{ alignSelf: "flex-start", fontSize: 12, opacity: 0.7, fontStyle: "italic" }}>
             💬 L&apos;agent a préparé une suggestion{pendingDraft.needs_human ? " (⚠️ escalade humaine)" : ""} —
-            en attente de validation dans l&apos;Inbox Instagram…
+            en attente de validation dans l&apos;Inbox…
           </div>
         )}
         {conversationId && !pendingDraft && messages.length > 0 && messages[messages.length - 1].role === "in" && (
