@@ -2462,15 +2462,16 @@ def instagram_hooks(
 # Agent de qualification Instagram — transport ManyChat (ALE-195 / 201)
 # ---------------------------------------------------------------------------
 
-def _verify_manychat_secret(request: Request) -> None:
-    """Fail-closed : le webhook n'accepte que les appels portant le secret partagé.
+def _verify_manychat_secret(request: Request, expected: str | None = None) -> None:
+    """Fail-closed : le webhook n'accepte que les appels portant le bon secret.
 
     Le secret est passé en en-tête `X-ManyChat-Secret` (l'action « External
     Request » ManyChat permet les en-têtes custom). On évite volontairement le
-    query-string : il finirait en clair dans les access logs. Si le secret n'est
-    pas configuré côté serveur, on refuse tout (pas de webhook ouvert par défaut).
+    query-string : il finirait en clair dans les access logs. `expected` = secret
+    de l'utilisateur (multi-client) ; sinon le secret global (webhook legacy). Si
+    aucun secret n'est configuré, on refuse tout (pas de webhook ouvert par défaut).
     """
-    expected = os.environ.get("MANYCHAT_WEBHOOK_SECRET")
+    expected = expected or os.environ.get("MANYCHAT_WEBHOOK_SECRET")
     if not expected:
         raise HTTPException(status_code=503, detail="Webhook ManyChat non configuré.")
     provided = request.headers.get("X-ManyChat-Secret") or ""
@@ -2478,17 +2479,28 @@ def _verify_manychat_secret(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Secret ManyChat invalide.")
 
 
-@app.post("/manychat/webhooks/inbound")
-async def manychat_inbound_webhook(request: Request) -> dict[str, Any]:
-    """Recevoir un DM Instagram entrant (ManyChat « External Request »).
+def _public_base_url(request: Request) -> str:
+    """URL publique du backend pour construire l'URL de webhook montrée au client.
 
-    Persiste le message dans la bonne conversation du compte propriétaire (v1
-    mono-compte via IG_OWNER_USER_ID, écriture service-role scellée sur ce user).
-    Pas d'auth utilisateur — appelé par ManyChat, vérifié par secret partagé.
-    Les vocaux (audio_url sans texte) sont pris en charge par ALE-203 ; ici on
-    crée la conversation et on signale `pending_audio`.
+    Render expose `RENDER_EXTERNAL_URL` ; sinon on dérive de la requête (en
+    forçant https, le backend étant servi derrière un proxy TLS).
     """
-    _verify_manychat_secret(request)
+    base = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_BACKEND_URL")
+    if base:
+        return base.rstrip("/")
+    url = str(request.base_url).rstrip("/")
+    if url.startswith("http://"):
+        url = "https://" + url[len("http://") :]
+    return url
+
+
+async def _process_manychat_inbound(request: Request, owner: str) -> dict[str, Any]:
+    """Traiter un DM entrant ManyChat pour le compte `owner` (routage résolu en amont).
+
+    Partagé par le webhook legacy (mono-compte via IG_OWNER_USER_ID) et le webhook
+    personnel par utilisateur (multi-client). Persiste le message via service-role
+    scellé sur `owner`, déclenche la génération de réponse en tâche de fond.
+    """
     try:
         payload = await request.json()
     except Exception:
@@ -2498,9 +2510,6 @@ async def manychat_inbound_webhook(request: Request) -> dict[str, Any]:
     if not parsed["prospect_id"]:
         raise HTTPException(status_code=400, detail="prospect_id (subscriber_id) manquant.")
 
-    owner = db.ig_owner_user_id()
-    if not owner:
-        raise HTTPException(status_code=503, detail="IG_OWNER_USER_ID non configuré.")
     if not db.admin_enabled():
         raise HTTPException(status_code=503, detail="Service-role Supabase indisponible.")
 
@@ -2527,6 +2536,35 @@ async def manychat_inbound_webhook(request: Request) -> dict[str, Any]:
         return {"ok": True, "conversation_id": conv["id"], "pending_audio": True}
 
     raise HTTPException(status_code=400, detail="Message vide (ni texte ni audio).")
+
+
+@app.post("/manychat/webhooks/inbound")
+async def manychat_inbound_webhook(request: Request) -> dict[str, Any]:
+    """Webhook ManyChat legacy — compte propriétaire unique (IG_OWNER_USER_ID).
+
+    Conservé pour le compte mono-compte historique (secret + owner via env). Les
+    clients multi-comptes utilisent leur URL personnelle `…/inbound/{token}`.
+    """
+    _verify_manychat_secret(request)
+    owner = db.ig_owner_user_id()
+    if not owner:
+        raise HTTPException(status_code=503, detail="IG_OWNER_USER_ID non configuré.")
+    return await _process_manychat_inbound(request, owner)
+
+
+@app.post("/manychat/webhooks/inbound/{webhook_token}")
+async def manychat_inbound_webhook_personal(webhook_token: str, request: Request) -> dict[str, Any]:
+    """Webhook ManyChat par utilisateur (multi-client).
+
+    Le slug d'URL identifie le compte app du client ; on vérifie ensuite le
+    secret propre à ce client dans `X-ManyChat-Secret`, puis on route le DM vers
+    SON inbox. Aucune configuration serveur par client : tout est en base.
+    """
+    integ = db.get_ig_manychat_by_webhook_token_admin(webhook_token)
+    if not integ:
+        raise HTTPException(status_code=404, detail="Webhook ManyChat inconnu.")
+    _verify_manychat_secret(request, expected=integ.get("webhook_secret"))
+    return await _process_manychat_inbound(request, integ["user_id"])
 
 
 class IgSendRequest(BaseModel):
@@ -2586,10 +2624,17 @@ def _ig_send_to_conversation(token: str, conv: dict, text: str) -> dict | None:
     # Conversation de simulation (page de test ManyChat) : on persiste sans
     # appeler l'API ManyChat — le prospect n'existe pas côté middleware.
     if not ig_agent.is_test_prospect(conv.get("prospect_id")):
-        if not manychat.enabled():
-            raise HTTPException(status_code=503, detail="MANYCHAT_API_TOKEN non configuré.")
+        # Multi-client : on envoie avec la clé du compte ManyChat de l'utilisateur ;
+        # repli sur la clé globale (compte propriétaire legacy) si pas de connexion.
+        integ = db.get_ig_manychat(token)
+        api_token = (integ or {}).get("access_token")
+        if not api_token and not manychat.enabled():
+            raise HTTPException(
+                status_code=503,
+                detail="Aucun compte ManyChat relié : connecte ta clé API ManyChat.",
+            )
         try:
-            manychat.send_text(conv["prospect_id"], text)
+            manychat.send_text(conv["prospect_id"], text, api_token=api_token)
         except manychat.ManyChatError as exc:
             raise HTTPException(status_code=502, detail=f"Envoi ManyChat échoué : {exc}")
     return db.add_ig_message(
@@ -2752,3 +2797,75 @@ def me_ig_test_inbound(
     if msg:
         ig_agent.generate_draft_async(user["id"], conv["id"], msg["id"], payload.text)
     return {"ok": True, "conversation_id": conv["id"], "message": msg}
+
+
+# ---------------------------------------------------------------------------
+# Connexion ManyChat par utilisateur (multi-client) — chaque client relie SON
+# compte ManyChat (clé API) et reçoit SON URL de webhook + secret à coller dans
+# une action « External Request » de son flow ManyChat.
+# ---------------------------------------------------------------------------
+
+def _mask_token(token: str | None) -> str | None:
+    """Ne jamais renvoyer la clé en clair : uniquement les 4 derniers caractères."""
+    if not token:
+        return None
+    tail = token[-4:]
+    return f"…{tail}"
+
+
+def _manychat_status_payload(request: Request, integ: dict | None) -> dict[str, Any]:
+    """Construire l'état de connexion ManyChat renvoyé au front (jamais la clé en clair)."""
+    if not integ or not integ.get("webhook_token"):
+        return {"connected": False}
+    base = _public_base_url(request)
+    return {
+        "connected": True,
+        "api_token_masked": _mask_token(integ.get("access_token")),
+        "webhook_url": f"{base}/manychat/webhooks/inbound/{integ['webhook_token']}",
+        "webhook_secret": integ.get("webhook_secret"),
+        "connected_at": integ.get("connected_at"),
+    }
+
+
+@app.get("/me/ig/manychat")
+def me_ig_manychat_status(request: Request, token: str = Depends(require_token)) -> dict[str, Any]:
+    """État de la connexion ManyChat de l'utilisateur (URL de webhook + secret à copier)."""
+    return _manychat_status_payload(request, db.get_ig_manychat(token))
+
+
+class IgManychatConnectRequest(BaseModel):
+    api_token: str = Field(..., min_length=8, max_length=400)
+
+
+@app.post("/me/ig/manychat")
+def me_ig_manychat_connect(
+    payload: IgManychatConnectRequest, request: Request, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Relier le compte ManyChat de l'utilisateur : valide la clé, génère l'URL + secret.
+
+    On vérifie la clé auprès de ManyChat (attrape une faute de frappe), puis on
+    persiste. L'URL de webhook et le secret sont réutilisés s'ils existent déjà
+    (reconnexion = nouvelle clé sans changer l'URL à recoller dans ManyChat).
+    """
+    api_token = payload.api_token.strip()
+    try:
+        manychat.validate_token(api_token)
+    except manychat.ManyChatError as exc:
+        raise HTTPException(status_code=400, detail=f"Clé API ManyChat refusée : {exc}")
+
+    existing = db.get_ig_manychat(token)
+    webhook_token = (existing or {}).get("webhook_token") or secrets.token_urlsafe(24)
+    webhook_secret = (existing or {}).get("webhook_secret") or secrets.token_urlsafe(24)
+    row = db.save_ig_manychat(
+        token, api_token=api_token, webhook_token=webhook_token, webhook_secret=webhook_secret
+    )
+    if row is None:
+        raise HTTPException(status_code=500, detail="Enregistrement de la connexion impossible.")
+    return {"ok": True, **_manychat_status_payload(request, row)}
+
+
+@app.delete("/me/ig/manychat")
+def me_ig_manychat_disconnect(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Délier le compte ManyChat de l'utilisateur (l'URL de webhook cesse de router)."""
+    db.delete_ig_manychat(token)
+    return {"ok": True, "connected": False}

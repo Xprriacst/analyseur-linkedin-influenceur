@@ -3215,3 +3215,119 @@ def get_ig_faq_admin(user_id: str) -> str:
     if not resp.data:
         return ""
     return (resp.data[0].get("content") or "").strip()
+
+
+# ---------------------------------------------------------------------------
+# Connexion ManyChat par utilisateur (multi-client) — table `user_integrations`
+# service='manychat'. access_token = clé API du client ; webhook_token = slug
+# public de routage ; webhook_secret = en-tête d'authentification.
+# ---------------------------------------------------------------------------
+
+
+def get_ig_manychat(access_token: str) -> dict | None:
+    """Intégration ManyChat de l'utilisateur (RLS) — pour l'écran de connexion."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    try:
+        resp = (
+            db.table("user_integrations")
+            .select("*")
+            .eq("user_id", user["id"])
+            .eq("service", "manychat")
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    return resp.data[0] if resp.data else None
+
+
+def save_ig_manychat(
+    access_token: str,
+    *,
+    api_token: str,
+    webhook_token: str,
+    webhook_secret: str,
+) -> dict | None:
+    """Relier/mettre à jour le compte ManyChat de l'utilisateur (RLS, upsert)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "service": "manychat",
+        "access_token": api_token,
+        "webhook_token": webhook_token,
+        "webhook_secret": webhook_secret,
+        "connected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    resp = (
+        db.table("user_integrations")
+        .upsert(row, on_conflict="user_id,service")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def delete_ig_manychat(access_token: str) -> bool:
+    """Délier le compte ManyChat de l'utilisateur (RLS)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_integrations")
+        .delete()
+        .eq("user_id", user["id"])
+        .eq("service", "manychat")
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def get_ig_manychat_by_webhook_token_admin(webhook_token: str) -> dict | None:
+    """Résoudre l'utilisateur propriétaire d'un webhook ManyChat (service-role).
+
+    Sert au routage du DM entrant : le slug de l'URL identifie le compte, on
+    renvoie user_id + secret (à vérifier) + clé API. Aucune session utilisateur
+    sur le webhook → service-role obligatoire.
+    """
+    if not admin_enabled() or not webhook_token:
+        return None
+    try:
+        resp = (
+            admin_client()
+            .table("user_integrations")
+            .select("user_id, access_token, webhook_secret")
+            .eq("service", "manychat")
+            .eq("webhook_token", webhook_token)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    return resp.data[0] if resp.data else None
+
+
+def get_ig_manychat_token_admin(user_id: str) -> str | None:
+    """Clé API ManyChat d'un utilisateur (service-role) — pour l'envoi autopilot."""
+    if not admin_enabled():
+        return None
+    try:
+        resp = (
+            admin_client()
+            .table("user_integrations")
+            .select("access_token")
+            .eq("service", "manychat")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    if not resp.data:
+        return None
+    return resp.data[0].get("access_token") or None
