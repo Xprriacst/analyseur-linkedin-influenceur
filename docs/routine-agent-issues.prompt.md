@@ -25,6 +25,19 @@ CONTEXTE ENVIRONNEMENT (à lire d'abord)
   tu le DIS explicitement dans le rapport final avec l'erreur exacte. Tu ne sautes jamais
   une étape en silence.
 
+JOURNAL DE BORD (obligatoire — mémoire entre les runs)
+- AU DÉBUT du run : lis les 2-3 dernières entrées de `docs/agent-journal.md` (branche `dev`).
+  Elles contiennent les pièges découverts par les runs précédents et les états en suspens
+  (PR ouvertes, issues Linear pas mises à jour…). Tiens-en compte.
+- À LA FIN du run (même si tout a échoué) : ajoute une entrée EN HAUT du journal, au format
+  décrit dans le fichier : issues traitées + PR + statuts, ce qui a été fait, difficultés
+  rencontrées (avec messages d'erreur exacts), leçons pour le prochain run.
+- Publication du journal : commit du SEUL fichier `docs/agent-journal.md` directement sur
+  `dev` (`git fetch origin dev && git checkout dev && git pull origin dev`, édite, commit
+  `journal: run routine <date>`, `git push origin dev`). C'est le seul cas où tu pousses
+  directement sur dev — un fichier de docs, jamais de code. Si le push échoue : pousse la
+  même entrée sur une branche `journal/<date>` et signale-le dans le rapport final.
+
 OBJECTIF
 Traiter en AUTONOMIE plusieurs issues, mais UNE À LA FOIS (jamais en parallèle), chacune
 dans UNE PR minimale ciblant `dev`. Boucle jusqu'à épuisement du lot ou 6 issues traitées.
@@ -107,3 +120,6 @@ RAPPORT FINAL (obligatoire, même si tout a échoué)
 Pour chaque issue : numéro → PR (lien) → statut (auto-mergé dans dev / en attente de
 validation Alex / sautée + RAISON PRÉCISE avec l'erreur exacte le cas échéant).
 Si Linear était indisponible, liste les mises à jour d'issues restées à faire.
+Le même contenu DOIT être ajouté en entrée du journal `docs/agent-journal.md` (voir
+« JOURNAL DE BORD » ci-dessus) — le rapport de chat disparaît avec la session, le journal
+reste dans le repo.
