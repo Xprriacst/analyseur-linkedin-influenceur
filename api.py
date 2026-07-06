@@ -2661,3 +2661,24 @@ def me_ig_conversation_mode(
     if not updated:
         raise HTTPException(status_code=404, detail="Conversation introuvable.")
     return {"ok": True, "conversation": updated}
+
+
+@app.get("/me/ig/autopilot/kill-switch")
+def me_ig_kill_switch_get(token: str = Depends(require_token)) -> dict[str, Any]:
+    """État du kill-switch global (true = tout en supervisé, aucun envoi auto)."""
+    return {"active": db.get_ig_kill_switch(token)}
+
+
+class IgKillSwitchRequest(BaseModel):
+    active: bool
+
+
+@app.post("/me/ig/autopilot/kill-switch")
+def me_ig_kill_switch_set(
+    payload: IgKillSwitchRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Basculer le kill-switch global — « tout repasser en supervisé » (ALE-205)."""
+    ok = db.set_ig_kill_switch(token, payload.active)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Profil éditorial requis pour le kill-switch.")
+    return {"ok": True, "active": payload.active}
