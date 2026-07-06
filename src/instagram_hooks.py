@@ -190,14 +190,20 @@ def select_hooks(user_context: dict[str, Any], count: int = 8, topic: str | None
             f"Réponds avec un tableau JSON de {count} chaînes."
         )
 
+        from src.llm import thinking_kwargs
+
+        model = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7")
         resp = client.messages.create(
-            model=os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-7"),
+            model=model,
             max_tokens=1024,
             messages=[{"role": "user", "content": user_msg}],
             system=system,
+            **thinking_kwargs(model),
         )
 
-        raw = resp.content[0].text.strip()
+        raw = "".join(
+            block.text for block in resp.content if getattr(block, "type", None) == "text"
+        ).strip()
         # Nettoyer les éventuels blocs ```json ... ```
         if raw.startswith("```"):
             raw = raw.split("```")[1]

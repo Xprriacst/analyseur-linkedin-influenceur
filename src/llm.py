@@ -57,6 +57,29 @@ def _accepts_temperature(model: str) -> bool:
     return not any(tag in model for tag in _NO_SAMPLING_TAGS)
 
 
+# Sonnet 5 active la « réflexion adaptative » quand le paramètre `thinking` est
+# omis, et les tokens de réflexion sont décomptés de `max_tokens` : la réponse
+# JSON attendue peut alors être tronquée (symptôme : « Unterminated string »
+# sur les analyses). On coupe donc la réflexion sur les appels structurés ;
+# le chat de l'Assistant (chat_stream) la conserve.
+_ADAPTIVE_THINKING_TAGS = ("sonnet-5",)
+
+
+def thinking_kwargs(model: str) -> dict[str, Any]:
+    """Paramètre `thinking` à ajouter pour un appel à réponse structurée."""
+    if any(tag in model for tag in _ADAPTIVE_THINKING_TAGS):
+        return {"thinking": {"type": "disabled"}}
+    return {}
+
+
+def _raise_if_truncated(resp) -> None:
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        raise RuntimeError(
+            "Réponse IA tronquée (limite de tokens atteinte). Réessaie ; si "
+            "l'erreur persiste, le budget max_tokens de cet appel est trop bas."
+        )
+
+
 _MOIS_FR = [
     "janvier", "février", "mars", "avril", "mai", "juin",
     "juillet", "août", "septembre", "octobre", "novembre", "décembre",
@@ -174,6 +197,7 @@ def _call_streaming(
     )
     if _accepts_temperature(kwargs["model"]):
         kwargs["temperature"] = temperature
+    kwargs.update(thinking_kwargs(kwargs["model"]))
     if tools:
         kwargs["tools"] = tools
 
@@ -221,6 +245,7 @@ def _call_streaming(
             continue
         break
 
+    _raise_if_truncated(resp)
     text = "".join(
         block.text for block in resp.content if getattr(block, "type", None) == "text"
     )
@@ -254,6 +279,7 @@ def _call(
     )
     if _accepts_temperature(kwargs["model"]):
         kwargs["temperature"] = temperature
+    kwargs.update(thinking_kwargs(kwargs["model"]))
     if tools:
         kwargs["tools"] = tools
 
@@ -268,6 +294,7 @@ def _call(
         resp = client.messages.create(messages=messages, **kwargs)
         _track(resp)
 
+    _raise_if_truncated(resp)
     text = "".join(
         block.text for block in resp.content if getattr(block, "type", None) == "text"
     )
@@ -693,6 +720,7 @@ Produis une analyse stratégique COMPLÈTE et ACTIONNABLE en suivant ce plan :
     kwargs: dict[str, Any] = dict(model=_model(), max_tokens=8192, system=system)
     if _accepts_temperature(kwargs["model"]):
         kwargs["temperature"] = 0.5
+    kwargs.update(thinking_kwargs(kwargs["model"]))
     tools = _web_search_tools()
     if tools:
         kwargs["tools"] = tools
