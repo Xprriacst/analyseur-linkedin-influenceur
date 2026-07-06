@@ -18,6 +18,7 @@ import {
   GripVertical,
   Image as ImageIcon,
   ImagePlus,
+  Inbox as InboxIcon,
   Lightbulb,
   Link2,
   Linkedin,
@@ -1192,17 +1193,17 @@ function Sidebar({
                 return (
                   <button
                     className={`nav-item ${view === "inbox" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
-                    title={collapsed ? "Inbox Instagram" : undefined}
+                    title={collapsed ? "Inbox" : undefined}
                     onClick={() => {
                       if (locked) {
-                        requireAuth("Crée un compte gratuit pour débloquer l'inbox Instagram.");
+                        requireAuth("Crée un compte gratuit pour débloquer l'inbox.");
                         return;
                       }
                       onNavigate("inbox");
                     }}
                   >
-                    <InstagramIcon size={14} />
-                    {!collapsed && <span>Inbox Instagram</span>}
+                    <InboxIcon size={14} />
+                    {!collapsed && <span>Inbox</span>}
                     {locked ? <Lock size={12} className="lock-ico" /> : null}
                   </button>
                 );
@@ -1481,7 +1482,7 @@ function TopHeader({
     profile: "Mon profil éditorial",
     assistant: "Agent IA",
     content: "Contenu",
-    inbox: "Inbox Instagram",
+    inbox: "Inbox",
   };
 
   return (

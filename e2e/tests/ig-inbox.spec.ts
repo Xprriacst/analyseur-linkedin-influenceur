@@ -8,8 +8,8 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
-test("Inbox Instagram : layout plein écran + boutons Simulateur / FAQ / kill-switch", async ({ page }) => {
-  await gotoTab(page, "Inbox Instagram");
+test("Inbox : layout plein écran + boutons Simulateur / FAQ / kill-switch", async ({ page }) => {
+  await gotoTab(page, "Inbox");
   await expect(page.getByText("Conversations", { exact: false }).first()).toBeVisible();
   // Nouveaux points d'entrée de la barre du haut.
   await expect(page.getByRole("link", { name: /Simulateur/i })).toBeVisible();
@@ -21,8 +21,8 @@ test("Inbox Instagram : layout plein écran + boutons Simulateur / FAQ / kill-sw
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Inbox Instagram : l'éditeur FAQ s'ouvre et se referme (sans enregistrer)", async ({ page }) => {
-  await gotoTab(page, "Inbox Instagram");
+test("Inbox : l'éditeur FAQ s'ouvre et se referme (sans enregistrer)", async ({ page }) => {
+  await gotoTab(page, "Inbox");
   await page.getByRole("button", { name: /FAQ de l'agent/i }).click();
   await expect(page.getByText(/source de vérité du cerveau/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /Enregistrer la FAQ/i })).toBeVisible();
