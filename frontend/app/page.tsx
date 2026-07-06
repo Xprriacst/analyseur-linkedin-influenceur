@@ -5048,6 +5048,10 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   const [mcNotice, setMcNotice] = useState("");
   const [mcCopied, setMcCopied] = useState<string>("");
   const endRef = useRef<HTMLDivElement | null>(null);
+  // Conversation réellement affichée : sert à ignorer les réponses de chargement
+  // de fil arrivées hors-séquence (l'utilisateur a changé de conversation entre
+  // la requête et sa réponse — fréquent sur le backend dev lent).
+  const selectedConvRef = useRef<string | null>(null);
 
   const active = conversations.find((c) => c.id === activeId) || null;
   // La suggestion à traiter = le draft pending le plus récent (créé après le dernier DM prospect).
@@ -5112,20 +5116,28 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
       ]);
       const mData = await mRes.json();
       const dData = await dRes.json();
+      // L'utilisateur a changé de conversation entre-temps : cette réponse est
+      // périmée, ne pas écraser le fil affiché avec le mauvais contenu.
+      if (selectedConvRef.current !== conversationId) return;
       if (!mRes.ok) throw new Error(mData.detail || "Messages introuvables");
       setMessages(Array.isArray(mData) ? mData : []);
       setDrafts(Array.isArray(dData) ? dData : []);
     } catch (err: any) {
-      setError(err.message);
+      if (selectedConvRef.current === conversationId) setError(err.message);
     } finally {
-      setLoading(false);
+      if (selectedConvRef.current === conversationId) setLoading(false);
     }
   }
 
   function selectConversation(id: string) {
+    selectedConvRef.current = id;
     setActiveId(id);
     setReplyText("");
     setDraftText("");
+    // Vider immédiatement le fil précédent → on affiche « Chargement… » au lieu
+    // de laisser le fil de la conversation d'avant tant que le fetch n'a pas fini.
+    setMessages([]);
+    setDrafts([]);
     loadThread(id);
   }
 
@@ -5222,6 +5234,7 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
 
   useEffect(() => {
     if (!isAuthed) {
+      selectedConvRef.current = null;
       setConversations([]); setActiveId(null); setMessages([]); setDrafts([]);
       return;
     }
