@@ -2465,14 +2465,15 @@ def instagram_hooks(
 def _verify_manychat_secret(request: Request) -> None:
     """Fail-closed : le webhook n'accepte que les appels portant le secret partagé.
 
-    Le secret peut arriver en en-tête `X-ManyChat-Secret` ou en query `?secret=`
-    (l'action « External Request » ManyChat permet les deux). Si le secret n'est
+    Le secret est passé en en-tête `X-ManyChat-Secret` (l'action « External
+    Request » ManyChat permet les en-têtes custom). On évite volontairement le
+    query-string : il finirait en clair dans les access logs. Si le secret n'est
     pas configuré côté serveur, on refuse tout (pas de webhook ouvert par défaut).
     """
     expected = os.environ.get("MANYCHAT_WEBHOOK_SECRET")
     if not expected:
         raise HTTPException(status_code=503, detail="Webhook ManyChat non configuré.")
-    provided = request.headers.get("X-ManyChat-Secret") or request.query_params.get("secret") or ""
+    provided = request.headers.get("X-ManyChat-Secret") or ""
     if not secrets.compare_digest(provided, expected):
         raise HTTPException(status_code=403, detail="Secret ManyChat invalide.")
 
