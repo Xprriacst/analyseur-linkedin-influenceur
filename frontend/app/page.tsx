@@ -5015,6 +5015,14 @@ type IgManychatStatus = {
   connected_at?: string | null;
 };
 
+// Corps JSON à coller dans l'action « External Request » ManyChat. Les valeurs
+// sont des libellés à remplacer par les champs système ManyChat (Contact ID, etc.).
+const MANYCHAT_BODY_TEMPLATE = `{
+  "subscriber_id": "{{Contact ID}}",
+  "name": "{{Full Name}}",
+  "text": "{{Last Text Input}}"
+}`;
+
 function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -5361,11 +5369,15 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
           </>
         ) : (
           <>
-            <p style={{ fontSize: 13, marginBottom: 10 }}>
+            <p style={{ fontSize: 13, marginBottom: 6 }}>
               <strong>✓ Compte ManyChat relié</strong>
               {mcStatus.api_token_masked && <span style={{ opacity: 0.7 }}> (clé {mcStatus.api_token_masked})</span>}.
-              Pour recevoir les DM, crée dans ManyChat un flow déclenché à chaque message,
-              avec une action <strong>« External Request »</strong> configurée ainsi :
+            </p>
+            <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
+              Dans ManyChat (plan <strong>Pro</strong> requis), crée une automatisation
+              déclenchée par <strong>Instagram → « Default Reply »</strong> (attrape tous les DM),
+              avec une action <strong>« External Request »</strong> configurée avec l'URL, l'en-tête
+              et le corps ci-dessous. Pas besoin de mapper la réponse : l'agent répond via l'API.
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <div>
@@ -5386,10 +5398,19 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
                   </button>
                 </div>
               </div>
-              <p style={{ fontSize: 12, opacity: 0.7, margin: 0 }}>
-                Corps (JSON) à envoyer : au minimum <code>{"{ \"subscriber_id\": \"...\", \"text\": \"...\" }"}</code>{" "}
-                (mappe les champs ManyChat correspondants au contact et à son dernier message).
-              </p>
+              <div>
+                <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>Corps (JSON, Content-Type application/json)</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <pre style={{ flex: 1, margin: 0, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{MANYCHAT_BODY_TEMPLATE}</pre>
+                  <button className="secondary-button" onClick={() => copyToClipboard(MANYCHAT_BODY_TEMPLATE, "body")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                    {mcCopied === "body" ? "Copié ✓" : "Copier"}
+                  </button>
+                </div>
+                <p style={{ fontSize: 11, opacity: 0.65, margin: "4px 0 0" }}>
+                  Remplace les valeurs par les champs système ManyChat correspondants
+                  (Contact ID, Full Name, Last Text Input) via le sélecteur de champs.
+                </p>
+              </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button className="secondary-button" onClick={disconnectManychat} disabled={mcBusy} style={{ fontSize: 12 }}>
                   Délier ce compte
