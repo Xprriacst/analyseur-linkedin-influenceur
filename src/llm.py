@@ -1149,3 +1149,73 @@ def synthesize_ig_strategy(stats: dict, classifications: list[dict], posts_enric
 
     data = _call(system, user, max_tokens=4096, temperature=0.4)
     return StrategySynthesis(**data).model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Agent de qualification Instagram — cerveau (ALE-195 / 202)
+# ---------------------------------------------------------------------------
+
+class IgQualification(BaseModel):
+    """Sortie structurée de l'agent de qualification pour UN message prospect."""
+    reponse: str = Field(description="Réponse suggérée au prospect, en français, prête à envoyer.")
+    confiance: float = Field(description="0..1 — niveau de couverture par la FAQ/objectif.")
+    besoin_humain: bool = Field(description="True si la réponse n'est pas ancrée dans la FAQ → passer la main.")
+    raison: str = Field(description="Brève justification (pourquoi cette réponse / pourquoi escalade).")
+
+
+def qualify_prospect(
+    faq_text: str,
+    history: list[dict],
+    latest_message: str,
+) -> dict[str, Any]:
+    """Produire une réponse suggérée ancrée dans la FAQ + un signal « je sais / je ne sais pas ».
+
+    - `faq_text` : contenu du fichier FAQ+objectif (config externe, collé tel quel).
+    - `history` : messages précédents [{role: in|out, text}], du plus ancien au plus récent.
+    - `latest_message` : dernier message du prospect à traiter.
+
+    « Sait » = **couvert par la FAQ/objectif** (jugement de couverture), pas
+    connaissance du monde. Si ce n'est pas ancré dans la FAQ → `besoin_humain=true`.
+    Sortie toujours conforme au schéma `IgQualification` (validée Pydantic).
+    """
+    system = (
+        "Tu es l'agent de pré-qualification des prospects arrivant en message privé Instagram. "
+        "Tu réponds en français, dans le ton et le persona définis ci-dessous, et tu poursuis "
+        "UN objectif de conversation. Ta seule source de vérité est la FAQ+objectif ci-dessous : "
+        "tu n'inventes JAMAIS d'information qui n'y figure pas.\n\n"
+        "Règle de couverture (impérative) : « savoir » = la réponse est ancrée dans la FAQ ou "
+        "l'objectif. Si la question du prospect n'est couverte par aucune entrée, ou relève d'un "
+        "cas d'escalade (prix négocié, devis précis, sujet sensible/juridique, prospect agacé), "
+        "alors `besoin_humain=true`, `confiance` basse, et `reponse` = une formulation d'attente "
+        "neutre (ex. « Je fais suivre à un humain qui revient vers toi très vite ») SANS inventer.\n"
+        "Sinon `besoin_humain=false`, `confiance` reflète la qualité de la couverture (0..1), et "
+        "`reponse` répond réellement en poussant vers l'objectif quand c'est pertinent.\n\n"
+        "=== FAQ + OBJECTIF (source de vérité) ===\n"
+        f"{faq_text.strip()}\n"
+        "=== FIN FAQ ===\n\n"
+        "Réponds UNIQUEMENT avec un objet JSON, sans texte avant ni après, sans balise markdown."
+    )
+
+    convo_lines = []
+    for m in history[-20:]:
+        who = "Prospect" if m.get("role") == "in" else "Agent"
+        text = (m.get("text") or "").strip()
+        if text:
+            convo_lines.append(f"{who}: {text}")
+    convo_block = "\n".join(convo_lines) if convo_lines else "(début de conversation)"
+
+    user = (
+        "Historique de la conversation :\n"
+        f"{convo_block}\n\n"
+        "Nouveau message du prospect à traiter :\n"
+        f"Prospect: {latest_message.strip()}\n\n"
+        "Schéma JSON attendu :\n"
+        '{"reponse": str, "confiance": number (0..1), "besoin_humain": bool, "raison": str}'
+    )
+
+    data = _call(system, user, max_tokens=1024, temperature=0.3)
+    parsed = IgQualification(**data)
+    result = parsed.model_dump()
+    # Garde-fou de bornage : confiance dans [0, 1].
+    result["confiance"] = max(0.0, min(1.0, float(result["confiance"])))
+    return result

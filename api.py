@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from src import db, slack as slack_client, zernio, manychat
+from src import db, slack as slack_client, zernio, manychat, ig_agent
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -2511,9 +2511,13 @@ async def manychat_inbound_webhook(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Impossible de créer la conversation.")
 
     if parsed["text"]:
-        db.add_ig_message_admin(
+        msg = db.add_ig_message_admin(
             owner, conv["id"], role="in", source="prospect", text=parsed["text"], kind="text"
         )
+        # Génère la réponse suggérée en tâche de fond (ALE-202) — ne bloque pas
+        # l'accusé de réception à ManyChat. L'envoi reste manuel (supervisé, 204).
+        if msg:
+            ig_agent.generate_draft_async(owner, conv["id"], msg["id"], parsed["text"])
         return {"ok": True, "conversation_id": conv["id"]}
 
     if parsed["audio_url"]:
