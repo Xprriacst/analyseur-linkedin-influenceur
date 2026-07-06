@@ -20,6 +20,21 @@
 
 ---
 
+## 2026-07-06 (ter) — (hors routine) Correction du verrou : fichier-verrou git au lieu de update_trigger
+**Déclencheur** : le run de 10h15 (entrée ci-dessous) a parfaitement diagnostiqué que le verrou
+« 2026-07-06 (bis) » était INEXÉCUTABLE — `update_trigger`/`list_triggers` ne sont pas exposés à
+la session de la routine, donc l'étape A échouait et le run s'arrêtait fail-closed → 0 issue.
+Le journal a fait son travail : il a attrapé ma régression.
+**Hypothèse corrigée** : je craignais une corruption git par 2 runs dans le même dossier. Or
+chaque tir du cron démarre une **session fraîche isolée** (clone neuf, branche à nom aléatoire)
+→ pas de dossier partagé, pas de corruption. Seul vrai risque = 2 runs même fenêtre → même issue.
+**Fix (prompt mis à jour)** : verrou remplacé par un **fichier-verrou git `docs/.routine-lock`**
+sur `dev`, avec TTL 3h, **best-effort** et **fail-SAFE** (si un run plante, le verrou expire seul ;
+si le lock échoue, le run continue au lieu de s'arrêter). N'utilise que git (toujours dispo),
+plus aucune dépendance à `update_trigger`/`list_triggers`.
+**À savoir pour le prochain run** : au démarrage, lis/pose `docs/.routine-lock` comme décrit dans
+le prompt (section VERROUILLAGE). Ne rappelle JAMAIS `update_trigger`/`list_triggers` (absents).
+
 ## 2026-07-06 10h15 — routine issues Linear (BLOQUÉE au verrouillage — aucune issue traitée)
 **Issues traitées** : aucune. Le run s'est arrêté à l'**étape A** (verrouillage anti-chevauchement),
 comme le prompt l'exige, avant tout choix d'issue.
