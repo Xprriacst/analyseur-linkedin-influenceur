@@ -4971,10 +4971,17 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   const [messages, setMessages] = useState<IgMessage[]>([]);
   const [drafts, setDrafts] = useState<IgDraft[]>([]);
   const [replyText, setReplyText] = useState("");
+  const [draftText, setDraftText] = useState("");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [killSwitch, setKillSwitch] = useState(false);
+  // Éditeur FAQ + objectif de l'agent (source de vérité du cerveau).
+  const [showFaq, setShowFaq] = useState(false);
+  const [faqText, setFaqText] = useState("");
+  const [faqLoaded, setFaqLoaded] = useState(false);
+  const [faqSaving, setFaqSaving] = useState(false);
+  const [faqNotice, setFaqNotice] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
 
   const active = conversations.find((c) => c.id === activeId) || null;
@@ -5044,7 +5051,41 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   function selectConversation(id: string) {
     setActiveId(id);
     setReplyText("");
+    setDraftText("");
     loadThread(id);
+  }
+
+  async function toggleFaq() {
+    const next = !showFaq;
+    setShowFaq(next);
+    if (next && !faqLoaded) {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/ig/faq`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (res.ok) {
+          setFaqText(data.content || "");
+          setFaqLoaded(true);
+        }
+      } catch { /* non bloquant */ }
+    }
+  }
+
+  async function saveFaq() {
+    setFaqSaving(true); setFaqNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/faq`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: faqText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
+      setFaqNotice("✓ FAQ enregistrée — l'agent l'utilise dès le prochain message.");
+    } catch (err: any) {
+      setFaqNotice(`Erreur : ${err.message}`);
+    } finally {
+      setFaqSaving(false);
+    }
   }
 
   useEffect(() => {
@@ -5067,23 +5108,23 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   }, [activeId]);
 
   useEffect(() => {
-    if (pendingDraft) setReplyText(pendingDraft.reply || "");
+    if (pendingDraft) setDraftText(pendingDraft.reply || "");
   }, [pendingDraft?.id]);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length, pendingDraft?.id]);
 
   async function sendDraft() {
-    if (!pendingDraft || !replyText.trim()) return;
+    if (!pendingDraft || !draftText.trim()) return;
     setBusy(true); setError("");
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/ig/drafts/${pendingDraft.id}/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ text: replyText }),
+        body: JSON.stringify({ text: draftText }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi impossible");
-      setReplyText("");
+      setDraftText("");
       if (activeId) await loadThread(activeId);
     } catch (err: any) {
       setError(err.message);
@@ -5158,19 +5199,50 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   }
 
   return (
-    <>
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: killSwitch ? "rgba(224,108,0,0.12)" : "rgba(128,128,128,0.08)" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - var(--header-h) - var(--dev-banner-h) - 40px)", minHeight: 420 }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: killSwitch ? "rgba(224,108,0,0.12)" : "rgba(128,128,128,0.08)", flex: "none" }}>
       <span style={{ fontSize: 13 }}>
         {killSwitch
           ? "🛑 Kill-switch actif — tout est en supervisé, aucun envoi automatique."
           : "L'autopilot peut envoyer seul sur les conversations en mode autopilot, uniquement quand l'agent sait (vert)."}
       </span>
-      <button className="secondary-button" onClick={toggleKillSwitch} disabled={busy} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-        {killSwitch ? "Réactiver l'autopilot" : "Tout repasser en supervisé"}
-      </button>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flex: "none" }}>
+        <a href="/manychat-test" className="secondary-button" style={{ fontSize: 12, whiteSpace: "nowrap", textDecoration: "none" }}>
+          🧪 Simulateur
+        </a>
+        <button className="secondary-button" onClick={toggleFaq} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+          {showFaq ? "Fermer la FAQ" : "📚 FAQ de l'agent"}
+        </button>
+        <button className="secondary-button" onClick={toggleKillSwitch} disabled={busy} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+          {killSwitch ? "Réactiver l'autopilot" : "Tout repasser en supervisé"}
+        </button>
+      </div>
     </div>
-    <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16, minHeight: 520 }}>
-      <aside className="card" style={{ padding: 8, overflowY: "auto", maxHeight: "72vh" }}>
+    {showFaq && (
+      <div className="card" style={{ marginBottom: 12, padding: 14, flex: "none" }}>
+        <p style={{ fontSize: 13, marginBottom: 8 }}>
+          <strong>FAQ + objectif de l'agent.</strong> C'est la seule source de vérité du cerveau :
+          il ne répond seul que si la réponse est couverte ici, sinon il te passe la main.
+          Décris ton offre, tes prix, tes questions/réponses fréquentes et l'objectif de la conversation
+          (ex. proposer un appel découverte).
+        </p>
+        <textarea
+          value={faqText}
+          onChange={(e) => setFaqText(e.target.value)}
+          placeholder={faqLoaded ? "Ex. : Qui es-tu ? / Quels sont tes tarifs ? / Objectif : qualifier puis proposer un appel…" : "Chargement…"}
+          rows={10}
+          style={{ width: "100%", resize: "vertical", padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13, fontFamily: "inherit" }}
+        />
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
+          <button className="primary-button" onClick={saveFaq} disabled={faqSaving || !faqLoaded} style={{ fontSize: 13 }}>
+            {faqSaving ? "Enregistrement…" : "Enregistrer la FAQ"}
+          </button>
+          {faqNotice && <span style={{ fontSize: 12, opacity: 0.8 }}>{faqNotice}</span>}
+        </div>
+      </div>
+    )}
+    <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
+      <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
         <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
         {conversations.length === 0 && (
           <p style={{ padding: 8, fontSize: 13, opacity: 0.7 }}>Aucune conversation pour l'instant. Elles apparaîtront dès qu'un prospect écrit en DM.</p>
@@ -5192,7 +5264,7 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
         ))}
       </aside>
 
-      <section className="card" style={{ display: "flex", flexDirection: "column", padding: 0, maxHeight: "72vh" }}>
+      <section className="card" style={{ display: "flex", flexDirection: "column", padding: 0, minHeight: 0 }}>
         {!active ? (
           <div style={{ margin: "auto", opacity: 0.7 }}>Sélectionne une conversation.</div>
         ) : (
@@ -5227,52 +5299,63 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
                   </div>
                 </div>
               ))}
+
+              {pendingDraft && (
+                <div style={{ alignSelf: "flex-end", width: "78%", maxWidth: "78%" }}>
+                  <div style={{
+                    padding: "10px 12px", borderRadius: 12,
+                    border: "1.5px dashed rgba(90,120,255,0.55)", background: "rgba(90,120,255,0.07)",
+                  }}>
+                    <div style={{ fontSize: 12, marginBottom: 6 }}>
+                      {pendingDraft.needs_human
+                        ? <span style={{ color: "#e06c00", fontWeight: 600 }}>⚠️ L'agent ne sait pas — à traiter à la main</span>
+                        : <span style={{ color: "#1a8a3a", fontWeight: 600 }}>✨ Réponse proposée par l'agent</span>}
+                      {typeof pendingDraft.confidence === "number" && (
+                        <span style={{ opacity: 0.7, marginLeft: 8 }}>confiance {Math.round(pendingDraft.confidence * 100)}%</span>
+                      )}
+                    </div>
+                    {pendingDraft.reason && <div style={{ fontSize: 11, opacity: 0.65, marginBottom: 6 }}>{pendingDraft.reason}</div>}
+                    <textarea
+                      value={draftText}
+                      onChange={(e) => setDraftText(e.target.value)}
+                      rows={Math.min(8, Math.max(2, draftText.split("\n").length))}
+                      style={{ width: "100%", resize: "vertical", padding: 8, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 14, fontFamily: "inherit", background: "transparent" }}
+                    />
+                    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+                      <button className="secondary-button" onClick={rejectDraft} disabled={busy} style={{ fontSize: 12 }}>
+                        ✕ Refuser
+                      </button>
+                      <button className="primary-button" onClick={sendDraft} disabled={busy || !draftText.trim()} style={{ fontSize: 13 }}>
+                        {busy ? "…" : "✓ Accepter & envoyer"}
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10, opacity: 0.5, textAlign: "right", marginTop: 2 }}>
+                    suggestion — modifiable avant envoi
+                  </div>
+                </div>
+              )}
               <div ref={endRef} />
             </div>
 
-            {pendingDraft && (
-              <div style={{ padding: "8px 16px", borderTop: "1px solid rgba(128,128,128,0.2)" }}>
-                <div style={{ fontSize: 12, marginBottom: 4 }}>
-                  {pendingDraft.needs_human
-                    ? <span style={{ color: "#e06c00", fontWeight: 600 }}>⚠️ L'agent ne sait pas — à traiter à la main</span>
-                    : <span style={{ color: "#1a8a3a", fontWeight: 600 }}>✅ Réponse suggérée</span>}
-                  {typeof pendingDraft.confidence === "number" && (
-                    <span style={{ opacity: 0.7, marginLeft: 8 }}>confiance {Math.round(pendingDraft.confidence * 100)}%</span>
-                  )}
-                </div>
-                {pendingDraft.reason && <div style={{ fontSize: 11, opacity: 0.65, marginBottom: 6 }}>{pendingDraft.reason}</div>}
-              </div>
-            )}
-
-            <div style={{ padding: 12, borderTop: pendingDraft ? "none" : "1px solid rgba(128,128,128,0.2)", display: "flex", gap: 8, alignItems: "flex-end" }}>
+            <div style={{ padding: 12, borderTop: "1px solid rgba(128,128,128,0.2)", display: "flex", gap: 8, alignItems: "flex-end", flex: "none" }}>
               <textarea
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
-                placeholder={pendingDraft ? "Édite la suggestion puis envoie…" : "Écris une réponse…"}
+                placeholder="Écris une réponse…"
                 rows={2}
                 style={{ flex: 1, resize: "vertical", padding: 8, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 14 }}
               />
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {pendingDraft ? (
-                  <>
-                    <button className="primary-button" onClick={sendDraft} disabled={busy || !replyText.trim()} style={{ fontSize: 13 }}>
-                      {busy ? "…" : "Valider & envoyer"}
-                    </button>
-                    <button className="secondary-button" onClick={rejectDraft} disabled={busy} style={{ fontSize: 12 }}>Refuser</button>
-                  </>
-                ) : (
-                  <button className="primary-button" onClick={sendManual} disabled={busy || !replyText.trim()} style={{ fontSize: 13 }}>
-                    {busy ? "…" : "Envoyer"}
-                  </button>
-                )}
-              </div>
+              <button className="primary-button" onClick={sendManual} disabled={busy || !replyText.trim()} style={{ fontSize: 13 }}>
+                {busy ? "…" : "Envoyer"}
+              </button>
             </div>
             {error && <div style={{ padding: "0 16px 12px", color: "#d33", fontSize: 13 }}>{error}</div>}
           </>
         )}
       </section>
     </div>
-    </>
+    </div>
   );
 }
 
