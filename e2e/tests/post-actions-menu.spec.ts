@@ -112,6 +112,48 @@ test("Agent IA : menu Publier + ⋯ sous une réponse (conversation mockée), av
   await expect(page.getByText(/image jointe au post LinkedIn/)).toHaveCount(0);
 });
 
+test("Agent IA : édition manuelle du post proposé (éditeur inline, version modifiée affichée)", async ({ page }) => {
+  await page.route("**/chat/conversations", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify([{ id: "e2e-conv-edit", title: "Test édition", created_at: "2026-07-01T10:00:00Z", updated_at: "2026-07-01T10:00:00Z" }]),
+    })
+  );
+  await page.route("**/chat/conversations/e2e-conv-edit/messages", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ messages: [
+        { id: "m1", role: "user", content: "Écris un post de test." },
+        { id: "m2", role: "assistant", content: "Texte proposé par l'agent." },
+      ] }),
+    })
+  );
+  await gotoTab(page, "Agent IA");
+  await page.getByText("Test édition").click();
+  await expect(page.getByText("Texte proposé par l'agent.")).toBeVisible();
+
+  // « Modifier le post » dans le menu « ⋯ » → éditeur inline pré-rempli.
+  const bar = page.locator(".post-actions-bar").first();
+  await bar.getByRole("button", { name: "Plus d'actions" }).click();
+  await page.locator(".action-menu").getByRole("menuitem", { name: /Modifier le post/ }).click();
+  const editor = page.locator("textarea.variant-text");
+  await expect(editor).toBeVisible();
+  await expect(editor).toHaveValue("Texte proposé par l'agent.");
+
+  // Enregistrer une retouche → panneau « Version modifiée » affiché, bulle intacte.
+  await editor.fill("Texte retouché à la main.");
+  await page.getByRole("button", { name: /Enregistrer/ }).click();
+  await expect(page.getByText(/Version modifiée/)).toBeVisible();
+  await expect(page.getByText("Texte retouché à la main.")).toBeVisible();
+  await expect(page.getByText("Texte proposé par l'agent.")).toBeVisible();
+
+  // Revenir au texte d'origine → le panneau disparaît.
+  await bar.getByRole("button", { name: "Plus d'actions" }).click();
+  await page.locator(".action-menu").getByRole("menuitem", { name: /Modifier le post/ }).click();
+  await page.getByRole("button", { name: /Revenir au texte d'origine/ }).click();
+  await expect(page.getByText(/Version modifiée/)).toHaveCount(0);
+});
+
 test("Contenu › Idée du jour : menu Publier + ⋯ sur le post du jour", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Idée du jour");
