@@ -2101,15 +2101,14 @@ function SchedulePostModal({
  *  post (gratuit), le montre à l'utilisateur qui peut l'ajuster, puis ne génère
  *  l'image (payante en crédits) qu'après validation explicite. L'image générée
  *  est remontée en data URL via `onGenerated`.
- *  Pendant la génération (2 à 3 min), la pop-up peut être réduite en pastille : la
- *  génération continue et l'image revient en preview à la fin (ALE-190). Quitter
- *  ou recharger la page pendant la génération déclenche l'alerte du navigateur ;
- *  changer d'onglet dans l'app perdrait aussi l'image, d'où « reste sur cette page ». */
+ *  Pendant la génération (2 à 3 min), la pop-up reste affichée — pas de réduction
+ *  en pastille : changer d'onglet dans l'app démonte le composant et perd l'image
+ *  (la vraie file d'attente serveur = ALE-141), donc on affiche un avertissement
+ *  explicite. Quitter ou recharger la page déclenche en plus l'alerte du navigateur. */
 function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; onClose: () => void; onGenerated: (dataUrl: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [loadingPrompt, setLoadingPrompt] = useState(true);
   const [generating, setGenerating] = useState(false);
-  const [minimized, setMinimized] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState("");
   const postBoxRef = useRef<HTMLDivElement | null>(null);
@@ -2170,34 +2169,12 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
       if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
       emitCredits(data.credits);
       onGenerated(data.image_data);
-      // La pop-up revient (même si elle était réduite) pour montrer le résultat.
       setPreview(data.image_data);
-      setMinimized(false);
     } catch (err: any) {
       setError(err.message || "Génération d'image impossible.");
-      setMinimized(false);
     } finally {
       setGenerating(false);
     }
-  }
-
-  // Réduite en pastille : la génération continue, clic pour rouvrir.
-  if (minimized) {
-    return (
-      <button
-        type="button"
-        className="card"
-        onClick={() => setMinimized(false)}
-        title="Rouvrir la génération d'image"
-        style={{
-          position: "fixed", right: 16, bottom: 16, zIndex: 1000, cursor: "pointer",
-          display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
-          fontSize: 13, border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
-        }}
-      >
-        <Loader2 size={14} className="spinning" /> Image IA en cours de génération…
-      </button>
-    );
   }
 
   return (
@@ -2230,11 +2207,26 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
           </>
         ) : (
           <>
-            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-              {generating
-                ? "Génération en cours (2 à 3 min). Tu peux réduire cette fenêtre et continuer à travailler — reste simplement sur cette page, l'image sera jointe au post automatiquement."
-                : "Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour générer l'image (5 crédits). L'image sera jointe au post."}
-            </p>
+            {generating ? (
+              <div style={{
+                display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 12,
+                border: "1px solid #f0b429", background: "rgba(240, 180, 41, 0.12)",
+                borderRadius: 8, padding: "10px 12px", fontSize: 13,
+              }}>
+                <span aria-hidden style={{ fontSize: 16, lineHeight: "18px" }}>⚠️</span>
+                <span>
+                  <strong>Génération en cours (2 à 3 min).</strong> Ne quitte pas cette page et ne change
+                  pas d&apos;onglet dans l&apos;application : l&apos;image serait perdue (et les crédits
+                  débités). Laisse cette fenêtre ouverte, l&apos;image sera jointe au post automatiquement.
+                </span>
+              </div>
+            ) : (
+              <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+                Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour
+                générer l&apos;image (5 crédits). L&apos;image sera jointe au post. Pendant la génération
+                (2 à 3 min), il faudra rester sur cette page.
+              </p>
+            )}
             {loadingPrompt ? (
               <p style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
                 <Loader2 size={14} className="spinning" /> Préparation du prompt…
@@ -2284,13 +2276,7 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
             )}
             {error && <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{error}</div>}
             <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end", flexWrap: "wrap" }}>
-              {generating ? (
-                <button className="secondary-button" onClick={() => setMinimized(true)}>
-                  Réduire — continuer en arrière-plan
-                </button>
-              ) : (
-                <button className="secondary-button" onClick={onClose}>Annuler</button>
-              )}
+              {!generating && <button className="secondary-button" onClick={onClose}>Annuler</button>}
               <button className="primary-button" disabled={loadingPrompt || generating || !prompt.trim()} onClick={generate}>
                 {generating
                   ? <><Loader2 size={13} className="spinning" /> Génération en cours… (2-3 min)</>
