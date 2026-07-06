@@ -3000,3 +3000,58 @@ def create_ig_draft_admin(
         .execute()
     )
     return resp.data[0] if resp.data else None
+
+
+def list_ig_drafts(access_token: str, conversation_id: str, limit: int = 50) -> list[dict]:
+    """Lister les réponses suggérées d'une conversation (RLS), plus récentes d'abord."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_drafts")
+        .select("*")
+        .eq("conversation_id", conversation_id)
+        .order("created_at", desc=True)
+        .limit(max(1, min(limit, 200)))
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_ig_draft(access_token: str, draft_id: str) -> dict | None:
+    """Récupérer une réponse suggérée de l'utilisateur (RLS garantit la propriété)."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_drafts").select("*").eq("id", draft_id).limit(1).execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_ig_draft(
+    access_token: str, draft_id: str, *, status: str, reply: str | None = None
+) -> dict | None:
+    """Mettre à jour le statut (et éventuellement le texte) d'un draft (RLS)."""
+    if not supabase_enabled():
+        return None
+    payload: dict[str, Any] = {"status": status, "updated_at": "now()"}
+    if reply is not None:
+        payload["reply"] = reply
+    db = client_for_token(access_token)
+    resp = db.table("ig_drafts").update(payload).eq("id", draft_id).execute()
+    return resp.data[0] if resp.data else None
+
+
+def set_ig_conversation_mode(access_token: str, conversation_id: str, mode: str) -> dict | None:
+    """Basculer une conversation entre supervisé et autopilot (RLS)."""
+    if mode not in ("supervised", "autopilot") or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_conversations")
+        .update({"mode": mode, "updated_at": "now()"})
+        .eq("id", conversation_id)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None

@@ -2563,6 +2563,15 @@ def me_ig_send(
     conv = db.get_ig_conversation(token, conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation introuvable.")
+    return {"ok": True, "message": _ig_send_to_conversation(token, conv, payload.text)}
+
+
+def _ig_send_to_conversation(token: str, conv: dict, text: str) -> dict | None:
+    """Envoyer un texte au prospect + persister le message sortant (envoi supervisé).
+
+    Vérifie la fenêtre 24 h, appelle ManyChat, persiste le message `out`.
+    Levée d'HTTPException en cas de fenêtre expirée / ManyChat KO / non configuré.
+    """
     expires = conv.get("window_expires_at")
     if expires:
         try:
@@ -2577,10 +2586,78 @@ def me_ig_send(
     if not manychat.enabled():
         raise HTTPException(status_code=503, detail="MANYCHAT_API_TOKEN non configuré.")
     try:
-        manychat.send_text(conv["prospect_id"], payload.text)
+        manychat.send_text(conv["prospect_id"], text)
     except manychat.ManyChatError as exc:
         raise HTTPException(status_code=502, detail=f"Envoi ManyChat échoué : {exc}")
-    msg = db.add_ig_message(
-        token, conversation_id, role="out", source="human", text=payload.text, kind="text"
+    return db.add_ig_message(
+        token, conv["id"], role="out", source="human", text=text, kind="text"
     )
-    return {"ok": True, "message": msg}
+
+
+@app.get("/me/ig/conversations/{conversation_id}/drafts")
+def me_ig_drafts(
+    conversation_id: str, token: str = Depends(require_token)
+) -> list[dict[str, Any]]:
+    """Lister les réponses suggérées d'une conversation (RLS)."""
+    if not db.get_ig_conversation(token, conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation introuvable.")
+    return db.list_ig_drafts(token, conversation_id)
+
+
+class IgDraftSendRequest(BaseModel):
+    text: str | None = Field(default=None, max_length=4000)
+
+
+@app.post("/me/ig/drafts/{draft_id}/send")
+def me_ig_draft_send(
+    draft_id: str,
+    payload: IgDraftSendRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Valider/éditer puis envoyer une réponse suggérée (envoi supervisé, ALE-204).
+
+    `text` fourni = version éditée par Alex (statut `edited`) ; sinon la
+    suggestion telle quelle (statut `approved`). Envoie via ManyChat + persiste
+    le message sortant, puis marque le draft `sent`.
+    """
+    draft = db.get_ig_draft(token, draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Réponse suggérée introuvable.")
+    if draft.get("status") == "sent":
+        raise HTTPException(status_code=409, detail="Réponse déjà envoyée.")
+    conv = db.get_ig_conversation(token, draft["conversation_id"])
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation introuvable.")
+    edited = payload.text is not None and payload.text.strip() != (draft.get("reply") or "").strip()
+    text = (payload.text if payload.text is not None else draft.get("reply") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Réponse vide.")
+    msg = _ig_send_to_conversation(token, conv, text)
+    db.update_ig_draft(token, draft_id, status="sent", reply=text if edited else None)
+    return {"ok": True, "message": msg, "edited": edited}
+
+
+@app.post("/me/ig/drafts/{draft_id}/reject")
+def me_ig_draft_reject(draft_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Refuser une réponse suggérée (ne l'envoie pas) — RLS."""
+    updated = db.update_ig_draft(token, draft_id, status="rejected")
+    if not updated:
+        raise HTTPException(status_code=404, detail="Réponse suggérée introuvable.")
+    return {"ok": True, "draft": updated}
+
+
+class IgModeRequest(BaseModel):
+    mode: str = Field(..., pattern="^(supervised|autopilot)$")
+
+
+@app.post("/me/ig/conversations/{conversation_id}/mode")
+def me_ig_conversation_mode(
+    conversation_id: str,
+    payload: IgModeRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Basculer une conversation supervisé ↔ autopilot (le comportement autopilot = ALE-205)."""
+    updated = db.set_ig_conversation_mode(token, conversation_id, payload.mode)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Conversation introuvable.")
+    return {"ok": True, "conversation": updated}

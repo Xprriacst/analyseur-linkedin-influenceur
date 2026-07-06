@@ -242,7 +242,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "assistant", "content"] as const;
+const mainViews = ["analyze", "profile", "assistant", "content", "inbox"] as const;
 type MainView = typeof mainViews[number];
 
 type Platform = "linkedin" | "instagram";
@@ -1187,6 +1187,26 @@ function Sidebar({
                   </button>
                 );
               })()}
+              {(() => {
+                const locked = !isAuthed;
+                return (
+                  <button
+                    className={`nav-item ${view === "inbox" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                    title={collapsed ? "Inbox Instagram" : undefined}
+                    onClick={() => {
+                      if (locked) {
+                        requireAuth("Crée un compte gratuit pour débloquer l'inbox Instagram.");
+                        return;
+                      }
+                      onNavigate("inbox");
+                    }}
+                  >
+                    <InstagramIcon size={14} />
+                    {!collapsed && <span>Inbox Instagram</span>}
+                    {locked ? <Lock size={12} className="lock-ico" /> : null}
+                  </button>
+                );
+              })()}
             </div>
           </section>
         );
@@ -1461,6 +1481,7 @@ function TopHeader({
     profile: "Mon profil éditorial",
     assistant: "Agent IA",
     content: "Contenu",
+    inbox: "Inbox Instagram",
   };
 
   return (
@@ -4911,6 +4932,308 @@ function AssistantMessageActions({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Inbox in-app de l'agent de qualification Instagram (ALE-195 / 204)
+// ---------------------------------------------------------------------------
+
+type IgConversation = {
+  id: string;
+  prospect_id: string;
+  prospect_name: string | null;
+  status: string;
+  mode: "supervised" | "autopilot";
+  last_message_at: string | null;
+  window_expires_at: string | null;
+};
+type IgMessage = {
+  id: string;
+  role: "in" | "out";
+  source: string;
+  text: string;
+  kind: string;
+  created_at: string;
+};
+type IgDraft = {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  reply: string;
+  confidence: number | null;
+  needs_human: boolean;
+  reason: string | null;
+  status: string;
+  created_at: string;
+};
+
+function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
+  const [conversations, setConversations] = useState<IgConversation[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<IgMessage[]>([]);
+  const [drafts, setDrafts] = useState<IgDraft[]>([]);
+  const [replyText, setReplyText] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const endRef = useRef<HTMLDivElement | null>(null);
+
+  const active = conversations.find((c) => c.id === activeId) || null;
+  // La suggestion à traiter = le draft pending le plus récent (créé après le dernier DM prospect).
+  const pendingDraft = drafts.find((d) => d.status === "pending") || null;
+
+  async function loadConversations() {
+    if (!isAuthed) return;
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Chargement des conversations impossible");
+      setConversations(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+
+  async function loadThread(conversationId: string) {
+    setLoading(true);
+    setError("");
+    try {
+      const [mRes, dRes] = await Promise.all([
+        fetch(`${DIRECT_API_URL}/me/ig/conversations/${conversationId}/messages`, { headers: await authHeaders() }),
+        fetch(`${DIRECT_API_URL}/me/ig/conversations/${conversationId}/drafts`, { headers: await authHeaders() }),
+      ]);
+      const mData = await mRes.json();
+      const dData = await dRes.json();
+      if (!mRes.ok) throw new Error(mData.detail || "Messages introuvables");
+      setMessages(Array.isArray(mData) ? mData : []);
+      setDrafts(Array.isArray(dData) ? dData : []);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function selectConversation(id: string) {
+    setActiveId(id);
+    setReplyText("");
+    loadThread(id);
+  }
+
+  useEffect(() => {
+    if (!isAuthed) {
+      setConversations([]); setActiveId(null); setMessages([]); setDrafts([]);
+      return;
+    }
+    loadConversations();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  // Le webhook persiste messages/drafts de façon asynchrone → on rafraîchit le
+  // fil ouvert toutes les 6 s pour voir arriver les nouveaux DM et suggestions.
+  useEffect(() => {
+    if (!activeId) return;
+    const t = setInterval(() => { loadThread(activeId); loadConversations(); }, 6000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
+
+  useEffect(() => {
+    if (pendingDraft) setReplyText(pendingDraft.reply || "");
+  }, [pendingDraft?.id]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+
+  async function sendDraft() {
+    if (!pendingDraft || !replyText.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/drafts/${pendingDraft.id}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text: replyText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi impossible");
+      setReplyText("");
+      if (activeId) await loadThread(activeId);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rejectDraft() {
+    if (!pendingDraft) return;
+    setBusy(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/drafts/${pendingDraft.id}/reject`, {
+        method: "POST", headers: await authHeaders(),
+      });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Refus impossible"); }
+      if (activeId) await loadThread(activeId);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendManual() {
+    if (!active || !replyText.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations/${active.id}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text: replyText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi impossible");
+      setReplyText("");
+      if (activeId) await loadThread(activeId);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleMode() {
+    if (!active) return;
+    const next = active.mode === "autopilot" ? "supervised" : "autopilot";
+    setBusy(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations/${active.id}/mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ mode: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Bascule impossible");
+      await loadConversations();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <p>Connecte-toi pour accéder à l'inbox de qualification Instagram.</p>
+        <button className="primary-button" onClick={() => requireAuth("Crée un compte pour accéder à l'inbox Instagram.")}>Se connecter</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16, minHeight: 520 }}>
+      <aside className="card" style={{ padding: 8, overflowY: "auto", maxHeight: "72vh" }}>
+        <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
+        {conversations.length === 0 && (
+          <p style={{ padding: 8, fontSize: 13, opacity: 0.7 }}>Aucune conversation pour l'instant. Elles apparaîtront dès qu'un prospect écrit en DM.</p>
+        )}
+        {conversations.map((c) => (
+          <button
+            key={c.id}
+            onClick={() => selectConversation(c.id)}
+            className={`ig-conv-item ${activeId === c.id ? "active" : ""}`}
+            style={{
+              display: "block", width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 4,
+              borderRadius: 8, border: "1px solid transparent", cursor: "pointer",
+              background: activeId === c.id ? "rgba(120,120,255,0.12)" : "transparent",
+            }}
+          >
+            <span style={{ fontWeight: 600, fontSize: 14 }}>{c.prospect_name || c.prospect_id}</span>
+            <span style={{ float: "right", fontSize: 11, opacity: 0.7 }}>{c.mode === "autopilot" ? "🤖 auto" : "🙋 supervisé"}</span>
+          </button>
+        ))}
+      </aside>
+
+      <section className="card" style={{ display: "flex", flexDirection: "column", padding: 0, maxHeight: "72vh" }}>
+        {!active ? (
+          <div style={{ margin: "auto", opacity: 0.7 }}>Sélectionne une conversation.</div>
+        ) : (
+          <>
+            <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: "1px solid rgba(128,128,128,0.2)" }}>
+              <div>
+                <strong>{active.prospect_name || active.prospect_id}</strong>
+                <span style={{ marginLeft: 10, fontSize: 12, opacity: 0.7 }}>
+                  {active.window_expires_at && new Date(active.window_expires_at) < new Date()
+                    ? "⏰ fenêtre 24 h expirée"
+                    : "fenêtre 24 h ouverte"}
+                </span>
+              </div>
+              <button className="secondary-button" onClick={toggleMode} disabled={busy} style={{ fontSize: 12 }}>
+                {active.mode === "autopilot" ? "Repasser en supervisé" : "Activer l'autopilot"}
+              </button>
+            </header>
+
+            <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+              {loading && messages.length === 0 && <p style={{ opacity: 0.6 }}>Chargement…</p>}
+              {messages.map((m) => (
+                <div key={m.id} style={{ alignSelf: m.role === "in" ? "flex-start" : "flex-end", maxWidth: "78%" }}>
+                  <div style={{
+                    padding: "8px 12px", borderRadius: 12, whiteSpace: "pre-wrap", fontSize: 14,
+                    background: m.role === "in" ? "rgba(128,128,128,0.14)" : "rgba(90,120,255,0.18)",
+                  }}>
+                    {m.kind === "voice" && <span title="note vocale transcrite" style={{ marginRight: 6 }}>🎤</span>}
+                    {m.text}
+                  </div>
+                  <div style={{ fontSize: 10, opacity: 0.5, textAlign: m.role === "in" ? "left" : "right", marginTop: 2 }}>
+                    {m.source}{m.created_at ? ` · ${new Date(m.created_at).toLocaleString("fr-FR")}` : ""}
+                  </div>
+                </div>
+              ))}
+              <div ref={endRef} />
+            </div>
+
+            {pendingDraft && (
+              <div style={{ padding: "8px 16px", borderTop: "1px solid rgba(128,128,128,0.2)" }}>
+                <div style={{ fontSize: 12, marginBottom: 4 }}>
+                  {pendingDraft.needs_human
+                    ? <span style={{ color: "#e06c00", fontWeight: 600 }}>⚠️ L'agent ne sait pas — à traiter à la main</span>
+                    : <span style={{ color: "#1a8a3a", fontWeight: 600 }}>✅ Réponse suggérée</span>}
+                  {typeof pendingDraft.confidence === "number" && (
+                    <span style={{ opacity: 0.7, marginLeft: 8 }}>confiance {Math.round(pendingDraft.confidence * 100)}%</span>
+                  )}
+                </div>
+                {pendingDraft.reason && <div style={{ fontSize: 11, opacity: 0.65, marginBottom: 6 }}>{pendingDraft.reason}</div>}
+              </div>
+            )}
+
+            <div style={{ padding: 12, borderTop: pendingDraft ? "none" : "1px solid rgba(128,128,128,0.2)", display: "flex", gap: 8, alignItems: "flex-end" }}>
+              <textarea
+                value={replyText}
+                onChange={(e) => setReplyText(e.target.value)}
+                placeholder={pendingDraft ? "Édite la suggestion puis envoie…" : "Écris une réponse…"}
+                rows={2}
+                style={{ flex: 1, resize: "vertical", padding: 8, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 14 }}
+              />
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {pendingDraft ? (
+                  <>
+                    <button className="primary-button" onClick={sendDraft} disabled={busy || !replyText.trim()} style={{ fontSize: 13 }}>
+                      {busy ? "…" : "Valider & envoyer"}
+                    </button>
+                    <button className="secondary-button" onClick={rejectDraft} disabled={busy} style={{ fontSize: 12 }}>Refuser</button>
+                  </>
+                ) : (
+                  <button className="primary-button" onClick={sendManual} disabled={busy || !replyText.trim()} style={{ fontSize: 13 }}>
+                    {busy ? "…" : "Envoyer"}
+                  </button>
+                )}
+              </div>
+            </div>
+            {error && <div style={{ padding: "0 16px 12px", color: "#d33", fontSize: 13 }}>{error}</div>}
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function Assistant({ isAuthed, requireAuth, seed }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { post: string; nonce: number } | null }) {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -7105,8 +7428,10 @@ export default function Home() {
             (ex. inscription d'un nouveau compte sans logout : `isAuthed` reste true,
             les useEffect keyés sur [isAuthed] ne se relancent pas). */}
         <main className="main" key={session?.user?.id ?? "anon"}>
-          {/* Agent IA et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
-          {view === "assistant" ? (
+          {/* Agent IA, Inbox IG et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
+          {view === "inbox" ? (
+            <IgInbox isAuthed={isAuthed} requireAuth={requireAuth} />
+          ) : view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} />
           ) : view === "profile" ? (
             <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />
