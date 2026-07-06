@@ -72,6 +72,46 @@ entrant** à l'agent.
 > l'agent avec le **Simulateur** (bouton « 🧪 Simulateur » de l'Inbox) : il
 > rejoue le même pipeline sans passer par ManyChat.
 
+## Nouvelle interface ManyChat (« Flow Builder » 2026)
+
+Depuis 2026, l'UI ManyChat a changé et **« Default Reply » n'apparaît plus dans la
+liste des triggers**. Voici le parcours équivalent, écran par écran.
+
+1. **Automation → New Automation.**
+2. **Trigger** : dans la liste des événements Instagram, choisis **« Instagram
+   Message » (« User sends a message »)**. (Les autres — *Post/Reel Comments*,
+   *Story Reply*, *Ads*… — ne sont que des déclencheurs partiels.)
+3. ManyChat propose alors deux façons de déclencher :
+   - **« Detect specific words in a message »** → filtre sur un **mot-clé** : ne
+     transmet QUE les DM contenant ce mot. À éviter en production.
+   - **« Recognize intention of a message »** → filtre par thème via l'IA ManyChat.
+   Pour un vrai **attrape-tout** (tous les DM), utilise plutôt le **Default Reply**
+   classique : lien **« Go To Basic Builder »** en haut à droite → il expose la
+   **Réponse par défaut** sans mot-clé. (Pour un simple test de branchement, un
+   mot-clé bidon comme `test` suffit à valider le webhook.)
+4. **Supprime le bloc « Send Message »** créé par défaut : l'agent répond via
+   l'API, ManyChat n'a pas à envoyer de message.
+5. Ajoute une étape **Actions → + Action → External Request**.
+6. Dans la fenêtre **« Edit Request »** :
+   - **Request Type** : `POST`.
+   - **Request URL** : ton URL de webhook (copiée depuis l'app). Format :
+     `https://analyseur-linkedin-influenceur-api.onrender.com/manychat/webhooks/inbound/<ton-token>`
+     — le token final est une longue chaîne aléatoire propre à ton compte ; ne
+     recopie jamais un exemple, prends la vraie valeur affichée dans l'app.
+   - **Contact for testing** : ton prénom (sert au bouton « Test Request »).
+   - Onglet **Headers → + Request Header** : `X-ManyChat-Secret` = ton secret.
+   - Onglet **Body** : type `JSON`, colle le corps de l'Étape 2 en insérant les
+     *system fields* via le bouton `{ }` (**Contact ID**, **Full Name**,
+     **Last Text Input**).
+   - Onglet **Response mapping** : ne touche à rien.
+   - **Test Request** → doit renvoyer **200** (403 = mauvais secret, 404 = mauvaise
+     URL / compte délié). Puis **Save**.
+7. **Set Live** (en haut à droite) pour publier.
+
+> ⚠️ **Plan** : l'action **External Request** exige un **compte Pro**. En **Trial**,
+> tu peux construire le flow mais l'exécution réelle du webhook nécessitera le
+> passage en Pro.
+
 ## Notes vocales (optionnel)
 
 Si ManyChat expose l'URL du fichier audio d'un message vocal, ajoute au body :
@@ -90,7 +130,9 @@ Sans ce champ, seuls les DM texte sont pris en charge.
 - **404 / « Webhook ManyChat inconnu »** : l'URL est erronée ou le compte a été
   délié dans l'app. Reconnecte-toi via « 🔌 Connecter ManyChat » et recopie l'URL.
 - **Le message n'arrive pas dans l'Inbox** : vérifie que l'automatisation est
-  bien **publiée** et que le déclencheur est **Default Reply** (pas un mot-clé
-  précis). Contrôle aussi que le corps envoie bien `subscriber_id` et `text`.
+  bien **publiée** (**Set Live**) et que le déclencheur attrape bien **tous** les
+  DM (Default Reply, ou « Instagram Message » sans mot-clé restrictif — voir la
+  section « Nouvelle interface » ci-dessus). Contrôle aussi que le corps envoie
+  bien `subscriber_id` et `text`.
 - **La réponse ne part pas au prospect** : l'envoi conforme n'est possible que
   dans la **fenêtre de 24 h** après le dernier message du prospect (règle Meta).
