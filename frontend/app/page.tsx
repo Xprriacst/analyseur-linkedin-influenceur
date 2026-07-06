@@ -4650,7 +4650,15 @@ function AssistantMessageActions({
   // Images jointes à la réponse (uploads + image IA générée) : elles partent avec
   // le post à la publication, programmation, envoi Slack et sauvegarde (ALE-188).
   const [images, setImages] = useState<LinkedInImageAttachment[]>([]);
+  // Édition manuelle du post proposé : la bulle de conversation reste intacte,
+  // mais toutes les actions (publier, programmer, Slack, X, sauvegarder, image)
+  // opèrent sur la version modifiée, affichée sous la réponse.
+  const [editedText, setEditedText] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState("");
   const [err, setErr] = useState("");
+
+  const postText = editedText ?? text;
 
   const btn = { fontSize: 12, minHeight: 30, padding: "0 10px" } as const;
   const xLogo = (
@@ -4693,7 +4701,7 @@ function AssistantMessageActions({
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(postText);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch { setErr("Copie impossible."); }
@@ -4708,7 +4716,7 @@ function AssistantMessageActions({
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
-          content: text,
+          content: postText,
           draft: false,
           images: imagePayload(),
         }),
@@ -4731,7 +4739,7 @@ function AssistantMessageActions({
       const res = await fetch(`${DIRECT_API_URL}/me/x/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft: false }),
+        body: JSON.stringify({ content: postText, draft: false }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Publication sur X impossible.");
@@ -4747,14 +4755,14 @@ function AssistantMessageActions({
       const saveRes = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: text, images: imagePayload() }),
+        body: JSON.stringify({ post: postText, images: imagePayload() }),
       });
       const saved = await saveRes.json();
       if (!saveRes.ok) throw new Error(saved.detail || "Sauvegarde impossible.");
       const res = await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_id: saved.id, content: text, images: imagePayload() }),
+        body: JSON.stringify({ post_id: saved.id, content: postText, images: imagePayload() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi Slack impossible.");
@@ -4768,7 +4776,7 @@ function AssistantMessageActions({
       const res = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: text, images: imagePayload() }),
+        body: JSON.stringify({ post: postText, images: imagePayload() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Sauvegarde impossible.");
@@ -4821,6 +4829,13 @@ function AssistantMessageActions({
         ]}
         moreActions={[
           {
+            key: "edit",
+            icon: <Pencil size={14} />,
+            label: editedText !== null ? "Modifier le post (modifié)" : "Modifier le post",
+            title: "Retoucher le texte à la main : c'est la version modifiée qui sera publiée, programmée, envoyée ou sauvegardée",
+            onClick: () => { setErr(""); setEditDraft(postText); setEditing(true); },
+          },
+          {
             key: "save",
             icon: <BookmarkPlus size={14} />,
             label: savedPost ? "Sauvegardé ✓" : "Sauvegarder",
@@ -4851,6 +4866,47 @@ function AssistantMessageActions({
           {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />} {copied ? "Copié ✓" : "Copier"}
         </button>
       </PostActionsBar>
+      {editing && (
+        <div style={{ width: "100%", marginTop: 8 }}>
+          <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>Modifier le post</label>
+          <textarea
+            value={editDraft}
+            rows={10}
+            className="variant-text"
+            style={{ width: "100%", boxSizing: "border-box", marginBottom: 8 }}
+            onChange={(e) => setEditDraft(e.target.value)}
+            autoFocus
+          />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              className="primary-button"
+              style={btn}
+              disabled={!editDraft.trim()}
+              onClick={() => { setEditedText(editDraft.trim() === text.trim() ? null : editDraft); setEditing(false); }}
+            >
+              <CheckCircle2 size={13} /> Enregistrer
+            </button>
+            <button className="secondary-button" style={btn} onClick={() => setEditing(false)}>Annuler</button>
+            {editedText !== null && (
+              <button
+                className="secondary-button"
+                style={btn}
+                onClick={() => { setEditedText(null); setEditing(false); }}
+              >
+                Revenir au texte d&apos;origine
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {!editing && editedText !== null && (
+        <div style={{ width: "100%", marginTop: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", background: "var(--surface)" }}>
+          <p className="role-picker-hint" style={{ marginBottom: 6 }}>
+            <Pencil size={12} /> Version modifiée — c&apos;est ce texte qui sera publié, programmé, envoyé ou sauvegardé.
+          </p>
+          <p style={{ whiteSpace: "pre-wrap", fontSize: 13, margin: 0 }}>{editedText}</p>
+        </div>
+      )}
       {confirmPub && (
         <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
           <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
@@ -4860,7 +4916,7 @@ function AssistantMessageActions({
       )}
       {scheduleOpen && (
         <SchedulePostModal
-          text={text}
+          text={postText}
           images={images.map((image) => ({ url: image.url, filename: image.filename }))}
           slackConnected={!!slack.status?.connected}
           onClose={() => setScheduleOpen(false)}
@@ -4886,7 +4942,7 @@ function AssistantMessageActions({
       )}
       {imageModalOpen && (
         <ImageGenModal
-          postText={text}
+          postText={postText}
           onClose={() => setImageModalOpen(false)}
           onGenerated={(dataUrl) => setImages((prev) => [...prev, {
             id: `generated-${Date.now()}`,
