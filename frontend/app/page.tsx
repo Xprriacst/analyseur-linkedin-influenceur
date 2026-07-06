@@ -5254,19 +5254,36 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   // même quand l'Inbox est vide : une nouvelle conversation créée côté serveur
   // (DM entrant via le webhook ManyChat, ou Simulateur) doit apparaître sans
   // recharger la page. Ce composant n'est monté que sur l'écran Inbox.
+  // Polling NON-CHEVAUCHANT (setTimeout récursif) : on ne relance qu'après la
+  // fin de la requête précédente. Sur backend lent (dev free), un setInterval
+  // fixe empilait les requêtes plus vite qu'elles n'étaient servies → file qui
+  // gonfle, ~6 connexions/hôte du navigateur saturées, et les écritures de
+  // l'utilisateur (FAQ / envoi) starvées → « Failed to fetch ».
   useEffect(() => {
     if (!isAuthed) return;
-    const t = setInterval(loadConversations, 6000);
-    return () => clearInterval(t);
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => {
+      await loadConversations();
+      if (!stop) timer = setTimeout(loop, 6000);
+    };
+    timer = setTimeout(loop, 6000);
+    return () => { stop = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
   // Le webhook persiste messages/drafts de façon asynchrone → on rafraîchit le
-  // fil ouvert toutes les 6 s pour voir arriver les nouveaux DM et suggestions.
+  // fil ouvert pour voir arriver les nouveaux DM et suggestions (non-chevauchant).
   useEffect(() => {
     if (!activeId) return;
-    const t = setInterval(() => loadThread(activeId), 6000);
-    return () => clearInterval(t);
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => {
+      await loadThread(activeId);
+      if (!stop) timer = setTimeout(loop, 6000);
+    };
+    timer = setTimeout(loop, 6000);
+    return () => { stop = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
@@ -7555,13 +7572,14 @@ export default function Home() {
     const seenKey = `ig_inbox_seen_at:${uid}`;
     const ts = (c: { last_message_at?: string | null }) =>
       c?.last_message_at ? new Date(c.last_message_at).getTime() : 0;
-    let cancelled = false;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
       try {
         const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations`, { headers: await authHeaders() });
-        if (!res.ok || cancelled) return;
+        if (!res.ok || stop) return;
         const data = await res.json();
-        if (cancelled || !Array.isArray(data)) return;
+        if (stop || !Array.isArray(data)) return;
         const latest = data.reduce((m: number, c: { last_message_at?: string | null }) => Math.max(m, ts(c)), 0);
         if (view === "inbox") {
           try { localStorage.setItem(seenKey, String(latest)); } catch { /* ignore */ }
@@ -7573,9 +7591,10 @@ export default function Home() {
         }
       } catch { /* non bloquant */ }
     };
-    tick();
-    const t = setInterval(tick, 25000);
-    return () => { cancelled = true; clearInterval(t); };
+    // Non-chevauchant : on replanifie seulement après la fin du tick (backend lent).
+    const loop = async () => { await tick(); if (!stop) timer = setTimeout(loop, 25000); };
+    loop();
+    return () => { stop = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, session?.access_token, view]);
 
