@@ -9,10 +9,14 @@ from openai import OpenAI
 
 def build_image_prompt(post_text: str) -> str:
     """Use Claude to generate an image prompt from the post content."""
+    from src.llm import thinking_kwargs
+
     client = Anthropic()
+    model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
     msg = client.messages.create(
-        model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+        model=model,
         max_tokens=120,
+        **thinking_kwargs(model),
         system=(
             "You are an expert at writing prompts for AI image generation. "
             "Your goal: craft a concise, vivid image prompt (30–50 words) "
@@ -26,7 +30,9 @@ def build_image_prompt(post_text: str) -> str:
         ),
         messages=[{"role": "user", "content": f"LinkedIn post:\n{post_text[:800]}"}],
     )
-    return msg.content[0].text.strip()
+    return "".join(
+        block.text for block in msg.content if getattr(block, "type", None) == "text"
+    ).strip()
 
 
 def generate_post_image(post_text: str, prompt: str | None = None) -> dict:
