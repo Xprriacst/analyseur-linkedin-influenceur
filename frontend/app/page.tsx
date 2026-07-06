@@ -5032,6 +5032,9 @@ const MANYCHAT_BODY_TEMPLATE = `{
 
 function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
+  // Faux tant que le premier /me/ig/conversations n'a pas répondu : évite d'afficher
+  // « Aucune conversation » pendant le chargement initial (backend dev lent).
+  const [convLoaded, setConvLoaded] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<IgMessage[]>([]);
   const [drafts, setDrafts] = useState<IgDraft[]>([]);
@@ -5082,6 +5085,8 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
       setConversations(Array.isArray(data) ? data : []);
     } catch (err: any) {
       setError(err.message);
+    } finally {
+      setConvLoaded(true);
     }
   }
 
@@ -5242,7 +5247,7 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   useEffect(() => {
     if (!isAuthed) {
       selectedConvRef.current = null;
-      setConversations([]); setActiveId(null); setMessages([]); setDrafts([]);
+      setConversations([]); setConvLoaded(false); setActiveId(null); setMessages([]); setDrafts([]);
       return;
     }
     loadConversations();
@@ -5509,7 +5514,11 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
       <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
         <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
         {conversations.length === 0 && (
-          <p style={{ padding: 8, fontSize: 13, opacity: 0.7 }}>Aucune conversation pour l'instant. Elles apparaîtront dès qu'un prospect écrit en DM.</p>
+          <p style={{ padding: 8, fontSize: 13, opacity: 0.7 }}>
+            {convLoaded
+              ? "Aucune conversation pour l'instant. Elles apparaîtront dès qu'un prospect écrit en DM."
+              : "Chargement des conversations…"}
+          </p>
         )}
         {conversations.map((c) => (
           <button
