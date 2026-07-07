@@ -150,6 +150,19 @@ def _generate_for_user(user_id: str, run_date: datetime.date) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Déclenchement manuel (ALE-212)                                                #
+# --------------------------------------------------------------------------- #
+
+def run_for_user(user_id: str, run_date: datetime.date | None = None) -> int:
+    """Génère les posts hebdo pour un seul utilisateur (déclenchement manuel).
+
+    Même logique que le cron du vendredi (créneaux de la semaine suivante,
+    validation Slack, idempotent). Retourne le nombre de posts créés.
+    """
+    return _generate_for_user(user_id, run_date or datetime.date.today())
+
+
+# --------------------------------------------------------------------------- #
 # Entry-point                                                                   #
 # --------------------------------------------------------------------------- #
 

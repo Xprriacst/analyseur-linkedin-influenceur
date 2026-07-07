@@ -5302,7 +5302,7 @@ function AgentFaqEditor({ isAuthed }: { isAuthed: boolean }) {
   );
 }
 
-function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
+function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
   // Faux tant que le premier /me/ig/conversations n'a pas répondu : évite d'afficher
   // « Aucune conversation » pendant le chargement initial (backend dev lent).
@@ -5337,6 +5337,59 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
   const lastInboundHasDraft = lastInbound ? drafts.some((d) => d.message_id === lastInbound.id) : true;
   const lastInboundAgeMs = lastInbound?.created_at ? Date.now() - new Date(lastInbound.created_at).getTime() : 0;
   const suggestionFailed = !!lastInbound && !lastInboundHasDraft && !pendingDraft && lastInboundAgeMs > 25000;
+
+  // Pastille « nouveau message » par conversation : une conversation est non lue
+  // tant que son dernier message est plus récent que la dernière fois qu'on l'a
+  // ouverte. Le repère est stocké par conversation dans localStorage, keyé par
+  // utilisateur (pas de fuite cross-user). Indépendant de la pastille globale de
+  // l'onglet Inbox : ici on veut voir QUELLE conversation a le nouveau message,
+  // même en restant sur l'écran Inbox.
+  const readKey = userId ? `ig_conv_read:${userId}` : null;
+  const [readMap, setReadMap] = useState<Record<string, number>>({});
+  const seededRef = useRef(false);
+  const convTs = (c: IgConversation) => (c.last_message_at ? new Date(c.last_message_at).getTime() : 0);
+  const markRead = (id: string, ts: number) => {
+    setReadMap((prev) => {
+      if ((prev[id] || 0) >= ts) return prev;
+      const next = { ...prev, [id]: ts };
+      if (readKey) { try { localStorage.setItem(readKey, JSON.stringify(next)); } catch { /* ignore */ } }
+      return next;
+    });
+  };
+  const isUnread = (c: IgConversation) => c.id !== activeId && convTs(c) > (readMap[c.id] || 0);
+
+  // Charge les repères de lecture au montage / changement d'utilisateur.
+  useEffect(() => {
+    seededRef.current = false;
+    if (!readKey) { setReadMap({}); return; }
+    try {
+      const raw = localStorage.getItem(readKey);
+      if (raw !== null) { setReadMap(JSON.parse(raw) || {}); seededRef.current = true; }
+      else setReadMap({});
+    } catch { setReadMap({}); }
+  }, [readKey]);
+
+  // Premier chargement pour cet utilisateur : on considère les conversations déjà
+  // présentes comme lues (sinon toutes seraient pastillées d'un coup). Seuls les
+  // messages arrivant après ce repère, ou les nouvelles conversations, alertent.
+  useEffect(() => {
+    if (!readKey || seededRef.current || !convLoaded) return;
+    const seed: Record<string, number> = {};
+    conversations.forEach((c) => { seed[c.id] = convTs(c); });
+    seededRef.current = true;
+    try { localStorage.setItem(readKey, JSON.stringify(seed)); } catch { /* ignore */ }
+    setReadMap(seed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readKey, convLoaded, conversations]);
+
+  // La conversation ouverte est toujours considérée lue, même si de nouveaux
+  // messages y arrivent pendant qu'elle est affichée (le fil se rafraîchit).
+  useEffect(() => {
+    if (!activeId) return;
+    const c = conversations.find((x) => x.id === activeId);
+    if (c) markRead(activeId, convTs(c));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, conversations]);
 
   async function loadConversations() {
     if (!isAuthed) return;
@@ -5580,7 +5633,16 @@ function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (r
               background: activeId === c.id ? "rgba(120,120,255,0.12)" : "transparent",
             }}
           >
-            <span style={{ fontWeight: 600, fontSize: 14 }}>{c.prospect_name || c.prospect_id}</span>
+            <span style={{ fontWeight: isUnread(c) ? 700 : 600, fontSize: 14, display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {isUnread(c) && (
+                <span
+                  aria-label="Nouveau message"
+                  title="Nouveau message"
+                  style={{ width: 8, height: 8, borderRadius: "50%", background: "#e5484d", flex: "0 0 auto" }}
+                />
+              )}
+              {c.prospect_name || c.prospect_id}
+            </span>
             <span style={{ float: "right", fontSize: 11, opacity: 0.7 }}>{c.mode === "autopilot" ? "🤖 auto" : "🙋 supervisé"}</span>
           </button>
         ))}
@@ -6005,6 +6067,9 @@ function ProfileView({
   const [weeklyEnabled, setWeeklyEnabled] = useState(false);
   const [weeklySchedule, setWeeklySchedule] = useState<{day_of_week: number; hour: number; timezone: string}[]>([]);
   const [weeklySaving, setWeeklySaving] = useState(false);
+  const [weeklyRunning, setWeeklyRunning] = useState(false);
+  const [weeklyRunMsg, setWeeklyRunMsg] = useState("");
+  const [weeklyRunErr, setWeeklyRunErr] = useState("");
   // `Field` lit toujours la dernière valeur du profil via cette ref, ce qui
   // permet de garder une identité de composant stable (useCallback ci-dessous)
   // sans capturer un `profile` périmé.
@@ -6096,6 +6161,25 @@ function ProfileView({
     const next = weeklySchedule.map((s) => s.day_of_week === day ? { ...s, hour } : s);
     setWeeklySchedule(next);
     void saveWeeklySchedule(next);
+  }
+
+  async function runWeeklyNow() {
+    setWeeklyRunning(true);
+    setWeeklyRunMsg("");
+    setWeeklyRunErr("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/weekly-posts/run`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Génération impossible.");
+      setWeeklyRunMsg("Génération lancée — les posts de la semaine prochaine arriveront sur Slack à valider dans une minute.");
+    } catch (err: any) {
+      setWeeklyRunErr(err.message);
+    } finally {
+      setWeeklyRunning(false);
+    }
   }
 
   function updateField(key: keyof EditorialProfile, value: string) {
@@ -6452,6 +6536,21 @@ function ProfileView({
             {weeklySchedule.length === 0 && (
               <p style={{ fontSize: 12, color: "var(--coral)", marginTop: 6 }}>Sélectionne au moins un jour.</p>
             )}
+            <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+              <p style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+                Pas envie d'attendre vendredi ? Génère les posts de la semaine prochaine tout de suite.
+              </p>
+              <button
+                className="secondary-button"
+                onClick={runWeeklyNow}
+                disabled={weeklyRunning || weeklySchedule.length === 0}
+                style={{ fontSize: 13 }}
+              >
+                {weeklyRunning ? <><Loader2 size={14} className="spinning" /> Génération…</> : <><Sparkles size={14} /> Générer les posts de la semaine maintenant</>}
+              </button>
+              {weeklyRunMsg && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>{weeklyRunMsg}</p>}
+              {weeklyRunErr && <p style={{ fontSize: 12, color: "var(--coral)", marginTop: 8 }}>{weeklyRunErr}</p>}
+            </div>
           </div>
         )}
       </section>
@@ -7955,7 +8054,7 @@ export default function Home() {
         <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA, Inbox IG et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "inbox" ? (
-            <IgInbox isAuthed={isAuthed} requireAuth={requireAuth} />
+            <IgInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} />
           ) : view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} />
           ) : view === "profile" ? (
