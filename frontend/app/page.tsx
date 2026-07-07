@@ -3106,6 +3106,7 @@ function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAut
 
 type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null; image_url?: string | null; source_url?: string | null };
 type IdeaSeed = { id: string; text: string; comment?: string | null; used_at?: string | null; created_at?: string };
+type ReferencePost = { id: string; text: string; url?: string | null; author?: string | null; note?: string | null; created_at?: string };
 type IdeaLine = { id?: string; line: string; source_type?: string; source_ref?: string; source_url?: string };
 type DailyIdeaCard = Pick<Idea, "title" | "hook" | "hook_type" | "funnel" | "angle" | "why_it_works" | "estimated_lift">;
 
@@ -3172,6 +3173,16 @@ function DailyIdeasView({
   const [editSeedText, setEditSeedText] = useState("");
   const [editSeedComment, setEditSeedComment] = useState("");
   const [savingSeedEdit, setSavingSeedEdit] = useState(false);
+
+  // ALE-67 : posts de référence (boîte à idées) — posts trouvés ailleurs dont
+  // l'IA s'inspire (fond et forme) à la génération.
+  const [refs, setRefs] = useState<ReferencePost[]>([]);
+  const [refDraft, setRefDraft] = useState("");
+  const [refAuthor, setRefAuthor] = useState("");
+  const [refUrl, setRefUrl] = useState("");
+  const [refNote, setRefNote] = useState("");
+  const [addingRef, setAddingRef] = useState(false);
+  const [refError, setRefError] = useState("");
 
   // ALE-143 : lot d'idées « une ligne »
   const [ideaBatch, setIdeaBatch] = useState<IdeaLine[]>([]);
@@ -3334,6 +3345,12 @@ function DailyIdeasView({
       const sData = await sRes.json();
       if (!sRes.ok) throw new Error(sData.detail || "Chargement du réservoir impossible");
       setSeeds(Array.isArray(sData) ? sData : []);
+      // Posts de référence : best-effort (la table peut ne pas encore exister).
+      try {
+        const rRes = await fetch(`${DIRECT_API_URL}/me/reference-posts`, { headers });
+        const rData = await rRes.json();
+        if (rRes.ok) setRefs(Array.isArray(rData) ? rData : []);
+      } catch { /* section vide, sans bloquer le réservoir */ }
       if (!reservoirOnly) {
         const dRes = await fetch(`${DIRECT_API_URL}/me/daily-ideas`, { headers });
         const dData = await dRes.json();
@@ -3350,7 +3367,7 @@ function DailyIdeasView({
 
   useEffect(() => {
     if (isAuthed) void loadAll();
-    else { setIdeas([]); setSeeds([]); setEnabled(false); }
+    else { setIdeas([]); setSeeds([]); setRefs([]); setEnabled(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
@@ -3409,6 +3426,41 @@ function DailyIdeasView({
     setSeeds((prev) => prev.filter((s) => s.id !== id));
     try {
       await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void loadAll(); }
+  }
+
+  // ALE-67 : ajout / suppression d'un post de référence.
+  async function addRef() {
+    const text = refDraft.trim();
+    if (text.length < 10) return;
+    setAddingRef(true);
+    setRefError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/reference-posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          text,
+          url: refUrl.trim() || null,
+          author: refAuthor.trim() || null,
+          note: refNote.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Ajout impossible");
+      setRefs((prev) => [data, ...prev]);
+      setRefDraft(""); setRefAuthor(""); setRefUrl(""); setRefNote("");
+    } catch (err: any) {
+      setRefError(err.message || "Ajout impossible");
+    } finally {
+      setAddingRef(false);
+    }
+  }
+
+  async function deleteRef(id: string) {
+    setRefs((prev) => prev.filter((r) => r.id !== id));
+    try {
+      await fetch(`${DIRECT_API_URL}/me/reference-posts/${id}`, { method: "DELETE", headers: await authHeaders() });
     } catch { void loadAll(); }
   }
 
@@ -3928,6 +3980,90 @@ function DailyIdeasView({
               </li>
               );
             })}
+          </ul>
+        )}
+      </div>
+
+      {/* ALE-67 : posts de référence — l'IA s'en inspire (fond et forme) à la génération. */}
+      <div className="card daily-reservoir" style={{ marginTop: 24 }}>
+        <div className="daily-reservoir-head">
+          <div>
+            <h3 className="daily-subtitle" style={{ margin: 0 }}><Bookmark size={16} /> Mes posts de référence</h3>
+            <p className="section-desc" style={{ margin: "4px 0 0" }}>
+              Colle des posts qui t&apos;ont plu (LinkedIn ou ailleurs) : l&apos;IA s&apos;en inspire — sujet, angle, structure — en les réécrivant pour toi.
+            </p>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+          <textarea
+            value={refDraft}
+            onChange={(e) => setRefDraft(e.target.value)}
+            placeholder="Colle ici le texte du post…"
+            maxLength={6000}
+            rows={3}
+            style={{ width: "100%", boxSizing: "border-box", resize: "vertical" }}
+          />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input
+              type="text"
+              value={refAuthor}
+              onChange={(e) => setRefAuthor(e.target.value)}
+              placeholder="Auteur (optionnel)"
+              maxLength={200}
+              style={{ flex: "1 1 160px" }}
+            />
+            <input
+              type="text"
+              value={refUrl}
+              onChange={(e) => setRefUrl(e.target.value)}
+              placeholder="Lien du post (optionnel)"
+              maxLength={2000}
+              style={{ flex: "2 1 220px" }}
+            />
+          </div>
+          <input
+            type="text"
+            value={refNote}
+            onChange={(e) => setRefNote(e.target.value)}
+            placeholder="Pourquoi il te plaît ? (optionnel) — ex. « l'accroche choc », « le storytelling client »"
+            maxLength={500}
+            style={{ width: "100%", boxSizing: "border-box" }}
+          />
+          <div>
+            <button className="primary-button" onClick={addRef} disabled={addingRef || refDraft.trim().length < 10}>
+              {addingRef ? <Loader2 size={14} className="spinning" /> : <BookmarkPlus size={14} />} Ajouter ce post
+            </button>
+          </div>
+        </div>
+        {refError && <div className="error" style={{ marginTop: 8 }}>{refError}</div>}
+
+        {refs.length === 0 ? (
+          <p style={{ color: "var(--muted)", margin: "12px 0 0", fontSize: 13 }}>
+            Aucun post de référence — la génération s&apos;appuiera sur ton benchmark et ton réservoir.
+          </p>
+        ) : (
+          <ul className="daily-seed-list">
+            {refs.map((r) => (
+              <li key={r.id}>
+                <span className="daily-seed-text" style={{ display: "grid", gap: 4 }}>
+                  <span style={{ whiteSpace: "pre-wrap" }}>
+                    {r.text.length > 280 ? `${r.text.slice(0, 280)}…` : r.text}
+                  </span>
+                  {(r.author || r.url) && (
+                    <em style={{ fontSize: 12, color: "var(--muted)" }}>
+                      {r.author}
+                      {r.author && r.url ? " — " : ""}
+                      {r.url ? <a href={r.url} target="_blank" rel="noreferrer">voir le post</a> : null}
+                    </em>
+                  )}
+                  {r.note ? (
+                    <em style={{ fontSize: 12, color: "var(--muted)" }}>↳ pourquoi : {r.note}</em>
+                  ) : null}
+                </span>
+                <button className="icon-button" title="Supprimer" onClick={() => deleteRef(r.id)}><Trash2 size={14} /></button>
+              </li>
+            ))}
           </ul>
         )}
       </div>

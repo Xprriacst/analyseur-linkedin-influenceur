@@ -1636,6 +1636,87 @@ def delete_idea_seed(access_token: str, seed_id: str) -> bool:
     return True
 
 
+def list_reference_posts(access_token: str, limit: int = 200) -> list[dict]:
+    """List the user's reference posts (inspiration box), newest first."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_reference_posts")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def add_reference_post(
+    access_token: str,
+    text: str,
+    url: str | None = None,
+    author: str | None = None,
+    note: str | None = None,
+) -> dict | None:
+    """Add a reference post (found elsewhere) to the user's inspiration box."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {"user_id": user["id"], "text": text}
+    if url:
+        row["url"] = url
+    if author:
+        row["author"] = author
+    if note:
+        row["note"] = note
+    resp = db.table("user_reference_posts").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def pick_reference_posts(access_token: str | None, count: int = 3) -> list[dict]:
+    """Échantillon de posts de référence à injecter dans une génération.
+
+    Aléatoire quand la boîte dépasse `count`, pour varier l'inspiration d'un
+    appel à l'autre. Best-effort : ne bloque jamais la génération.
+    """
+    if not access_token:
+        return []
+    try:
+        refs = list_reference_posts(access_token, limit=50)
+    except Exception:
+        return []
+    if len(refs) <= count:
+        return refs
+    import random
+
+    return random.sample(refs, count)
+
+
+def delete_reference_post(access_token: str, ref_id: str) -> bool:
+    """Delete one of the user's reference posts. RLS guarantees ownership."""
+    if not supabase_enabled():
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    (
+        db.table("user_reference_posts")
+        .delete()
+        .eq("id", ref_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return True
+
+
 def list_daily_ideas(access_token: str, limit: int = 30) -> list[dict]:
     """List the user's generated daily ideas, newest first."""
     if not supabase_enabled():
