@@ -69,6 +69,15 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-07 #4 (release prod : posts hebdo — horaire indiqué + bouton « Générer maintenant » ALE-212 — PR #206)
+- **Contexte** : le système de posts automatiques de la semaine repose sur 2 crons — (1) **génération** `analyseur-weekly-posts` (`crn-d9323gegvqtc739rcq8g`, planning Render **`0 5 * * 5`** = vendredi 05:00 UTC ≈ **6-7h Paris**) qui crée les posts de la **semaine suivante** et les envoie sur Slack à valider ; (2) **publication** via `src/scheduler.py` (`*/5 * * * *`) aux **créneaux choisis par l'utilisateur** (défaut Lun/Mer/Ven 9h Europe/Paris, table `weekly_post_schedule`). Le « 9h » = heure de publication, pas de génération.
+- **#204** : la section « Posts automatiques de la semaine » du profil **indique désormais** l'horaire de génération (vendredi matin) et le flux (génération → Slack → publication aux jours/heures choisis, déjà éditables via `PUT /me/weekly-posts/schedule`).
+- **ALE-212** (#205) : **bouton « Générer les posts de la semaine maintenant »** dans le profil → nouvel endpoint `POST /me/weekly-posts/run` (authentifié) qui vérifie planning + corpus puis lance en **tâche de fond** `weekly_posts.run_for_user(user_id)` (wrapper public de `_generate_for_user`, même logique que le cron, service-role admin). Idempotent (ne recrée pas un post déjà planifié), pas de débit de crédits, résultat sur Slack. Backend + frontend, **aucune migration**.
+- Release PR #206 `dev → main` → Render prod live (`dep-d96cvje7r5hc73epcov0`, 10:08 UTC). `/health` OK, `/me/weekly-posts/run` → 401 (route déployée).
+
+### 2026-07-07 #3 (release prod : ALE-211 badge « Connecté » + détail du compte — PR #203)
+- Ajustement UX (retour Alex) : dans « Publier sur LinkedIn » du profil, pastille verte **« Connecté »** restaurée + **détail du compte** en dessous (« page professionnelle Clareo Solutions »). Libellé de type : « page professionnelle » / « profil personnel ». Confirmé : Zernio renvoie bien nom + type. Frontend-only, aucune migration.
+
 ### 2026-07-07 #2 (release prod : fix « 7 posts » + modale de publication éditable ALE-210 + compte LinkedIn ALE-211 — PR #201)
 - **Release `dev → main`** (PR #201, mergée ~10:30 Paris) → Render prod live (`dep-d96big9o3t8c73dnqmn0`, terminé 08:32 UTC) + Netlify prod. `/health` prod OK ; `/me/linkedin/status` → 401 (pas 500) = nouvelles colonnes bien lues.
 - **fix génération « 1 variant → 7 posts »** (#198) : `generate_posts` (`src/llm.py`) ne bornait pas la sortie du modèle à `count` → Sonnet 5 (réflexion adaptative) sur-générait un post par rôle éditorial. Fix = `data.get("variants", [])[:count]`. Backend-only.
