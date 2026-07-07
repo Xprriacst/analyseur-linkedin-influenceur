@@ -4,6 +4,7 @@ import os
 import json
 import secrets
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from src import db, slack as slack_client, zernio, manychat, ig_agent
+from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -1570,6 +1571,39 @@ def put_me_weekly_posts_schedule(
     slots = [s.model_dump() for s in payload.schedule]
     saved = db.set_weekly_schedule(token, slots)
     return {"schedule": saved}
+
+
+def _weekly_run_bg(user_id: str) -> None:
+    """Génère les posts hebdo d'un utilisateur en tâche de fond (déclenchement manuel)."""
+    try:
+        created = weekly_posts.run_for_user(user_id)
+        print(f"[weekly manual] {user_id}: {created} post(s) créé(s)")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[weekly manual] {user_id}: échec {exc}", file=sys.stderr)
+
+
+@app.post("/me/weekly-posts/run")
+def run_me_weekly_posts_now(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Déclenche manuellement la génération des posts de la semaine (comme le cron du vendredi).
+
+    Génère les posts de la semaine suivante pour l'utilisateur courant et les envoie
+    sur Slack à valider. Lancé en tâche de fond (peut prendre ~1 min) ; idempotent :
+    ne recrée pas un post déjà planifié pour une date.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
+    if not db.admin_enabled():
+        raise HTTPException(status_code=400, detail="Génération manuelle indisponible (service-role serveur manquant).")
+    user = db.get_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Session invalide.")
+    user_id = user["id"]
+    if not db.get_weekly_schedule_for_user(user_id):
+        raise HTTPException(status_code=400, detail="Choisis au moins un jour de publication avant de générer.")
+    if not db.get_corpus_for_user(user_id):
+        raise HTTPException(status_code=400, detail="Aucun influenceur analysé : lance d'abord une analyse pour nourrir la génération.")
+    threading.Thread(target=_weekly_run_bg, args=(user_id,), daemon=True).start()
+    return {"started": True}
 
 
 @app.post("/me/daily-ideas/regenerate")
