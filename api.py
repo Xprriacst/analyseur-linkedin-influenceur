@@ -1051,6 +1051,8 @@ class IdeasRequest(BaseModel):
 class GenerateRequest(BaseModel):
     topic: Optional[str] = Field(default=None)
     editorial_role: Optional[str] = Field(default=None)
+    # ALE-216 : template de structure choisi dans la banque (optionnel).
+    template_id: Optional[str] = Field(default=None)
     # Deprecated client hint kept for backward compatibility. Post generation now
     # exposes web search as an autonomous server-side tool; the model decides.
     web_search: bool = Field(default=False)
@@ -1160,6 +1162,7 @@ def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) ->
         "topic": topic,
         "credits": credits,
         "reference_posts": db.pick_reference_posts(token) or None,
+        "template": db.get_post_template(token, payload.template_id) if (token and payload.template_id) else None,
     }
 
 
@@ -1188,6 +1191,7 @@ def _generate_posts_response(
         count=payload.count,
         on_web_search=on_web_search,
         reference_posts=context["reference_posts"],
+        template=context["template"],
     )
     variants, save_error = _save_generated_variants(token, context["topic"], variants)
     return {"variants": variants, "save_error": save_error, "credits": context["credits"]}
@@ -1220,6 +1224,7 @@ def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(opt
                     count=payload.count,
                     on_web_search=on_web_search,
                     reference_posts=context["reference_posts"],
+                    template=context["template"],
                 )
                 variants, save_error = _save_generated_variants(token, context["topic"], variants)
                 events.put(("done", {
@@ -1279,7 +1284,7 @@ def create_generation_job(payload: GenerateRequest, token: str = Depends(require
 
     role = (payload.editorial_role or "").strip() or None
     topic = (payload.topic or "").strip() or None
-    job = db.create_generation_job(token, topic, role, payload.web_search, payload.count)
+    job = db.create_generation_job(token, topic, role, payload.web_search, payload.count, template_id=payload.template_id)
     if not job:
         raise HTTPException(status_code=500, detail="Création du job de génération impossible.")
     start_generation_job_thread(token, job["id"])
@@ -1570,6 +1575,47 @@ def add_me_reference_post(payload: ReferencePostRequest, token: str = Depends(re
 def delete_me_reference_post(ref_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
     """Delete one of the user's reference posts."""
     return {"deleted": db.delete_reference_post(token, ref_id)}
+
+
+# --------------------------------------------------------------------------- #
+# Banque de templates de posts (ALE-216)
+# --------------------------------------------------------------------------- #
+
+class PostTemplateRequest(BaseModel):
+    structure_label: str = Field(..., min_length=3, max_length=200)
+    structure_text: str = Field(..., min_length=10, max_length=4000)
+    format: str | None = Field(default=None, max_length=30)
+    image_url: str | None = Field(default=None, max_length=2000)
+    image_note: str | None = Field(default=None, max_length=500)
+
+
+@app.get("/me/post-templates")
+def me_post_templates(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List the user's post templates."""
+    return db.list_post_templates(token)
+
+
+@app.post("/me/post-templates")
+def add_me_post_template(payload: PostTemplateRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Add a template (structure + type d'image) to the user's bank."""
+    template = db.add_post_template(
+        token,
+        payload.structure_label.strip(),
+        payload.structure_text.strip(),
+        format=(payload.format or "").strip() or None,
+        image_url=(payload.image_url or "").strip() or None,
+        image_note=(payload.image_note or "").strip() or None,
+        source="user",
+    )
+    if not template:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer le template.")
+    return template
+
+
+@app.delete("/me/post-templates/{template_id}")
+def delete_me_post_template(template_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Delete one of the user's templates."""
+    return {"deleted": db.delete_post_template(token, template_id)}
 
 
 @app.get("/me/daily-ideas")

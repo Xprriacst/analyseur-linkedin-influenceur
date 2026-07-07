@@ -1276,22 +1276,26 @@ def create_generation_job(
     editorial_role: str | None,
     web_search: bool,
     count: int,
+    template_id: str | None = None,
 ) -> dict | None:
     """Crée un job de génération `queued`. Retourne la ligne créée."""
     user = get_user(access_token)
     if not user:
         return None
     db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "status": "queued",
+        "topic": topic or None,
+        "editorial_role": editorial_role or None,
+        "web_search": bool(web_search),
+        "count": count,
+    }
+    if template_id:
+        row["template_id"] = template_id
     resp = (
         db.table("generation_jobs")
-        .insert({
-            "user_id": user["id"],
-            "status": "queued",
-            "topic": topic or None,
-            "editorial_role": editorial_role or None,
-            "web_search": bool(web_search),
-            "count": count,
-        })
+        .insert(row)
         .execute()
     )
     return resp.data[0] if resp.data else None
@@ -1714,6 +1718,101 @@ def delete_reference_post(access_token: str, ref_id: str) -> bool:
         db.table("user_reference_posts")
         .delete()
         .eq("id", ref_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return True
+
+
+# ── Banque de templates de posts (ALE-216) ────────────────────────────────── #
+
+def list_post_templates(access_token: str, limit: int = 200) -> list[dict]:
+    """List the user's post templates, newest first."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("post_templates")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_post_template(access_token: str, template_id: str) -> dict | None:
+    """Fetch one of the user's templates (RLS scope)."""
+    if not supabase_enabled() or not template_id:
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("post_templates")
+        .select("*")
+        .eq("id", template_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def add_post_template(
+    access_token: str,
+    structure_label: str,
+    structure_text: str,
+    format: str | None = None,
+    image_url: str | None = None,
+    image_note: str | None = None,
+    source: str = "user",
+    source_author: str | None = None,
+    source_post_url: str | None = None,
+) -> dict | None:
+    """Add a post template to the user's bank."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "structure_label": structure_label,
+        "structure_text": structure_text,
+        "source": source,
+    }
+    for key, value in (
+        ("format", format),
+        ("image_url", image_url),
+        ("image_note", image_note),
+        ("source_author", source_author),
+        ("source_post_url", source_post_url),
+    ):
+        if value:
+            row[key] = value
+    resp = db.table("post_templates").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def delete_post_template(access_token: str, template_id: str) -> bool:
+    """Delete one of the user's templates. RLS guarantees ownership."""
+    if not supabase_enabled():
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    (
+        db.table("post_templates")
+        .delete()
+        .eq("id", template_id)
         .eq("user_id", user["id"])
         .execute()
     )
