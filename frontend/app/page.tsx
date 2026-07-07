@@ -1815,8 +1815,19 @@ type LinkedInStatus = {
   configured: boolean;
   connected: boolean;
   account_id?: string | null;
+  account_name?: string | null;
+  account_type?: string | null;
   connected_at?: string | null;
 };
+
+/** Libellé grand public du type de compte LinkedIn (si Zernio l'expose). */
+function linkedinAccountTypeLabel(type?: string | null): string | null {
+  if (!type) return null;
+  const t = type.toLowerCase();
+  if (/(organization|organisation|company|entreprise|page|business)/.test(t)) return "page pro / entreprise";
+  if (/(person|personal|perso|profile|profil|member|individual)/.test(t)) return "profil personnel";
+  return null;
+}
 
 /** Statut de connexion LinkedIn (via Zernio) + lancement du flux OAuth. */
 function useLinkedIn(isAuthed: boolean) {
@@ -1829,7 +1840,17 @@ function useLinkedIn(isAuthed: boolean) {
     (async () => {
       try {
         const res = await fetch(`${DIRECT_API_URL}/me/linkedin/status`, { headers: await authHeaders() });
-        if (res.ok) setStatus(await res.json());
+        if (!res.ok) return;
+        const st: LinkedInStatus = await res.json();
+        setStatus(st);
+        // Backfill : les comptes connectés avant ALE-211 n'ont pas de nom stocké.
+        // On récupère alors le nom depuis Zernio une seule fois (puis il est persisté).
+        if (st.connected && !st.account_name) {
+          try {
+            const r2 = await fetch(`${DIRECT_API_URL}/me/linkedin/refresh`, { method: "POST", headers: await authHeaders() });
+            if (r2.ok) setStatus(await r2.json());
+          } catch { /* ignore */ }
+        }
       } catch { /* ignore */ }
     })();
   }, [isAuthed]);
@@ -6301,14 +6322,16 @@ function ProfileView({
             <strong>Publier sur LinkedIn</strong>
             <p className="section-desc" style={{ margin: 0 }}>
               {linkedin.status?.connected
-                ? "Compte LinkedIn connecté — tes posts générés peuvent être publiés directement sur LinkedIn en un clic."
+                ? (linkedin.status.account_name
+                    ? `Tes posts seront publiés sur le compte « ${linkedin.status.account_name} »${linkedinAccountTypeLabel(linkedin.status.account_type) ? ` (${linkedinAccountTypeLabel(linkedin.status.account_type)})` : ""}.`
+                    : "Compte LinkedIn connecté — tes posts générés peuvent être publiés directement sur LinkedIn en un clic.")
                 : "Connecte ton compte LinkedIn pour publier tes posts générés directement sur LinkedIn, sans copier-coller."}
             </p>
           </div>
         </div>
         {linkedin.status?.connected ? (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+            <span className="status-pill ok"><CheckCircle2 size={14} /> {linkedin.status.account_name || "Connecté"}</span>
             <button
               className="secondary-button"
               onClick={() => { if (window.confirm("Déconnecter le compte LinkedIn ?")) linkedin.disconnect(); }}

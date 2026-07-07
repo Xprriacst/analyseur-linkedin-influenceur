@@ -387,6 +387,8 @@ def _linkedin_status(token: str) -> dict[str, Any]:
         "configured": zernio.enabled(),
         "connected": bool(profile.get("zernio_account_id")),
         "account_id": profile.get("zernio_account_id"),
+        "account_name": profile.get("zernio_account_name"),
+        "account_type": profile.get("zernio_account_type"),
         "profile_id": profile.get("zernio_profile_id"),
         "connected_at": profile.get("zernio_connected_at"),
     }
@@ -437,10 +439,13 @@ def me_linkedin_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
     if not profile_id:
         return _linkedin_status(token)
     try:
-        account_id = zernio.find_linkedin_account_id(profile_id)
+        account = zernio.find_account(profile_id, "linkedin")
     except zernio.ZernioError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    db.set_zernio_account(token, account_id)
+    account_id = account.get("_id") if account else None
+    account_name = zernio.account_display_name(account)
+    account_type = zernio.account_type(account)
+    db.set_zernio_account(token, account_id, account_name, account_type)
     return _linkedin_status(token)
 
 

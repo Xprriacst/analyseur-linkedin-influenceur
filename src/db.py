@@ -486,8 +486,13 @@ def set_zernio_profile_id(access_token: str, profile_id: str) -> dict | None:
     return resp.data[0] if resp.data else None
 
 
-def set_zernio_account(access_token: str, account_id: str | None) -> dict | None:
-    """Persist (or clear) the connected LinkedIn account id for this user."""
+def set_zernio_account(
+    access_token: str,
+    account_id: str | None,
+    account_name: str | None = None,
+    account_type: str | None = None,
+) -> dict | None:
+    """Persist (or clear) the connected LinkedIn account (id + nom + type) for this user."""
     user = get_user(access_token)
     if not user:
         return None
@@ -496,6 +501,8 @@ def set_zernio_account(access_token: str, account_id: str | None) -> dict | None
     row = {
         "user_id": user["id"],
         "zernio_account_id": account_id,
+        "zernio_account_name": account_name if account_id else None,
+        "zernio_account_type": account_type if account_id else None,
         "zernio_connected_at": now if account_id else None,
         "updated_at": now,
     }
