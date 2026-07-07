@@ -184,12 +184,54 @@ def get_connect_url(profile_id: str, redirect_url: str | None = None, platform: 
     return auth_url
 
 
-def find_account_id(profile_id: str, platform: str = PLATFORM) -> str | None:
-    """Return the connected account id for the given platform, if any."""
+def find_account(profile_id: str, platform: str = PLATFORM) -> dict[str, Any] | None:
+    """Return the connected account object for the given platform, if any."""
     data = _request("GET", "/accounts", params={"profileId": profile_id})
     for account in data.get("accounts", []):
         if account.get("platform") == platform:
-            return account.get("_id")
+            return account
+    return None
+
+
+def find_account_id(profile_id: str, platform: str = PLATFORM) -> str | None:
+    """Return the connected account id for the given platform, if any."""
+    account = find_account(profile_id, platform)
+    return account.get("_id") if account else None
+
+
+def account_display_name(account: dict[str, Any] | None) -> str | None:
+    """Best-effort human name of a connected account.
+
+    Le schéma exact de Zernio pour /accounts n'est pas garanti : on teste les
+    clés usuelles (et un éventuel objet imbriqué) et on renvoie la 1re non vide.
+    """
+    if not isinstance(account, dict):
+        return None
+    for key in ("name", "displayName", "fullName", "username", "handle", "screenName", "profileName"):
+        val = account.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    for nested_key in ("profile", "user", "account", "details"):
+        nested = account.get(nested_key)
+        if isinstance(nested, dict):
+            name = account_display_name(nested)
+            if name:
+                return name
+    return None
+
+
+def account_type(account: dict[str, Any] | None) -> str | None:
+    """Best-effort type de compte (profil personnel vs page entreprise/organisation).
+
+    Dépend de ce que Zernio expose ; renvoie la valeur brute en minuscules si
+    présente, sinon None (le front n'affiche alors pas de mention de type).
+    """
+    if not isinstance(account, dict):
+        return None
+    for key in ("type", "accountType", "entityType", "kind", "category"):
+        val = account.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip().lower()
     return None
 
 
