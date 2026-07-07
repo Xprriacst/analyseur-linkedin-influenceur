@@ -3187,7 +3187,9 @@ function DailyIdeasView({
       const res = await fetch(`${DIRECT_API_URL}/ideas`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ count: 15, web_search: batchWebSearch }),
+        // ALE-213 : lot ramené à 3 idées + recherche web désactivée (débordait le budget
+        // de tokens → réponse tronquée → 500). Réactivable quand le budget sera relevé.
+        body: JSON.stringify({ count: 3, web_search: false }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Génération impossible");
@@ -3522,13 +3524,13 @@ function DailyIdeasView({
           <div>
             <h3 style={{ margin: "0 0 4px" }}>💡 Générer des idées</h3>
             <p className="section-desc" style={{ margin: 0 }}>
-              Un lot de 15 idées en une ligne, ancrées dans tes vrais posts performants. 3 crédits/lot.
+              Un lot de 3 idées en une ligne, ancrées dans tes vrais posts performants. 3 crédits/lot.
             </p>
           </div>
           <div className="ideas-batch-actions">
-            <label className="ideas-web-toggle">
-              <input type="checkbox" checked={batchWebSearch} onChange={(e) => setBatchWebSearch(e.target.checked)} />
-              <span>Chercher sur le web</span>
+            <label className="ideas-web-toggle ideas-web-toggle--disabled" title="Bientôt disponible">
+              <input type="checkbox" checked={batchWebSearch} disabled onChange={(e) => setBatchWebSearch(e.target.checked)} />
+              <span>Chercher sur le web — bientôt</span>
             </label>
             <button className="primary-button" onClick={generateIdeaBatch} disabled={generatingBatch}>
               {generatingBatch ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
