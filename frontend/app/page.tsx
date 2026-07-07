@@ -7335,6 +7335,8 @@ function MonitoringFeedView({
   const [checkMsg, setCheckMsg] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
+  const [savingTplId, setSavingTplId] = useState<string | null>(null);
+  const [savedTplIds, setSavedTplIds] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   async function load() {
@@ -7410,6 +7412,33 @@ function MonitoringFeedView({
     onInspire(
       `Inspire-toi de ce post de ${who} — reprends l'angle, la structure ou le fond, mais réécris-le entièrement pour moi :\n\n« ${(p.text || "").slice(0, 1200)} »`
     );
+  }
+
+  // ALE-217 : « Garder comme template » → l'IA extrait le squelette (jamais le contenu)
+  // et le range dans la banque de templates avec l'image du post.
+  async function keepAsTemplate(p: MonitoredPost) {
+    if (!p.text) return;
+    setSavingTplId(p.id);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/post-templates/from-post`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          text: p.text,
+          image_url: firstImage(p),
+          author: p.influencer_name || p.influencer_handle || null,
+          url: p.url || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Extraction impossible");
+      setSavedTplIds((prev) => ({ ...prev, [p.id]: true }));
+    } catch (err: any) {
+      setError(err.message || "Extraction impossible");
+    } finally {
+      setSavingTplId(null);
+    }
   }
 
   const fmtFeedDate = (s?: string | null) => {
@@ -7540,6 +7569,19 @@ function MonitoringFeedView({
                         ? <Loader2 size={12} className="spinning" />
                         : savedIds[p.id] ? <CheckCircle2 size={12} /> : <BookmarkPlus size={12} />}
                       {savedIds[p.id] ? " Gardé ✓" : " Garder pour plus tard"}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 12px" }}
+                      disabled={savingTplId === p.id || !!savedTplIds[p.id]}
+                      title="L'IA extrait la structure de ce post (jamais son contenu) et la range dans tes templates avec son image"
+                      onClick={() => void keepAsTemplate(p)}
+                    >
+                      {savingTplId === p.id
+                        ? <Loader2 size={12} className="spinning" />
+                        : savedTplIds[p.id] ? <CheckCircle2 size={12} /> : <ListChecks size={12} />}
+                      {savedTplIds[p.id] ? " Template ✓" : savingTplId === p.id ? " Extraction…" : " Garder comme template"}
                     </button>
                     {p.url && (
                       <a href={p.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "var(--muted)" }}>

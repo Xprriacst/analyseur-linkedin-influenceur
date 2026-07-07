@@ -21,7 +21,7 @@ from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread
-from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream
+from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
@@ -1616,6 +1616,40 @@ def add_me_post_template(payload: PostTemplateRequest, token: str = Depends(requ
 def delete_me_post_template(template_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
     """Delete one of the user's templates."""
     return {"deleted": db.delete_post_template(token, template_id)}
+
+
+class TemplateFromPostRequest(BaseModel):
+    text: str = Field(..., min_length=20, max_length=6000)
+    image_url: str | None = Field(default=None, max_length=2000)
+    author: str | None = Field(default=None, max_length=200)
+    url: str | None = Field(default=None, max_length=2000)
+
+
+@app.post("/me/post-templates/from-post")
+def add_me_post_template_from_post(payload: TemplateFromPostRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Capture un template depuis un post d'influenceur (ALE-217, fil de veille).
+
+    L'IA extrait le squelette de structure (jamais le contenu) ; l'image du
+    post est conservée comme exemple de type visuel. Gratuit (appel léger).
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
+    extracted = extract_post_template(payload.text)
+    if not extracted.get("structure_label") or len(extracted.get("structure_text") or "") < 10:
+        raise HTTPException(status_code=502, detail="L'extraction du squelette a échoué — réessaie.")
+    template = db.add_post_template(
+        token,
+        extracted["structure_label"][:200],
+        extracted["structure_text"][:4000],
+        format=extracted.get("format"),
+        image_url=(payload.image_url or "").strip() or None,
+        source="influencer",
+        source_author=(payload.author or "").strip() or None,
+        source_post_url=(payload.url or "").strip() or None,
+    )
+    if not template:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer le template.")
+    return template
 
 
 @app.get("/me/daily-ideas")
