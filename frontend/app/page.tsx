@@ -6395,7 +6395,7 @@ function ProfileView({
             <div>
               <strong>Posts automatiques de la semaine</strong>
               <p className="section-desc" style={{ margin: 0 }}>
-                Génère et programme 3 posts chaque semaine, envoyés sur Slack pour validation avant publication. Requiert LinkedIn et Slack connectés.
+                Chaque <strong>vendredi matin (vers 6-7h, heure de Paris)</strong>, 3 posts sont générés pour la <strong>semaine suivante</strong> et envoyés sur Slack pour validation. Une fois validés, ils sont publiés automatiquement aux jours et heures choisis ci-dessous. Requiert LinkedIn et Slack connectés.
               </p>
             </div>
           </div>
