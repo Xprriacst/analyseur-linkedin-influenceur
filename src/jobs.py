@@ -184,7 +184,7 @@ def start_job_thread(access_token: str, job_id: str) -> None:
 GENERATION_TIMEOUT_S = 300
 
 
-def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, count):
+def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, count, reference_posts=None):
     """Exécute `generate_posts` avec un timeout dur (thread jetable abandonné si figé)."""
     from src.llm import generate_posts
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -196,6 +196,7 @@ def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, cou
         user_context=user_context,
         editorial_role=role,
         count=count,
+        reference_posts=reference_posts,
     )
     try:
         return fut.result(timeout=GENERATION_TIMEOUT_S)
@@ -227,7 +228,8 @@ def process_generation_job(access_token: str, job_id: str) -> None:
         count = int(job.get("count") or 1)
 
         variants = _generate_posts_guarded(
-            topic, top_posts, benchmark, user_context, role, count
+            topic, top_posts, benchmark, user_context, role, count,
+            reference_posts=db.pick_reference_posts(access_token) or None,
         )
 
         # Annulé pendant le calcul ? On respecte l'annulation.

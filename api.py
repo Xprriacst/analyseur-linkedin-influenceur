@@ -1108,6 +1108,7 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
         user_context=user_context,
         web_search=payload.web_search,
         recent_idea_lines=recent_idea_lines or None,
+        reference_posts=db.pick_reference_posts(token) or None,
     )
     save_error: str | None = None
     if token:
@@ -1158,6 +1159,7 @@ def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) ->
         "role": role,
         "topic": topic,
         "credits": credits,
+        "reference_posts": db.pick_reference_posts(token) or None,
     }
 
 
@@ -1185,6 +1187,7 @@ def _generate_posts_response(
         editorial_role=context["role"],
         count=payload.count,
         on_web_search=on_web_search,
+        reference_posts=context["reference_posts"],
     )
     variants, save_error = _save_generated_variants(token, context["topic"], variants)
     return {"variants": variants, "save_error": save_error, "credits": context["credits"]}
@@ -1216,6 +1219,7 @@ def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(opt
                     editorial_role=context["role"],
                     count=payload.count,
                     on_web_search=on_web_search,
+                    reference_posts=context["reference_posts"],
                 )
                 variants, save_error = _save_generated_variants(token, context["topic"], variants)
                 events.put(("done", {
@@ -1505,6 +1509,44 @@ def delete_me_idea_seed(seed_id: str, token: str = Depends(require_token)) -> di
     return {"deleted": db.delete_idea_seed(token, seed_id)}
 
 
+# --------------------------------------------------------------------------- #
+# Boîte à idées — posts de référence (ALE-67)
+# --------------------------------------------------------------------------- #
+
+class ReferencePostRequest(BaseModel):
+    text: str = Field(..., min_length=10, max_length=6000)
+    url: str | None = Field(default=None, max_length=2000)
+    author: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=500)
+
+
+@app.get("/me/reference-posts")
+def me_reference_posts(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List the user's reference posts (inspiration box)."""
+    return db.list_reference_posts(token)
+
+
+@app.post("/me/reference-posts")
+def add_me_reference_post(payload: ReferencePostRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Add a reference post to the user's inspiration box."""
+    ref = db.add_reference_post(
+        token,
+        payload.text.strip(),
+        url=(payload.url or "").strip() or None,
+        author=(payload.author or "").strip() or None,
+        note=(payload.note or "").strip() or None,
+    )
+    if not ref:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer le post de référence.")
+    return ref
+
+
+@app.delete("/me/reference-posts/{ref_id}")
+def delete_me_reference_post(ref_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Delete one of the user's reference posts."""
+    return {"deleted": db.delete_reference_post(token, ref_id)}
+
+
 @app.get("/me/daily-ideas")
 def me_daily_ideas(
     limit: int = 30,
@@ -1642,7 +1684,10 @@ def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]
             seed_text = None  # échec propre : post benchmark sans image
 
     # ALE-136 : régénérer produit un VRAI post (postable), comme le cron.
-    posts = generate_posts(seed_text, top_posts, benchmark, user_context=user_context, count=1)
+    posts = generate_posts(
+        seed_text, top_posts, benchmark, user_context=user_context, count=1,
+        reference_posts=db.pick_reference_posts(token) or None,
+    )
     if not posts:
         raise HTTPException(status_code=500, detail="La génération n'a produit aucun post.")
 
