@@ -459,6 +459,29 @@ def _format_reference_posts(reference_posts: list[dict] | None) -> str:
     )
 
 
+def _format_template(template: dict | None) -> str:
+    """Render a chosen post template (ALE-216) as a strict structure directive."""
+    if not template:
+        return ""
+    structure = str(template.get("structure_text") or "").strip()
+    if not structure:
+        return ""
+    label = str(template.get("structure_label") or "").strip()
+    label_part = f" « {label} »" if label else ""
+    note = str(template.get("image_note") or "").strip()
+    image_part = (
+        f"\nType d'image recommandé pour illustrer ce post (à ne PAS décrire dans le texte) : {note}"
+        if note else ""
+    )
+    return (
+        f"\n\nTemplate de structure{label_part} choisi par l'utilisateur — respecte STRICTEMENT "
+        "ce squelette pour CHAQUE variant (il prime sur la forme par défaut du rôle éditorial, "
+        "mais jamais sur le contexte client ni sur le fond) :\n"
+        + structure
+        + image_part
+    )
+
+
 EDITORIAL_PROFILE_KEYS = [
     "display_name",
     "brand_name",
@@ -886,6 +909,7 @@ def generate_posts(
     count: int = 1,
     on_web_search: Callable[[dict[str, Any]], None] | None = None,
     reference_posts: list[dict] | None = None,
+    template: dict | None = None,
 ) -> list[dict]:
     """Generate LinkedIn post variants (default 1) covering editorial roles.
 
@@ -956,6 +980,7 @@ def generate_posts(
         + "\n\nExemples des posts les plus performants :\n"
         + examples_text
         + _format_reference_posts(reference_posts)
+        + _format_template(template)
         + f"\n\nGénère exactement {count} variant{'s' if count > 1 else ''} de post{'s' if count > 1 else ''} LinkedIn, un par rôle éditorial ci-dessous, "
         "DANS L'ORDRE indiqué :\n\n"
         + roles_block

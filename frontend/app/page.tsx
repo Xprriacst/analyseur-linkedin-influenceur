@@ -263,7 +263,7 @@ function InstagramIcon({ size = 14 }: { size?: number }) {
 type AnalyzeTab = "analyze" | "influencers" | "monitoring";
 
 /** Sous-onglets de la vue « Contenu » (idée du jour, générateur, mes contenus fusionnés). */
-type ContentTab = "daily" | "generator" | "library";
+type ContentTab = "daily" | "generator" | "library" | "templates";
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
 const steps = [
@@ -2342,6 +2342,21 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   const [variants, setVariants] = useState<Variant[]>(_genCache.variants);
   const [topic, setTopic] = useState(_genCache.topic);
   const [role, setRole] = useState("auto");
+  // ALE-216 : template de structure choisi dans la banque (optionnel).
+  const [templates, setTemplates] = useState<PostTemplate[]>([]);
+  const [templateId, setTemplateId] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) { setTemplates([]); setTemplateId(""); return; }
+    let cancelled = false;
+    authHeaders().then((h) =>
+      fetch(`${DIRECT_API_URL}/me/post-templates`, { headers: h })
+        .then((r) => (r.ok ? r.json() : []))
+        .then((data) => { if (!cancelled) setTemplates(Array.isArray(data) ? data : []); })
+        .catch(() => {})
+    );
+    return () => { cancelled = true; };
+  }, [isAuthed]);
   const [loadingPosts, setLoadingPosts] = useState(false);
   const [error, setError] = useState("");
   const linkedin = useLinkedIn(isAuthed);
@@ -2583,9 +2598,10 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     setLoadingPosts(true);
     try {
       // Sujet optionnel : sans sujet, le backend choisit lui-même un angle (idée = post).
-      const body: { topic?: string; editorial_role?: string; count?: number } = { count: variantCount };
+      const body: { topic?: string; editorial_role?: string; count?: number; template_id?: string } = { count: variantCount };
       if (t.trim()) body.topic = t.trim();
       if (role !== "auto") body.editorial_role = role;
+      if (templateId) body.template_id = templateId;
       const res = await fetch(`${DIRECT_API_URL}/generate/jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
@@ -2673,6 +2689,26 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                 <option value={3}>3</option>
               </select>
             </label>
+            {templates.length > 0 && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", flexWrap: "wrap" }}>
+                Template :
+                <select
+                  value={templateId}
+                  onChange={(e) => setTemplateId(e.target.value)}
+                  style={{ fontSize: 13, padding: "2px 6px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", cursor: "pointer", maxWidth: 280 }}
+                >
+                  <option value="">Aucun (structure libre)</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>{t.structure_label}</option>
+                  ))}
+                </select>
+                {templateId && templates.find((t) => t.id === templateId)?.image_note ? (
+                  <span style={{ fontSize: 12 }}>
+                    🖼 {templates.find((t) => t.id === templateId)?.image_note}
+                  </span>
+                ) : null}
+              </label>
+            )}
           </div>
           {genJobActive && (
             <div className="web-search-status" role="status" aria-live="polite">
@@ -7620,6 +7656,209 @@ function AnalyzeHub({
 }
 
 /** Onglet « Contenu » : regroupe Idée du jour, Générateur et Mes contenus en sous-onglets. */
+/** ALE-216 : banque de templates — structures de posts + type d'image, réutilisées à la génération. */
+type PostTemplate = {
+  id: string;
+  structure_label: string;
+  structure_text: string;
+  format?: string | null;
+  image_url?: string | null;
+  image_note?: string | null;
+  source?: string | null;
+  source_author?: string | null;
+  source_post_url?: string | null;
+  created_at?: string;
+};
+
+function TemplatesView({
+  isAuthed,
+  requireAuth,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
+  const [templates, setTemplates] = useState<PostTemplate[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [label, setLabel] = useState("");
+  const [structure, setStructure] = useState("");
+  const [imageNote, setImageNote] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  async function load() {
+    if (!isAuthed) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/post-templates`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Chargement des templates impossible");
+      setTemplates(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setError(err.message || "Chargement impossible");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAuthed) void load();
+    else setTemplates([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  async function addTemplate() {
+    if (label.trim().length < 3 || structure.trim().length < 10) return;
+    setAdding(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/post-templates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          structure_label: label.trim(),
+          structure_text: structure.trim(),
+          image_note: imageNote.trim() || null,
+          image_url: imageUrl.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Ajout impossible");
+      setTemplates((prev) => [data, ...prev]);
+      setLabel(""); setStructure(""); setImageNote(""); setImageUrl("");
+    } catch (err: any) {
+      setError(err.message || "Ajout impossible");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function deleteTemplate(id: string) {
+    setTemplates((prev) => prev.filter((t) => t.id !== id));
+    try {
+      await fetch(`${DIRECT_API_URL}/me/post-templates/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void load(); }
+  }
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Lock size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Templates</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Connecte-toi pour garder en stock tes structures de posts préférées et les réutiliser à la génération.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour ta banque de templates.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="section-header" style={{ marginBottom: 16 }}>
+        <div>
+          <h2 className="section-title"><ListChecks size={20} /> Templates de posts</h2>
+          <p className="section-desc">
+            Garde en stock des structures qui marchent (ex. « accroche choc + 3 bullets + CTA ») et le type d&apos;image qui va avec.
+            Au moment de générer, choisis un template : le post respectera cette structure — sans copier le contenu de personne.
+          </p>
+        </div>
+      </div>
+
+      <div className="card daily-reservoir">
+        <h3 className="daily-subtitle" style={{ margin: 0 }}><PlusCircle size={16} /> Ajouter un template</h3>
+        <div className="ref-add" style={{ marginTop: 12, display: "grid", gap: 8 }}>
+          <input
+            type="text"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Nom du template — ex. « Accroche choc + 3 bullets + CTA »"
+            maxLength={200}
+          />
+          <textarea
+            value={structure}
+            onChange={(e) => setStructure(e.target.value)}
+            placeholder={"La structure, ligne par ligne — ex. :\n1. Accroche en une phrase choc\n2. 3 bullets avec un chiffre chacun\n3. Question finale pour faire commenter"}
+            maxLength={4000}
+            rows={4}
+          />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input
+              type="text"
+              value={imageNote}
+              onChange={(e) => setImageNote(e.target.value)}
+              placeholder="Type d'image (optionnel) — ex. « juste deux logos côte à côte »"
+              maxLength={500}
+              style={{ flex: "2 1 220px" }}
+            />
+            <input
+              type="text"
+              value={imageUrl}
+              onChange={(e) => setImageUrl(e.target.value)}
+              placeholder="Lien d'une image d'exemple (optionnel)"
+              maxLength={2000}
+              style={{ flex: "1 1 180px" }}
+            />
+          </div>
+          <div>
+            <button
+              className="primary-button"
+              onClick={addTemplate}
+              disabled={adding || label.trim().length < 3 || structure.trim().length < 10}
+            >
+              {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter le template
+            </button>
+          </div>
+        </div>
+        {error && <div className="error" style={{ marginTop: 8 }}>{error}</div>}
+      </div>
+
+      <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
+        {loading && templates.length === 0 ? (
+          <div className="card" style={{ textAlign: "center", padding: 24 }}>
+            <Loader2 size={20} className="spinning" style={{ opacity: 0.5 }} />
+          </div>
+        ) : templates.length === 0 ? (
+          <div className="card" style={{ textAlign: "center", padding: 24 }}>
+            <p style={{ margin: 0, color: "var(--muted)" }}>
+              Aucun template pour l&apos;instant — ajoute ta première structure ci-dessus, tu la retrouveras dans le Générateur.
+            </p>
+          </div>
+        ) : (
+          templates.map((t) => (
+            <div key={t.id} className="card" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+                  <strong>{t.structure_label}</strong>
+                  {t.source === "influencer" && (
+                    <span className="daily-seed-tag">depuis la veille{t.source_author ? ` · ${t.source_author}` : ""}</span>
+                  )}
+                </div>
+                <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
+                  {t.structure_text.length > 400 ? `${t.structure_text.slice(0, 400)}…` : t.structure_text}
+                </p>
+                {t.image_note && (
+                  <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                    <ImageIcon size={12} style={{ verticalAlign: "-2px" }} /> Image : {t.image_note}
+                  </p>
+                )}
+              </div>
+              {t.image_url && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={t.image_url} alt="" style={{ width: 90, maxHeight: 90, objectFit: "cover", borderRadius: 8, flex: "0 0 auto" }} />
+              )}
+              <button className="icon-button" title="Supprimer" onClick={() => deleteTemplate(t.id)}><Trash2 size={14} /></button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ContentHub({
   tab,
   onTab,
@@ -7647,6 +7886,7 @@ function ContentHub({
     { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} /> },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} /> },
     { key: "library", label: "Mes contenus", icon: <Bookmark size={14} /> },
+    { key: "templates", label: "Templates", icon: <ListChecks size={14} /> },
   ];
 
   // Compte client restreint : on ne montre que le réservoir d'idées, sans sous-onglets.
@@ -7678,6 +7918,9 @@ function ContentHub({
       {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} onRework={onRework} />}
       {tab === "library" && (
         <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
+      )}
+      {tab === "templates" && (
+        <TemplatesView isAuthed={isAuthed} requireAuth={requireAuth} />
       )}
     </div>
   );
