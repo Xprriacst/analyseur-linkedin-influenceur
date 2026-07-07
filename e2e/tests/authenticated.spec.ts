@@ -26,6 +26,15 @@ test("onglet Veille : sous-onglets Analyser / Mes influenceurs (Dashboard fusion
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
+test("Veille › Nouveaux posts : fil de veille rendu sans erreur (ALE-215)", async ({ page }) => {
+  await gotoTab(page, "Veille");
+  await page.locator(".tab", { hasText: "Nouveaux posts" }).click();
+  await expect(page.getByRole("heading", { name: /^Nouveaux posts$/i })).toBeVisible();
+  // Bouton de rafraîchissement toujours présent ; l'état vide invite à suivre des influenceurs.
+  await expect(page.getByRole("button", { name: /Rafraîchir/i })).toBeVisible();
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
 test("onglet Mon profil : contexte éditorial + pré-remplissage IA + sauvegarde", async ({ page }) => {
   await gotoTab(page, "Mon profil");
   await expect(page.getByRole("heading", { name: /Contexte éditorial/i })).toBeVisible();

@@ -2752,6 +2752,51 @@ def list_followed_handles_for_user(user_id: str, platform: str = "linkedin") -> 
     return sorted({r["handle"] for r in (resp.data or []) if r.get("handle")})
 
 
+def get_monitoring_feed_for_user(user_id: str, days: int = 30, limit: int = 60) -> list[dict]:
+    """[veille ALE-215] Posts récents des influenceurs suivis par l'utilisateur.
+
+    Lit le cache partagé via le service-role (ses tables ont une RLS sans policy,
+    donc inaccessibles au front), mais ne renvoie que les posts des influenceurs
+    que CET utilisateur suit. Fenêtre : posts publiés OU découverts < `days` jours.
+    """
+    if not admin_enabled():
+        return []
+    handles = list_followed_handles_for_user(user_id)
+    if not handles:
+        return []
+    admin = admin_client()
+    caches = (
+        admin.table("influencer_cache")
+        .select("id,handle,name")
+        .in_("handle", handles)
+        .eq("platform", "linkedin")
+        .execute()
+    ).data or []
+    if not caches:
+        return []
+    by_id = {c["id"]: c for c in caches}
+    cutoff = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+    ).isoformat()
+    posts = (
+        admin.table("cached_posts")
+        .select(
+            "id,influencer_cache_id,url,text,posted_at,format,likes,comments,"
+            "reposts,engagement,media_items,detected_by_monitor,first_seen_at"
+        )
+        .in_("influencer_cache_id", list(by_id.keys()))
+        .or_(f"posted_at.gte.{cutoff},first_seen_at.gte.{cutoff}")
+        .order("posted_at", desc=True, nullsfirst=False)
+        .limit(limit)
+        .execute()
+    ).data or []
+    for p in posts:
+        cache = by_id.get(p.get("influencer_cache_id")) or {}
+        p["influencer_name"] = cache.get("name") or cache.get("handle")
+        p["influencer_handle"] = cache.get("handle")
+    return posts
+
+
 def refresh_cached_post_metrics(cache_id: str, post: dict) -> None:
     """[cron monitoring] Re-relève l'engagement d'un post déjà en cache.
 
