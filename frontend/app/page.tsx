@@ -47,6 +47,7 @@ import {
 import type { Session } from "@supabase/supabase-js";
 import AuthModal, { type AuthMode } from "./components/AuthModal";
 import PostActionsBar, { type PostAction } from "./components/PostActionsBar";
+import PublishConfirmModal from "./components/PublishConfirmModal";
 import { authHeaders, supabase } from "./lib/supabase";
 
 const API_URL = "/api";
@@ -1815,8 +1816,19 @@ type LinkedInStatus = {
   configured: boolean;
   connected: boolean;
   account_id?: string | null;
+  account_name?: string | null;
+  account_type?: string | null;
   connected_at?: string | null;
 };
+
+/** Libellé grand public du type de compte LinkedIn (si Zernio l'expose). */
+function linkedinAccountTypeLabel(type?: string | null): string | null {
+  if (!type) return null;
+  const t = type.toLowerCase();
+  if (/(organization|organisation|company|entreprise|page|business)/.test(t)) return "page pro / entreprise";
+  if (/(person|personal|perso|profile|profil|member|individual)/.test(t)) return "profil personnel";
+  return null;
+}
 
 /** Statut de connexion LinkedIn (via Zernio) + lancement du flux OAuth. */
 function useLinkedIn(isAuthed: boolean) {
@@ -1829,7 +1841,17 @@ function useLinkedIn(isAuthed: boolean) {
     (async () => {
       try {
         const res = await fetch(`${DIRECT_API_URL}/me/linkedin/status`, { headers: await authHeaders() });
-        if (res.ok) setStatus(await res.json());
+        if (!res.ok) return;
+        const st: LinkedInStatus = await res.json();
+        setStatus(st);
+        // Backfill : les comptes connectés avant ALE-211 n'ont pas de nom stocké.
+        // On récupère alors le nom depuis Zernio une seule fois (puis il est persisté).
+        if (st.connected && !st.account_name) {
+          try {
+            const r2 = await fetch(`${DIRECT_API_URL}/me/linkedin/refresh`, { method: "POST", headers: await authHeaders() });
+            if (r2.ok) setStatus(await r2.json());
+          } catch { /* ignore */ }
+        }
       } catch { /* ignore */ }
     })();
   }, [isAuthed]);
@@ -2865,56 +2887,17 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       )}
 
       {confirmIndex !== null && (
-        <div style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
-          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
-        }}>
-          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
-            <h3 style={{ marginTop: 0, marginBottom: 8 }}>Publier ce post sur LinkedIn ?</h3>
-            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-              Le post sera publié <strong>immédiatement</strong> sur ton compte LinkedIn.
-            </p>
-            <textarea
-              readOnly
-              value={editedVariants[confirmIndex] ?? variants[confirmIndex]?.post ?? ""}
-              rows={8}
-              className="variant-text"
-              style={{ width: "100%", boxSizing: "border-box", marginBottom: 16 }}
-            />
-            {(variantImages[confirmIndex] || []).length > 0 && (
-              <div style={{ marginBottom: 16 }}>
-                <p className="role-picker-hint" style={{ marginBottom: 8 }}>
-                  {(variantImages[confirmIndex] || []).length} image{(variantImages[confirmIndex] || []).length > 1 ? "s" : ""} {(variantImages[confirmIndex] || []).length > 1 ? "seront jointes" : "sera jointe"}.
-                </p>
-                <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
-                  {(variantImages[confirmIndex] || []).map((image, idx) => (
-                    <img
-                      key={image.id}
-                      src={image.url}
-                      alt={`Image jointe ${idx + 1}`}
-                      style={{ width: 86, height: 86, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button className="secondary-button" onClick={() => setConfirmIndex(null)}>
-                Annuler
-              </button>
-              <button
-                className="primary-button"
-                disabled={publishing !== null}
-                onClick={() => doPublish(confirmIndex, editedVariants[confirmIndex] ?? variants[confirmIndex]?.post ?? "")}
-              >
-                {publishing !== null
-                  ? <><Loader2 size={14} className="spinning" /> Publication…</>
-                  : <><Linkedin size={14} /> Confirmer la publication</>
-                }
-              </button>
-            </div>
-          </div>
-        </div>
+        <PublishConfirmModal
+          text={editedVariants[confirmIndex] ?? variants[confirmIndex]?.post ?? ""}
+          images={(variantImages[confirmIndex] || []).map((im) => ({ url: im.url, filename: im.filename }))}
+          busy={publishing !== null}
+          onClose={() => setConfirmIndex(null)}
+          onConfirm={(t) => {
+            const i = confirmIndex!;
+            setEditedVariants((prev) => ({ ...prev, [i]: t }));
+            doPublish(i, t);
+          }}
+        />
       )}
 
       {confirmXIndex !== null && (
@@ -3268,7 +3251,7 @@ function DailyIdeasView({
     }
   }
 
-  async function publishPost(it: DailyIdea) {
+  async function publishPost(it: DailyIdea, overrideText?: string) {
     setConfirmPublishId(null);
     if (!linkedin.status?.connected) {
       setPostError("Connecte ton compte LinkedIn dans l'onglet Profil.");
@@ -3281,7 +3264,7 @@ function DailyIdeasView({
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
-          content: postTextOf(it),
+          content: overrideText ?? postTextOf(it),
           draft: false,
           images: ideaImagePayload(it),
         }),
@@ -3750,11 +3733,13 @@ function DailyIdeasView({
                         </div>
                       )}
                       {confirmPublishId === it.id && (
-                        <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
-                          <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => publishPost(it)}>Confirmer</button>
-                          <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmPublishId(null)}>Annuler</button>
-                        </div>
+                        <PublishConfirmModal
+                          text={postTextOf(it)}
+                          images={ideaImagePayload(it).map((im) => ({ url: im.url }))}
+                          busy={publishingId === it.id}
+                          onClose={() => setConfirmPublishId(null)}
+                          onConfirm={(t) => { setEditedPost((prev) => ({ ...prev, [it.id]: t })); publishPost(it, t); }}
+                        />
                       )}
                       {scheduleModalIdea?.id === it.id && (
                         <SchedulePostModal
@@ -4052,7 +4037,7 @@ function LibraryView({
   // Génération d'image IA : pop-up de validation du prompt sur un post sauvegardé.
   const [imageModalSaved, setImageModalSaved] = useState<SavedPost | null>(null);
 
-  async function publishSavedPost(p: SavedPost) {
+  async function publishSavedPost(p: SavedPost, overrideText?: string) {
     setConfirmPublishPostId(null);
     if (!linkedin.status?.connected) {
       setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
@@ -4061,7 +4046,7 @@ function LibraryView({
     setPublishError("");
     setPublishingPost(p.id);
     try {
-      const text = editedPosts[p.id] ?? p.post;
+      const text = overrideText ?? editedPosts[p.id] ?? p.post;
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
@@ -4415,11 +4400,13 @@ function LibraryView({
                   ]}
                 />
                 {confirmPublishPostId === p.id && (
-                  <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
-                    <button className="primary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => publishSavedPost(p)}>Confirmer</button>
-                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmPublishPostId(null)}>Annuler</button>
-                  </div>
+                  <PublishConfirmModal
+                    text={editedPosts[p.id] ?? p.post}
+                    images={savedPostImagePayload(p).map((im) => ({ url: im.url, filename: im.filename }))}
+                    busy={publishingPost === p.id}
+                    onClose={() => setConfirmPublishPostId(null)}
+                    onConfirm={(t) => { setEditedPosts((prev) => ({ ...prev, [p.id]: t })); publishSavedPost(p, t); }}
+                  />
                 )}
                 {scheduleForPost === p.id && (
                   <SchedulePostModal
@@ -4700,8 +4687,9 @@ function AssistantMessageActions({
     } catch { setErr("Copie impossible."); }
   }
 
-  async function publishLinkedIn() {
+  async function publishLinkedIn(overrideText?: string) {
     setConfirmPub(false);
+    if (overrideText !== undefined) setEditedText(overrideText);
     if (!linkedin.status?.connected) { setErr("Connecte d'abord ton compte LinkedIn dans l'onglet Profil."); return; }
     setErr(""); setPublishing(true);
     try {
@@ -4709,7 +4697,7 @@ function AssistantMessageActions({
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
-          content: postText,
+          content: overrideText ?? postText,
           draft: false,
           images: imagePayload(),
         }),
@@ -4901,11 +4889,13 @@ function AssistantMessageActions({
         </div>
       )}
       {confirmPub && (
-        <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
-          <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
-          <button className="primary-button" style={btn} onClick={publishLinkedIn}>Confirmer</button>
-          <button className="secondary-button" style={btn} onClick={() => setConfirmPub(false)}>Annuler</button>
-        </div>
+        <PublishConfirmModal
+          text={postText}
+          images={images.map((im) => ({ url: im.url, filename: im.filename }))}
+          busy={publishing}
+          onClose={() => setConfirmPub(false)}
+          onConfirm={(t) => publishLinkedIn(t)}
+        />
       )}
       {scheduleOpen && (
         <SchedulePostModal
@@ -6301,14 +6291,16 @@ function ProfileView({
             <strong>Publier sur LinkedIn</strong>
             <p className="section-desc" style={{ margin: 0 }}>
               {linkedin.status?.connected
-                ? "Compte LinkedIn connecté — tes posts générés peuvent être publiés directement sur LinkedIn en un clic."
+                ? (linkedin.status.account_name
+                    ? `Tes posts seront publiés sur le compte « ${linkedin.status.account_name} »${linkedinAccountTypeLabel(linkedin.status.account_type) ? ` (${linkedinAccountTypeLabel(linkedin.status.account_type)})` : ""}.`
+                    : "Compte LinkedIn connecté — tes posts générés peuvent être publiés directement sur LinkedIn en un clic.")
                 : "Connecte ton compte LinkedIn pour publier tes posts générés directement sur LinkedIn, sans copier-coller."}
             </p>
           </div>
         </div>
         {linkedin.status?.connected ? (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+            <span className="status-pill ok"><CheckCircle2 size={14} /> {linkedin.status.account_name || "Connecté"}</span>
             <button
               className="secondary-button"
               onClick={() => { if (window.confirm("Déconnecter le compte LinkedIn ?")) linkedin.disconnect(); }}

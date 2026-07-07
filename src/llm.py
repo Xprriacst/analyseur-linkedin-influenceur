@@ -958,7 +958,11 @@ Schéma JSON attendu (toutes les clés obligatoires) :
         tools=search_tools,
         on_web_search=on_web_search,
     )
-    variants = data.get("variants", [])
+    # Filet de sécurité : on borne à `count`. Le prompt demande "exactement N
+    # variants", mais un modèle à réflexion adaptative (Sonnet 5) peut sur-générer
+    # et couvrir tous les rôles éditoriaux → l'utilisateur qui demande 1 post en
+    # recevait plusieurs. On ne garde que les `count` premiers (l'ordre = rôles demandés).
+    variants = data.get("variants", [])[:count]
 
     # Backfill : si le LLM omet editorial_role (compat), on le déduit de l'ordre demandé.
     for i, v in enumerate(variants):
