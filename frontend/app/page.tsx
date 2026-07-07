@@ -7003,6 +7003,80 @@ function InfluencersView({
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
+  // ALE-214 : suivi d'influenceurs (veille). handle → id de la ligne de suivi.
+  const [followed, setFollowed] = useState<Record<string, string>>({});
+  const [followCap, setFollowCap] = useState(5);
+  const [togglingHandle, setTogglingHandle] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkMsg, setCheckMsg] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) { setFollowed({}); return; }
+    let cancelled = false;
+    authHeaders().then((h) =>
+      fetch(`${DIRECT_API_URL}/me/followed-influencers`, { headers: h })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (cancelled || !data) return;
+          const map: Record<string, string> = {};
+          (data.followed || []).forEach((f: any) => { if (f.handle) map[f.handle] = f.id; });
+          setFollowed(map);
+          if (data.cap) setFollowCap(data.cap);
+        })
+        .catch(() => {})
+    );
+    return () => { cancelled = true; };
+  }, [isAuthed]);
+
+  async function toggleFollow(handle: string) {
+    setError("");
+    setTogglingHandle(handle);
+    try {
+      const followId = followed[handle];
+      if (followId) {
+        setFollowed((prev) => { const next = { ...prev }; delete next[handle]; return next; });
+        await fetch(`${DIRECT_API_URL}/me/followed-influencers/${followId}`, {
+          method: "DELETE",
+          headers: await authHeaders(),
+        });
+      } else {
+        const res = await fetch(`${DIRECT_API_URL}/me/followed-influencers`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ handle }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Impossible de suivre cet influenceur");
+        setFollowed((prev) => ({ ...prev, [handle]: data.id }));
+      }
+    } catch (err: any) {
+      setError(err.message || "Action impossible");
+    } finally {
+      setTogglingHandle(null);
+    }
+  }
+
+  async function checkNow() {
+    setChecking(true);
+    setCheckMsg("");
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/influencer-monitor/run`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Détection impossible");
+      setCheckMsg("Détection lancée ✓ — les nouveaux posts sont enregistrés en arrière-plan (écran de veille à venir).");
+    } catch (err: any) {
+      setError(err.message || "Détection impossible");
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  const followedCount = Object.keys(followed).length;
+
   if (!isAuthed) {
     return (
       <div className="card" style={{ textAlign: "center", padding: 40 }}>
@@ -7079,8 +7153,21 @@ function InfluencersView({
         <span style={{ fontSize: 13, color: "var(--muted)" }}>
           {filtered.length} profil{filtered.length > 1 ? "s" : ""}
         </span>
+        {followedCount > 0 && (
+          <button
+            type="button"
+            className="secondary-button"
+            style={{ fontSize: 13, whiteSpace: "nowrap" }}
+            disabled={checking}
+            title="Scrape les derniers posts de tes influenceurs suivis et enregistre les nouveaux"
+            onClick={checkNow}
+          >
+            {checking ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />} Vérifier les nouveaux posts
+          </button>
+        )}
       </div>
 
+      {checkMsg && <div className="card" style={{ marginBottom: 12, padding: "10px 14px", fontSize: 13, color: "var(--muted)" }}>{checkMsg}</div>}
       {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
       {loading ? (
@@ -7107,6 +7194,7 @@ function InfluencersView({
                   <th>Handle</th>
                   <th>Abonnés</th>
                   <th>Dernière analyse</th>
+                  <th>Veille</th>
                   <th>Profil</th>
                   <th>Rapport</th>
                 </tr>
@@ -7128,6 +7216,23 @@ function InfluencersView({
                       {entry.analyzed_at
                         ? new Date(entry.analyzed_at * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" })
                         : "—"}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className={followed[entry.handle] ? "primary-button" : "secondary-button"}
+                        style={{ padding: "4px 10px", fontSize: 12, whiteSpace: "nowrap" }}
+                        disabled={togglingHandle === entry.handle}
+                        title={followed[entry.handle]
+                          ? "Ne plus surveiller cet influenceur"
+                          : `Surveiller ses nouveaux posts (max ${followCap} influenceurs)`}
+                        onClick={() => toggleFollow(entry.handle)}
+                      >
+                        {togglingHandle === entry.handle
+                          ? <Loader2 size={12} className="spinning" />
+                          : <Eye size={12} />}
+                        {followed[entry.handle] ? " Suivi ✓" : " Suivre"}
+                      </button>
                     </td>
                     <td>
                       <a href={entry.profile_url} target="_blank" rel="noopener noreferrer" className="secondary-button" style={{ padding: "4px 10px", fontSize: 12 }}>

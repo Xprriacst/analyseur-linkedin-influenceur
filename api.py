@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts
+from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -1670,6 +1670,81 @@ def run_me_weekly_posts_now(token: str = Depends(require_token)) -> dict[str, An
     if not db.get_corpus_for_user(user_id):
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé : lance d'abord une analyse pour nourrir la génération.")
     threading.Thread(target=_weekly_run_bg, args=(user_id,), daemon=True).start()
+    return {"started": True}
+
+
+# --------------------------------------------------------------------------- #
+# Monitoring influenceurs (ALE-214) — suivi + détection à la demande
+# --------------------------------------------------------------------------- #
+
+FOLLOWED_INFLUENCERS_CAP = int(os.environ.get("FOLLOWED_INFLUENCERS_CAP", "5"))
+
+
+class FollowInfluencerRequest(BaseModel):
+    handle: str = Field(..., min_length=2, max_length=200)
+    platform: str = Field(default="linkedin", max_length=30)
+
+
+@app.get("/me/followed-influencers")
+def me_followed_influencers(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Influenceurs suivis par l'utilisateur + plafond."""
+    return {"followed": db.list_followed_influencers(token), "cap": FOLLOWED_INFLUENCERS_CAP}
+
+
+@app.post("/me/followed-influencers")
+def follow_me_influencer(payload: FollowInfluencerRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Suit un influenceur (cap FOLLOWED_INFLUENCERS_CAP — garde-fou coûts Apify)."""
+    handle = payload.handle.strip()
+    current = db.list_followed_influencers(token)
+    existing = next(
+        (f for f in current if f.get("handle") == handle and f.get("platform") == payload.platform),
+        None,
+    )
+    if existing:
+        return existing
+    if len(current) >= FOLLOWED_INFLUENCERS_CAP:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Tu suis déjà {FOLLOWED_INFLUENCERS_CAP} influenceurs (maximum). Retire-en un avant d'en ajouter.",
+        )
+    row = db.follow_influencer(token, handle, payload.platform)
+    if not row:
+        raise HTTPException(status_code=400, detail="Impossible de suivre cet influenceur.")
+    return row
+
+
+@app.delete("/me/followed-influencers/{follow_id}")
+def unfollow_me_influencer(follow_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Ne plus suivre un influenceur."""
+    return {"deleted": db.unfollow_influencer(token, follow_id)}
+
+
+def _monitor_run_bg(user_id: str) -> None:
+    """Détection des nouveaux posts en tâche de fond (bouton « Vérifier maintenant »)."""
+    try:
+        totals = influencer_monitor.run_for_user(user_id)
+        print(f"[monitor manual] {user_id}: {totals}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[monitor manual] {user_id}: échec {exc}", file=sys.stderr)
+
+
+@app.post("/me/influencer-monitor/run")
+def run_me_influencer_monitor(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Déclenche manuellement la détection des nouveaux posts (comme le cron).
+
+    Tâche de fond (quelques dizaines de secondes par influenceur suivi).
+    Idempotent : les posts déjà connus ne sont pas dupliqués (dédup URL).
+    """
+    if not db.admin_enabled():
+        raise HTTPException(status_code=400, detail="Détection indisponible (service-role serveur manquant).")
+    if not os.environ.get("APIFY_TOKEN"):
+        raise HTTPException(status_code=400, detail="APIFY_TOKEN manquant côté serveur.")
+    user = db.get_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Session invalide.")
+    if not db.list_followed_handles_for_user(user["id"]):
+        raise HTTPException(status_code=400, detail="Suis d'abord au moins un influenceur (onglet Veille › Mes influenceurs).")
+    threading.Thread(target=_monitor_run_bg, args=(user["id"],), daemon=True).start()
     return {"started": True}
 
 
