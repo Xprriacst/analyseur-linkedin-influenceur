@@ -18,6 +18,11 @@ test("onglet Veille : sous-onglets Analyser / Mes influenceurs (Dashboard fusion
   await page.locator(".tab", { hasText: "Mes influenceurs" }).click();
   await expect(page.getByRole("heading", { name: /^Mes influenceurs$/i })).toBeVisible();
   await expect(page.getByRole("heading", { name: /Dashboard global/i })).toBeVisible();
+  // ALE-214 : si des influenceurs sont listés, la colonne de veille (suivi) est présente.
+  const influencersTable = page.locator("table.dash-table").first();
+  if (await influencersTable.count()) {
+    await expect(influencersTable.locator("th", { hasText: "Veille" })).toBeVisible();
+  }
   await expect(page.locator(".error")).toHaveCount(0);
 });
 

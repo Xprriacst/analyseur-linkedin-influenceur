@@ -122,6 +122,47 @@ def _detect_format(post: dict) -> str:
     return "text"
 
 
+def _extract_media(post: dict) -> list[dict]:
+    """URLs des médias du post — {type, url}, dédupliquées (ALE-214, prérequis ALE-208).
+
+    Jusqu'ici ces URLs n'étaient lues que pour deviner le format puis jetées ;
+    on les conserve pour la veille et la banque de templates.
+    """
+    items: list[dict] = []
+
+    def _push(kind: str, value: Any) -> None:
+        url = value.get("url") if isinstance(value, dict) else value
+        if isinstance(url, str) and url.startswith("http"):
+            items.append({"type": kind, "url": url})
+
+    # Schéma apimaestro : media = {"type": ..., "images": [...], "thumbnail": ..., "video_url"/"url": ...}
+    media = post.get("media")
+    if isinstance(media, dict):
+        mtype = str(media.get("type") or "").lower()
+        for img in media.get("images") or []:
+            _push("image", img)
+        if mtype == "video":
+            _push("video", media.get("video_url") or media.get("url"))
+            _push("image", media.get("thumbnail"))
+        elif not items:
+            _push("image", media.get("thumbnail"))
+    # Schémas harvestapi et variantes : listes d'images à plat.
+    for key in ("images", "imageUrls", "postImages"):
+        value = post.get(key)
+        if isinstance(value, list):
+            for img in value:
+                _push("image", img)
+
+    seen: set[str] = set()
+    deduped = []
+    for item in items:
+        if item["url"] in seen:
+            continue
+        seen.add(item["url"])
+        deduped.append(item)
+    return deduped[:10]
+
+
 def normalize_posts(raw: list[dict]) -> list[dict]:
     out = []
     for p in raw:
@@ -157,6 +198,7 @@ def normalize_posts(raw: list[dict]) -> list[dict]:
                 "engagement": likes + comments + reposts,
                 "length_chars": len(text),
                 "length_words": len(text.split()),
+                "media_items": _extract_media(p),
             }
         )
     out = [p for p in out if p["text"] or p["format"] != "text"]
