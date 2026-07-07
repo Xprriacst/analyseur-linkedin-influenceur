@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts
+from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -24,7 +24,7 @@ from src.jobs import start_job_thread, start_generation_job_thread
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
-from src.scraper import fetch_posts, fetch_profile
+from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
 from src.stats import compute_stats
 from src.instagram_hooks import select_hooks
 from src.daily_ideas import _render_idea_markdown
@@ -1108,6 +1108,7 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
         user_context=user_context,
         web_search=payload.web_search,
         recent_idea_lines=recent_idea_lines or None,
+        reference_posts=db.pick_reference_posts(token) or None,
     )
     save_error: str | None = None
     if token:
@@ -1158,6 +1159,7 @@ def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) ->
         "role": role,
         "topic": topic,
         "credits": credits,
+        "reference_posts": db.pick_reference_posts(token) or None,
     }
 
 
@@ -1185,6 +1187,7 @@ def _generate_posts_response(
         editorial_role=context["role"],
         count=payload.count,
         on_web_search=on_web_search,
+        reference_posts=context["reference_posts"],
     )
     variants, save_error = _save_generated_variants(token, context["topic"], variants)
     return {"variants": variants, "save_error": save_error, "credits": context["credits"]}
@@ -1216,6 +1219,7 @@ def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(opt
                     editorial_role=context["role"],
                     count=payload.count,
                     on_web_search=on_web_search,
+                    reference_posts=context["reference_posts"],
                 )
                 variants, save_error = _save_generated_variants(token, context["topic"], variants)
                 events.put(("done", {
@@ -1505,6 +1509,69 @@ def delete_me_idea_seed(seed_id: str, token: str = Depends(require_token)) -> di
     return {"deleted": db.delete_idea_seed(token, seed_id)}
 
 
+# --------------------------------------------------------------------------- #
+# Boîte à idées — posts de référence (ALE-67)
+# --------------------------------------------------------------------------- #
+
+class ReferencePostRequest(BaseModel):
+    # Texte optionnel : un lien LinkedIn seul suffit, le post est importé (scrape).
+    text: str | None = Field(default=None, max_length=6000)
+    url: str | None = Field(default=None, max_length=2000)
+    author: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=500)
+
+
+@app.get("/me/reference-posts")
+def me_reference_posts(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List the user's reference posts (inspiration box)."""
+    return db.list_reference_posts(token)
+
+
+@app.post("/me/reference-posts")
+def add_me_reference_post(payload: ReferencePostRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Add a reference post to the user's inspiration box.
+
+    Deux modes : texte collé directement, ou lien LinkedIn seul → le texte et
+    l'auteur sont importés automatiquement (scrape Apify, ~0,005 $).
+    """
+    text = (payload.text or "").strip()
+    url = (payload.url or "").strip() or None
+    author = (payload.author or "").strip() or None
+
+    if not text:
+        if not url or not url.lower().startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="Colle le lien du post ou son texte.")
+        detail = fetch_post_detail(url)
+        if not detail:
+            raise HTTPException(
+                status_code=422,
+                detail="Impossible de lire le post depuis ce lien — colle son texte directement.",
+            )
+        text = detail["text"]
+        author = author or detail.get("author")
+        url = detail.get("url") or url
+
+    if len(text) < 10:
+        raise HTTPException(status_code=422, detail="Le texte du post est trop court (10 caractères minimum).")
+
+    ref = db.add_reference_post(
+        token,
+        text[:6000],
+        url=url,
+        author=author,
+        note=(payload.note or "").strip() or None,
+    )
+    if not ref:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer le post de référence.")
+    return ref
+
+
+@app.delete("/me/reference-posts/{ref_id}")
+def delete_me_reference_post(ref_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Delete one of the user's reference posts."""
+    return {"deleted": db.delete_reference_post(token, ref_id)}
+
+
 @app.get("/me/daily-ideas")
 def me_daily_ideas(
     limit: int = 30,
@@ -1606,6 +1673,100 @@ def run_me_weekly_posts_now(token: str = Depends(require_token)) -> dict[str, An
     return {"started": True}
 
 
+# --------------------------------------------------------------------------- #
+# Monitoring influenceurs (ALE-214) — suivi + détection à la demande
+# --------------------------------------------------------------------------- #
+
+FOLLOWED_INFLUENCERS_CAP = int(os.environ.get("FOLLOWED_INFLUENCERS_CAP", "5"))
+
+
+class FollowInfluencerRequest(BaseModel):
+    handle: str = Field(..., min_length=2, max_length=200)
+    platform: str = Field(default="linkedin", max_length=30)
+
+
+@app.get("/me/followed-influencers")
+def me_followed_influencers(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Influenceurs suivis par l'utilisateur + plafond."""
+    return {"followed": db.list_followed_influencers(token), "cap": FOLLOWED_INFLUENCERS_CAP}
+
+
+@app.post("/me/followed-influencers")
+def follow_me_influencer(payload: FollowInfluencerRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Suit un influenceur (cap FOLLOWED_INFLUENCERS_CAP — garde-fou coûts Apify)."""
+    handle = payload.handle.strip()
+    current = db.list_followed_influencers(token)
+    existing = next(
+        (f for f in current if f.get("handle") == handle and f.get("platform") == payload.platform),
+        None,
+    )
+    if existing:
+        return existing
+    if len(current) >= FOLLOWED_INFLUENCERS_CAP:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Tu suis déjà {FOLLOWED_INFLUENCERS_CAP} influenceurs (maximum). Retire-en un avant d'en ajouter.",
+        )
+    row = db.follow_influencer(token, handle, payload.platform)
+    if not row:
+        raise HTTPException(status_code=400, detail="Impossible de suivre cet influenceur.")
+    return row
+
+
+@app.delete("/me/followed-influencers/{follow_id}")
+def unfollow_me_influencer(follow_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Ne plus suivre un influenceur."""
+    return {"deleted": db.unfollow_influencer(token, follow_id)}
+
+
+def _monitor_run_bg(user_id: str) -> None:
+    """Détection des nouveaux posts en tâche de fond (bouton « Vérifier maintenant »)."""
+    try:
+        totals = influencer_monitor.run_for_user(user_id)
+        print(f"[monitor manual] {user_id}: {totals}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[monitor manual] {user_id}: échec {exc}", file=sys.stderr)
+
+
+@app.post("/me/influencer-monitor/run")
+def run_me_influencer_monitor(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Déclenche manuellement la détection des nouveaux posts (comme le cron).
+
+    Tâche de fond (quelques dizaines de secondes par influenceur suivi).
+    Idempotent : les posts déjà connus ne sont pas dupliqués (dédup URL).
+    """
+    if not db.admin_enabled():
+        raise HTTPException(status_code=400, detail="Détection indisponible (service-role serveur manquant).")
+    if not os.environ.get("APIFY_TOKEN"):
+        raise HTTPException(status_code=400, detail="APIFY_TOKEN manquant côté serveur.")
+    user = db.get_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Session invalide.")
+    if not db.list_followed_handles_for_user(user["id"]):
+        raise HTTPException(status_code=400, detail="Suis d'abord au moins un influenceur (onglet Veille › Mes influenceurs).")
+    threading.Thread(target=_monitor_run_bg, args=(user["id"],), daemon=True).start()
+    return {"started": True}
+
+
+@app.get("/me/monitoring/feed")
+def me_monitoring_feed(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Fil de veille (ALE-215) : posts récents des influenceurs suivis.
+
+    Lecture seule en base (aucun scrape, aucun LLM) — la détection est faite
+    par le cron ou le bouton « Vérifier les nouveaux posts ».
+    """
+    if not db.admin_enabled():
+        raise HTTPException(status_code=400, detail="Veille indisponible (service-role serveur manquant).")
+    user = db.get_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Session invalide.")
+    followed = db.list_followed_handles_for_user(user["id"])
+    return {
+        "posts": db.get_monitoring_feed_for_user(user["id"]),
+        "followed_count": len(followed),
+    }
+
+
 @app.post("/me/daily-ideas/regenerate")
 def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]:
     """Regenerate today's daily idea on demand (costs 1 credit)."""
@@ -1642,7 +1803,10 @@ def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]
             seed_text = None  # échec propre : post benchmark sans image
 
     # ALE-136 : régénérer produit un VRAI post (postable), comme le cron.
-    posts = generate_posts(seed_text, top_posts, benchmark, user_context=user_context, count=1)
+    posts = generate_posts(
+        seed_text, top_posts, benchmark, user_context=user_context, count=1,
+        reference_posts=db.pick_reference_posts(token) or None,
+    )
     if not posts:
         raise HTTPException(status_code=500, detail="La génération n'a produit aucun post.")
 

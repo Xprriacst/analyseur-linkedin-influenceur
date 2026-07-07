@@ -428,6 +428,37 @@ def _format_user_context(user_context: dict[str, Any] | None) -> str:
     return "\n".join(lines) if lines else "Aucun contexte client exploitable."
 
 
+def _format_reference_posts(reference_posts: list[dict] | None) -> str:
+    """Render the user's reference posts (inspiration box) for LLM prompts.
+
+    Returns an empty string when there is nothing to inject. The block states
+    the reuse rule: substance AND form may be reused, but always rewritten and
+    adapted to the client — never copied verbatim.
+    """
+    if not reference_posts:
+        return ""
+    entries = []
+    for ref in reference_posts[:5]:
+        text = str(ref.get("text") or "").strip()
+        if not text:
+            continue
+        header_bits = [b for b in [ref.get("author"), ref.get("url")] if b]
+        header = f" ({' — '.join(str(b) for b in header_bits)})" if header_bits else ""
+        note = str(ref.get("note") or "").strip()
+        note_line = f"\n  ↳ pourquoi il plaît au client : {note}" if note else ""
+        entries.append(f"- Post de référence{header} :\n  {text[:800]}{note_line}")
+    if not entries:
+        return ""
+    return (
+        "\n\nPosts de référence choisis par le client (posts qui lui ont plu, trouvés ailleurs) :\n"
+        + "\n".join(entries)
+        + "\n\nRègle d'usage des posts de référence : tu peux t'inspirer librement de leur angle, "
+        "de leur structure ET de leur fond (sujet, argument, anecdote transposée), mais tu RÉÉCRIS "
+        "toujours en l'adaptant au contexte du client — jamais de copier-coller ni de paraphrase "
+        "quasi identique."
+    )
+
+
 EDITORIAL_PROFILE_KEYS = [
     "display_name",
     "brand_name",
@@ -591,6 +622,7 @@ def generate_one_line_ideas(
     web_search: bool = False,
     recent_idea_lines: list[str] | None = None,
     seed_topic: str | None = None,
+    reference_posts: list[dict] | None = None,
 ) -> list[dict]:
     """Generate scannable one-liner post ideas anchored in real top posts.
 
@@ -622,6 +654,7 @@ def generate_one_line_ideas(
         f"Contexte client :\n{context_text}"
         + seed_directive
         + f"\n\nPosts réels les plus performants (source + engagement) :\n{posts_text}"
+        + _format_reference_posts(reference_posts)
         + recent_text
         + f"""
 
@@ -852,6 +885,7 @@ def generate_posts(
     web_search: bool = False,
     count: int = 1,
     on_web_search: Callable[[dict[str, Any]], None] | None = None,
+    reference_posts: list[dict] | None = None,
 ) -> list[dict]:
     """Generate LinkedIn post variants (default 1) covering editorial roles.
 
@@ -921,6 +955,7 @@ def generate_posts(
         + json.dumps(benchmark, ensure_ascii=False, indent=2)
         + "\n\nExemples des posts les plus performants :\n"
         + examples_text
+        + _format_reference_posts(reference_posts)
         + f"\n\nGénère exactement {count} variant{'s' if count > 1 else ''} de post{'s' if count > 1 else ''} LinkedIn, un par rôle éditorial ci-dessous, "
         "DANS L'ORDRE indiqué :\n\n"
         + roles_block

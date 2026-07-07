@@ -135,9 +135,13 @@ def send_text(subscriber_id: str, text: str, *, api_token: str | None = None) ->
                 "messages": [{"type": "text", "text": text}],
             },
         },
-        # Réponse dans la fenêtre 24 h : tag standard hors-promotion.
-        "message_tag": os.environ.get("MANYCHAT_MESSAGE_TAG", "ACCOUNT_UPDATE"),
     }
+    # Meta a supprimé les message tags (ManyChat renvoie 400 si on en envoie un).
+    # On répond dans la fenêtre 24 h, qui n'exige aucun tag. `MANYCHAT_MESSAGE_TAG`
+    # reste honorée si explicitement définie (secours si l'API réintroduit un mécanisme).
+    tag = os.environ.get("MANYCHAT_MESSAGE_TAG", "").strip()
+    if tag:
+        payload["message_tag"] = tag
     return _request("POST", "/fb/sending/sendContent", body=payload, api_token=api_token)
 
 

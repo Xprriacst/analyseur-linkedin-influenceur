@@ -18,6 +18,20 @@ test("onglet Veille : sous-onglets Analyser / Mes influenceurs (Dashboard fusion
   await page.locator(".tab", { hasText: "Mes influenceurs" }).click();
   await expect(page.getByRole("heading", { name: /^Mes influenceurs$/i })).toBeVisible();
   await expect(page.getByRole("heading", { name: /Dashboard global/i })).toBeVisible();
+  // ALE-214 : si des influenceurs sont listés, la colonne de veille (suivi) est présente.
+  const influencersTable = page.locator("table.dash-table").first();
+  if (await influencersTable.count()) {
+    await expect(influencersTable.locator("th", { hasText: "Veille" })).toBeVisible();
+  }
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
+test("Veille › Nouveaux posts : fil de veille rendu sans erreur (ALE-215)", async ({ page }) => {
+  await gotoTab(page, "Veille");
+  await page.locator(".tab", { hasText: "Nouveaux posts" }).click();
+  await expect(page.getByRole("heading", { name: /^Nouveaux posts$/i })).toBeVisible();
+  // Bouton de rafraîchissement toujours présent ; l'état vide invite à suivre des influenceurs.
+  await expect(page.getByRole("button", { name: /Rafraîchir/i })).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
@@ -73,5 +87,20 @@ test("Contenu › Idée du jour : idée + réservoir + opt-in sans erreur", asyn
   await expect(page.getByText(/Recevoir une idée chaque matin/i)).toBeVisible();
   await expect(page.getByPlaceholder(/Mon retour sur/i)).toBeVisible();
   // Aucun bandeau d'erreur de chargement (daily-ideas + idea-seeds).
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
+test("Contenu › Idée du jour : section « Mes posts de référence » (ALE-67)", async ({ page }) => {
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Idée du jour");
+  // La boîte à idées expose la section des posts de référence (lecture seule : aucun ajout).
+  await expect(page.getByRole("heading", { name: /Mes posts de référence/i })).toBeVisible();
+  // Le lien d'abord (import automatique), le texte en secours.
+  await expect(page.getByPlaceholder(/Colle le lien du post LinkedIn/i)).toBeVisible();
+  await expect(page.getByPlaceholder(/colle directement le texte du post/i)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Ajouter ce post/i })).toBeVisible();
+  // Champs optionnels du formulaire.
+  await expect(page.getByPlaceholder(/Auteur \(optionnel\)/i)).toBeVisible();
+  await expect(page.getByPlaceholder(/Pourquoi il te plaît/i)).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });

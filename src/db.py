@@ -132,6 +132,9 @@ def _post_rows(influencer_id: str, posts: list[dict], platform: str = "linkedin"
             "length_chars": int(p.get("length_chars", 0) or 0),
             "length_words": int(p.get("length_words", 0) or 0),
         }
+        media_items = p.get("media_items")
+        if media_items:
+            row["media_items"] = media_items
         # Instagram-specific columns (ignored for LinkedIn rows by Postgres if columns absent)
         if platform == "instagram":
             views = p.get("views")
@@ -1636,6 +1639,87 @@ def delete_idea_seed(access_token: str, seed_id: str) -> bool:
     return True
 
 
+def list_reference_posts(access_token: str, limit: int = 200) -> list[dict]:
+    """List the user's reference posts (inspiration box), newest first."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_reference_posts")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def add_reference_post(
+    access_token: str,
+    text: str,
+    url: str | None = None,
+    author: str | None = None,
+    note: str | None = None,
+) -> dict | None:
+    """Add a reference post (found elsewhere) to the user's inspiration box."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {"user_id": user["id"], "text": text}
+    if url:
+        row["url"] = url
+    if author:
+        row["author"] = author
+    if note:
+        row["note"] = note
+    resp = db.table("user_reference_posts").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def pick_reference_posts(access_token: str | None, count: int = 3) -> list[dict]:
+    """Échantillon de posts de référence à injecter dans une génération.
+
+    Aléatoire quand la boîte dépasse `count`, pour varier l'inspiration d'un
+    appel à l'autre. Best-effort : ne bloque jamais la génération.
+    """
+    if not access_token:
+        return []
+    try:
+        refs = list_reference_posts(access_token, limit=50)
+    except Exception:
+        return []
+    if len(refs) <= count:
+        return refs
+    import random
+
+    return random.sample(refs, count)
+
+
+def delete_reference_post(access_token: str, ref_id: str) -> bool:
+    """Delete one of the user's reference posts. RLS guarantees ownership."""
+    if not supabase_enabled():
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    (
+        db.table("user_reference_posts")
+        .delete()
+        .eq("id", ref_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return True
+
+
 def list_daily_ideas(access_token: str, limit: int = 30) -> list[dict]:
     """List the user's generated daily ideas, newest first."""
     if not supabase_enabled():
@@ -2509,12 +2593,18 @@ def upsert_influencer_cache(
         return None
 
 
-def upsert_cached_posts(cache_id: str, posts_with_classifs: list[dict]) -> None:
+def upsert_cached_posts(
+    cache_id: str,
+    posts_with_classifs: list[dict],
+    detected_by_monitor: bool = False,
+) -> None:
     """Insère les nouveaux posts dans le cache global (les existants sont préservés).
 
     `posts_with_classifs` : liste de {"post": post_dict, "classification": classif | None}.
     Les métriques (likes/comments/reposts) des posts déjà présents en cache ne sont
     PAS mises à jour — conformément à la décision ALE-109 ("métriques figées").
+    Exception ALE-214 : le cron de monitoring re-relève l'engagement des posts
+    récents via `refresh_cached_post_metrics` (engagement non stabilisé).
     La clé de déduplication est (influencer_cache_id, url).
     """
     if not admin_enabled() or not posts_with_classifs:
@@ -2552,6 +2642,11 @@ def upsert_cached_posts(cache_id: str, posts_with_classifs: list[dict]) -> None:
                 "length_chars": int(post.get("length_chars", 0) or 0),
                 "length_words": int(post.get("length_words", 0) or 0),
             }
+            media_items = post.get("media_items")
+            if media_items:
+                row["media_items"] = _json_safe(media_items)
+            if detected_by_monitor:
+                row["detected_by_monitor"] = True
             if classif:
                 row.update({
                     "stage": classif.get("stage"),
@@ -2566,6 +2661,176 @@ def upsert_cached_posts(cache_id: str, posts_with_classifs: list[dict]) -> None:
             admin.table("cached_posts").insert(new_rows).execute()
     except Exception:
         pass  # La persistance du cache ne doit jamais bloquer l'analyse
+
+
+# ── Monitoring influenceurs (ALE-214) ─────────────────────────────────────── #
+
+def list_followed_influencers(access_token: str) -> list[dict]:
+    """Influenceurs suivis par l'utilisateur (RLS)."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("followed_influencers")
+        .select("*")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=False)
+        .execute()
+    )
+    return resp.data or []
+
+
+def follow_influencer(access_token: str, handle: str, platform: str = "linkedin") -> dict | None:
+    """Suit un influenceur (idempotent : renvoie la ligne existante si déjà suivi)."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("followed_influencers")
+        .upsert(
+            {"user_id": user["id"], "handle": handle, "platform": platform},
+            on_conflict="user_id,handle,platform",
+        )
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def unfollow_influencer(access_token: str, follow_id: str) -> bool:
+    """Ne plus suivre un influenceur. RLS garantit la propriété."""
+    if not supabase_enabled():
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    (
+        db.table("followed_influencers")
+        .delete()
+        .eq("id", follow_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return True
+
+
+def list_all_followed_handles(platform: str = "linkedin") -> list[str]:
+    """[cron] Handles suivis, dédupliqués tous utilisateurs confondus.
+
+    Le cache est partagé : un influenceur suivi par 3 clients = un seul scrape.
+    """
+    if not admin_enabled():
+        return []
+    resp = (
+        admin_client()
+        .table("followed_influencers")
+        .select("handle")
+        .eq("platform", platform)
+        .execute()
+    )
+    return sorted({r["handle"] for r in (resp.data or []) if r.get("handle")})
+
+
+def list_followed_handles_for_user(user_id: str, platform: str = "linkedin") -> list[str]:
+    """[cron/run-now] Handles suivis par un utilisateur donné (service-role)."""
+    if not admin_enabled():
+        return []
+    resp = (
+        admin_client()
+        .table("followed_influencers")
+        .select("handle")
+        .eq("user_id", user_id)
+        .eq("platform", platform)
+        .execute()
+    )
+    return sorted({r["handle"] for r in (resp.data or []) if r.get("handle")})
+
+
+def get_monitoring_feed_for_user(user_id: str, days: int = 30, limit: int = 60) -> list[dict]:
+    """[veille ALE-215] Posts récents des influenceurs suivis par l'utilisateur.
+
+    Lit le cache partagé via le service-role (ses tables ont une RLS sans policy,
+    donc inaccessibles au front), mais ne renvoie que les posts des influenceurs
+    que CET utilisateur suit. Fenêtre : posts publiés OU découverts < `days` jours.
+    """
+    if not admin_enabled():
+        return []
+    handles = list_followed_handles_for_user(user_id)
+    if not handles:
+        return []
+    admin = admin_client()
+    caches = (
+        admin.table("influencer_cache")
+        .select("id,handle,name")
+        .in_("handle", handles)
+        .eq("platform", "linkedin")
+        .execute()
+    ).data or []
+    if not caches:
+        return []
+    by_id = {c["id"]: c for c in caches}
+    cutoff = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+    ).isoformat()
+    posts = (
+        admin.table("cached_posts")
+        .select(
+            "id,influencer_cache_id,url,text,posted_at,format,likes,comments,"
+            "reposts,engagement,media_items,detected_by_monitor,first_seen_at"
+        )
+        .in_("influencer_cache_id", list(by_id.keys()))
+        .or_(f"posted_at.gte.{cutoff},first_seen_at.gte.{cutoff}")
+        .order("posted_at", desc=True, nullsfirst=False)
+        .limit(limit)
+        .execute()
+    ).data or []
+    for p in posts:
+        cache = by_id.get(p.get("influencer_cache_id")) or {}
+        p["influencer_name"] = cache.get("name") or cache.get("handle")
+        p["influencer_handle"] = cache.get("handle")
+    return posts
+
+
+def refresh_cached_post_metrics(cache_id: str, post: dict) -> None:
+    """[cron monitoring] Re-relève l'engagement d'un post déjà en cache.
+
+    Exception assumée à la règle « métriques figées » d'ALE-109 : l'engagement
+    d'un post frais n'est pas stabilisé, le cron le re-mesure à chaque passage
+    tant que le post est récent (fenêtre gérée par l'appelant).
+    """
+    if not admin_enabled():
+        return
+    url = post.get("url")
+    if not url:
+        return
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        updates: dict[str, Any] = {
+            "likes": int(post.get("likes", 0) or 0),
+            "comments": int(post.get("comments", 0) or 0),
+            "reposts": int(post.get("reposts", 0) or 0),
+            "engagement": int(post.get("engagement", 0) or 0),
+            "engagement_checked_at": now,
+        }
+        media_items = post.get("media_items")
+        if media_items:
+            updates["media_items"] = _json_safe(media_items)
+        (
+            admin_client()
+            .table("cached_posts")
+            .update(updates)
+            .eq("influencer_cache_id", cache_id)
+            .eq("url", url)
+            .execute()
+        )
+    except Exception:
+        pass  # best-effort : ne bloque jamais le cron
 
 
 # ── Posts hebdo (ALE-159) ─────────────────────────────────────────────────── #
