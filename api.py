@@ -1748,6 +1748,25 @@ def run_me_influencer_monitor(token: str = Depends(require_token)) -> dict[str, 
     return {"started": True}
 
 
+@app.get("/me/monitoring/feed")
+def me_monitoring_feed(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Fil de veille (ALE-215) : posts récents des influenceurs suivis.
+
+    Lecture seule en base (aucun scrape, aucun LLM) — la détection est faite
+    par le cron ou le bouton « Vérifier les nouveaux posts ».
+    """
+    if not db.admin_enabled():
+        raise HTTPException(status_code=400, detail="Veille indisponible (service-role serveur manquant).")
+    user = db.get_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Session invalide.")
+    followed = db.list_followed_handles_for_user(user["id"])
+    return {
+        "posts": db.get_monitoring_feed_for_user(user["id"]),
+        "followed_count": len(followed),
+    }
+
+
 @app.post("/me/daily-ideas/regenerate")
 def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]:
     """Regenerate today's daily idea on demand (costs 1 credit)."""

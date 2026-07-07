@@ -260,7 +260,7 @@ function InstagramIcon({ size = 14 }: { size?: number }) {
 }
 
 /** Sous-onglets de la vue « Analyser » (analyse, influenceurs, dashboard fusionnés). */
-type AnalyzeTab = "analyze" | "influencers";
+type AnalyzeTab = "analyze" | "influencers" | "monitoring";
 
 /** Sous-onglets de la vue « Contenu » (idée du jour, générateur, mes contenus fusionnés). */
 type ContentTab = "daily" | "generator" | "library";
@@ -7264,6 +7264,271 @@ function InfluencersView({
   );
 }
 
+/** ALE-215 : fil de veille — nouveaux posts des influenceurs suivis. */
+type MonitoredPost = {
+  id: string;
+  url?: string | null;
+  text?: string | null;
+  posted_at?: string | null;
+  format?: string | null;
+  likes: number;
+  comments: number;
+  reposts: number;
+  engagement: number;
+  media_items?: { type: string; url: string }[] | null;
+  detected_by_monitor?: boolean;
+  first_seen_at?: string | null;
+  influencer_name?: string | null;
+  influencer_handle?: string | null;
+};
+
+function MonitoringFeedView({
+  isAuthed,
+  requireAuth,
+  onInspire,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onInspire: (topic: string) => void;
+}) {
+  const [posts, setPosts] = useState<MonitoredPost[]>([]);
+  const [followedCount, setFollowedCount] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [checkMsg, setCheckMsg] = useState("");
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  async function load() {
+    if (!isAuthed) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/monitoring/feed`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Chargement de la veille impossible");
+      setPosts(Array.isArray(data.posts) ? data.posts : []);
+      setFollowedCount(data.followed_count || 0);
+    } catch (err: any) {
+      setError(err.message || "Chargement impossible");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAuthed) void load();
+    else { setPosts([]); setFollowedCount(0); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  async function checkNow() {
+    setChecking(true);
+    setCheckMsg("");
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/influencer-monitor/run`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Détection impossible");
+      setCheckMsg("Détection lancée ✓ — compte ~30 s par influenceur suivi, puis clique « Rafraîchir ».");
+    } catch (err: any) {
+      setError(err.message || "Détection impossible");
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  // « Garder pour plus tard » → boîte à idées (posts de référence, ALE-67).
+  async function keepForLater(p: MonitoredPost) {
+    if (!p.text) return;
+    setSavingId(p.id);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/reference-posts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          text: p.text,
+          url: p.url || null,
+          author: p.influencer_name || p.influencer_handle || null,
+          note: "Repéré via la veille",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
+      setSavedIds((prev) => ({ ...prev, [p.id]: true }));
+    } catch (err: any) {
+      setError(err.message || "Enregistrement impossible");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  function inspire(p: MonitoredPost) {
+    const who = p.influencer_name || p.influencer_handle || "un influenceur suivi";
+    onInspire(
+      `Inspire-toi de ce post de ${who} — reprends l'angle, la structure ou le fond, mais réécris-le entièrement pour moi :\n\n« ${(p.text || "").slice(0, 1200)} »`
+    );
+  }
+
+  const fmtFeedDate = (s?: string | null) => {
+    if (!s) return "";
+    try { return new Date(s).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }); }
+    catch { return ""; }
+  };
+  const isNew = (p: MonitoredPost) => {
+    if (!p.detected_by_monitor || !p.first_seen_at) return false;
+    try { return Date.now() - new Date(p.first_seen_at).getTime() < 7 * 24 * 3600 * 1000; }
+    catch { return false; }
+  };
+  const firstImage = (p: MonitoredPost) =>
+    (p.media_items || []).find((m) => m?.type === "image" && m?.url)?.url || null;
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Lock size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Nouveaux posts</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Connecte-toi pour surveiller les nouveaux posts de tes influenceurs et t&apos;en inspirer.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour activer la veille.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="section-header" style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div>
+          <h2 className="section-title"><Eye size={20} /> Nouveaux posts</h2>
+          <p className="section-desc">
+            Les derniers posts de tes influenceurs suivis — inspire-t&apos;en en un clic, ou garde-les pour plus tard.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" className="secondary-button" style={{ fontSize: 13 }} disabled={loading} onClick={() => void load()}>
+            {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />} Rafraîchir
+          </button>
+          {followedCount > 0 && (
+            <button
+              type="button"
+              className="primary-button"
+              style={{ fontSize: 13 }}
+              disabled={checking}
+              title="Scrape les derniers posts de tes influenceurs suivis et enregistre les nouveaux"
+              onClick={checkNow}
+            >
+              {checking ? <Loader2 size={14} className="spinning" /> : <Zap size={14} />} Vérifier les nouveaux posts
+            </button>
+          )}
+        </div>
+      </div>
+
+      {checkMsg && <div className="card" style={{ marginBottom: 12, padding: "10px 14px", fontSize: 13, color: "var(--muted)" }}>{checkMsg}</div>}
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {followedCount === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+          <Eye size={24} style={{ opacity: 0.35, marginBottom: 8 }} />
+          <p style={{ margin: 0, color: "var(--muted)" }}>
+            Tu ne suis encore aucun influenceur. Va dans « Mes influenceurs » et clique « Suivre » (jusqu&apos;à 5) pour activer la veille.
+          </p>
+        </div>
+      ) : loading && posts.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+          <Loader2 size={24} className="spinning" style={{ opacity: 0.5 }} />
+          <p style={{ marginTop: 12, color: "var(--muted)" }}>Chargement de la veille…</p>
+        </div>
+      ) : posts.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+          <p style={{ margin: 0, color: "var(--muted)" }}>
+            Aucun post récent en stock pour tes influenceurs suivis. Clique « Vérifier les nouveaux posts », attends ~30 s par influenceur, puis « Rafraîchir ».
+          </p>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 12 }}>
+          {posts.map((p) => {
+            const img = firstImage(p);
+            const text = p.text || "";
+            const isLong = text.length > 320;
+            const shown = expanded[p.id] || !isLong ? text : `${text.slice(0, 320)}…`;
+            return (
+              <div key={p.id} className="card" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", marginBottom: 6 }}>
+                    <strong>{p.influencer_name || p.influencer_handle}</strong>
+                    <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtFeedDate(p.posted_at)}</span>
+                    {isNew(p) && <span className="daily-seed-tag" style={{ background: "var(--primary)", color: "#fff" }}>Nouveau</span>}
+                    <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                      👍 {fmt(p.likes)} · 💬 {fmt(p.comments)} · 🔁 {fmt(p.reposts)}
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 14 }}>{shown}</p>
+                  {isLong && (
+                    <button
+                      type="button"
+                      className="icon-button"
+                      style={{ fontSize: 12, marginTop: 4 }}
+                      onClick={() => setExpanded((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
+                    >
+                      {expanded[p.id] ? "Réduire" : "Lire la suite"}
+                    </button>
+                  )}
+                  <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 12px" }}
+                      title="Génère un post pour toi sur le même angle, réécrit selon ton profil"
+                      onClick={() => inspire(p)}
+                    >
+                      <Sparkles size={12} /> M&apos;en inspirer
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 12px" }}
+                      disabled={savingId === p.id || !!savedIds[p.id]}
+                      title="Enregistre ce post dans tes posts de référence (boîte à idées)"
+                      onClick={() => void keepForLater(p)}
+                    >
+                      {savingId === p.id
+                        ? <Loader2 size={12} className="spinning" />
+                        : savedIds[p.id] ? <CheckCircle2 size={12} /> : <BookmarkPlus size={12} />}
+                      {savedIds[p.id] ? " Gardé ✓" : " Garder pour plus tard"}
+                    </button>
+                    {p.url && (
+                      <a href={p.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "var(--muted)" }}>
+                        voir sur LinkedIn
+                      </a>
+                    )}
+                  </div>
+                </div>
+                {img && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={img}
+                    alt=""
+                    style={{ width: 120, maxHeight: 120, objectFit: "cover", borderRadius: 8, flex: "0 0 auto" }}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * Vue « Analyser » fusionnée : barre de sous-onglets qui regroupe l'ancien
  * onglet Analyser (séries) et Mes influenceurs. Le Dashboard global (ALE-132)
@@ -7282,6 +7547,7 @@ function AnalyzeHub({
   onOpenLibraryReport,
   isAuthed,
   requireAuth,
+  onInspire,
 }: {
   tab: AnalyzeTab;
   onTab: (t: AnalyzeTab) => void;
@@ -7295,10 +7561,12 @@ function AnalyzeHub({
   onOpenLibraryReport: (entry: InfluencerLibraryEntry) => Promise<void>;
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onInspire: (topic: string) => void;
 }) {
   const subTabs: { key: AnalyzeTab; label: string; icon: React.ReactNode }[] = [
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
     { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} /> },
+    { key: "monitoring", label: "Nouveaux posts", icon: <Eye size={14} /> },
   ];
 
   return (
@@ -7343,6 +7611,9 @@ function AnalyzeHub({
             </div>
           )}
         </>
+      )}
+      {tab === "monitoring" && (
+        <MonitoringFeedView isAuthed={isAuthed} requireAuth={requireAuth} onInspire={onInspire} />
       )}
     </div>
   );
@@ -8370,6 +8641,11 @@ export default function Home() {
                           onOpenLibraryReport={openLibraryReport}
                           isAuthed={isAuthed}
                           requireAuth={requireAuth}
+                          onInspire={(topic) => {
+                            setGeneratorSeed({ topic, nonce: Date.now() });
+                            setContentTab("generator");
+                            setView("content");
+                          }}
                         />
                       )
               )}
