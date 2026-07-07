@@ -3430,9 +3430,12 @@ function DailyIdeasView({
   }
 
   // ALE-67 : ajout / suppression d'un post de référence.
+  // Deux modes : lien LinkedIn seul (le backend importe texte + auteur) ou texte collé.
+  const refUrlValid = /^https?:\/\/\S+$/i.test(refUrl.trim());
+  const refCanAdd = refUrlValid || refDraft.trim().length >= 10;
+
   async function addRef() {
-    const text = refDraft.trim();
-    if (text.length < 10) return;
+    if (!refCanAdd) return;
     setAddingRef(true);
     setRefError("");
     try {
@@ -3440,7 +3443,7 @@ function DailyIdeasView({
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
-          text,
+          text: refDraft.trim() || null,
           url: refUrl.trim() || null,
           author: refAuthor.trim() || null,
           note: refNote.trim() || null,
@@ -3990,19 +3993,26 @@ function DailyIdeasView({
           <div>
             <h3 className="daily-subtitle" style={{ margin: 0 }}><Bookmark size={16} /> Mes posts de référence</h3>
             <p className="section-desc" style={{ margin: "4px 0 0" }}>
-              Colle des posts qui t&apos;ont plu (LinkedIn ou ailleurs) : l&apos;IA s&apos;en inspire — sujet, angle, structure — en les réécrivant pour toi.
+              Ajoute des posts qui t&apos;ont plu (lien LinkedIn ou texte collé) : l&apos;IA s&apos;en inspire — sujet, angle, structure — en les réécrivant pour toi.
             </p>
           </div>
         </div>
 
-        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+        <div className="ref-add" style={{ marginTop: 12, display: "grid", gap: 8 }}>
+          <input
+            type="text"
+            value={refUrl}
+            onChange={(e) => setRefUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addRef(); } }}
+            placeholder="Colle le lien du post LinkedIn — texte et auteur importés automatiquement"
+            maxLength={2000}
+          />
           <textarea
             value={refDraft}
             onChange={(e) => setRefDraft(e.target.value)}
-            placeholder="Colle ici le texte du post…"
+            placeholder="…ou colle directement le texte du post (utile seulement sans lien)"
             maxLength={6000}
-            rows={3}
-            style={{ width: "100%", boxSizing: "border-box", resize: "vertical" }}
+            rows={2}
           />
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input
@@ -4015,24 +4025,17 @@ function DailyIdeasView({
             />
             <input
               type="text"
-              value={refUrl}
-              onChange={(e) => setRefUrl(e.target.value)}
-              placeholder="Lien du post (optionnel)"
-              maxLength={2000}
+              value={refNote}
+              onChange={(e) => setRefNote(e.target.value)}
+              placeholder="Pourquoi il te plaît ? (optionnel) — ex. « l'accroche choc »"
+              maxLength={500}
               style={{ flex: "2 1 220px" }}
             />
           </div>
-          <input
-            type="text"
-            value={refNote}
-            onChange={(e) => setRefNote(e.target.value)}
-            placeholder="Pourquoi il te plaît ? (optionnel) — ex. « l'accroche choc », « le storytelling client »"
-            maxLength={500}
-            style={{ width: "100%", boxSizing: "border-box" }}
-          />
           <div>
-            <button className="primary-button" onClick={addRef} disabled={addingRef || refDraft.trim().length < 10}>
-              {addingRef ? <Loader2 size={14} className="spinning" /> : <BookmarkPlus size={14} />} Ajouter ce post
+            <button className="primary-button" onClick={addRef} disabled={addingRef || !refCanAdd}>
+              {addingRef ? <Loader2 size={14} className="spinning" /> : <BookmarkPlus size={14} />}
+              {addingRef && refUrlValid && refDraft.trim().length < 10 ? " Import du post…" : " Ajouter ce post"}
             </button>
           </div>
         </div>
@@ -4040,7 +4043,9 @@ function DailyIdeasView({
 
         {refs.length === 0 ? (
           <p style={{ color: "var(--muted)", margin: "12px 0 0", fontSize: 13 }}>
-            Aucun post de référence — la génération s&apos;appuiera sur ton benchmark et ton réservoir.
+            {loading
+              ? "Chargement de tes posts de référence…"
+              : "Aucun post de référence — la génération s'appuiera sur ton benchmark et ton réservoir."}
           </p>
         ) : (
           <ul className="daily-seed-list">
@@ -4061,6 +4066,16 @@ function DailyIdeasView({
                     <em style={{ fontSize: 12, color: "var(--muted)" }}>↳ pourquoi : {r.note}</em>
                   ) : null}
                 </span>
+                {!reservoirOnly && (
+                  <button
+                    className="secondary-button"
+                    style={{ fontSize: 12, minHeight: 28, padding: "0 10px", whiteSpace: "nowrap" }}
+                    title="Générer un post inspiré de celui-ci (angle, structure, fond — réécrit pour toi)"
+                    onClick={() => onReuse(`Inspire-toi de ce post de référence — reprends l'angle, la structure ou le fond, mais réécris-le entièrement pour moi :\n\n« ${r.text.slice(0, 1200)} »`)}
+                  >
+                    <Sparkles size={12} /> Générer un post inspiré
+                  </button>
+                )}
                 <button className="icon-button" title="Supprimer" onClick={() => deleteRef(r.id)}><Trash2 size={14} /></button>
               </li>
             ))}

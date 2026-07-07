@@ -24,7 +24,7 @@ from src.jobs import start_job_thread, start_generation_job_thread
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
-from src.scraper import fetch_posts, fetch_profile
+from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
 from src.stats import compute_stats
 from src.instagram_hooks import select_hooks
 from src.daily_ideas import _render_idea_markdown
@@ -1514,7 +1514,8 @@ def delete_me_idea_seed(seed_id: str, token: str = Depends(require_token)) -> di
 # --------------------------------------------------------------------------- #
 
 class ReferencePostRequest(BaseModel):
-    text: str = Field(..., min_length=10, max_length=6000)
+    # Texte optionnel : un lien LinkedIn seul suffit, le post est importé (scrape).
+    text: str | None = Field(default=None, max_length=6000)
     url: str | None = Field(default=None, max_length=2000)
     author: str | None = Field(default=None, max_length=200)
     note: str | None = Field(default=None, max_length=500)
@@ -1528,12 +1529,36 @@ def me_reference_posts(token: str = Depends(require_token)) -> list[dict[str, An
 
 @app.post("/me/reference-posts")
 def add_me_reference_post(payload: ReferencePostRequest, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Add a reference post to the user's inspiration box."""
+    """Add a reference post to the user's inspiration box.
+
+    Deux modes : texte collé directement, ou lien LinkedIn seul → le texte et
+    l'auteur sont importés automatiquement (scrape Apify, ~0,005 $).
+    """
+    text = (payload.text or "").strip()
+    url = (payload.url or "").strip() or None
+    author = (payload.author or "").strip() or None
+
+    if not text:
+        if not url or not url.lower().startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="Colle le lien du post ou son texte.")
+        detail = fetch_post_detail(url)
+        if not detail:
+            raise HTTPException(
+                status_code=422,
+                detail="Impossible de lire le post depuis ce lien — colle son texte directement.",
+            )
+        text = detail["text"]
+        author = author or detail.get("author")
+        url = detail.get("url") or url
+
+    if len(text) < 10:
+        raise HTTPException(status_code=422, detail="Le texte du post est trop court (10 caractères minimum).")
+
     ref = db.add_reference_post(
         token,
-        payload.text.strip(),
-        url=(payload.url or "").strip() or None,
-        author=(payload.author or "").strip() or None,
+        text[:6000],
+        url=url,
+        author=author,
         note=(payload.note or "").strip() or None,
     )
     if not ref:
