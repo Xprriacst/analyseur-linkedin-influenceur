@@ -66,6 +66,37 @@ def _default_dataset_id(run: Any) -> str:
     return run.default_dataset_id
 
 
+POST_DETAIL_ACTOR = "apimaestro/linkedin-post-detail"
+
+
+def fetch_post_detail(post_url: str) -> dict[str, Any] | None:
+    """Scrape un post LinkedIn isolé par son URL (import d'un post de référence).
+
+    Retourne {text, author, url} ou None si le post est illisible — l'appelant
+    demande alors à l'utilisateur de coller le texte lui-même.
+    """
+    actor = os.environ.get("APIFY_POST_ACTOR", POST_DETAIL_ACTOR)
+    try:
+        run = _call_actor(actor, {"post_urls": [post_url.strip()]}, timeout_secs=120)
+        items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
+    except Exception as exc:
+        print(f"[scraper] échec scrape post {post_url} via {actor}: {exc}", flush=True)
+        return None
+    for item in items:
+        post = item.get("post") or {}
+        text = (post.get("text") or "").strip()
+        if not text:
+            continue
+        track_apify(actor, 1, cached=False)
+        author = (item.get("author") or {}).get("name")
+        return {
+            "text": text,
+            "author": (author or "").strip() or None,
+            "url": post.get("url") or post_url,
+        }
+    return None
+
+
 def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> list[dict[str, Any]]:
     """Fetch the last `limit` posts of a LinkedIn profile via Apify."""
     handle = extract_handle(profile_url)

@@ -81,10 +81,12 @@ test("Contenu › Idée du jour : section « Mes posts de référence » (ALE-67
   await gotoSubTab(page, "Idée du jour");
   // La boîte à idées expose la section des posts de référence (lecture seule : aucun ajout).
   await expect(page.getByRole("heading", { name: /Mes posts de référence/i })).toBeVisible();
-  await expect(page.getByPlaceholder(/Colle ici le texte du post/i)).toBeVisible();
+  // Le lien d'abord (import automatique), le texte en secours.
+  await expect(page.getByPlaceholder(/Colle le lien du post LinkedIn/i)).toBeVisible();
+  await expect(page.getByPlaceholder(/colle directement le texte du post/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /Ajouter ce post/i })).toBeVisible();
   // Champs optionnels du formulaire.
   await expect(page.getByPlaceholder(/Auteur \(optionnel\)/i)).toBeVisible();
-  await expect(page.getByPlaceholder(/Lien du post \(optionnel\)/i)).toBeVisible();
+  await expect(page.getByPlaceholder(/Pourquoi il te plaît/i)).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
