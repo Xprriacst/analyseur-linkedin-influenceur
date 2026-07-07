@@ -2769,3 +2769,565 @@ def weekly_post_exists(user_id: str, utc_date: str) -> bool:
         .execute()
     )
     return bool(resp.data)
+
+
+# ---------------------------------------------------------------------------
+# Agent de qualification Instagram (ALE-195 / 201)
+#
+# Le webhook ManyChat entrant n'a pas de session utilisateur → écritures
+# service-role STRICTEMENT scellées sur le user_id propriétaire du compte IG
+# (patron du cron daily_ideas). En v1 mono-compte, ce propriétaire est résolu
+# via l'env IG_OWNER_USER_ID. Les lectures UI (204) passent par le JWT (RLS).
+# ---------------------------------------------------------------------------
+
+def ig_owner_user_id() -> str | None:
+    """App user_id propriétaire du compte Instagram (v1 mono-compte)."""
+    return os.environ.get("IG_OWNER_USER_ID") or None
+
+
+def get_or_create_ig_conversation_admin(
+    user_id: str, prospect_id: str, prospect_name: str | None = None
+) -> dict | None:
+    """Retrouver ou créer la conversation d'un prospect (service-role, scellé user_id)."""
+    if not admin_enabled():
+        return None
+    db = admin_client()
+    existing = (
+        db.table("ig_conversations")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("prospect_id", prospect_id)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        row = existing.data[0]
+        if prospect_name and not row.get("prospect_name"):
+            upd = (
+                db.table("ig_conversations")
+                .update({"prospect_name": prospect_name, "updated_at": "now()"})
+                .eq("id", row["id"])
+                .execute()
+            )
+            return upd.data[0] if upd.data else row
+        return row
+    resp = (
+        db.table("ig_conversations")
+        .insert({
+            "user_id": user_id,
+            "prospect_id": prospect_id,
+            "prospect_name": prospect_name,
+        })
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def add_ig_message_admin(
+    user_id: str,
+    conversation_id: str,
+    *,
+    role: str,
+    source: str,
+    text: str,
+    kind: str = "text",
+) -> dict | None:
+    """Persister un message IG + rafraîchir les horodatages/fenêtre 24 h de la conversation.
+
+    `role` in|out, `source` prospect|agent|human. Un message entrant (in) remet à
+    zéro la fenêtre de réponse conforme (24 h après le dernier message du prospect).
+    """
+    if not admin_enabled():
+        return None
+    db = admin_client()
+    msg = (
+        db.table("ig_messages")
+        .insert({
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "role": role,
+            "source": source,
+            "text": text or "",
+            "kind": kind,
+        })
+        .execute()
+    )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    conv_update: dict[str, Any] = {
+        "last_message_at": now.isoformat(),
+        "updated_at": "now()",
+    }
+    if role == "in":
+        expires = now + datetime.timedelta(hours=24)
+        conv_update["last_inbound_at"] = now.isoformat()
+        conv_update["window_expires_at"] = expires.isoformat()
+    db.table("ig_conversations").update(conv_update).eq("id", conversation_id).execute()
+    return msg.data[0] if msg.data else None
+
+
+def list_ig_conversations(access_token: str, limit: int = 100) -> list[dict]:
+    """Lister les conversations IG de l'utilisateur (RLS), plus récentes d'abord."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_conversations")
+        .select("*")
+        .order("last_message_at", desc=True)
+        .limit(max(1, min(limit, 200)))
+        .execute()
+    )
+    return resp.data or []
+
+
+def list_ig_messages(access_token: str, conversation_id: str, limit: int = 200) -> list[dict]:
+    """Lister les messages d'une conversation IG de l'utilisateur (RLS), chronologique."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_messages")
+        .select("*")
+        .eq("conversation_id", conversation_id)
+        .order("created_at", desc=False)
+        .limit(max(1, min(limit, 500)))
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_ig_conversation(access_token: str, conversation_id: str) -> dict | None:
+    """Récupérer une conversation IG de l'utilisateur (RLS garantit la propriété)."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_conversations")
+        .select("*")
+        .eq("id", conversation_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def add_ig_message(
+    access_token: str,
+    conversation_id: str,
+    *,
+    role: str,
+    source: str,
+    text: str,
+    kind: str = "text",
+) -> dict | None:
+    """Insérer un message IG + rafraîchir la conversation, côté utilisateur (RLS).
+
+    Variante token-scoped d'`add_ig_message_admin`, utilisée par les actions UI
+    (envoi supervisé). RLS empêche l'écriture sur la conversation d'un autre user.
+    """
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    msg = (
+        db.table("ig_messages")
+        .insert({
+            "user_id": user["id"],
+            "conversation_id": conversation_id,
+            "role": role,
+            "source": source,
+            "text": text or "",
+            "kind": kind,
+        })
+        .execute()
+    )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    conv_update: dict[str, Any] = {
+        "last_message_at": now.isoformat(),
+        "updated_at": "now()",
+    }
+    if role == "in":
+        expires = now + datetime.timedelta(hours=24)
+        conv_update["last_inbound_at"] = now.isoformat()
+        conv_update["window_expires_at"] = expires.isoformat()
+    db.table("ig_conversations").update(conv_update).eq("id", conversation_id).execute()
+    return msg.data[0] if msg.data else None
+
+
+def list_ig_messages_admin(user_id: str, conversation_id: str, limit: int = 40) -> list[dict]:
+    """Historique d'une conversation (service-role, scellé user_id) — pour le cerveau agent."""
+    if not admin_enabled():
+        return []
+    resp = (
+        admin_client()
+        .table("ig_messages")
+        .select("role, source, text, kind, created_at")
+        .eq("user_id", user_id)
+        .eq("conversation_id", conversation_id)
+        .order("created_at", desc=False)
+        .limit(max(1, min(limit, 200)))
+        .execute()
+    )
+    return resp.data or []
+
+
+def create_ig_draft_admin(
+    user_id: str,
+    conversation_id: str,
+    message_id: str,
+    *,
+    reply: str,
+    confidence,
+    needs_human: bool,
+    reason,
+) -> dict | None:
+    """Persister une réponse suggérée (statut pending), service-role scellé user_id (ALE-202)."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("ig_drafts")
+        .insert({
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "reply": reply or "",
+            "confidence": confidence,
+            "needs_human": bool(needs_human),
+            "reason": reason,
+            "status": "pending",
+        })
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def list_ig_drafts(access_token: str, conversation_id: str, limit: int = 50) -> list[dict]:
+    """Lister les réponses suggérées d'une conversation (RLS), plus récentes d'abord."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_drafts")
+        .select("*")
+        .eq("conversation_id", conversation_id)
+        .order("created_at", desc=True)
+        .limit(max(1, min(limit, 200)))
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_ig_draft(access_token: str, draft_id: str) -> dict | None:
+    """Récupérer une réponse suggérée de l'utilisateur (RLS garantit la propriété)."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_drafts").select("*").eq("id", draft_id).limit(1).execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_ig_draft(
+    access_token: str, draft_id: str, *, status: str, reply: str | None = None
+) -> dict | None:
+    """Mettre à jour le statut (et éventuellement le texte) d'un draft (RLS)."""
+    if not supabase_enabled():
+        return None
+    payload: dict[str, Any] = {"status": status, "updated_at": "now()"}
+    if reply is not None:
+        payload["reply"] = reply
+    db = client_for_token(access_token)
+    resp = db.table("ig_drafts").update(payload).eq("id", draft_id).execute()
+    return resp.data[0] if resp.data else None
+
+
+def set_ig_conversation_mode(access_token: str, conversation_id: str, mode: str) -> dict | None:
+    """Basculer une conversation entre supervisé et autopilot (RLS)."""
+    if mode not in ("supervised", "autopilot") or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_conversations")
+        .update({"mode": mode, "updated_at": "now()"})
+        .eq("id", conversation_id)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+# --- Garde-fou + autopilot (ALE-205) ---------------------------------------
+
+def get_ig_conversation_admin(user_id: str, conversation_id: str) -> dict | None:
+    """Lire une conversation (service-role, scellé user_id) — pour le routage agent."""
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("ig_conversations")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("id", conversation_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_ig_kill_switch_admin(user_id: str) -> bool:
+    """Kill-switch global de l'utilisateur (service-role). Défaut True (fail-safe)
+    si le profil est introuvable : on préfère NE PAS auto-envoyer par défaut."""
+    if not admin_enabled():
+        return True
+    resp = (
+        admin_client()
+        .table("user_editorial_profiles")
+        .select("ig_autopilot_kill_switch")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        return True
+    return bool(resp.data[0].get("ig_autopilot_kill_switch", False))
+
+
+def get_ig_kill_switch(access_token: str) -> bool:
+    """Kill-switch global de l'utilisateur (RLS) — pour l'UI."""
+    if not supabase_enabled():
+        return True
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_editorial_profiles")
+        .select("ig_autopilot_kill_switch")
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        return False
+    return bool(resp.data[0].get("ig_autopilot_kill_switch", False))
+
+
+def set_ig_kill_switch(access_token: str, active: bool) -> bool:
+    """Basculer le kill-switch global (RLS)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_editorial_profiles")
+        .update({"ig_autopilot_kill_switch": bool(active), "updated_at": "now()"})
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def update_ig_draft_status_admin(draft_id: str, status: str, reply: str | None = None) -> dict | None:
+    """Mettre à jour le statut d'un draft (service-role) — pour l'envoi autopilot."""
+    if not admin_enabled():
+        return None
+    payload: dict[str, Any] = {"status": status, "updated_at": "now()"}
+    if reply is not None:
+        payload["reply"] = reply
+    resp = admin_client().table("ig_drafts").update(payload).eq("id", draft_id).execute()
+    return resp.data[0] if resp.data else None
+
+
+def log_ig_decision_admin(
+    user_id: str,
+    conversation_id: str,
+    message_id: str | None,
+    draft_id: str | None,
+    *,
+    decision: str,
+    confidence,
+    needs_human,
+    reason,
+) -> None:
+    """Journaliser une décision du garde-fou (service-role) pour tuner le seuil (ALE-205)."""
+    if not admin_enabled():
+        return
+    admin_client().table("ig_decisions").insert({
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+        "message_id": message_id,
+        "draft_id": draft_id,
+        "decision": decision,
+        "confidence": confidence,
+        "needs_human": needs_human,
+        "reason": reason,
+    }).execute()
+
+
+def get_ig_faq(access_token: str) -> dict | None:
+    """FAQ + objectif de l'utilisateur (RLS) — pour l'éditeur in-app.
+
+    Fail-safe si la table n'existe pas encore (migration 0034 non appliquée).
+    """
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    try:
+        resp = db.table("ig_faqs").select("*").limit(1).execute()
+    except Exception:
+        return None
+    return resp.data[0] if resp.data else None
+
+
+def set_ig_faq(access_token: str, content: str) -> dict | None:
+    """Créer/mettre à jour la FAQ de l'utilisateur (RLS, une ligne par user)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ig_faqs")
+        .upsert(
+            {"user_id": user["id"], "content": content or "", "updated_at": "now()"},
+            on_conflict="user_id",
+        )
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def get_ig_faq_admin(user_id: str) -> str:
+    """Contenu FAQ de l'utilisateur (service-role) — pour le cerveau agent.
+
+    Chaîne vide si absent : l'appelant retombe sur le fichier de config serveur.
+    """
+    if not admin_enabled():
+        return ""
+    try:
+        resp = (
+            admin_client()
+            .table("ig_faqs")
+            .select("content")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        # Table absente (migration 0034 non appliquée) → repli fichier.
+        return ""
+    if not resp.data:
+        return ""
+    return (resp.data[0].get("content") or "").strip()
+
+
+# ---------------------------------------------------------------------------
+# Connexion ManyChat par utilisateur (multi-client) — table `user_integrations`
+# service='manychat'. access_token = clé API du client ; webhook_token = slug
+# public de routage ; webhook_secret = en-tête d'authentification.
+# ---------------------------------------------------------------------------
+
+
+def get_ig_manychat(access_token: str) -> dict | None:
+    """Intégration ManyChat de l'utilisateur (RLS) — pour l'écran de connexion."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    try:
+        resp = (
+            db.table("user_integrations")
+            .select("*")
+            .eq("user_id", user["id"])
+            .eq("service", "manychat")
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    return resp.data[0] if resp.data else None
+
+
+def save_ig_manychat(
+    access_token: str,
+    *,
+    api_token: str,
+    webhook_token: str,
+    webhook_secret: str,
+) -> dict | None:
+    """Relier/mettre à jour le compte ManyChat de l'utilisateur (RLS, upsert)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "service": "manychat",
+        "access_token": api_token,
+        "webhook_token": webhook_token,
+        "webhook_secret": webhook_secret,
+        "connected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    resp = (
+        db.table("user_integrations")
+        .upsert(row, on_conflict="user_id,service")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def delete_ig_manychat(access_token: str) -> bool:
+    """Délier le compte ManyChat de l'utilisateur (RLS)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_integrations")
+        .delete()
+        .eq("user_id", user["id"])
+        .eq("service", "manychat")
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def get_ig_manychat_by_webhook_token_admin(webhook_token: str) -> dict | None:
+    """Résoudre l'utilisateur propriétaire d'un webhook ManyChat (service-role).
+
+    Sert au routage du DM entrant : le slug de l'URL identifie le compte, on
+    renvoie user_id + secret (à vérifier) + clé API. Aucune session utilisateur
+    sur le webhook → service-role obligatoire.
+    """
+    if not admin_enabled() or not webhook_token:
+        return None
+    try:
+        resp = (
+            admin_client()
+            .table("user_integrations")
+            .select("user_id, access_token, webhook_secret")
+            .eq("service", "manychat")
+            .eq("webhook_token", webhook_token)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    return resp.data[0] if resp.data else None
+
+
+def get_ig_manychat_token_admin(user_id: str) -> str | None:
+    """Clé API ManyChat d'un utilisateur (service-role) — pour l'envoi autopilot."""
+    if not admin_enabled():
+        return None
+    try:
+        resp = (
+            admin_client()
+            .table("user_integrations")
+            .select("access_token")
+            .eq("service", "manychat")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    if not resp.data:
+        return None
+    return resp.data[0].get("access_token") or None

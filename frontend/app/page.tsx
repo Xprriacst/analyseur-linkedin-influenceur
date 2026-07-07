@@ -18,6 +18,7 @@ import {
   GripVertical,
   Image as ImageIcon,
   ImagePlus,
+  Inbox as InboxIcon,
   Lightbulb,
   Link2,
   Linkedin,
@@ -242,7 +243,7 @@ type GrowthRow = {
   growth_pct: number | null;
 };
 
-const mainViews = ["analyze", "profile", "assistant", "content"] as const;
+const mainViews = ["analyze", "profile", "assistant", "content", "inbox"] as const;
 type MainView = typeof mainViews[number];
 
 type Platform = "linkedin" | "instagram";
@@ -1020,6 +1021,7 @@ function Sidebar({
   onToggleView,
   jobBadges,
   credits,
+  igUnread,
   platform,
   onNavigate,
   onLoadReport,
@@ -1036,6 +1038,7 @@ function Sidebar({
   onToggleView: () => void;
   jobBadges: { linkedin: { completed: number; total: number } | null; instagram: { completed: number; total: number } | null };
   credits: number | null;
+  igUnread: number;
   platform: Platform;
   onNavigate: (v: MainView) => void;
   onLoadReport: (report: Report) => void;
@@ -1183,6 +1186,31 @@ function Sidebar({
                   >
                     <MessageSquare size={14} />
                     {!collapsed && <span>Agent IA</span>}
+                    {locked ? <Lock size={12} className="lock-ico" /> : null}
+                  </button>
+                );
+              })()}
+              {(() => {
+                const locked = !isAuthed;
+                return (
+                  <button
+                    className={`nav-item ${view === "inbox" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                    title={collapsed ? "Inbox" : undefined}
+                    onClick={() => {
+                      if (locked) {
+                        requireAuth("Crée un compte gratuit pour débloquer l'inbox.");
+                        return;
+                      }
+                      onNavigate("inbox");
+                    }}
+                  >
+                    <InboxIcon size={14} />
+                    {!collapsed && <span>Inbox</span>}
+                    {!locked && igUnread > 0 ? (
+                      collapsed
+                        ? <span className="nav-alert-badge nav-alert-badge-dot" aria-label={`${igUnread} nouveau(x) message(s)`} />
+                        : <span className="nav-alert-badge">{igUnread > 9 ? "9+" : igUnread}</span>
+                    ) : null}
                     {locked ? <Lock size={12} className="lock-ico" /> : null}
                   </button>
                 );
@@ -1461,6 +1489,7 @@ function TopHeader({
     profile: "Mon profil éditorial",
     assistant: "Agent IA",
     content: "Contenu",
+    inbox: "Inbox",
   };
 
   return (
@@ -2079,15 +2108,14 @@ function SchedulePostModal({
  *  post (gratuit), le montre à l'utilisateur qui peut l'ajuster, puis ne génère
  *  l'image (payante en crédits) qu'après validation explicite. L'image générée
  *  est remontée en data URL via `onGenerated`.
- *  Pendant la génération (2 à 3 min), la pop-up peut être réduite en pastille : la
- *  génération continue et l'image revient en preview à la fin (ALE-190). Quitter
- *  ou recharger la page pendant la génération déclenche l'alerte du navigateur ;
- *  changer d'onglet dans l'app perdrait aussi l'image, d'où « reste sur cette page ». */
+ *  Pendant la génération (2 à 3 min), la pop-up reste affichée — pas de réduction
+ *  en pastille : changer d'onglet dans l'app démonte le composant et perd l'image
+ *  (la vraie file d'attente serveur = ALE-141), donc on affiche un avertissement
+ *  explicite. Quitter ou recharger la page déclenche en plus l'alerte du navigateur. */
 function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; onClose: () => void; onGenerated: (dataUrl: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [loadingPrompt, setLoadingPrompt] = useState(true);
   const [generating, setGenerating] = useState(false);
-  const [minimized, setMinimized] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState("");
   const postBoxRef = useRef<HTMLDivElement | null>(null);
@@ -2148,34 +2176,12 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
       if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
       emitCredits(data.credits);
       onGenerated(data.image_data);
-      // La pop-up revient (même si elle était réduite) pour montrer le résultat.
       setPreview(data.image_data);
-      setMinimized(false);
     } catch (err: any) {
       setError(err.message || "Génération d'image impossible.");
-      setMinimized(false);
     } finally {
       setGenerating(false);
     }
-  }
-
-  // Réduite en pastille : la génération continue, clic pour rouvrir.
-  if (minimized) {
-    return (
-      <button
-        type="button"
-        className="card"
-        onClick={() => setMinimized(false)}
-        title="Rouvrir la génération d'image"
-        style={{
-          position: "fixed", right: 16, bottom: 16, zIndex: 1000, cursor: "pointer",
-          display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
-          fontSize: 13, border: "1px solid var(--border)", boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
-        }}
-      >
-        <Loader2 size={14} className="spinning" /> Image IA en cours de génération…
-      </button>
-    );
   }
 
   return (
@@ -2208,11 +2214,26 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
           </>
         ) : (
           <>
-            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-              {generating
-                ? "Génération en cours (2 à 3 min). Tu peux réduire cette fenêtre et continuer à travailler — reste simplement sur cette page, l'image sera jointe au post automatiquement."
-                : "Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour générer l'image (5 crédits). L'image sera jointe au post."}
-            </p>
+            {generating ? (
+              <div style={{
+                display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 12,
+                border: "1px solid #f0b429", background: "rgba(240, 180, 41, 0.12)",
+                borderRadius: 8, padding: "10px 12px", fontSize: 13,
+              }}>
+                <span aria-hidden style={{ fontSize: 16, lineHeight: "18px" }}>⚠️</span>
+                <span>
+                  <strong>Génération en cours (2 à 3 min).</strong> Ne quitte pas cette page et ne change
+                  pas d&apos;onglet dans l&apos;application : l&apos;image serait perdue (et les crédits
+                  débités). Laisse cette fenêtre ouverte, l&apos;image sera jointe au post automatiquement.
+                </span>
+              </div>
+            ) : (
+              <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+                Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour
+                générer l&apos;image (5 crédits). L&apos;image sera jointe au post. Pendant la génération
+                (2 à 3 min), il faudra rester sur cette page.
+              </p>
+            )}
             {loadingPrompt ? (
               <p style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
                 <Loader2 size={14} className="spinning" /> Préparation du prompt…
@@ -2262,13 +2283,7 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
             )}
             {error && <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{error}</div>}
             <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end", flexWrap: "wrap" }}>
-              {generating ? (
-                <button className="secondary-button" onClick={() => setMinimized(true)}>
-                  Réduire — continuer en arrière-plan
-                </button>
-              ) : (
-                <button className="secondary-button" onClick={onClose}>Annuler</button>
-              )}
+              {!generating && <button className="secondary-button" onClick={onClose}>Annuler</button>}
               <button className="primary-button" disabled={loadingPrompt || generating || !prompt.trim()} onClick={generate}>
                 {generating
                   ? <><Loader2 size={13} className="spinning" /> Génération en cours… (2-3 min)</>
@@ -4628,7 +4643,15 @@ function AssistantMessageActions({
   // Images jointes à la réponse (uploads + image IA générée) : elles partent avec
   // le post à la publication, programmation, envoi Slack et sauvegarde (ALE-188).
   const [images, setImages] = useState<LinkedInImageAttachment[]>([]);
+  // Édition manuelle du post proposé : la bulle de conversation reste intacte,
+  // mais toutes les actions (publier, programmer, Slack, X, sauvegarder, image)
+  // opèrent sur la version modifiée, affichée sous la réponse.
+  const [editedText, setEditedText] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState("");
   const [err, setErr] = useState("");
+
+  const postText = editedText ?? text;
 
   const btn = { fontSize: 12, minHeight: 30, padding: "0 10px" } as const;
   const xLogo = (
@@ -4671,7 +4694,7 @@ function AssistantMessageActions({
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(postText);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch { setErr("Copie impossible."); }
@@ -4686,7 +4709,7 @@ function AssistantMessageActions({
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
-          content: text,
+          content: postText,
           draft: false,
           images: imagePayload(),
         }),
@@ -4709,7 +4732,7 @@ function AssistantMessageActions({
       const res = await fetch(`${DIRECT_API_URL}/me/x/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft: false }),
+        body: JSON.stringify({ content: postText, draft: false }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Publication sur X impossible.");
@@ -4725,14 +4748,14 @@ function AssistantMessageActions({
       const saveRes = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: text, images: imagePayload() }),
+        body: JSON.stringify({ post: postText, images: imagePayload() }),
       });
       const saved = await saveRes.json();
       if (!saveRes.ok) throw new Error(saved.detail || "Sauvegarde impossible.");
       const res = await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_id: saved.id, content: text, images: imagePayload() }),
+        body: JSON.stringify({ post_id: saved.id, content: postText, images: imagePayload() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi Slack impossible.");
@@ -4746,7 +4769,7 @@ function AssistantMessageActions({
       const res = await fetch(`${DIRECT_API_URL}/me/generated-posts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: text, images: imagePayload() }),
+        body: JSON.stringify({ post: postText, images: imagePayload() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Sauvegarde impossible.");
@@ -4799,6 +4822,13 @@ function AssistantMessageActions({
         ]}
         moreActions={[
           {
+            key: "edit",
+            icon: <Pencil size={14} />,
+            label: editedText !== null ? "Modifier le post (modifié)" : "Modifier le post",
+            title: "Retoucher le texte à la main : c'est la version modifiée qui sera publiée, programmée, envoyée ou sauvegardée",
+            onClick: () => { setErr(""); setEditDraft(postText); setEditing(true); },
+          },
+          {
             key: "save",
             icon: <BookmarkPlus size={14} />,
             label: savedPost ? "Sauvegardé ✓" : "Sauvegarder",
@@ -4829,6 +4859,47 @@ function AssistantMessageActions({
           {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />} {copied ? "Copié ✓" : "Copier"}
         </button>
       </PostActionsBar>
+      {editing && (
+        <div style={{ width: "100%", marginTop: 8 }}>
+          <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>Modifier le post</label>
+          <textarea
+            value={editDraft}
+            rows={10}
+            className="variant-text"
+            style={{ width: "100%", boxSizing: "border-box", marginBottom: 8 }}
+            onChange={(e) => setEditDraft(e.target.value)}
+            autoFocus
+          />
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              className="primary-button"
+              style={btn}
+              disabled={!editDraft.trim()}
+              onClick={() => { setEditedText(editDraft.trim() === text.trim() ? null : editDraft); setEditing(false); }}
+            >
+              <CheckCircle2 size={13} /> Enregistrer
+            </button>
+            <button className="secondary-button" style={btn} onClick={() => setEditing(false)}>Annuler</button>
+            {editedText !== null && (
+              <button
+                className="secondary-button"
+                style={btn}
+                onClick={() => { setEditedText(null); setEditing(false); }}
+              >
+                Revenir au texte d&apos;origine
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {!editing && editedText !== null && (
+        <div style={{ width: "100%", marginTop: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", background: "var(--surface)" }}>
+          <p className="role-picker-hint" style={{ marginBottom: 6 }}>
+            <Pencil size={12} /> Version modifiée — c&apos;est ce texte qui sera publié, programmé, envoyé ou sauvegardé.
+          </p>
+          <p style={{ whiteSpace: "pre-wrap", fontSize: 13, margin: 0 }}>{editedText}</p>
+        </div>
+      )}
       {confirmPub && (
         <div className="idea-footer" style={{ gap: 8, marginTop: 4, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
           <span style={{ fontSize: 13 }}>Publier ce post maintenant sur LinkedIn ?</span>
@@ -4838,7 +4909,7 @@ function AssistantMessageActions({
       )}
       {scheduleOpen && (
         <SchedulePostModal
-          text={text}
+          text={postText}
           images={images.map((image) => ({ url: image.url, filename: image.filename }))}
           slackConnected={!!slack.status?.connected}
           onClose={() => setScheduleOpen(false)}
@@ -4864,7 +4935,7 @@ function AssistantMessageActions({
       )}
       {imageModalOpen && (
         <ImageGenModal
-          postText={text}
+          postText={postText}
           onClose={() => setImageModalOpen(false)}
           onGenerated={(dataUrl) => setImages((prev) => [...prev, {
             id: `generated-${Date.now()}`,
@@ -4907,6 +4978,731 @@ function AssistantMessageActions({
         </div>
       )}
       {err && <div className="error" style={{ marginTop: 4, fontSize: 12, width: "100%" }}>{err}</div>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inbox in-app de l'agent de qualification Instagram (ALE-195 / 204)
+// ---------------------------------------------------------------------------
+
+type IgConversation = {
+  id: string;
+  prospect_id: string;
+  prospect_name: string | null;
+  status: string;
+  mode: "supervised" | "autopilot";
+  last_message_at: string | null;
+  window_expires_at: string | null;
+};
+type IgMessage = {
+  id: string;
+  role: "in" | "out";
+  source: string;
+  text: string;
+  kind: string;
+  created_at: string;
+};
+type IgDraft = {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  reply: string;
+  confidence: number | null;
+  needs_human: boolean;
+  reason: string | null;
+  status: string;
+  created_at: string;
+};
+type IgManychatStatus = {
+  connected: boolean;
+  api_token_masked?: string | null;
+  webhook_url?: string;
+  webhook_secret?: string;
+  connected_at?: string | null;
+};
+
+// Corps JSON à coller dans l'action « External Request » ManyChat. Les valeurs
+// sont des libellés à remplacer par les champs système ManyChat (Contact ID, etc.).
+const MANYCHAT_BODY_TEMPLATE = `{
+  "subscriber_id": "{{Contact ID}}",
+  "name": "{{Full Name}}",
+  "text": "{{Last Text Input}}"
+}`;
+
+// Connexion ManyChat (par client), affichée dans le profil à côté des autres
+// connexions (LinkedIn/X/Slack). ManyChat est le pont d'envoi vers les DM
+// Instagram : clé API + webhook à coller côté ManyChat. C'est une étape de
+// paramétrage ponctuel, d'où sa place dans le profil plutôt que l'Inbox.
+function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
+  const [status, setStatus] = useState<IgManychatStatus | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [copied, setCopied] = useState("");
+  const [setupOpen, setSetupOpen] = useState(false);
+  // Vrai quand l'utilisateur veut ressaisir une clé alors qu'un compte est déjà
+  // relié : on repasse en mode saisie sans perdre le status côté serveur.
+  const [editingKey, setEditingKey] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthed) { setStatus(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (res.ok) setStatus(data);
+      } catch { /* non bloquant */ }
+    })();
+  }, [isAuthed]);
+
+  async function connect() {
+    if (!apiKey.trim()) return;
+    setBusy(true); setNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ api_token: apiKey.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion impossible");
+      setStatus(data);
+      setApiKey("");
+      setEditingKey(false);
+      setSetupOpen(true);
+      setNotice("✓ Compte ManyChat relié. Copie l'URL et le secret ci-dessous dans ton flow ManyChat.");
+    } catch (err: any) {
+      setNotice(`Erreur : ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!window.confirm("Délier le compte ManyChat ?")) return;
+    setBusy(true); setNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, { method: "DELETE", headers: await authHeaders() });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Déconnexion impossible"); }
+      setStatus({ connected: false });
+      setSetupOpen(false);
+      setNotice("Compte ManyChat délié.");
+    } catch (err: any) {
+      setNotice(`Erreur : ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copy(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+      setTimeout(() => setCopied(""), 1500);
+    } catch { /* clipboard indisponible */ }
+  }
+
+  const connected = !!status?.connected && !editingKey;
+
+  return (
+    <>
+      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <MessageSquare size={20} style={{ flexShrink: 0, color: "#2563eb" }} />
+          <div>
+            <strong>Répondre aux DM Instagram (ManyChat)</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              {connected
+                ? "Compte ManyChat relié — l'agent peut envoyer ses réponses à tes prospects sur Instagram."
+                : "Connecte ManyChat pour recevoir les DM Instagram dans l'Inbox et laisser l'agent y répondre."}
+            </p>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <a href="/manychat-test" className="secondary-button" style={{ fontSize: 12, whiteSpace: "nowrap", textDecoration: "none" }} title="Tester l'agent avec un faux DM entrant">
+            🧪 Simulateur
+          </a>
+          {connected ? (
+            <>
+              <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+              <button className="secondary-button" onClick={() => setSetupOpen((v) => !v)} style={{ fontSize: 12 }}>
+                {setupOpen ? "Masquer le webhook" : "Configurer le webhook"}
+              </button>
+              <button className="secondary-button" onClick={disconnect} disabled={busy} style={{ fontSize: 12 }}>
+                {busy ? <Loader2 size={12} className="spinning" /> : null}
+                Délier
+              </button>
+            </>
+          ) : null}
+        </div>
+      </section>
+
+      {!connected && (
+        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
+          <p style={{ fontSize: 13, marginBottom: 8 }}>
+            <strong>Connecter ton compte ManyChat.</strong> Colle ta clé API ManyChat
+            (ManyChat → Settings → API → Generate your token). Elle sert à envoyer les
+            réponses de l'agent à tes prospects. Après connexion, tu recevras une URL de
+            webhook et un secret à coller dans un flow ManyChat pour recevoir les DM.
+          </p>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="Clé API ManyChat (0123456789:abcdef…)"
+              style={{ flex: 1, padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13 }}
+            />
+            <button className="primary-button" onClick={connect} disabled={busy || !apiKey.trim()} style={{ fontSize: 13, whiteSpace: "nowrap" }}>
+              {busy ? "Vérification…" : "Connecter"}
+            </button>
+            {status?.connected && (
+              <button className="secondary-button" onClick={() => { setEditingKey(false); setApiKey(""); setNotice(""); }} disabled={busy} style={{ fontSize: 13, whiteSpace: "nowrap" }}>
+                Annuler
+              </button>
+            )}
+          </div>
+          {notice && <div style={{ fontSize: 12, marginTop: 10, opacity: 0.85 }}>{notice}</div>}
+        </section>
+      )}
+
+      {connected && setupOpen && (
+        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
+          <p style={{ fontSize: 13, marginBottom: 6 }}>
+            <strong>✓ Compte ManyChat relié</strong>
+            {status?.api_token_masked && <span style={{ opacity: 0.7 }}> (clé {status.api_token_masked})</span>}.
+          </p>
+          <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
+            Dans ManyChat (plan <strong>Pro</strong> requis), crée une automatisation
+            déclenchée par <strong>Instagram → « Default Reply »</strong> (attrape tous les DM),
+            avec une action <strong>« External Request »</strong> configurée avec l'URL, l'en-tête
+            et le corps ci-dessous. Pas besoin de mapper la réponse : l'agent répond via l'API.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>Méthode & URL (POST)</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <code style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, wordBreak: "break-all" }}>{status?.webhook_url}</code>
+                <button className="secondary-button" onClick={() => copy(status?.webhook_url || "", "url")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                  {copied === "url" ? "Copié ✓" : "Copier"}
+                </button>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>En-tête <code>X-ManyChat-Secret</code></div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <code style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, wordBreak: "break-all" }}>{status?.webhook_secret}</code>
+                <button className="secondary-button" onClick={() => copy(status?.webhook_secret || "", "secret")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                  {copied === "secret" ? "Copié ✓" : "Copier"}
+                </button>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, textTransform: "uppercase", opacity: 0.6, marginBottom: 3 }}>Corps (JSON, Content-Type application/json)</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <pre style={{ flex: 1, margin: 0, padding: "8px 10px", borderRadius: 8, background: "rgba(128,128,128,0.12)", fontSize: 12, whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{MANYCHAT_BODY_TEMPLATE}</pre>
+                <button className="secondary-button" onClick={() => copy(MANYCHAT_BODY_TEMPLATE, "body")} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                  {copied === "body" ? "Copié ✓" : "Copier"}
+                </button>
+              </div>
+              <p style={{ fontSize: 11, opacity: 0.65, margin: "4px 0 0" }}>
+                Remplace les valeurs par les champs système ManyChat correspondants
+                (Contact ID, Full Name, Last Text Input) via le sélecteur de champs.
+              </p>
+            </div>
+            <div>
+              <button className="secondary-button" onClick={() => { setEditingKey(true); setSetupOpen(false); setNotice(""); }} disabled={busy} style={{ fontSize: 12 }}>
+                Changer la clé API
+              </button>
+            </div>
+          </div>
+          {notice && <div style={{ fontSize: 12, marginTop: 10, opacity: 0.85 }}>{notice}</div>}
+        </section>
+      )}
+    </>
+  );
+}
+
+// Cerveau de l'agent DM (FAQ + objectif) : la seule source de vérité utilisée
+// par l'agent Instagram. Édité ponctuellement → placé dans le profil, à côté de
+// la config ManyChat, plutôt que dans le header de l'Inbox.
+function AgentFaqEditor({ isAuthed }: { isAuthed: boolean }) {
+  const [text, setText] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthed || loaded || !open) return;
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/ig/faq`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (res.ok) { setText(data.content || ""); setLoaded(true); }
+      } catch { /* non bloquant */ }
+    })();
+  }, [isAuthed, open, loaded]);
+
+  async function save() {
+    setSaving(true); setNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/faq`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
+      setNotice("✓ FAQ enregistrée — l'agent l'utilise dès le prochain message.");
+    } catch (err: any) {
+      setNotice(`Erreur : ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="card" style={{ marginBottom: 16, padding: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Lightbulb size={20} style={{ flexShrink: 0, color: "var(--coral)" }} />
+          <div>
+            <strong>Cerveau de l'agent (FAQ + objectif)</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              La seule source de vérité de l'agent DM : il ne répond seul que si la réponse est couverte ici, sinon il te passe la main.
+            </p>
+          </div>
+        </div>
+        <button className="secondary-button" onClick={() => setOpen((v) => !v)} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+          {open ? "Masquer" : "Éditer la FAQ"}
+        </button>
+      </div>
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
+            Décris ton offre, tes prix, tes questions/réponses fréquentes et l'objectif de la conversation
+            (ex. proposer un appel découverte).
+          </p>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={loaded ? "Ex. : Qui es-tu ? / Quels sont tes tarifs ? / Objectif : qualifier puis proposer un appel…" : "Chargement…"}
+            rows={10}
+            style={{ width: "100%", resize: "vertical", padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13, fontFamily: "inherit" }}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
+            <button className="primary-button" onClick={save} disabled={saving || !loaded} style={{ fontSize: 13 }}>
+              {saving ? "Enregistrement…" : "Enregistrer la FAQ"}
+            </button>
+            {notice && <span style={{ fontSize: 12, opacity: 0.8 }}>{notice}</span>}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function IgInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
+  const [conversations, setConversations] = useState<IgConversation[]>([]);
+  // Faux tant que le premier /me/ig/conversations n'a pas répondu : évite d'afficher
+  // « Aucune conversation » pendant le chargement initial (backend dev lent).
+  const [convLoaded, setConvLoaded] = useState(false);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<IgMessage[]>([]);
+  const [drafts, setDrafts] = useState<IgDraft[]>([]);
+  const [replyText, setReplyText] = useState("");
+  const [draftText, setDraftText] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [killSwitch, setKillSwitch] = useState(false);
+  // La FAQ/objectif de l'agent et la connexion ManyChat ont été déplacées dans
+  // le profil (composants AgentFaqEditor + ManychatConnect) — l'Inbox reste
+  // focalisée sur les conversations.
+  const endRef = useRef<HTMLDivElement | null>(null);
+  // Conversation réellement affichée : sert à ignorer les réponses de chargement
+  // de fil arrivées hors-séquence (l'utilisateur a changé de conversation entre
+  // la requête et sa réponse — fréquent sur le backend dev lent).
+  const selectedConvRef = useRef<string | null>(null);
+
+  const active = conversations.find((c) => c.id === activeId) || null;
+  // La suggestion à traiter = le draft pending le plus récent (créé après le dernier DM prospect).
+  const pendingDraft = drafts.find((d) => d.status === "pending") || null;
+  // Échec de génération : le dernier message du prospect n'a produit aucune
+  // suggestion (aucun draft ne le référence) alors qu'elle aurait dû aboutir.
+  // Cause typique en dev : thread de fond tué (Render free) ou hoquet LLM —
+  // l'erreur est avalée côté serveur, on la rend au moins visible ici. Délai de
+  // grâce (25 s) pour ne pas alerter pendant la génération encore en cours.
+  const lastInbound = [...messages].reverse().find((m) => m.role === "in") || null;
+  const lastInboundHasDraft = lastInbound ? drafts.some((d) => d.message_id === lastInbound.id) : true;
+  const lastInboundAgeMs = lastInbound?.created_at ? Date.now() - new Date(lastInbound.created_at).getTime() : 0;
+  const suggestionFailed = !!lastInbound && !lastInboundHasDraft && !pendingDraft && lastInboundAgeMs > 25000;
+
+  async function loadConversations() {
+    if (!isAuthed) return;
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Chargement des conversations impossible");
+      setConversations(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setConvLoaded(true);
+    }
+  }
+
+  async function loadKillSwitch() {
+    if (!isAuthed) return;
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/autopilot/kill-switch`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setKillSwitch(!!data.active);
+    } catch { /* non bloquant */ }
+  }
+
+  // toggleKillSwitch retiré : le bouton « Désactiver l'autopilot partout » est
+  // grisé tant que la feature n'est pas disponible (l'endpoint reste en place).
+
+  async function loadThread(conversationId: string) {
+    setLoading(true);
+    setError("");
+    try {
+      const [mRes, dRes] = await Promise.all([
+        fetch(`${DIRECT_API_URL}/me/ig/conversations/${conversationId}/messages`, { headers: await authHeaders() }),
+        fetch(`${DIRECT_API_URL}/me/ig/conversations/${conversationId}/drafts`, { headers: await authHeaders() }),
+      ]);
+      const mData = await mRes.json();
+      const dData = await dRes.json();
+      // L'utilisateur a changé de conversation entre-temps : cette réponse est
+      // périmée, ne pas écraser le fil affiché avec le mauvais contenu.
+      if (selectedConvRef.current !== conversationId) return;
+      if (!mRes.ok) throw new Error(mData.detail || "Messages introuvables");
+      setMessages(Array.isArray(mData) ? mData : []);
+      setDrafts(Array.isArray(dData) ? dData : []);
+    } catch (err: any) {
+      if (selectedConvRef.current === conversationId) setError(err.message);
+    } finally {
+      if (selectedConvRef.current === conversationId) setLoading(false);
+    }
+  }
+
+  function selectConversation(id: string) {
+    selectedConvRef.current = id;
+    setActiveId(id);
+    setReplyText("");
+    setDraftText("");
+    // Vider immédiatement le fil précédent → on affiche « Chargement… » au lieu
+    // de laisser le fil de la conversation d'avant tant que le fetch n'a pas fini.
+    setMessages([]);
+    setDrafts([]);
+    loadThread(id);
+  }
+
+  useEffect(() => {
+    if (!isAuthed) {
+      selectedConvRef.current = null;
+      setConversations([]); setConvLoaded(false); setActiveId(null); setMessages([]); setDrafts([]);
+      return;
+    }
+    loadConversations();
+    loadKillSwitch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  // La liste des conversations se rafraîchit en continu tant qu'on est connecté,
+  // même quand l'Inbox est vide : une nouvelle conversation créée côté serveur
+  // (DM entrant via le webhook ManyChat, ou Simulateur) doit apparaître sans
+  // recharger la page. Ce composant n'est monté que sur l'écran Inbox.
+  // Polling NON-CHEVAUCHANT (setTimeout récursif) : on ne relance qu'après la
+  // fin de la requête précédente. Sur backend lent (dev free), un setInterval
+  // fixe empilait les requêtes plus vite qu'elles n'étaient servies → file qui
+  // gonfle, ~6 connexions/hôte du navigateur saturées, et les écritures de
+  // l'utilisateur (FAQ / envoi) starvées → « Failed to fetch ».
+  useEffect(() => {
+    if (!isAuthed) return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => {
+      await loadConversations();
+      if (!stop) timer = setTimeout(loop, 6000);
+    };
+    timer = setTimeout(loop, 6000);
+    return () => { stop = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  // Le webhook persiste messages/drafts de façon asynchrone → on rafraîchit le
+  // fil ouvert pour voir arriver les nouveaux DM et suggestions (non-chevauchant).
+  useEffect(() => {
+    if (!activeId) return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => {
+      await loadThread(activeId);
+      if (!stop) timer = setTimeout(loop, 6000);
+    };
+    timer = setTimeout(loop, 6000);
+    return () => { stop = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
+
+  useEffect(() => {
+    if (pendingDraft) setDraftText(pendingDraft.reply || "");
+  }, [pendingDraft?.id]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length, pendingDraft?.id]);
+
+  async function sendDraft() {
+    if (!pendingDraft || !draftText.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/drafts/${pendingDraft.id}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text: draftText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi impossible");
+      setDraftText("");
+      if (activeId) await loadThread(activeId);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rejectDraft() {
+    if (!pendingDraft) return;
+    setBusy(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/drafts/${pendingDraft.id}/reject`, {
+        method: "POST", headers: await authHeaders(),
+      });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Refus impossible"); }
+      if (activeId) await loadThread(activeId);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendManual() {
+    if (!active || !replyText.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations/${active.id}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text: replyText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi impossible");
+      setReplyText("");
+      if (activeId) await loadThread(activeId);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleMode() {
+    if (!active) return;
+    const next = active.mode === "autopilot" ? "supervised" : "autopilot";
+    setBusy(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations/${active.id}/mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ mode: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Bascule impossible");
+      await loadConversations();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <p>Connecte-toi pour accéder à l'inbox de qualification Instagram.</p>
+        <button className="primary-button" onClick={() => requireAuth("Crée un compte pour accéder à l'inbox Instagram.")}>Se connecter</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - var(--header-h) - var(--dev-banner-h) - 40px)", minHeight: 420 }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: killSwitch ? "rgba(224,108,0,0.12)" : "rgba(128,128,128,0.08)", flex: "none" }}>
+      <span style={{ fontSize: 13 }}>
+        {killSwitch
+          ? "🛑 Kill-switch actif — tout est en supervisé, aucun envoi automatique."
+          : "🙋 Mode supervisé — l'autopilot est temporairement désactivé, chaque réponse est validée à la main avant envoi."}
+      </span>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flex: "none" }}>
+        {/* Désactive l'autopilot (envoi automatique) sur TOUTES les conversations
+            d'un coup. Feature pas encore disponible → bouton grisé. */}
+        <button
+          className="secondary-button"
+          disabled
+          title="Bientôt disponible"
+          style={{ fontSize: 12, whiteSpace: "nowrap", opacity: 0.5, cursor: "not-allowed" }}
+        >
+          🛑 Désactiver l'autopilot partout — bientôt
+        </button>
+      </div>
+    </div>
+    <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
+      <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
+        <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
+        {conversations.length === 0 && (
+          <p style={{ padding: 8, fontSize: 13, opacity: 0.7 }}>
+            {convLoaded
+              ? "Aucune conversation pour l'instant. Elles apparaîtront dès qu'un prospect écrit en DM."
+              : "Chargement des conversations…"}
+          </p>
+        )}
+        {conversations.map((c) => (
+          <button
+            key={c.id}
+            onClick={() => selectConversation(c.id)}
+            className={`ig-conv-item ${activeId === c.id ? "active" : ""}`}
+            style={{
+              display: "block", width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 4,
+              borderRadius: 8, border: "1px solid transparent", cursor: "pointer",
+              background: activeId === c.id ? "rgba(120,120,255,0.12)" : "transparent",
+            }}
+          >
+            <span style={{ fontWeight: 600, fontSize: 14 }}>{c.prospect_name || c.prospect_id}</span>
+            <span style={{ float: "right", fontSize: 11, opacity: 0.7 }}>{c.mode === "autopilot" ? "🤖 auto" : "🙋 supervisé"}</span>
+          </button>
+        ))}
+      </aside>
+
+      <section className="card" style={{ display: "flex", flexDirection: "column", padding: 0, minHeight: 0 }}>
+        {!active ? (
+          <div style={{ margin: "auto", opacity: 0.7 }}>Sélectionne une conversation.</div>
+        ) : (
+          <>
+            <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: "1px solid rgba(128,128,128,0.2)" }}>
+              <div>
+                <strong>{active.prospect_name || active.prospect_id}</strong>
+                <span style={{ marginLeft: 10, fontSize: 12, opacity: 0.7 }}>
+                  {active.window_expires_at && new Date(active.window_expires_at) < new Date()
+                    ? "⏰ fenêtre 24 h expirée"
+                    : "fenêtre 24 h ouverte"}
+                </span>
+              </div>
+              {/* Autopilot temporairement grisé : chaque réponse reste validée à la main. */}
+              <button
+                className="secondary-button"
+                onClick={toggleMode}
+                disabled
+                title="L'autopilot sera bientôt disponible"
+                style={{ fontSize: 12, opacity: 0.5, cursor: "not-allowed" }}
+              >
+                🤖 Autopilot — bientôt
+              </button>
+            </header>
+
+            <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+              {loading && messages.length === 0 && <p style={{ opacity: 0.6 }}>Chargement…</p>}
+              {messages.map((m) => (
+                <div key={m.id} style={{ alignSelf: m.role === "in" ? "flex-start" : "flex-end", maxWidth: "78%" }}>
+                  <div style={{
+                    padding: "8px 12px", borderRadius: 12, whiteSpace: "pre-wrap", fontSize: 14,
+                    background: m.role === "in" ? "rgba(128,128,128,0.14)" : "rgba(90,120,255,0.18)",
+                  }}>
+                    {m.kind === "voice" && <span title="note vocale transcrite" style={{ marginRight: 6 }}>🎤</span>}
+                    {m.text}
+                  </div>
+                  <div style={{ fontSize: 10, opacity: 0.5, textAlign: m.role === "in" ? "left" : "right", marginTop: 2 }}>
+                    {m.source}{m.created_at ? ` · ${new Date(m.created_at).toLocaleString("fr-FR")}` : ""}
+                  </div>
+                </div>
+              ))}
+
+              {pendingDraft && (
+                <div style={{ alignSelf: "flex-end", width: "78%", maxWidth: "78%" }}>
+                  <div style={{
+                    padding: "10px 12px", borderRadius: 12,
+                    border: "1.5px dashed rgba(90,120,255,0.55)", background: "rgba(90,120,255,0.07)",
+                  }}>
+                    <div style={{ fontSize: 12, marginBottom: 6 }}>
+                      {pendingDraft.needs_human
+                        ? <span style={{ color: "#e06c00", fontWeight: 600 }}>⚠️ L'agent ne sait pas — à traiter à la main</span>
+                        : <span style={{ color: "#1a8a3a", fontWeight: 600 }}>✨ Réponse proposée par l'agent</span>}
+                      {typeof pendingDraft.confidence === "number" && (
+                        <span style={{ opacity: 0.7, marginLeft: 8 }}>confiance {Math.round(pendingDraft.confidence * 100)}%</span>
+                      )}
+                    </div>
+                    {pendingDraft.reason && <div style={{ fontSize: 11, opacity: 0.65, marginBottom: 6 }}>{pendingDraft.reason}</div>}
+                    <textarea
+                      value={draftText}
+                      onChange={(e) => setDraftText(e.target.value)}
+                      rows={Math.min(8, Math.max(2, draftText.split("\n").length))}
+                      style={{ width: "100%", resize: "vertical", padding: 8, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 14, fontFamily: "inherit", background: "transparent" }}
+                    />
+                    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+                      <button className="secondary-button" onClick={rejectDraft} disabled={busy} style={{ fontSize: 12 }}>
+                        ✕ Refuser
+                      </button>
+                      <button className="primary-button" onClick={sendDraft} disabled={busy || !draftText.trim()} style={{ fontSize: 13 }}>
+                        {busy ? "…" : "✓ Accepter & envoyer"}
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10, opacity: 0.5, textAlign: "right", marginTop: 2 }}>
+                    suggestion — modifiable avant envoi
+                  </div>
+                </div>
+              )}
+
+              {suggestionFailed && (
+                <div style={{ alignSelf: "flex-end", width: "78%", maxWidth: "78%" }}>
+                  <div style={{
+                    padding: "10px 12px", borderRadius: 12,
+                    border: "1.5px dashed rgba(224,108,0,0.55)", background: "rgba(224,108,0,0.07)",
+                  }}>
+                    <div style={{ fontSize: 12, color: "#e06c00", fontWeight: 600, marginBottom: 4 }}>
+                      ⚠️ Aucune suggestion n'a pu être générée pour ce message
+                    </div>
+                    <div style={{ fontSize: 11, opacity: 0.7 }}>
+                      La génération a échoué (erreur temporaire). Réponds à la main,
+                      ou attends le prochain message du prospect pour relancer l'agent.
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div ref={endRef} />
+            </div>
+
+            <div style={{ padding: 12, borderTop: "1px solid rgba(128,128,128,0.2)", display: "flex", gap: 8, alignItems: "flex-end", flex: "none" }}>
+              <textarea
+                value={replyText}
+                onChange={(e) => setReplyText(e.target.value)}
+                placeholder="Écris une réponse…"
+                rows={2}
+                style={{ flex: 1, resize: "vertical", padding: 8, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 14 }}
+              />
+              <button className="primary-button" onClick={sendManual} disabled={busy || !replyText.trim()} style={{ fontSize: 13 }}>
+                {busy ? "…" : "Envoyer"}
+              </button>
+            </div>
+            {error && <div style={{ padding: "0 16px 12px", color: "#d33", fontSize: 13 }}>{error}</div>}
+          </>
+        )}
+      </section>
+    </div>
     </div>
   );
 }
@@ -5582,6 +6378,10 @@ function ProfileView({
         ) : null}
       </section>
       {slack.error ? <div className="error" style={{ marginBottom: 12 }}>{slack.error}</div> : null}
+
+      <ManychatConnect isAuthed={isAuthed} />
+
+      <AgentFaqEditor isAuthed={isAuthed} />
 
       <section className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -6619,6 +7419,9 @@ export default function Home() {
   const [authReason, setAuthReason] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [credits, setCredits] = useState<number | null>(null);
+  // Nombre de conversations Inbox avec un message plus récent que la dernière
+  // visite → pastille d'alerte dans la sidebar (poll global, cf. effet plus bas).
+  const [igUnread, setIgUnread] = useState(0);
   const [showOnboarding, setShowOnboarding] = useState(false);
   // Le temps de vérifier (côté serveur) si le profil est vide, on affiche un
   // écran de chargement neutre plutôt que l'app qui "flashe" puis l'onboarding.
@@ -6821,6 +7624,44 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anyJobActive, isAuthed]);
 
+  // Pastille d'alerte Inbox : poll léger et global (indépendant de l'écran actif,
+  // contrairement au poll interne de l'Inbox qui ne tourne que quand elle est
+  // ouverte). Une conversation est « non lue » si son dernier message est plus
+  // récent que le repère de dernière visite (max des last_message_at vus, stocké
+  // par utilisateur dans localStorage → pas de fuite cross-user, cf. clé keyée).
+  // Sur l'écran Inbox on considère tout comme vu et on met à jour le repère.
+  useEffect(() => {
+    if (!isAuthed) { setIgUnread(0); return; }
+    const uid = session?.user?.id ?? "anon";
+    const seenKey = `ig_inbox_seen_at:${uid}`;
+    const ts = (c: { last_message_at?: string | null }) =>
+      c?.last_message_at ? new Date(c.last_message_at).getTime() : 0;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations`, { headers: await authHeaders() });
+        if (!res.ok || stop) return;
+        const data = await res.json();
+        if (stop || !Array.isArray(data)) return;
+        const latest = data.reduce((m: number, c: { last_message_at?: string | null }) => Math.max(m, ts(c)), 0);
+        if (view === "inbox") {
+          try { localStorage.setItem(seenKey, String(latest)); } catch { /* ignore */ }
+          setIgUnread(0);
+        } else {
+          let seen = 0;
+          try { seen = Number(localStorage.getItem(seenKey) || 0); } catch { /* ignore */ }
+          setIgUnread(data.filter((c: { last_message_at?: string | null }) => ts(c) > seen).length);
+        }
+      } catch { /* non bloquant */ }
+    };
+    // Non-chevauchant : on replanifie seulement après la fin du tick (backend lent).
+    const loop = async () => { await tick(); if (!stop) timer = setTimeout(loop, 25000); };
+    loop();
+    return () => { stop = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.access_token, view]);
+
   async function persistAnonResult(anon: Analysis) {
     try {
       await fetch(`${DIRECT_API_URL}/analyses/persist`, {
@@ -6873,6 +7714,7 @@ export default function Home() {
       setLoadedReport(null);
       setJobs([]);
       setGenerationJobs([]);
+      setIgUnread(0);
       // ALE-145 : purge le cache générateur quand l'utilisateur change (anti fuite cross-user).
       _genCache.variants = [];
       _genCache.topic = "";
@@ -7072,6 +7914,7 @@ export default function Home() {
             instagram: activeIgJob ? { completed: activeIgJob.completed, total: activeIgJob.total } : null,
           }}
           credits={credits}
+          igUnread={igUnread}
           platform={platform}
           onNavigate={(v) => {
             setView(v);
@@ -7105,8 +7948,10 @@ export default function Home() {
             (ex. inscription d'un nouveau compte sans logout : `isAuthed` reste true,
             les useEffect keyés sur [isAuthed] ne se relancent pas). */}
         <main className="main" key={session?.user?.id ?? "anon"}>
-          {/* Agent IA et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
-          {view === "assistant" ? (
+          {/* Agent IA, Inbox IG et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
+          {view === "inbox" ? (
+            <IgInbox isAuthed={isAuthed} requireAuth={requireAuth} />
+          ) : view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} />
           ) : view === "profile" ? (
             <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />

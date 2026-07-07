@@ -10,3 +10,4 @@ cache/
 
 # Claude Code internal
 .claude/worktrees/
+test-results/

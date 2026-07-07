@@ -57,6 +57,29 @@ def _accepts_temperature(model: str) -> bool:
     return not any(tag in model for tag in _NO_SAMPLING_TAGS)
 
 
+# Sonnet 5 active la « réflexion adaptative » quand le paramètre `thinking` est
+# omis, et les tokens de réflexion sont décomptés de `max_tokens` : la réponse
+# JSON attendue peut alors être tronquée (symptôme : « Unterminated string »
+# sur les analyses). On coupe donc la réflexion sur les appels structurés ;
+# le chat de l'Assistant (chat_stream) la conserve.
+_ADAPTIVE_THINKING_TAGS = ("sonnet-5",)
+
+
+def thinking_kwargs(model: str) -> dict[str, Any]:
+    """Paramètre `thinking` à ajouter pour un appel à réponse structurée."""
+    if any(tag in model for tag in _ADAPTIVE_THINKING_TAGS):
+        return {"thinking": {"type": "disabled"}}
+    return {}
+
+
+def _raise_if_truncated(resp) -> None:
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        raise RuntimeError(
+            "Réponse IA tronquée (limite de tokens atteinte). Réessaie ; si "
+            "l'erreur persiste, le budget max_tokens de cet appel est trop bas."
+        )
+
+
 _MOIS_FR = [
     "janvier", "février", "mars", "avril", "mai", "juin",
     "juillet", "août", "septembre", "octobre", "novembre", "décembre",
@@ -174,6 +197,7 @@ def _call_streaming(
     )
     if _accepts_temperature(kwargs["model"]):
         kwargs["temperature"] = temperature
+    kwargs.update(thinking_kwargs(kwargs["model"]))
     if tools:
         kwargs["tools"] = tools
 
@@ -221,6 +245,7 @@ def _call_streaming(
             continue
         break
 
+    _raise_if_truncated(resp)
     text = "".join(
         block.text for block in resp.content if getattr(block, "type", None) == "text"
     )
@@ -254,6 +279,7 @@ def _call(
     )
     if _accepts_temperature(kwargs["model"]):
         kwargs["temperature"] = temperature
+    kwargs.update(thinking_kwargs(kwargs["model"]))
     if tools:
         kwargs["tools"] = tools
 
@@ -268,6 +294,7 @@ def _call(
         resp = client.messages.create(messages=messages, **kwargs)
         _track(resp)
 
+    _raise_if_truncated(resp)
     text = "".join(
         block.text for block in resp.content if getattr(block, "type", None) == "text"
     )
@@ -693,6 +720,7 @@ Produis une analyse stratégique COMPLÈTE et ACTIONNABLE en suivant ce plan :
     kwargs: dict[str, Any] = dict(model=_model(), max_tokens=8192, system=system)
     if _accepts_temperature(kwargs["model"]):
         kwargs["temperature"] = 0.5
+    kwargs.update(thinking_kwargs(kwargs["model"]))
     tools = _web_search_tools()
     if tools:
         kwargs["tools"] = tools
@@ -1149,3 +1177,73 @@ def synthesize_ig_strategy(stats: dict, classifications: list[dict], posts_enric
 
     data = _call(system, user, max_tokens=4096, temperature=0.4)
     return StrategySynthesis(**data).model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Agent de qualification Instagram — cerveau (ALE-195 / 202)
+# ---------------------------------------------------------------------------
+
+class IgQualification(BaseModel):
+    """Sortie structurée de l'agent de qualification pour UN message prospect."""
+    reponse: str = Field(description="Réponse suggérée au prospect, en français, prête à envoyer.")
+    confiance: float = Field(description="0..1 — niveau de couverture par la FAQ/objectif.")
+    besoin_humain: bool = Field(description="True si la réponse n'est pas ancrée dans la FAQ → passer la main.")
+    raison: str = Field(description="Brève justification (pourquoi cette réponse / pourquoi escalade).")
+
+
+def qualify_prospect(
+    faq_text: str,
+    history: list[dict],
+    latest_message: str,
+) -> dict[str, Any]:
+    """Produire une réponse suggérée ancrée dans la FAQ + un signal « je sais / je ne sais pas ».
+
+    - `faq_text` : contenu du fichier FAQ+objectif (config externe, collé tel quel).
+    - `history` : messages précédents [{role: in|out, text}], du plus ancien au plus récent.
+    - `latest_message` : dernier message du prospect à traiter.
+
+    « Sait » = **couvert par la FAQ/objectif** (jugement de couverture), pas
+    connaissance du monde. Si ce n'est pas ancré dans la FAQ → `besoin_humain=true`.
+    Sortie toujours conforme au schéma `IgQualification` (validée Pydantic).
+    """
+    system = (
+        "Tu es l'agent de pré-qualification des prospects arrivant en message privé Instagram. "
+        "Tu réponds en français, dans le ton et le persona définis ci-dessous, et tu poursuis "
+        "UN objectif de conversation. Ta seule source de vérité est la FAQ+objectif ci-dessous : "
+        "tu n'inventes JAMAIS d'information qui n'y figure pas.\n\n"
+        "Règle de couverture (impérative) : « savoir » = la réponse est ancrée dans la FAQ ou "
+        "l'objectif. Si la question du prospect n'est couverte par aucune entrée, ou relève d'un "
+        "cas d'escalade (prix négocié, devis précis, sujet sensible/juridique, prospect agacé), "
+        "alors `besoin_humain=true`, `confiance` basse, et `reponse` = une formulation d'attente "
+        "neutre (ex. « Je fais suivre à un humain qui revient vers toi très vite ») SANS inventer.\n"
+        "Sinon `besoin_humain=false`, `confiance` reflète la qualité de la couverture (0..1), et "
+        "`reponse` répond réellement en poussant vers l'objectif quand c'est pertinent.\n\n"
+        "=== FAQ + OBJECTIF (source de vérité) ===\n"
+        f"{faq_text.strip()}\n"
+        "=== FIN FAQ ===\n\n"
+        "Réponds UNIQUEMENT avec un objet JSON, sans texte avant ni après, sans balise markdown."
+    )
+
+    convo_lines = []
+    for m in history[-20:]:
+        who = "Prospect" if m.get("role") == "in" else "Agent"
+        text = (m.get("text") or "").strip()
+        if text:
+            convo_lines.append(f"{who}: {text}")
+    convo_block = "\n".join(convo_lines) if convo_lines else "(début de conversation)"
+
+    user = (
+        "Historique de la conversation :\n"
+        f"{convo_block}\n\n"
+        "Nouveau message du prospect à traiter :\n"
+        f"Prospect: {latest_message.strip()}\n\n"
+        "Schéma JSON attendu :\n"
+        '{"reponse": str, "confiance": number (0..1), "besoin_humain": bool, "raison": str}'
+    )
+
+    data = _call(system, user, max_tokens=1024, temperature=0.3)
+    parsed = IgQualification(**data)
+    result = parsed.model_dump()
+    # Garde-fou de bornage : confiance dans [0, 1].
+    result["confiance"] = max(0.0, min(1.0, float(result["confiance"])))
+    return result
