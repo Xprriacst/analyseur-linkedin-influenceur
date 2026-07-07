@@ -2060,6 +2060,8 @@ a { color: inherit; text-decoration: none; }
 .ideas-batch-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .ideas-web-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .ideas-web-toggle input[type="checkbox"] { accent-color: var(--primary); }
+.ideas-web-toggle--disabled { opacity: 0.45; cursor: not-allowed; }
+.ideas-web-toggle--disabled input[type="checkbox"] { cursor: not-allowed; }
 .ideas-batch-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .idea-line-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-low); flex-wrap: wrap; }
 .idea-line-text { flex: 1; font-size: 13px; font-weight: 500; min-width: 200px; }

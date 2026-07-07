@@ -1044,7 +1044,7 @@ def dashboard_ai_analysis(token: Optional[str] = Depends(optional_token)) -> dic
 
 
 class IdeasRequest(BaseModel):
-    count: int = Field(default=15, ge=1, le=20)
+    count: int = Field(default=3, ge=1, le=20)
     web_search: bool = Field(default=False)
 
 
