@@ -132,6 +132,10 @@ def send_text(subscriber_id: str, text: str, *, api_token: str | None = None) ->
         "data": {
             "version": "v2",
             "content": {
+                # Sans `type`, ManyChat cible Facebook Messenger par défaut — or nos
+                # prospects sont des DM Instagram (le canal Messenger n'existe pas
+                # pour eux → l'envoi est rejeté).
+                "type": os.environ.get("MANYCHAT_CHANNEL", "instagram"),
                 "messages": [{"type": "text", "text": text}],
             },
         },
