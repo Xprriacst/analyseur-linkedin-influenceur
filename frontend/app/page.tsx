@@ -3234,7 +3234,7 @@ function DailyIdeasView({
       const res = await fetch(`${DIRECT_API_URL}/ideas`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ count: 15, web_search: batchWebSearch }),
+        body: JSON.stringify({ count: 3, web_search: batchWebSearch }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Génération impossible");
@@ -3613,7 +3613,7 @@ function DailyIdeasView({
           <div>
             <h3 style={{ margin: "0 0 4px" }}>💡 Générer des idées</h3>
             <p className="section-desc" style={{ margin: 0 }}>
-              Un lot de 15 idées en une ligne, ancrées dans tes vrais posts performants. 3 crédits/lot.
+              Un lot de 3 idées en une ligne, ancrées dans tes vrais posts performants. 3 crédits/lot.
             </p>
           </div>
           <div className="ideas-batch-actions">
