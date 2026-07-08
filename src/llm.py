@@ -139,16 +139,22 @@ def _date_directive() -> str:
 
 
 def _extract_json(text: str) -> dict:
-    """Strip Claude's prose / markdown fences and parse JSON."""
+    """Strip Claude's prose / markdown fences and parse JSON.
+
+    `strict=False` : les champs texte libre (ex. le corps d'un post) peuvent
+    contenir des retours à la ligne littéraux que le modèle oublie d'échapper
+    en `\\n` — le mode strict de json.loads rejette ça avec "Invalid control
+    character", alors que le JSON est par ailleurs valide et complet.
+    """
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fence:
-        return json.loads(fence.group(1))
+        return json.loads(fence.group(1), strict=False)
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
-        return json.loads(text[start : end + 1])
-    return json.loads(text)
+        return json.loads(text[start : end + 1], strict=False)
+    return json.loads(text, strict=False)
 
 
 def _track(resp) -> None:
