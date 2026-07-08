@@ -54,14 +54,25 @@ test("Veille › Monitoring d'influenceurs : fil de veille rendu sans erreur (AL
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("onglet Mon profil : contexte éditorial + pré-remplissage IA + sauvegarde", async ({ page }) => {
+test("onglet Mon profil : contexte éditorial direct (plus de sous-onglet Tableau de bord, ALE-224)", async ({ page }) => {
   await gotoTab(page, "Mon profil");
+  // ALE-224 : le sous-onglet « Tableau de bord » a été retiré → le contexte éditorial
+  // s'affiche directement, sans onglet intermédiaire.
   await expect(page.getByRole("heading", { name: /Contexte éditorial/i })).toBeVisible();
+  await expect(page.locator(".tab", { hasText: "Tableau de bord" })).toHaveCount(0);
   // Le bouton de sauvegarde manuelle reste présent…
   await expect(page.getByRole("button", { name: /Sauvegarder/i })).toBeVisible();
   // …et la barre de pré-remplissage IA (qui auto-sauve désormais) aussi.
   await expect(page.getByPlaceholder(/Description, URL LinkedIn ou site web/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /Pré-remplir/i })).toBeVisible();
+});
+
+test("onglet Mon profil : 2ᵉ switch « idée du jour » présent et synchronisé (ALE-224)", async ({ page }) => {
+  await gotoTab(page, "Mon profil");
+  // Le switch d'opt-in « idée du jour » est aussi accessible depuis le profil
+  // (en plus de Contenu › Idée du jour), sans bandeau d'erreur.
+  await expect(page.getByText(/Recevoir une idée chaque matin/i)).toBeVisible();
+  await expect(page.locator(".error")).toHaveCount(0);
 });
 
 test("onglet Mon profil : encart de publication X (Twitter) rendu", async ({ page }) => {
@@ -112,11 +123,12 @@ test("Contenu › Idée du jour : idée + réservoir + opt-in sans erreur", asyn
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Contenu › Idée du jour : les posts de référence ont déménagé (ALE-222)", async ({ page }) => {
+test("Contenu › Idée du jour : plus de posts de référence ni de note de renvoi (ALE-222/224)", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Idée du jour");
-  // L'ancienne section ALE-67 n'existe plus ici : un renvoi pointe vers Ma bibliothèque.
+  // L'ancienne section ALE-67 n'existe plus ici (déménagée dans Ma bibliothèque)…
   await expect(page.getByRole("heading", { name: /Mes posts de référence/i })).toHaveCount(0);
-  await expect(page.getByText(/Tes posts de référence sont désormais dans/i)).toBeVisible();
+  // …et la note de renvoi temporaire a été retirée (ALE-224).
+  await expect(page.getByText(/Tes posts de référence sont désormais dans/i)).toHaveCount(0);
   await expect(page.locator(".error")).toHaveCount(0);
 });
