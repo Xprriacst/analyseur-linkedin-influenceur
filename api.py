@@ -1078,6 +1078,8 @@ class GenerateImageRequest(BaseModel):
     post_text: str = Field(..., min_length=10)
     # Prompt validé/édité par l'utilisateur dans la pop-up ; absent = prompt auto.
     prompt: Optional[str] = Field(default=None, max_length=4000)
+    # Image de la banque de templates choisie comme référence visuelle (ALE-221).
+    reference_template_id: Optional[str] = Field(default=None, max_length=100)
 
 
 class ChatRequest(BaseModel):
@@ -2382,6 +2384,27 @@ def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends
     """Generate an image to accompany a LinkedIn post (GPT Image 2)."""
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(status_code=400, detail="OPENAI_API_KEY manquant dans .env")
+    # Import paresseux : la génération d'image dépend d'`openai`. Un import
+    # au niveau module ferait planter tout le démarrage de l'API si la
+    # dépendance (ou le module) manque — on l'isole donc à cet endpoint.
+    from src.image_gen import ImageGenError, fetch_reference_image, generate_post_image
+
+    # Résolution + téléchargement de l'image de référence AVANT le débit de
+    # crédits : un lien mort/expiré (fréquent, ces URLs viennent de posts
+    # scrapés) ne doit pas coûter de crédits à l'utilisateur (ALE-221).
+    reference_image = None
+    if payload.reference_template_id:
+        if not token:
+            raise HTTPException(status_code=400, detail="Authentification requise pour utiliser une image de référence.")
+        template = db.get_post_template(token, payload.reference_template_id)
+        image_url = (template or {}).get("image_url")
+        if not image_url:
+            raise HTTPException(status_code=404, detail="Template introuvable ou sans image de référence.")
+        try:
+            reference_image = fetch_reference_image(image_url)
+        except ImageGenError as exc:
+            raise HTTPException(status_code=422, detail=f"Image de référence inaccessible : {exc}")
+
     credits: int | None = None
     if token:
         ok, balance = db.debit_credits(token, "generate_image")
@@ -2389,11 +2412,7 @@ def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends
             raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération d'image = {db.CREDIT_COSTS['generate_image']} crédit(s).")
         credits = balance
     try:
-        # Import paresseux : la génération d'image dépend d'`openai`. Un import
-        # au niveau module ferait planter tout le démarrage de l'API si la
-        # dépendance (ou le module) manque — on l'isole donc à cet endpoint.
-        from src.image_gen import generate_post_image
-        result = generate_post_image(payload.post_text, prompt=payload.prompt)
+        result = generate_post_image(payload.post_text, prompt=payload.prompt, reference_image=reference_image)
         if isinstance(result, dict):
             result["credits"] = credits
         return result
