@@ -29,13 +29,19 @@ test("onglet Veille : sous-onglets Analyser / Mes influenceurs (Dashboard fusion
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Contenu › Templates : banque de templates rendue sans erreur (ALE-216)", async ({ page }) => {
+test("Contenu › Ma bibliothèque : bibliothèque unifiée rendue sans erreur (ALE-222)", async ({ page }) => {
   await gotoTab(page, "Contenu");
-  await gotoSubTab(page, "Templates");
-  await expect(page.getByRole("heading", { name: /Templates de posts/i })).toBeVisible();
-  await expect(page.getByPlaceholder(/Nom du template/i)).toBeVisible();
-  await expect(page.getByPlaceholder(/La structure, ligne par ligne/i)).toBeVisible();
-  await expect(page.getByRole("button", { name: /Ajouter le template/i })).toBeVisible();
+  await gotoSubTab(page, "Ma bibliothèque");
+  await expect(page.getByRole("heading", { name: /^Ma bibliothèque$/i })).toBeVisible();
+  // Saisie principale : le lien du post (import auto texte + auteur + image + structure).
+  await expect(page.getByPlaceholder(/Colle le lien du post LinkedIn/i)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Ajouter à ma bibliothèque/i })).toBeVisible();
+  // Le tiroir « Plus d'options » expose texte collé, note, structure à la main (ex-ALE-67/216).
+  await page.getByText(/Plus d'options/i).click();
+  await expect(page.getByPlaceholder(/colle le texte du post directement/i)).toBeVisible();
+  await expect(page.getByPlaceholder(/Pourquoi il te plaît/i)).toBeVisible();
+  await expect(page.getByPlaceholder(/Nom de la structure/i)).toBeVisible();
+  await expect(page.getByPlaceholder(/Structure à la main/i)).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
@@ -103,17 +109,11 @@ test("Contenu › Idée du jour : idée + réservoir + opt-in sans erreur", asyn
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Contenu › Idée du jour : section « Mes posts de référence » (ALE-67)", async ({ page }) => {
+test("Contenu › Idée du jour : les posts de référence ont déménagé (ALE-222)", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Idée du jour");
-  // La boîte à idées expose la section des posts de référence (lecture seule : aucun ajout).
-  await expect(page.getByRole("heading", { name: /Mes posts de référence/i })).toBeVisible();
-  // Le lien d'abord (import automatique), le texte en secours.
-  await expect(page.getByPlaceholder(/Colle le lien du post LinkedIn/i)).toBeVisible();
-  await expect(page.getByPlaceholder(/colle directement le texte du post/i)).toBeVisible();
-  await expect(page.getByRole("button", { name: /Ajouter ce post/i })).toBeVisible();
-  // Champs optionnels du formulaire.
-  await expect(page.getByPlaceholder(/Auteur \(optionnel\)/i)).toBeVisible();
-  await expect(page.getByPlaceholder(/Pourquoi il te plaît/i)).toBeVisible();
+  // L'ancienne section ALE-67 n'existe plus ici : un renvoi pointe vers Ma bibliothèque.
+  await expect(page.getByRole("heading", { name: /Mes posts de référence/i })).toHaveCount(0);
+  await expect(page.getByText(/Tes posts de référence sont désormais dans/i)).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });

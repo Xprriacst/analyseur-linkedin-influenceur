@@ -1293,7 +1293,7 @@ def reconcile_stale_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
 # revenir, le résultat est conservé.
 
 _GENERATION_JOB_COLS = (
-    "id,status,topic,editorial_role,web_search,count,result,error,created_at,updated_at"
+    "id,status,topic,editorial_role,web_search,count,template_id,result,error,created_at,updated_at"
 )
 
 
@@ -1670,8 +1670,29 @@ def delete_idea_seed(access_token: str, seed_id: str) -> bool:
     return True
 
 
+def _as_reference_post(row: dict) -> dict:
+    """Projette une entrée de bibliothèque au format « post de référence » legacy.
+
+    Le mapping vit ici pour que llm._format_reference_posts (clés text/author/
+    url/note) et le front legacy restent inchangés.
+    """
+    return {
+        "id": row.get("id"),
+        "text": row.get("post_text") or "",
+        "url": row.get("source_post_url"),
+        "author": row.get("source_author"),
+        "note": row.get("note"),
+        "created_at": row.get("created_at"),
+    }
+
+
 def list_reference_posts(access_token: str, limit: int = 200) -> list[dict]:
-    """List the user's reference posts (inspiration box), newest first."""
+    """Entrées de la bibliothèque ayant un texte de post, au format legacy.
+
+    Depuis ALE-222 tout vit dans post_templates (user_reference_posts est
+    gelée) ; ce shim ne sert plus qu'aux endpoints /me/reference-posts
+    conservés une release pour les onglets ouverts sur un vieux bundle.
+    """
     if not supabase_enabled():
         return []
     user = get_user(access_token)
@@ -1679,14 +1700,15 @@ def list_reference_posts(access_token: str, limit: int = 200) -> list[dict]:
         return []
     db = client_for_token(access_token)
     resp = (
-        db.table("user_reference_posts")
+        db.table("post_templates")
         .select("*")
         .eq("user_id", user["id"])
+        .not_.is_("post_text", "null")
         .order("created_at", desc=True)
         .limit(limit)
         .execute()
     )
-    return resp.data or []
+    return [_as_reference_post(row) for row in (resp.data or [])]
 
 
 def add_reference_post(
@@ -1696,29 +1718,22 @@ def add_reference_post(
     author: str | None = None,
     note: str | None = None,
 ) -> dict | None:
-    """Add a reference post (found elsewhere) to the user's inspiration box."""
-    if not supabase_enabled():
-        return None
-    user = get_user(access_token)
-    if not user:
-        return None
-    db = client_for_token(access_token)
-    row: dict[str, Any] = {"user_id": user["id"], "text": text}
-    if url:
-        row["url"] = url
-    if author:
-        row["author"] = author
-    if note:
-        row["note"] = note
-    resp = db.table("user_reference_posts").insert(row).execute()
-    return resp.data[0] if resp.data else None
+    """Shim legacy : ajoute une entrée texte-seul dans la bibliothèque unifiée."""
+    row = add_post_template(
+        access_token,
+        post_text=text,
+        note=note,
+        source_author=author,
+        source_post_url=url,
+    )
+    return _as_reference_post(row) if row else None
 
 
 def pick_reference_posts(access_token: str | None, count: int = 3) -> list[dict]:
-    """Échantillon de posts de référence à injecter dans une génération.
+    """Échantillon de la bibliothèque (entrées avec texte) pour une génération.
 
-    Aléatoire quand la boîte dépasse `count`, pour varier l'inspiration d'un
-    appel à l'autre. Best-effort : ne bloque jamais la génération.
+    Aléatoire quand la bibliothèque dépasse `count`, pour varier l'inspiration
+    d'un appel à l'autre. Best-effort : ne bloque jamais la génération.
     """
     if not access_token:
         return []
@@ -1726,6 +1741,7 @@ def pick_reference_posts(access_token: str | None, count: int = 3) -> list[dict]
         refs = list_reference_posts(access_token, limit=50)
     except Exception:
         return []
+    refs = [r for r in refs if (r.get("text") or "").strip()]
     if len(refs) <= count:
         return refs
     import random
@@ -1734,21 +1750,8 @@ def pick_reference_posts(access_token: str | None, count: int = 3) -> list[dict]
 
 
 def delete_reference_post(access_token: str, ref_id: str) -> bool:
-    """Delete one of the user's reference posts. RLS guarantees ownership."""
-    if not supabase_enabled():
-        return False
-    user = get_user(access_token)
-    if not user:
-        return False
-    db = client_for_token(access_token)
-    (
-        db.table("user_reference_posts")
-        .delete()
-        .eq("id", ref_id)
-        .eq("user_id", user["id"])
-        .execute()
-    )
-    return True
+    """Shim legacy : supprime une entrée de la bibliothèque unifiée."""
+    return delete_post_template(access_token, ref_id)
 
 
 # ── Banque de templates de posts (ALE-216) ────────────────────────────────── #
@@ -1793,16 +1796,18 @@ def get_post_template(access_token: str, template_id: str) -> dict | None:
 
 def add_post_template(
     access_token: str,
-    structure_label: str,
-    structure_text: str,
+    structure_label: str | None = None,
+    structure_text: str | None = None,
     format: str | None = None,
     image_url: str | None = None,
     image_note: str | None = None,
     source: str = "user",
     source_author: str | None = None,
     source_post_url: str | None = None,
+    post_text: str | None = None,
+    note: str | None = None,
 ) -> dict | None:
-    """Add a post template to the user's bank."""
+    """Ajoute une entrée à la bibliothèque (texte de post et/ou structure)."""
     if not supabase_enabled():
         return None
     user = get_user(access_token)
@@ -1811,20 +1816,40 @@ def add_post_template(
     db = client_for_token(access_token)
     row: dict[str, Any] = {
         "user_id": user["id"],
-        "structure_label": structure_label,
-        "structure_text": structure_text,
         "source": source,
     }
     for key, value in (
+        ("structure_label", structure_label),
+        ("structure_text", structure_text),
         ("format", format),
         ("image_url", image_url),
         ("image_note", image_note),
         ("source_author", source_author),
         ("source_post_url", source_post_url),
+        ("post_text", post_text),
+        ("note", note),
     ):
         if value:
             row[key] = value
     resp = db.table("post_templates").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def update_post_template(access_token: str, template_id: str, fields: dict) -> dict | None:
+    """Met à jour une entrée de la bibliothèque (RLS scope)."""
+    if not supabase_enabled() or not template_id or not fields:
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("post_templates")
+        .update(fields)
+        .eq("id", template_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
     return resp.data[0] if resp.data else None
 
 
