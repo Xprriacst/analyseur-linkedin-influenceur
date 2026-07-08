@@ -69,6 +69,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-08 (release prod : banque de templates ALE-216 + ALE-217 — PR #218)
+- **Release `dev → main` PR #218** mergée ~09:05 Paris → Render prod live + Netlify prod. Vérifié post-deploy : `/health` OK, `/me/post-templates` → 401 (routes déployées), chaîne « banque de templates » présente dans le bundle JS du site prod.
+- **ALE-216 — banque de templates V1** (PR #216) : stock manuel de templates de posts (nom + structure + image d'exemple), utilisables depuis le Générateur — le template choisi voyage avec le job de génération (colonne `template_id` sur `generation_jobs`).
+- **ALE-217 — « Garder comme template » depuis la veille** (PR #217) : bouton sur les posts repérés en veille — extraction LLM du **squelette** du post (jamais son contenu) + récupération de l'image, ajout direct à la banque.
+- **Migration 0039** (`post_templates` + colonne `template_id`, idempotente) appliquée sur **prod** via MCP juste avant le merge (dev l'avait déjà). Aucune env var.
+
 ### 2026-07-07 #6 (fix prod : envoi de DM Instagram via ManyChat — PR #211 + #214, release #215)
 - **Bug (test Alex, connexion ManyChat)** : la réception des DM fonctionnait mais tout envoi sortant échouait. Deux causes successives dans `src/manychat.py` (`send_text`) : (1) le payload `sendContent` joignait un `message_tag` (`ACCOUNT_UPDATE`) que **Meta a supprimé** → 400 « Message tags are no longer supported » (fix PR #211) ; (2) même sans tag, le payload ne précisait pas de canal → ManyChat cible **Facebook Messenger par défaut** alors que nos prospects sont des DM **Instagram** → 502 persistant (fix PR #214 : `data.content.type = "instagram"`, surchargeable `MANYCHAT_CHANNEL`).
 - Release `dev → main` PR #215 (~20:15 Paris), Render prod live, `/health` OK. Backend-only, aucune migration, aucune env var. **Validé par Alex de bout en bout** (DM entrant → réponse depuis l'Inbox → reçue sur Instagram).
