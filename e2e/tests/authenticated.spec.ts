@@ -45,10 +45,10 @@ test("Contenu › Ma bibliothèque : bibliothèque unifiée rendue sans erreur (
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Veille › Nouveaux posts : fil de veille rendu sans erreur (ALE-215)", async ({ page }) => {
+test("Veille › Monitoring d'influenceurs : fil de veille rendu sans erreur (ALE-215)", async ({ page }) => {
   await gotoTab(page, "Veille");
-  await page.locator(".tab", { hasText: "Nouveaux posts" }).click();
-  await expect(page.getByRole("heading", { name: /^Nouveaux posts$/i })).toBeVisible();
+  await page.locator(".tab", { hasText: "Monitoring d'influenceurs" }).click();
+  await expect(page.getByRole("heading", { name: /^Monitoring d'influenceurs$/i })).toBeVisible();
   // Bouton de rafraîchissement toujours présent ; l'état vide invite à suivre des influenceurs.
   await expect(page.getByRole("button", { name: /Rafraîchir/i })).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);

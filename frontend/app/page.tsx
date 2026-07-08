@@ -3437,6 +3437,7 @@ function DailyIdeasView({
     try { return new Date(s).toLocaleDateString("fr-FR", { weekday: "long", day: "2-digit", month: "long" }); }
     catch { return s || ""; }
   };
+  const todayIso = new Date().toLocaleDateString("en-CA");
 
   async function loadAll() {
     if (!isAuthed) return;
@@ -3730,15 +3731,16 @@ function DailyIdeasView({
         </div>
       ) : (
         <div className="daily-ideas-lines">
-          {ideas.map((it, idx) => {
+          {ideas.map((it) => {
             const isPost = !!it.post_text;
             const idea = isPost ? null : parseDailyIdeaMarkdown(it.idea_markdown);
+            const isToday = it.idea_date === todayIso;
             return (
-              <details className="card daily-idea-line" key={it.id} open={idx === 0}>
-                {/* Ligne fermée = date seule (demande Alex 2026-07-03 : pas d'extrait, trop d'info). */}
+              <details className="card daily-idea-line" key={it.id}>
+                {/* Ligne fermée par défaut, tag "Aujourd'hui" seulement si la date correspond (demande Alex 2026-07-08). */}
                 <summary>
                   <span className="daily-line-date">{fmtDate(it.idea_date)}</span>
-                  {idx === 0 ? <span className="daily-today-tag">Aujourd'hui</span> : null}
+                  {isToday ? <span className="daily-today-tag">Aujourd'hui</span> : null}
                 </summary>
                 <div className="daily-line-body">
                   {isPost ? (
@@ -4079,7 +4081,7 @@ function LibraryView({
   const [savedPost, setSavedPost] = useState<string | null>(null);
   // Tiroir repliable : permet de masquer la liste des posts sauvegardés pour atteindre
   // la section « Posts programmés » sans scroller tout en bas.
-  const [savedOpen, setSavedOpen] = useState(true);
+  const [savedOpen, setSavedOpen] = useState(false);
   const slack = useSlack(isAuthed);
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
@@ -6854,7 +6856,7 @@ function trendsPrintHtml(trends: InfluencerTrends): string {
   ${barTable("Jour de publication", trends.weekdays)}
   ${freq ? `<section><h2>Rythme de publication</h2><table>${freq.buckets.map((b) => `<tr><td>${escHtml(b.label)}</td><td class="num">${fmtRatePct(b.median_rate_pct)}</td><td class="n">${b.accounts} comptes</td></tr>`).join("")}</table><p class="note">Taux d'engagement médian par tranche de fréquence (comparaison entre comptes).</p></section>` : ""}
   ${bench ? `<section><h2>Benchmark</h2><p>Meilleur taux d&#39;engagement : <b>${escHtml(bench.best.name)}</b> (${fmtKAbo(bench.best.followers)} abonnés, ${fmtRatePct(bench.best.rate_pct)})${bench.biggest.name !== bench.best.name ? ` — plus gros compte : ${escHtml(bench.biggest.name)} (${fmtKAbo(bench.biggest.followers)}, ${fmtRatePct(bench.biggest.rate_pct)})` : ""}.${bench.high_freq ? ` Au-delà de ${bench.high_freq.threshold} posts/semaine, aucun compte ne dépasse ${fmtRatePct(bench.high_freq.max_rate_pct)} de taux.` : ""}</p></section>` : ""}
-  ${ranking.length ? `<section><h2>Classement</h2><table>${ranking.map((r, i) => `<tr><td class="n">${i + 1}</td><td>${escHtml(r.name)}</td><td class="n">${fmtKAbo(r.followers)} abonnés</td><td class="num">${r.median_engagement}</td><td class="n">taux ${fmtRatePct(r.engagement_rate_pct)}</td></tr>`).join("")}</table><p class="note">Engagement médian par post (likes + commentaires + partages).</p></section>` : ""}
+  ${ranking.length ? `<section><h2>Classement</h2><table>${ranking.map((r, i) => `<tr><td class="n">${i + 1}</td><td>${escHtml(r.name)}</td><td class="n">${fmtKAbo(r.followers)} abonnés</td></tr>`).join("")}</table></section>` : ""}
   </body></html>`;
 }
 
@@ -7376,7 +7378,6 @@ function InfluencersView({
                   <tr>
                     <th>#</th>
                     <th>Influenceur</th>
-                    <th style={{ textAlign: "right" }}>Eng. médian / post</th>
                     <th style={{ textAlign: "center" }}>Veille</th>
                     <th style={{ textAlign: "center" }}>Rapport</th>
                   </tr>
@@ -7405,17 +7406,6 @@ function InfluencersView({
                               </span>
                             </span>
                           </span>
-                        </td>
-                        <td style={{ textAlign: "right" }}>
-                          {s ? (
-                            <>
-                              <span className="tr-eng">{fmt(s.median_engagement)}</span>
-                              <br />
-                              <span className="tr-rate">taux {fmtRatePct(s.engagement_rate_pct)}</span>
-                            </>
-                          ) : (
-                            <span style={{ color: "var(--muted)" }}>—</span>
-                          )}
                         </td>
                         <td style={{ textAlign: "center" }}>
                           <button
@@ -7594,7 +7584,7 @@ function MonitoringFeedView({
     return (
       <div className="card" style={{ textAlign: "center", padding: 40 }}>
         <Lock size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
-        <h2 style={{ margin: "0 0 8px" }}>Nouveaux posts</h2>
+        <h2 style={{ margin: "0 0 8px" }}>Monitoring d&apos;influenceurs</h2>
         <p style={{ color: "var(--muted)", marginBottom: 16 }}>
           Connecte-toi pour surveiller les nouveaux posts de tes influenceurs et t&apos;en inspirer.
         </p>
@@ -7609,7 +7599,7 @@ function MonitoringFeedView({
     <div>
       <div className="section-header" style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
         <div>
-          <h2 className="section-title"><Eye size={20} /> Nouveaux posts</h2>
+          <h2 className="section-title"><Eye size={20} /> Monitoring d&apos;influenceurs</h2>
           <p className="section-desc">
             Les derniers posts de tes influenceurs suivis — inspire-t&apos;en en un clic, ou garde-les pour plus tard.
           </p>
@@ -7767,7 +7757,7 @@ function AnalyzeHub({
   const subTabs: { key: AnalyzeTab; label: string; icon: React.ReactNode }[] = [
     { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
     { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} /> },
-    { key: "monitoring", label: "Nouveaux posts", icon: <Eye size={14} /> },
+    { key: "monitoring", label: "Monitoring d'influenceurs", icon: <Eye size={14} /> },
   ];
 
   return (
