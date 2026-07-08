@@ -27,6 +27,7 @@ from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
 from src.stats import compute_stats
 from src.instagram_hooks import select_hooks
+from src.trends import compute_trends
 from src.daily_ideas import _render_idea_markdown
 from src.listing import ListingError, build_listing_topic, fetch_listing_preview, is_listing_url
 
@@ -178,6 +179,18 @@ def me_influencers(token: str = Depends(require_token)) -> list[dict[str, Any]]:
 def me_influencer_library(token: str = Depends(require_token)) -> list[dict[str, Any]]:
     """All analyzed influencers with current analysis metadata (no markdown)."""
     return db.list_influencer_library(token)
+
+
+@app.get("/me/influencer-trends")
+def me_influencer_trends(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Tendances transverses calculées sur tous les rapports de l'utilisateur.
+
+    Agrégation pure (aucun appel LLM, aucun scraping) : lecture du corpus et
+    des stats de rapports, donc gratuit et recalculable à la demande.
+    """
+    corpus = db.get_user_corpus(token)
+    analyses = db.list_analysis_stats(token)
+    return compute_trends(corpus, analyses)
 
 
 @app.get("/me/analyses")
