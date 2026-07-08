@@ -21,7 +21,7 @@ from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread
-from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream
+from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
@@ -1051,6 +1051,8 @@ class IdeasRequest(BaseModel):
 class GenerateRequest(BaseModel):
     topic: Optional[str] = Field(default=None)
     editorial_role: Optional[str] = Field(default=None)
+    # ALE-216 : template de structure choisi dans la banque (optionnel).
+    template_id: Optional[str] = Field(default=None)
     # Deprecated client hint kept for backward compatibility. Post generation now
     # exposes web search as an autonomous server-side tool; the model decides.
     web_search: bool = Field(default=False)
@@ -1160,6 +1162,7 @@ def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) ->
         "topic": topic,
         "credits": credits,
         "reference_posts": db.pick_reference_posts(token) or None,
+        "template": db.get_post_template(token, payload.template_id) if (token and payload.template_id) else None,
     }
 
 
@@ -1188,6 +1191,7 @@ def _generate_posts_response(
         count=payload.count,
         on_web_search=on_web_search,
         reference_posts=context["reference_posts"],
+        template=context["template"],
     )
     variants, save_error = _save_generated_variants(token, context["topic"], variants)
     return {"variants": variants, "save_error": save_error, "credits": context["credits"]}
@@ -1220,6 +1224,7 @@ def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(opt
                     count=payload.count,
                     on_web_search=on_web_search,
                     reference_posts=context["reference_posts"],
+                    template=context["template"],
                 )
                 variants, save_error = _save_generated_variants(token, context["topic"], variants)
                 events.put(("done", {
@@ -1279,7 +1284,7 @@ def create_generation_job(payload: GenerateRequest, token: str = Depends(require
 
     role = (payload.editorial_role or "").strip() or None
     topic = (payload.topic or "").strip() or None
-    job = db.create_generation_job(token, topic, role, payload.web_search, payload.count)
+    job = db.create_generation_job(token, topic, role, payload.web_search, payload.count, template_id=payload.template_id)
     if not job:
         raise HTTPException(status_code=500, detail="Création du job de génération impossible.")
     start_generation_job_thread(token, job["id"])
@@ -1570,6 +1575,81 @@ def add_me_reference_post(payload: ReferencePostRequest, token: str = Depends(re
 def delete_me_reference_post(ref_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
     """Delete one of the user's reference posts."""
     return {"deleted": db.delete_reference_post(token, ref_id)}
+
+
+# --------------------------------------------------------------------------- #
+# Banque de templates de posts (ALE-216)
+# --------------------------------------------------------------------------- #
+
+class PostTemplateRequest(BaseModel):
+    structure_label: str = Field(..., min_length=3, max_length=200)
+    structure_text: str = Field(..., min_length=10, max_length=4000)
+    format: str | None = Field(default=None, max_length=30)
+    image_url: str | None = Field(default=None, max_length=2000)
+    image_note: str | None = Field(default=None, max_length=500)
+
+
+@app.get("/me/post-templates")
+def me_post_templates(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List the user's post templates."""
+    return db.list_post_templates(token)
+
+
+@app.post("/me/post-templates")
+def add_me_post_template(payload: PostTemplateRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Add a template (structure + type d'image) to the user's bank."""
+    template = db.add_post_template(
+        token,
+        payload.structure_label.strip(),
+        payload.structure_text.strip(),
+        format=(payload.format or "").strip() or None,
+        image_url=(payload.image_url or "").strip() or None,
+        image_note=(payload.image_note or "").strip() or None,
+        source="user",
+    )
+    if not template:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer le template.")
+    return template
+
+
+@app.delete("/me/post-templates/{template_id}")
+def delete_me_post_template(template_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Delete one of the user's templates."""
+    return {"deleted": db.delete_post_template(token, template_id)}
+
+
+class TemplateFromPostRequest(BaseModel):
+    text: str = Field(..., min_length=20, max_length=6000)
+    image_url: str | None = Field(default=None, max_length=2000)
+    author: str | None = Field(default=None, max_length=200)
+    url: str | None = Field(default=None, max_length=2000)
+
+
+@app.post("/me/post-templates/from-post")
+def add_me_post_template_from_post(payload: TemplateFromPostRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Capture un template depuis un post d'influenceur (ALE-217, fil de veille).
+
+    L'IA extrait le squelette de structure (jamais le contenu) ; l'image du
+    post est conservée comme exemple de type visuel. Gratuit (appel léger).
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
+    extracted = extract_post_template(payload.text)
+    if not extracted.get("structure_label") or len(extracted.get("structure_text") or "") < 10:
+        raise HTTPException(status_code=502, detail="L'extraction du squelette a échoué — réessaie.")
+    template = db.add_post_template(
+        token,
+        extracted["structure_label"][:200],
+        extracted["structure_text"][:4000],
+        format=extracted.get("format"),
+        image_url=(payload.image_url or "").strip() or None,
+        source="influencer",
+        source_author=(payload.author or "").strip() or None,
+        source_post_url=(payload.url or "").strip() or None,
+    )
+    if not template:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer le template.")
+    return template
 
 
 @app.get("/me/daily-ideas")

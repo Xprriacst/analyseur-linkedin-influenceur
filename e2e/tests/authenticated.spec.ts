@@ -26,6 +26,16 @@ test("onglet Veille : sous-onglets Analyser / Mes influenceurs (Dashboard fusion
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
+test("Contenu › Templates : banque de templates rendue sans erreur (ALE-216)", async ({ page }) => {
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Templates");
+  await expect(page.getByRole("heading", { name: /Templates de posts/i })).toBeVisible();
+  await expect(page.getByPlaceholder(/Nom du template/i)).toBeVisible();
+  await expect(page.getByPlaceholder(/La structure, ligne par ligne/i)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Ajouter le template/i })).toBeVisible();
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
 test("Veille › Nouveaux posts : fil de veille rendu sans erreur (ALE-215)", async ({ page }) => {
   await gotoTab(page, "Veille");
   await page.locator(".tab", { hasText: "Nouveaux posts" }).click();
