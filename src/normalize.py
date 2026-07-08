@@ -163,6 +163,10 @@ def _extract_media(post: dict) -> list[dict]:
     return deduped[:10]
 
 
+# Alias public : utilisé hors normalisation (import d'un post isolé, ALE-222).
+extract_media = _extract_media
+
+
 def normalize_posts(raw: list[dict]) -> list[dict]:
     out = []
     for p in raw:
