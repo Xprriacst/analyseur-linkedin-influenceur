@@ -209,7 +209,7 @@ def select_hooks(user_context: dict[str, Any], count: int = 8, topic: str | None
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        hooks = json.loads(raw)
+        hooks = json.loads(raw, strict=False)
         if isinstance(hooks, list) and hooks:
             return [str(h) for h in hooks[:count]]
         return _fallback()
