@@ -154,6 +154,67 @@ test("Agent IA : édition manuelle du post proposé (éditeur inline, version mo
   await expect(page.getByText(/Version modifiée/)).toHaveCount(0);
 });
 
+test("Contenu › Mes contenus : Image IA propose une image de référence depuis la banque de templates (ALE-221, tout mocké)", async ({ page }) => {
+  await page.route("**/me/generated-posts", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify([
+          { id: "e2e-ale-221", post: "Post de test ALE-221", topic: "Sujet test", created_at: "2026-07-08T10:00:00Z", media_items: [] },
+        ]),
+      });
+    }
+    return route.fallback();
+  });
+  await page.route("**/me/post-templates", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: "tpl-e2e-1",
+            structure_label: "Accroche choc + 3 bullets",
+            structure_text: "1. Accroche\n2. Bullet\n3. Bullet\n4. CTA",
+            image_url: "https://example.com/tpl.png",
+          },
+        ]),
+      });
+    }
+    return route.fallback();
+  });
+  await page.route("**/generate-image/prompt", (route) =>
+    route.fulfill({ contentType: "application/json", body: JSON.stringify({ prompt: "Un prompt de test." }) })
+  );
+  const onePxPng =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  let capturedBody: { reference_template_id?: string } | null = null;
+  await page.route("**/generate-image", (route) => {
+    if (route.request().method() === "POST") {
+      capturedBody = route.request().postDataJSON();
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ image_data: onePxPng, prompt_used: "Un prompt de test.", credits: 95 }),
+      });
+    }
+    return route.fallback();
+  });
+
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Mes contenus");
+  const bar = page.locator(".post-actions-bar").first();
+  await bar.getByRole("button", { name: "Plus d'actions" }).click();
+  await page.locator(".action-menu").getByRole("menuitem", { name: /Générer une image IA/ }).click();
+
+  // La vignette du template (dérivée de l'alt de son image) apparaît et se sélectionne.
+  const thumbnail = page.getByRole("button", { name: "Accroche choc + 3 bullets" });
+  await expect(thumbnail).toBeVisible();
+  await thumbnail.click();
+
+  await page.getByRole("button", { name: /Générer l'image/ }).click();
+  await expect(page.getByText(/Image jointe au post/)).toBeVisible();
+  expect(capturedBody?.reference_template_id).toBe("tpl-e2e-1");
+});
+
 test("Contenu › Idée du jour : menu Publier + ⋯ sur le post du jour", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Idée du jour");

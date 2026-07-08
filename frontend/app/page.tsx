@@ -2160,6 +2160,22 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState("");
   const postBoxRef = useRef<HTMLDivElement | null>(null);
+  // Banque de templates (ALE-216) proposée comme référence visuelle optionnelle (ALE-221) :
+  // fetch local à la pop-up plutôt qu'un prop threadé depuis les 4 écrans appelants.
+  const [templates, setTemplates] = useState<PostTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    authHeaders().then((h) =>
+      fetch(`${DIRECT_API_URL}/me/post-templates`, { headers: h })
+        .then((r) => (r.ok ? r.json() : []))
+        .then((data) => { if (!cancelled) setTemplates(Array.isArray(data) ? data : []); })
+        .catch(() => {})
+    );
+    return () => { cancelled = true; };
+  }, []);
+  const templatesWithImage = templates.filter((t) => !!t.image_url);
 
   // Reprend le texte du post (ou le passage sélectionné à la souris dans le bloc
   // ci-dessous) à la suite du prompt (ALE-192).
@@ -2211,7 +2227,11 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
       const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_text: postText, prompt: prompt.trim() || undefined }),
+        body: JSON.stringify({
+          post_text: postText,
+          prompt: prompt.trim() || undefined,
+          reference_template_id: selectedTemplateId || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
@@ -2274,6 +2294,39 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
                 générer l&apos;image (5 crédits). L&apos;image sera jointe au post. Pendant la génération
                 (2 à 3 min), il faudra rester sur cette page.
               </p>
+            )}
+            {templatesWithImage.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <p style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 6px", fontWeight: 600 }}>
+                  Image de référence (optionnel) — style/composition repris depuis ta banque de templates
+                </p>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {templatesWithImage.map((t) => {
+                    const selected = selectedTemplateId === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        title={t.structure_label}
+                        disabled={generating}
+                        onClick={() => setSelectedTemplateId(selected ? "" : t.id)}
+                        style={{
+                          width: 60, height: 60, padding: 0, borderRadius: 8, overflow: "hidden",
+                          border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
+                          cursor: generating ? "default" : "pointer", flex: "0 0 auto", background: "none",
+                        }}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={t.image_url || ""}
+                          alt={t.structure_label}
+                          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
             {loadingPrompt ? (
               <p style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
