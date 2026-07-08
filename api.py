@@ -1078,6 +1078,8 @@ class GenerateImageRequest(BaseModel):
     post_text: str = Field(..., min_length=10)
     # Prompt validé/édité par l'utilisateur dans la pop-up ; absent = prompt auto.
     prompt: Optional[str] = Field(default=None, max_length=4000)
+    # Image de la banque de templates choisie comme référence visuelle (ALE-221).
+    reference_template_id: Optional[str] = Field(default=None, max_length=100)
 
 
 class ChatRequest(BaseModel):
@@ -1543,14 +1545,18 @@ class ReferencePostRequest(BaseModel):
 
 @app.get("/me/reference-posts")
 def me_reference_posts(token: str = Depends(require_token)) -> list[dict[str, Any]]:
-    """List the user's reference posts (inspiration box)."""
+    """Déprécié (ALE-222) : lit la bibliothèque unifiée au format legacy.
+
+    Conservé une release pour les onglets ouverts sur un vieux bundle SPA.
+    """
     return db.list_reference_posts(token)
 
 
 @app.post("/me/reference-posts")
 def add_me_reference_post(payload: ReferencePostRequest, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Add a reference post to the user's inspiration box.
+    """Déprécié (ALE-222) : écrit dans la bibliothèque unifiée (sans extraction IA).
 
+    Conservé une release pour les onglets ouverts sur un vieux bundle SPA.
     Deux modes : texte collé directement, ou lien LinkedIn seul → le texte et
     l'auteur sont importés automatiquement (scrape Apify, ~0,005 $).
     """
@@ -1588,49 +1594,170 @@ def add_me_reference_post(payload: ReferencePostRequest, token: str = Depends(re
 
 @app.delete("/me/reference-posts/{ref_id}")
 def delete_me_reference_post(ref_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
-    """Delete one of the user's reference posts."""
+    """Déprécié (ALE-222) : supprime dans la bibliothèque unifiée."""
     return {"deleted": db.delete_reference_post(token, ref_id)}
 
 
 # --------------------------------------------------------------------------- #
-# Banque de templates de posts (ALE-216)
+# Ma bibliothèque (ALE-222 — fusion posts de référence ALE-67 + templates ALE-216)
 # --------------------------------------------------------------------------- #
 
 class PostTemplateRequest(BaseModel):
-    structure_label: str = Field(..., min_length=3, max_length=200)
-    structure_text: str = Field(..., min_length=10, max_length=4000)
+    # Tous optionnels — il faut au moins un lien de post, un texte ou une structure.
+    url: str | None = Field(default=None, max_length=2000)
+    text: str | None = Field(default=None, max_length=6000)
+    note: str | None = Field(default=None, max_length=500)
+    author: str | None = Field(default=None, max_length=200)
+    source: str | None = Field(default=None, max_length=30)
+    structure_label: str | None = Field(default=None, max_length=200)
+    structure_text: str | None = Field(default=None, max_length=4000)
     format: str | None = Field(default=None, max_length=30)
     image_url: str | None = Field(default=None, max_length=2000)
     image_note: str | None = Field(default=None, max_length=500)
 
 
+def _add_library_entry(
+    token: str,
+    *,
+    url: str | None,
+    text: str | None,
+    note: str | None,
+    author: str | None,
+    structure_label: str | None,
+    structure_text: str | None,
+    fmt: str | None,
+    image_url: str | None,
+    image_note: str | None,
+    source: str,
+) -> dict[str, Any]:
+    """Ajout unifié à « Ma bibliothèque » (ALE-222).
+
+    (1) Pas de texte ni de structure + lien valide → import du post (texte,
+    auteur, image) ; (2) texte sans structure manuelle → extraction IA du
+    squelette, best-effort : un échec ne fait jamais perdre la sauvegarde
+    (l'entrée reste utilisable comme inspiration) ; (3) insert.
+    """
+    text = (text or "").strip()
+    url = (url or "").strip() or None
+    author = (author or "").strip() or None
+    structure_label = (structure_label or "").strip() or None
+    structure_text = (structure_text or "").strip() or None
+    fmt = (fmt or "").strip() or None
+    image_url = (image_url or "").strip() or None
+
+    has_valid_url = bool(url and url.lower().startswith(("http://", "https://")))
+    if not text and not structure_text:
+        if not has_valid_url:
+            raise HTTPException(
+                status_code=422,
+                detail="Colle le lien du post, son texte, ou une structure.",
+            )
+        detail = fetch_post_detail(url)
+        if not detail:
+            raise HTTPException(
+                status_code=422,
+                detail="Impossible de lire le post depuis ce lien — colle son texte directement.",
+            )
+        text = detail["text"]
+        author = author or detail.get("author")
+        url = detail.get("url") or url
+        image_url = image_url or detail.get("image_url")
+
+    if text and len(text) < 10:
+        raise HTTPException(status_code=422, detail="Le texte du post est trop court (10 caractères minimum).")
+    if not text and structure_text and len(structure_text) < 10:
+        raise HTTPException(status_code=422, detail="La structure est trop courte (10 caractères minimum).")
+
+    if text and not structure_text and os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            extracted = extract_post_template(text)
+            if len(extracted.get("structure_text") or "") >= 10:
+                structure_text = extracted["structure_text"][:4000]
+                structure_label = structure_label or (extracted.get("structure_label") or "")[:200] or None
+                fmt = fmt or extracted.get("format")
+        except Exception as exc:  # noqa: BLE001 — extraction bonus, jamais bloquante
+            print(f"[library] extraction de structure échouée (entrée sauvée sans) : {exc}", flush=True)
+
+    if structure_text and not structure_label:
+        structure_label = structure_text.splitlines()[0][:60]
+
+    entry = db.add_post_template(
+        token,
+        structure_label=structure_label,
+        structure_text=structure_text,
+        format=fmt,
+        image_url=image_url,
+        image_note=(image_note or "").strip() or None,
+        source=source,
+        source_author=author,
+        source_post_url=url,
+        post_text=text[:6000] or None,
+        note=(note or "").strip() or None,
+    )
+    if not entry:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer dans la bibliothèque.")
+    return entry
+
+
 @app.get("/me/post-templates")
 def me_post_templates(token: str = Depends(require_token)) -> list[dict[str, Any]]:
-    """List the user's post templates."""
+    """List the user's library entries (posts de référence + templates unifiés)."""
     return db.list_post_templates(token)
 
 
 @app.post("/me/post-templates")
 def add_me_post_template(payload: PostTemplateRequest, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Add a template (structure + type d'image) to the user's bank."""
-    template = db.add_post_template(
+    """Ajout unifié à « Ma bibliothèque » — lien de post, texte collé et/ou structure."""
+    # `source` coercé serveur : jamais de valeur libre venue du client.
+    source = "influencer" if (payload.source or "").strip() == "influencer" else "user"
+    return _add_library_entry(
         token,
-        payload.structure_label.strip(),
-        payload.structure_text.strip(),
-        format=(payload.format or "").strip() or None,
-        image_url=(payload.image_url or "").strip() or None,
-        image_note=(payload.image_note or "").strip() or None,
-        source="user",
+        url=payload.url,
+        text=payload.text,
+        note=payload.note,
+        author=payload.author,
+        structure_label=payload.structure_label,
+        structure_text=payload.structure_text,
+        fmt=payload.format,
+        image_url=payload.image_url,
+        image_note=payload.image_note,
+        source=source,
     )
-    if not template:
-        raise HTTPException(status_code=400, detail="Impossible d'enregistrer le template.")
-    return template
 
 
 @app.delete("/me/post-templates/{template_id}")
 def delete_me_post_template(template_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
-    """Delete one of the user's templates."""
+    """Delete one of the user's library entries."""
     return {"deleted": db.delete_post_template(token, template_id)}
+
+
+@app.post("/me/post-templates/{template_id}/extract-structure")
+def extract_me_post_template_structure(template_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Extrait (IA) la structure d'une entrée de bibliothèque qui n'en a pas.
+
+    Remède pour les entrées migrées d'ALE-67 ou collées sans structure :
+    elles deviennent sélectionnables comme template dans le Générateur.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
+    entry = db.get_post_template(token, template_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entrée introuvable.")
+    text = (entry.get("post_text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Cette entrée n'a pas de texte de post à analyser.")
+    extracted = extract_post_template(text)
+    if len(extracted.get("structure_text") or "") < 10:
+        raise HTTPException(status_code=502, detail="L'extraction de la structure a échoué — réessaie.")
+    fields: dict[str, Any] = {"structure_text": extracted["structure_text"][:4000]}
+    if not entry.get("structure_label") and extracted.get("structure_label"):
+        fields["structure_label"] = extracted["structure_label"][:200]
+    if not entry.get("format") and extracted.get("format"):
+        fields["format"] = extracted["format"]
+    updated = db.update_post_template(token, template_id, fields)
+    if not updated:
+        raise HTTPException(status_code=400, detail="Impossible de mettre à jour l'entrée.")
+    return updated
 
 
 class TemplateFromPostRequest(BaseModel):
@@ -1642,29 +1769,25 @@ class TemplateFromPostRequest(BaseModel):
 
 @app.post("/me/post-templates/from-post")
 def add_me_post_template_from_post(payload: TemplateFromPostRequest, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Capture un template depuis un post d'influenceur (ALE-217, fil de veille).
+    """Déprécié (ALE-222) : alias de POST /me/post-templates pour la veille (ALE-217).
 
-    L'IA extrait le squelette de structure (jamais le contenu) ; l'image du
-    post est conservée comme exemple de type visuel. Gratuit (appel léger).
+    Conservé une release pour les onglets ouverts sur un vieux bundle SPA.
+    Stocke désormais aussi le texte du post ; un échec d'extraction de la
+    structure ne bloque plus la sauvegarde (plus de 502).
     """
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
-    extracted = extract_post_template(payload.text)
-    if not extracted.get("structure_label") or len(extracted.get("structure_text") or "") < 10:
-        raise HTTPException(status_code=502, detail="L'extraction du squelette a échoué — réessaie.")
-    template = db.add_post_template(
+    return _add_library_entry(
         token,
-        extracted["structure_label"][:200],
-        extracted["structure_text"][:4000],
-        format=extracted.get("format"),
-        image_url=(payload.image_url or "").strip() or None,
+        url=payload.url,
+        text=payload.text,
+        note=None,
+        author=payload.author,
+        structure_label=None,
+        structure_text=None,
+        fmt=None,
+        image_url=payload.image_url,
+        image_note=None,
         source="influencer",
-        source_author=(payload.author or "").strip() or None,
-        source_post_url=(payload.url or "").strip() or None,
     )
-    if not template:
-        raise HTTPException(status_code=400, detail="Impossible d'enregistrer le template.")
-    return template
 
 
 @app.get("/me/daily-ideas")
@@ -2382,6 +2505,27 @@ def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends
     """Generate an image to accompany a LinkedIn post (GPT Image 2)."""
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(status_code=400, detail="OPENAI_API_KEY manquant dans .env")
+    # Import paresseux : la génération d'image dépend d'`openai`. Un import
+    # au niveau module ferait planter tout le démarrage de l'API si la
+    # dépendance (ou le module) manque — on l'isole donc à cet endpoint.
+    from src.image_gen import ImageGenError, fetch_reference_image, generate_post_image
+
+    # Résolution + téléchargement de l'image de référence AVANT le débit de
+    # crédits : un lien mort/expiré (fréquent, ces URLs viennent de posts
+    # scrapés) ne doit pas coûter de crédits à l'utilisateur (ALE-221).
+    reference_image = None
+    if payload.reference_template_id:
+        if not token:
+            raise HTTPException(status_code=400, detail="Authentification requise pour utiliser une image de référence.")
+        template = db.get_post_template(token, payload.reference_template_id)
+        image_url = (template or {}).get("image_url")
+        if not image_url:
+            raise HTTPException(status_code=404, detail="Template introuvable ou sans image de référence.")
+        try:
+            reference_image = fetch_reference_image(image_url)
+        except ImageGenError as exc:
+            raise HTTPException(status_code=422, detail=f"Image de référence inaccessible : {exc}")
+
     credits: int | None = None
     if token:
         ok, balance = db.debit_credits(token, "generate_image")
@@ -2389,11 +2533,7 @@ def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends
             raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération d'image = {db.CREDIT_COSTS['generate_image']} crédit(s).")
         credits = balance
     try:
-        # Import paresseux : la génération d'image dépend d'`openai`. Un import
-        # au niveau module ferait planter tout le démarrage de l'API si la
-        # dépendance (ou le module) manque — on l'isole donc à cet endpoint.
-        from src.image_gen import generate_post_image
-        result = generate_post_image(payload.post_text, prompt=payload.prompt)
+        result = generate_post_image(payload.post_text, prompt=payload.prompt, reference_image=reference_image)
         if isinstance(result, dict):
             result["credits"] = credits
         return result

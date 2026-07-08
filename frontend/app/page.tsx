@@ -2160,6 +2160,22 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState("");
   const postBoxRef = useRef<HTMLDivElement | null>(null);
+  // Banque de templates (ALE-216) proposée comme référence visuelle optionnelle (ALE-221) :
+  // fetch local à la pop-up plutôt qu'un prop threadé depuis les 4 écrans appelants.
+  const [templates, setTemplates] = useState<PostTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    authHeaders().then((h) =>
+      fetch(`${DIRECT_API_URL}/me/post-templates`, { headers: h })
+        .then((r) => (r.ok ? r.json() : []))
+        .then((data) => { if (!cancelled) setTemplates(Array.isArray(data) ? data : []); })
+        .catch(() => {})
+    );
+    return () => { cancelled = true; };
+  }, []);
+  const templatesWithImage = templates.filter((t) => !!t.image_url);
 
   // Reprend le texte du post (ou le passage sélectionné à la souris dans le bloc
   // ci-dessous) à la suite du prompt (ALE-192).
@@ -2211,7 +2227,11 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
       const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post_text: postText, prompt: prompt.trim() || undefined }),
+        body: JSON.stringify({
+          post_text: postText,
+          prompt: prompt.trim() || undefined,
+          reference_template_id: selectedTemplateId || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
@@ -2274,6 +2294,39 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
                 générer l&apos;image (5 crédits). L&apos;image sera jointe au post. Pendant la génération
                 (2 à 3 min), il faudra rester sur cette page.
               </p>
+            )}
+            {templatesWithImage.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <p style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 6px", fontWeight: 600 }}>
+                  Image de référence (optionnel) — style/composition repris depuis ta bibliothèque
+                </p>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {templatesWithImage.map((t) => {
+                    const selected = selectedTemplateId === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        title={libraryEntryTitle(t)}
+                        disabled={generating}
+                        onClick={() => setSelectedTemplateId(selected ? "" : t.id)}
+                        style={{
+                          width: 60, height: 60, padding: 0, borderRadius: 8, overflow: "hidden",
+                          border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
+                          cursor: generating ? "default" : "pointer", flex: "0 0 auto", background: "none",
+                        }}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={t.image_url || ""}
+                          alt={libraryEntryTitle(t)}
+                          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
             {loadingPrompt ? (
               <p style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
@@ -2353,7 +2406,9 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   const [variants, setVariants] = useState<Variant[]>(_genCache.variants);
   const [topic, setTopic] = useState(_genCache.topic);
   const [role, setRole] = useState("auto");
-  // ALE-216 : template de structure choisi dans la banque (optionnel).
+  // ALE-216/ALE-222 : template de structure choisi dans la bibliothèque (optionnel).
+  // Seules les entrées AVEC structure sont proposées (les entrées texte-seul
+  // nourrissent l'inspiration aléatoire, pas le sélecteur).
   const [templates, setTemplates] = useState<PostTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
 
@@ -2363,7 +2418,14 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     authHeaders().then((h) =>
       fetch(`${DIRECT_API_URL}/me/post-templates`, { headers: h })
         .then((r) => (r.ok ? r.json() : []))
-        .then((data) => { if (!cancelled) setTemplates(Array.isArray(data) ? data : []); })
+        .then((data) => {
+          if (cancelled) return;
+          const withStructure = (Array.isArray(data) ? data : []).filter(
+            (t: PostTemplate) => (t.structure_text || "").trim()
+          );
+          setTemplates(withStructure);
+          setTemplateId((prev) => (prev && !withStructure.some((t: PostTemplate) => t.id === prev) ? "" : prev));
+        })
         .catch(() => {})
     );
     return () => { cancelled = true; };
@@ -2700,7 +2762,9 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                 <option value={3}>3</option>
               </select>
             </label>
-            {templates.length > 0 && (
+            {/* Toujours visible (retour Alex ALE-222) : caché derrière le chargement de la
+                bibliothèque, le menu semblait ne pas exister. Vide → texte d'aide. */}
+            {isAuthed && (
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", flexWrap: "wrap" }}>
                 Template :
                 <select
@@ -2710,10 +2774,14 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                 >
                   <option value="">Aucun (structure libre)</option>
                   {templates.map((t) => (
-                    <option key={t.id} value={t.id}>{t.structure_label}</option>
+                    <option key={t.id} value={t.id}>{libraryEntryTitle(t)}</option>
                   ))}
                 </select>
-                {templateId && templates.find((t) => t.id === templateId)?.image_note ? (
+                {templates.length === 0 ? (
+                  <span style={{ fontSize: 12 }}>
+                    Ajoute des posts dans Contenu › Ma bibliothèque pour avoir des templates de structure.
+                  </span>
+                ) : templateId && templates.find((t) => t.id === templateId)?.image_note ? (
                   <span style={{ fontSize: 12 }}>
                     🖼 {templates.find((t) => t.id === templateId)?.image_note}
                   </span>
@@ -3153,7 +3221,6 @@ function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAut
 
 type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null; image_url?: string | null; source_url?: string | null };
 type IdeaSeed = { id: string; text: string; comment?: string | null; used_at?: string | null; created_at?: string };
-type ReferencePost = { id: string; text: string; url?: string | null; author?: string | null; note?: string | null; created_at?: string };
 type IdeaLine = { id?: string; line: string; source_type?: string; source_ref?: string; source_url?: string };
 type DailyIdeaCard = Pick<Idea, "title" | "hook" | "hook_type" | "funnel" | "angle" | "why_it_works" | "estimated_lift">;
 
@@ -3220,16 +3287,6 @@ function DailyIdeasView({
   const [editSeedText, setEditSeedText] = useState("");
   const [editSeedComment, setEditSeedComment] = useState("");
   const [savingSeedEdit, setSavingSeedEdit] = useState(false);
-
-  // ALE-67 : posts de référence (boîte à idées) — posts trouvés ailleurs dont
-  // l'IA s'inspire (fond et forme) à la génération.
-  const [refs, setRefs] = useState<ReferencePost[]>([]);
-  const [refDraft, setRefDraft] = useState("");
-  const [refAuthor, setRefAuthor] = useState("");
-  const [refUrl, setRefUrl] = useState("");
-  const [refNote, setRefNote] = useState("");
-  const [addingRef, setAddingRef] = useState(false);
-  const [refError, setRefError] = useState("");
 
   // ALE-143 : lot d'idées « une ligne »
   const [ideaBatch, setIdeaBatch] = useState<IdeaLine[]>([]);
@@ -3392,12 +3449,6 @@ function DailyIdeasView({
       const sData = await sRes.json();
       if (!sRes.ok) throw new Error(sData.detail || "Chargement du réservoir impossible");
       setSeeds(Array.isArray(sData) ? sData : []);
-      // Posts de référence : best-effort (la table peut ne pas encore exister).
-      try {
-        const rRes = await fetch(`${DIRECT_API_URL}/me/reference-posts`, { headers });
-        const rData = await rRes.json();
-        if (rRes.ok) setRefs(Array.isArray(rData) ? rData : []);
-      } catch { /* section vide, sans bloquer le réservoir */ }
       if (!reservoirOnly) {
         const dRes = await fetch(`${DIRECT_API_URL}/me/daily-ideas`, { headers });
         const dData = await dRes.json();
@@ -3414,7 +3465,7 @@ function DailyIdeasView({
 
   useEffect(() => {
     if (isAuthed) void loadAll();
-    else { setIdeas([]); setSeeds([]); setRefs([]); setEnabled(false); }
+    else { setIdeas([]); setSeeds([]); setEnabled(false); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
@@ -3473,44 +3524,6 @@ function DailyIdeasView({
     setSeeds((prev) => prev.filter((s) => s.id !== id));
     try {
       await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, { method: "DELETE", headers: await authHeaders() });
-    } catch { void loadAll(); }
-  }
-
-  // ALE-67 : ajout / suppression d'un post de référence.
-  // Deux modes : lien LinkedIn seul (le backend importe texte + auteur) ou texte collé.
-  const refUrlValid = /^https?:\/\/\S+$/i.test(refUrl.trim());
-  const refCanAdd = refUrlValid || refDraft.trim().length >= 10;
-
-  async function addRef() {
-    if (!refCanAdd) return;
-    setAddingRef(true);
-    setRefError("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/reference-posts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({
-          text: refDraft.trim() || null,
-          url: refUrl.trim() || null,
-          author: refAuthor.trim() || null,
-          note: refNote.trim() || null,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Ajout impossible");
-      setRefs((prev) => [data, ...prev]);
-      setRefDraft(""); setRefAuthor(""); setRefUrl(""); setRefNote("");
-    } catch (err: any) {
-      setRefError(err.message || "Ajout impossible");
-    } finally {
-      setAddingRef(false);
-    }
-  }
-
-  async function deleteRef(id: string) {
-    setRefs((prev) => prev.filter((r) => r.id !== id));
-    try {
-      await fetch(`${DIRECT_API_URL}/me/reference-posts/${id}`, { method: "DELETE", headers: await authHeaders() });
     } catch { void loadAll(); }
   }
 
@@ -4034,101 +4047,14 @@ function DailyIdeasView({
         )}
       </div>
 
-      {/* ALE-67 : posts de référence — l'IA s'en inspire (fond et forme) à la génération. */}
-      <div className="card daily-reservoir" style={{ marginTop: 24 }}>
-        <div className="daily-reservoir-head">
-          <div>
-            <h3 className="daily-subtitle" style={{ margin: 0 }}><Bookmark size={16} /> Mes posts de référence</h3>
-            <p className="section-desc" style={{ margin: "4px 0 0" }}>
-              Ajoute des posts qui t&apos;ont plu (lien LinkedIn ou texte collé) : l&apos;IA s&apos;en inspire — sujet, angle, structure — en les réécrivant pour toi.
-            </p>
-          </div>
-        </div>
-
-        <div className="ref-add" style={{ marginTop: 12, display: "grid", gap: 8 }}>
-          <input
-            type="text"
-            value={refUrl}
-            onChange={(e) => setRefUrl(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addRef(); } }}
-            placeholder="Colle le lien du post LinkedIn — texte et auteur importés automatiquement"
-            maxLength={2000}
-          />
-          <textarea
-            value={refDraft}
-            onChange={(e) => setRefDraft(e.target.value)}
-            placeholder="…ou colle directement le texte du post (utile seulement sans lien)"
-            maxLength={6000}
-            rows={2}
-          />
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <input
-              type="text"
-              value={refAuthor}
-              onChange={(e) => setRefAuthor(e.target.value)}
-              placeholder="Auteur (optionnel)"
-              maxLength={200}
-              style={{ flex: "1 1 160px" }}
-            />
-            <input
-              type="text"
-              value={refNote}
-              onChange={(e) => setRefNote(e.target.value)}
-              placeholder="Pourquoi il te plaît ? (optionnel) — ex. « l'accroche choc »"
-              maxLength={500}
-              style={{ flex: "2 1 220px" }}
-            />
-          </div>
-          <div>
-            <button className="primary-button" onClick={addRef} disabled={addingRef || !refCanAdd}>
-              {addingRef ? <Loader2 size={14} className="spinning" /> : <BookmarkPlus size={14} />}
-              {addingRef && refUrlValid && refDraft.trim().length < 10 ? " Import du post…" : " Ajouter ce post"}
-            </button>
-          </div>
-        </div>
-        {refError && <div className="error" style={{ marginTop: 8 }}>{refError}</div>}
-
-        {refs.length === 0 ? (
-          <p style={{ color: "var(--muted)", margin: "12px 0 0", fontSize: 13 }}>
-            {loading
-              ? "Chargement de tes posts de référence…"
-              : "Aucun post de référence — la génération s'appuiera sur ton benchmark et ton réservoir."}
-          </p>
-        ) : (
-          <ul className="daily-seed-list">
-            {refs.map((r) => (
-              <li key={r.id}>
-                <span className="daily-seed-text" style={{ display: "grid", gap: 4 }}>
-                  <span style={{ whiteSpace: "pre-wrap" }}>
-                    {r.text.length > 280 ? `${r.text.slice(0, 280)}…` : r.text}
-                  </span>
-                  {(r.author || r.url) && (
-                    <em style={{ fontSize: 12, color: "var(--muted)" }}>
-                      {r.author}
-                      {r.author && r.url ? " — " : ""}
-                      {r.url ? <a href={r.url} target="_blank" rel="noreferrer">voir le post</a> : null}
-                    </em>
-                  )}
-                  {r.note ? (
-                    <em style={{ fontSize: 12, color: "var(--muted)" }}>↳ pourquoi : {r.note}</em>
-                  ) : null}
-                </span>
-                {!reservoirOnly && (
-                  <button
-                    className="secondary-button"
-                    style={{ fontSize: 12, minHeight: 28, padding: "0 10px", whiteSpace: "nowrap" }}
-                    title="Générer un post inspiré de celui-ci (angle, structure, fond — réécrit pour toi)"
-                    onClick={() => onReuse(`Inspire-toi de ce post de référence — reprends l'angle, la structure ou le fond, mais réécris-le entièrement pour moi :\n\n« ${r.text.slice(0, 1200)} »`)}
-                  >
-                    <Sparkles size={12} /> Générer un post inspiré
-                  </button>
-                )}
-                <button className="icon-button" title="Supprimer" onClick={() => deleteRef(r.id)}><Trash2 size={14} /></button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {/* ALE-222 : les posts de référence ont déménagé dans « Ma bibliothèque ».
+          Renvoi affiché une release, le temps que les habitudes suivent. */}
+      {!reservoirOnly && (
+        <p style={{ color: "var(--muted)", marginTop: 16, fontSize: 13 }}>
+          <Bookmark size={12} style={{ verticalAlign: "-2px" }} /> Tes posts de référence sont désormais dans
+          {" "}<strong>Contenu › Ma bibliothèque</strong>, avec tes templates.
+        </p>
+      )}
     </div>
   );
 }
@@ -7570,8 +7496,6 @@ function MonitoringFeedView({
   const [checkMsg, setCheckMsg] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
-  const [savingTplId, setSavingTplId] = useState<string | null>(null);
-  const [savedTplIds, setSavedTplIds] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   async function load() {
@@ -7616,20 +7540,24 @@ function MonitoringFeedView({
     }
   }
 
-  // « Garder pour plus tard » → boîte à idées (posts de référence, ALE-67).
-  async function keepForLater(p: MonitoredPost) {
+  // ALE-222 : « Garder dans ma bibliothèque » — remplace « Garder pour plus tard »
+  // (posts de référence) + « Garder comme template » : une seule entrée avec le
+  // texte, l'image et la structure extraite par l'IA (best-effort côté serveur).
+  async function keepInLibrary(p: MonitoredPost) {
     if (!p.text) return;
     setSavingId(p.id);
     setError("");
     try {
-      const res = await fetch(`${DIRECT_API_URL}/me/reference-posts`, {
+      const res = await fetch(`${DIRECT_API_URL}/me/post-templates`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
           text: p.text,
           url: p.url || null,
           author: p.influencer_name || p.influencer_handle || null,
+          image_url: firstImage(p),
           note: "Repéré via la veille",
+          source: "influencer",
         }),
       });
       const data = await res.json();
@@ -7647,33 +7575,6 @@ function MonitoringFeedView({
     onInspire(
       `Inspire-toi de ce post de ${who} — reprends l'angle, la structure ou le fond, mais réécris-le entièrement pour moi :\n\n« ${(p.text || "").slice(0, 1200)} »`
     );
-  }
-
-  // ALE-217 : « Garder comme template » → l'IA extrait le squelette (jamais le contenu)
-  // et le range dans la banque de templates avec l'image du post.
-  async function keepAsTemplate(p: MonitoredPost) {
-    if (!p.text) return;
-    setSavingTplId(p.id);
-    setError("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/post-templates/from-post`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({
-          text: p.text,
-          image_url: firstImage(p),
-          author: p.influencer_name || p.influencer_handle || null,
-          url: p.url || null,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Extraction impossible");
-      setSavedTplIds((prev) => ({ ...prev, [p.id]: true }));
-    } catch (err: any) {
-      setError(err.message || "Extraction impossible");
-    } finally {
-      setSavingTplId(null);
-    }
   }
 
   const fmtFeedDate = (s?: string | null) => {
@@ -7797,26 +7698,13 @@ function MonitoringFeedView({
                       className="secondary-button"
                       style={{ fontSize: 12, minHeight: 30, padding: "0 12px" }}
                       disabled={savingId === p.id || !!savedIds[p.id]}
-                      title="Enregistre ce post dans tes posts de référence (boîte à idées)"
-                      onClick={() => void keepForLater(p)}
+                      title="Garde ce post (texte, image, structure extraite par l'IA) dans Contenu › Ma bibliothèque"
+                      onClick={() => void keepInLibrary(p)}
                     >
                       {savingId === p.id
                         ? <Loader2 size={12} className="spinning" />
                         : savedIds[p.id] ? <CheckCircle2 size={12} /> : <BookmarkPlus size={12} />}
-                      {savedIds[p.id] ? " Gardé ✓" : " Garder pour plus tard"}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      style={{ fontSize: 12, minHeight: 30, padding: "0 12px" }}
-                      disabled={savingTplId === p.id || !!savedTplIds[p.id]}
-                      title="L'IA extrait la structure de ce post (jamais son contenu) et la range dans tes templates avec son image"
-                      onClick={() => void keepAsTemplate(p)}
-                    >
-                      {savingTplId === p.id
-                        ? <Loader2 size={12} className="spinning" />
-                        : savedTplIds[p.id] ? <CheckCircle2 size={12} /> : <ListChecks size={12} />}
-                      {savedTplIds[p.id] ? " Template ✓" : savingTplId === p.id ? " Extraction…" : " Garder comme template"}
+                      {savedIds[p.id] ? " Gardé ✓" : savingId === p.id ? " Extraction…" : " Garder dans ma bibliothèque"}
                     </button>
                     {p.url && (
                       <a href={p.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "var(--muted)" }}>
@@ -7926,11 +7814,16 @@ function AnalyzeHub({
 }
 
 /** Onglet « Contenu » : regroupe Idée du jour, Générateur et Mes contenus en sous-onglets. */
-/** ALE-216 : banque de templates — structures de posts + type d'image, réutilisées à la génération. */
+/** ALE-222 : « Ma bibliothèque » — fusion posts de référence (ALE-67) + templates (ALE-216).
+ *  Une entrée peut porter un texte de post (inspiration à la génération), une
+ *  structure (template sélectionnable au Générateur) et/ou une image (référence
+ *  visuelle pour l'image IA). */
 type PostTemplate = {
   id: string;
-  structure_label: string;
-  structure_text: string;
+  structure_label?: string | null;
+  structure_text?: string | null;
+  post_text?: string | null;
+  note?: string | null;
   format?: string | null;
   image_url?: string | null;
   image_note?: string | null;
@@ -7940,21 +7833,34 @@ type PostTemplate = {
   created_at?: string;
 };
 
-function TemplatesView({
+function libraryEntryTitle(t: PostTemplate): string {
+  if (t.structure_label) return t.structure_label;
+  if (t.source_author) return t.source_author;
+  const text = (t.post_text || "").trim();
+  return text.length > 60 ? `${text.slice(0, 60)}…` : text || "Entrée";
+}
+
+function MyLibraryView({
   isAuthed,
   requireAuth,
+  onReuse,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onReuse: (topic: string) => void;
 }) {
-  const [templates, setTemplates] = useState<PostTemplate[]>([]);
+  const [entries, setEntries] = useState<PostTemplate[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [url, setUrl] = useState("");
+  const [text, setText] = useState("");
+  const [note, setNote] = useState("");
   const [label, setLabel] = useState("");
   const [structure, setStructure] = useState("");
   const [imageNote, setImageNote] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [adding, setAdding] = useState(false);
+  const [extractingId, setExtractingId] = useState<string | null>(null);
 
   async function load() {
     if (!isAuthed) return;
@@ -7963,8 +7869,8 @@ function TemplatesView({
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/post-templates`, { headers: await authHeaders() });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Chargement des templates impossible");
-      setTemplates(Array.isArray(data) ? data : []);
+      if (!res.ok) throw new Error(data.detail || "Chargement de la bibliothèque impossible");
+      setEntries(Array.isArray(data) ? data : []);
     } catch (err: any) {
       setError(err.message || "Chargement impossible");
     } finally {
@@ -7974,12 +7880,16 @@ function TemplatesView({
 
   useEffect(() => {
     if (isAuthed) void load();
-    else setTemplates([]);
+    else setEntries([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
-  async function addTemplate() {
-    if (label.trim().length < 3 || structure.trim().length < 10) return;
+  // Miroir de la matrice serveur : lien valide OU texte ≥ 10 OU structure ≥ 10.
+  const urlOk = /^https?:\/\//i.test(url.trim());
+  const canAdd = urlOk || text.trim().length >= 10 || structure.trim().length >= 10;
+
+  async function addEntry() {
+    if (!canAdd || adding) return;
     setAdding(true);
     setError("");
     try {
@@ -7987,16 +7897,19 @@ function TemplatesView({
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
-          structure_label: label.trim(),
-          structure_text: structure.trim(),
+          url: url.trim() || null,
+          text: text.trim() || null,
+          note: note.trim() || null,
+          structure_label: label.trim() || null,
+          structure_text: structure.trim() || null,
           image_note: imageNote.trim() || null,
           image_url: imageUrl.trim() || null,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Ajout impossible");
-      setTemplates((prev) => [data, ...prev]);
-      setLabel(""); setStructure(""); setImageNote(""); setImageUrl("");
+      setEntries((prev) => [data, ...prev]);
+      setUrl(""); setText(""); setNote(""); setLabel(""); setStructure(""); setImageNote(""); setImageUrl("");
     } catch (err: any) {
       setError(err.message || "Ajout impossible");
     } finally {
@@ -8004,8 +7917,26 @@ function TemplatesView({
     }
   }
 
-  async function deleteTemplate(id: string) {
-    setTemplates((prev) => prev.filter((t) => t.id !== id));
+  async function extractStructure(id: string) {
+    setExtractingId(id);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/post-templates/${id}/extract-structure`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Extraction impossible");
+      setEntries((prev) => prev.map((t) => (t.id === id ? data : t)));
+    } catch (err: any) {
+      setError(err.message || "Extraction impossible");
+    } finally {
+      setExtractingId(null);
+    }
+  }
+
+  async function deleteEntry(id: string) {
+    setEntries((prev) => prev.filter((t) => t.id !== id));
     try {
       await fetch(`${DIRECT_API_URL}/me/post-templates/${id}`, { method: "DELETE", headers: await authHeaders() });
     } catch { void load(); }
@@ -8015,11 +7946,11 @@ function TemplatesView({
     return (
       <div className="card" style={{ textAlign: "center", padding: 40 }}>
         <Lock size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
-        <h2 style={{ margin: "0 0 8px" }}>Templates</h2>
+        <h2 style={{ margin: "0 0 8px" }}>Ma bibliothèque</h2>
         <p style={{ color: "var(--muted)", marginBottom: 16 }}>
-          Connecte-toi pour garder en stock tes structures de posts préférées et les réutiliser à la génération.
+          Connecte-toi pour garder les posts qui t&apos;ont plu et tes structures préférées — l&apos;IA s&apos;en inspire à la génération.
         </p>
-        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour ta banque de templates.")}>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour ta bibliothèque.")}>
           <Sparkles size={14} /> Créer un compte gratuit
         </button>
       </div>
@@ -8030,99 +7961,173 @@ function TemplatesView({
     <div>
       <div className="section-header" style={{ marginBottom: 16 }}>
         <div>
-          <h2 className="section-title"><ListChecks size={20} /> Templates de posts</h2>
+          <h2 className="section-title"><ListChecks size={20} /> Ma bibliothèque</h2>
           <p className="section-desc">
-            Garde en stock des structures qui marchent (ex. « accroche choc + 3 bullets + CTA ») et le type d&apos;image qui va avec.
-            Au moment de générer, choisis un template : le post respectera cette structure — sans copier le contenu de personne.
+            Garde ici tout ce qui te sert de référence : des posts qui t&apos;ont plu et des structures qui marchent.
+            L&apos;IA s&apos;inspire des textes à chaque génération (toujours réécrits, jamais copiés), les structures sont
+            proposées comme templates dans le Générateur, et les images servent de référence visuelle pour l&apos;image IA.
           </p>
         </div>
       </div>
 
       <div className="card daily-reservoir">
-        <h3 className="daily-subtitle" style={{ margin: 0 }}><PlusCircle size={16} /> Ajouter un template</h3>
+        <h3 className="daily-subtitle" style={{ margin: 0 }}><PlusCircle size={16} /> Ajouter à ma bibliothèque</h3>
         <div className="ref-add" style={{ marginTop: 12, display: "grid", gap: 8 }}>
-          <input
-            type="text"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder="Nom du template — ex. « Accroche choc + 3 bullets + CTA »"
-            maxLength={200}
-          />
-          <textarea
-            value={structure}
-            onChange={(e) => setStructure(e.target.value)}
-            placeholder={"La structure, ligne par ligne — ex. :\n1. Accroche en une phrase choc\n2. 3 bullets avec un chiffre chacun\n3. Question finale pour faire commenter"}
-            maxLength={4000}
-            rows={4}
-          />
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input
               type="text"
-              value={imageNote}
-              onChange={(e) => setImageNote(e.target.value)}
-              placeholder="Type d'image (optionnel) — ex. « juste deux logos côte à côte »"
-              maxLength={500}
-              style={{ flex: "2 1 220px" }}
-            />
-            <input
-              type="text"
-              value={imageUrl}
-              onChange={(e) => setImageUrl(e.target.value)}
-              placeholder="Lien d'une image d'exemple (optionnel)"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addEntry(); } }}
+              placeholder="Colle le lien du post LinkedIn — texte, auteur, image et structure importés automatiquement"
               maxLength={2000}
-              style={{ flex: "1 1 180px" }}
+              style={{ flex: "1 1 320px" }}
             />
-          </div>
-          <div>
-            <button
-              className="primary-button"
-              onClick={addTemplate}
-              disabled={adding || label.trim().length < 3 || structure.trim().length < 10}
-            >
-              {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter le template
+            <button className="primary-button" onClick={addEntry} disabled={adding || !canAdd}>
+              {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter à ma bibliothèque
             </button>
           </div>
+          <details>
+            <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--muted)" }}>Plus d&apos;options — texte collé, structure à la main, image</summary>
+            <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Ou colle le texte du post directement (si tu n'as pas le lien)"
+                maxLength={6000}
+                rows={4}
+              />
+              <input
+                type="text"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Pourquoi il te plaît ? (optionnel — guide l'IA)"
+                maxLength={500}
+              />
+              <input
+                type="text"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="Nom de la structure (optionnel) — ex. « Accroche choc + 3 bullets + CTA »"
+                maxLength={200}
+              />
+              <textarea
+                value={structure}
+                onChange={(e) => setStructure(e.target.value)}
+                placeholder={"Structure à la main (optionnel), ligne par ligne — ex. :\n1. Accroche en une phrase choc\n2. 3 bullets avec un chiffre chacun\n3. Question finale pour faire commenter"}
+                maxLength={4000}
+                rows={4}
+              />
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <input
+                  type="text"
+                  value={imageNote}
+                  onChange={(e) => setImageNote(e.target.value)}
+                  placeholder="Type d'image (optionnel) — ex. « juste deux logos côte à côte »"
+                  maxLength={500}
+                  style={{ flex: "2 1 220px" }}
+                />
+                <input
+                  type="text"
+                  value={imageUrl}
+                  onChange={(e) => setImageUrl(e.target.value)}
+                  placeholder="Lien d'une image d'exemple (optionnel)"
+                  maxLength={2000}
+                  style={{ flex: "1 1 180px" }}
+                />
+              </div>
+            </div>
+          </details>
         </div>
         {error && <div className="error" style={{ marginTop: 8 }}>{error}</div>}
       </div>
 
       <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
-        {loading && templates.length === 0 ? (
+        {loading && entries.length === 0 ? (
           <div className="card" style={{ textAlign: "center", padding: 24 }}>
             <Loader2 size={20} className="spinning" style={{ opacity: 0.5 }} />
           </div>
-        ) : templates.length === 0 ? (
+        ) : entries.length === 0 ? (
           <div className="card" style={{ textAlign: "center", padding: 24 }}>
             <p style={{ margin: 0, color: "var(--muted)" }}>
-              Aucun template pour l&apos;instant — ajoute ta première structure ci-dessus, tu la retrouveras dans le Générateur.
+              Ta bibliothèque est vide — colle le lien d&apos;un post qui t&apos;a plu ci-dessus, tu le retrouveras
+              comme inspiration et comme template dans le Générateur.
             </p>
           </div>
         ) : (
-          templates.map((t) => (
-            <div key={t.id} className="card" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-                  <strong>{t.structure_label}</strong>
-                  {t.source === "influencer" && (
-                    <span className="daily-seed-tag">depuis la veille{t.source_author ? ` · ${t.source_author}` : ""}</span>
+          entries.map((t) => {
+            const postText = (t.post_text || "").trim();
+            const structureText = (t.structure_text || "").trim();
+            return (
+              <div key={t.id} className="card" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+                    <strong>{libraryEntryTitle(t)}</strong>
+                    {postText && <span className="daily-seed-tag">texte</span>}
+                    {structureText && <span className="daily-seed-tag">structure</span>}
+                    {t.image_url && <span className="daily-seed-tag">image</span>}
+                    {t.source === "influencer" && (
+                      <span className="daily-seed-tag">depuis la veille{t.source_author ? ` · ${t.source_author}` : ""}</span>
+                    )}
+                  </div>
+                  {postText && (
+                    <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
+                      {postText.length > 300 ? `${postText.slice(0, 300)}…` : postText}
+                    </p>
                   )}
+                  {structureText && (
+                    <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
+                      <ListChecks size={12} style={{ verticalAlign: "-2px" }} />{" "}
+                      {structureText.length > 400 ? `${structureText.slice(0, 400)}…` : structureText}
+                    </p>
+                  )}
+                  {t.note && (
+                    <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>↳ pourquoi : {t.note}</p>
+                  )}
+                  {t.image_note && (
+                    <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                      <ImageIcon size={12} style={{ verticalAlign: "-2px" }} /> Image : {t.image_note}
+                    </p>
+                  )}
+                  {(t.source_author || t.source_post_url) && !t.structure_label && (
+                    <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                      {t.source_post_url ? (
+                        <a href={t.source_post_url} target="_blank" rel="noreferrer">voir le post</a>
+                      ) : null}
+                    </p>
+                  )}
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                    {postText && (
+                      <button
+                        className="secondary-button"
+                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
+                        title="Générer un post inspiré de celui-ci (angle, structure, fond — réécrit pour toi)"
+                        onClick={() => onReuse(`Inspire-toi de ce post de référence — reprends l'angle, la structure ou le fond, mais réécris-le entièrement pour moi :\n\n« ${postText.slice(0, 1200)} »`)}
+                      >
+                        <Sparkles size={12} /> Générer un post inspiré
+                      </button>
+                    )}
+                    {postText && !structureText && (
+                      <button
+                        className="secondary-button"
+                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
+                        title="Extraire la structure de ce post (IA) — il deviendra sélectionnable comme template dans le Générateur"
+                        onClick={() => extractStructure(t.id)}
+                        disabled={extractingId === t.id}
+                      >
+                        {extractingId === t.id ? <Loader2 size={12} className="spinning" /> : <ListChecks size={12} />} Extraire la structure
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
-                  {t.structure_text.length > 400 ? `${t.structure_text.slice(0, 400)}…` : t.structure_text}
-                </p>
-                {t.image_note && (
-                  <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
-                    <ImageIcon size={12} style={{ verticalAlign: "-2px" }} /> Image : {t.image_note}
-                  </p>
+                {t.image_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={t.image_url} alt="" style={{ width: 90, maxHeight: 90, objectFit: "cover", borderRadius: 8, flex: "0 0 auto" }} />
                 )}
+                <button className="icon-button" title="Supprimer" onClick={() => deleteEntry(t.id)}><Trash2 size={14} /></button>
               </div>
-              {t.image_url && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={t.image_url} alt="" style={{ width: 90, maxHeight: 90, objectFit: "cover", borderRadius: 8, flex: "0 0 auto" }} />
-              )}
-              <button className="icon-button" title="Supprimer" onClick={() => deleteTemplate(t.id)}><Trash2 size={14} /></button>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>
@@ -8156,7 +8161,8 @@ function ContentHub({
     { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} /> },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} /> },
     { key: "library", label: "Mes contenus", icon: <Bookmark size={14} /> },
-    { key: "templates", label: "Templates", icon: <ListChecks size={14} /> },
+    // ⚠️ La clé interne reste "templates" ("library" = Mes contenus) ; seul le label change (ALE-222).
+    { key: "templates", label: "Ma bibliothèque", icon: <ListChecks size={14} /> },
   ];
 
   // Compte client restreint : on ne montre que le réservoir d'idées, sans sous-onglets.
@@ -8190,7 +8196,7 @@ function ContentHub({
         <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
       )}
       {tab === "templates" && (
-        <TemplatesView isAuthed={isAuthed} requireAuth={requireAuth} />
+        <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
       )}
     </div>
   );

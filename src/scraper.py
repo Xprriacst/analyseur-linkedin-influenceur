@@ -70,11 +70,15 @@ POST_DETAIL_ACTOR = "apimaestro/linkedin-post-detail"
 
 
 def fetch_post_detail(post_url: str) -> dict[str, Any] | None:
-    """Scrape un post LinkedIn isolé par son URL (import d'un post de référence).
+    """Scrape un post LinkedIn isolé par son URL (import dans la bibliothèque).
 
-    Retourne {text, author, url} ou None si le post est illisible — l'appelant
-    demande alors à l'utilisateur de coller le texte lui-même.
+    Retourne {text, author, url, image_url} ou None si le post est illisible —
+    l'appelant demande alors à l'utilisateur de coller le texte lui-même.
+    L'URL d'image est stockée telle quelle (pas de re-hosting) : le
+    téléchargement en aval passe par le garde-fou net_guard (ALE-221).
     """
+    from src.normalize import extract_media
+
     actor = os.environ.get("APIFY_POST_ACTOR", POST_DETAIL_ACTOR)
     try:
         run = _call_actor(actor, {"post_urls": [post_url.strip()]}, timeout_secs=120)
@@ -89,10 +93,17 @@ def fetch_post_detail(post_url: str) -> dict[str, Any] | None:
             continue
         track_apify(actor, 1, cached=False)
         author = (item.get("author") or {}).get("name")
+        # apimaestro post-detail range les médias à la racine de l'item, pas dans
+        # le bloc post (vérifié sur le dataset réel) — on regarde les deux.
+        media_source = {**post, "media": item.get("media") or post.get("media")}
+        image_url = next(
+            (m["url"] for m in extract_media(media_source) if m.get("type") == "image"), None
+        )
         return {
             "text": text,
             "author": (author or "").strip() or None,
             "url": post.get("url") or post_url,
+            "image_url": image_url,
         }
     return None
 
