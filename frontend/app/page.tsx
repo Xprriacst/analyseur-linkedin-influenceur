@@ -274,7 +274,9 @@ function InstagramIcon({ size = 14 }: { size?: number }) {
 type AnalyzeTab = "analyze" | "influencers" | "monitoring";
 
 /** Sous-onglets de la vue « Contenu » (idée du jour, générateur, mes contenus fusionnés). */
-type ContentTab = "daily" | "generator" | "library" | "templates";
+// ALE-223 : « Mes contenus » et « Ma bibliothèque » fusionnés dans un seul
+// sous-onglet (clé "library", label « Ma bibliothèque »), présenté en tiroirs.
+type ContentTab = "daily" | "generator" | "library";
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
 const steps = [
@@ -4061,6 +4063,48 @@ function DailyIdeasView({
   );
 }
 
+// ALE-223 : tiroir repliable réutilisable pour l'onglet « Ma bibliothèque »
+// (contenus sauvegardés / posts programmés / références & templates).
+function LibDrawer({
+  icon,
+  title,
+  desc,
+  open,
+  onToggle,
+  right,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  desc?: string;
+  open: boolean;
+  onToggle: () => void;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section style={{ marginBottom: 24 }}>
+      <div className="section-header" style={{ marginBottom: open ? 16 : 0 }}>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={open}
+          title={open ? "Replier" : "Déplier"}
+          style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", color: "inherit", flex: 1, minWidth: 0 }}
+        >
+          <ChevronRight size={20} style={{ marginTop: 2, flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+          <div>
+            <h2 className="section-title">{icon} {title}</h2>
+            {desc && <p className="section-desc">{desc}</p>}
+          </div>
+        </button>
+        {right}
+      </div>
+      {open && children}
+    </section>
+  );
+}
+
 function LibraryView({
   isAuthed,
   requireAuth,
@@ -4079,9 +4123,10 @@ function LibraryView({
   const [editedPosts, setEditedPosts] = useState<Record<string, string>>({});
   const [savingPost, setSavingPost] = useState<string | null>(null);
   const [savedPost, setSavedPost] = useState<string | null>(null);
-  // Tiroir repliable : permet de masquer la liste des posts sauvegardés pour atteindre
-  // la section « Posts programmés » sans scroller tout en bas.
-  const [savedOpen, setSavedOpen] = useState(false);
+  // Tiroirs repliables (ALE-223) : les contenus sauvegardés sont ouverts par défaut,
+  // les posts programmés repliés.
+  const [savedOpen, setSavedOpen] = useState(true);
+  const [scheduledOpen, setScheduledOpen] = useState(false);
   const slack = useSlack(isAuthed);
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
@@ -4637,13 +4682,13 @@ function LibraryView({
       )}
 
       {linkedin.status?.connected && (
-        <div style={{ marginTop: 32 }}>
-          <div className="section-header" style={{ marginBottom: 16 }}>
-            <div>
-              <h2 className="section-title"><Clock3 size={20} /> Posts programmés</h2>
-              <p className="section-desc">Posts en attente de publication ou déjà publiés via la programmation LinkedIn.</p>
-            </div>
-          </div>
+        <LibDrawer
+          icon={<Clock3 size={20} />}
+          title={`Posts programmés${scheduledPosts.length ? ` (${scheduledPosts.length})` : ""}`}
+          desc="Posts en attente de publication ou déjà publiés via la programmation LinkedIn."
+          open={scheduledOpen}
+          onToggle={() => setScheduledOpen((v) => !v)}
+        >
           {scheduledPosts.length === 0 ? (
             <div className="card" style={{ padding: 24, textAlign: "center", color: "var(--muted)" }}>
               Aucun post programmé pour l'instant. Programme un post depuis le Générateur.
@@ -4689,7 +4734,7 @@ function LibraryView({
               })}
             </div>
           )}
-        </div>
+        </LibDrawer>
       )}
 
       {imageModalSaved && (
@@ -7839,6 +7884,8 @@ function MyLibraryView({
   requireAuth: (reason?: string, mode?: AuthMode) => void;
   onReuse: (topic: string) => void;
 }) {
+  // ALE-223 : rendu en tiroir repliable au sein de l'onglet « Ma bibliothèque ».
+  const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<PostTemplate[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -7948,18 +7995,13 @@ function MyLibraryView({
   }
 
   return (
-    <div>
-      <div className="section-header" style={{ marginBottom: 16 }}>
-        <div>
-          <h2 className="section-title"><ListChecks size={20} /> Ma bibliothèque</h2>
-          <p className="section-desc">
-            Garde ici tout ce qui te sert de référence : des posts qui t&apos;ont plu et des structures qui marchent.
-            L&apos;IA s&apos;inspire des textes à chaque génération (toujours réécrits, jamais copiés), les structures sont
-            proposées comme templates dans le Générateur, et les images servent de référence visuelle pour l&apos;image IA.
-          </p>
-        </div>
-      </div>
-
+    <LibDrawer
+      icon={<ListChecks size={20} />}
+      title={`Posts de référence & templates${entries.length ? ` (${entries.length})` : ""}`}
+      desc="Garde ici tout ce qui te sert de référence : des posts qui t'ont plu et des structures qui marchent. L'IA s'en inspire à la génération (toujours réécrits, jamais copiés), les structures deviennent des templates dans le Générateur, et les images servent de référence visuelle."
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
       <div className="card daily-reservoir">
         <h3 className="daily-subtitle" style={{ margin: 0 }}><PlusCircle size={16} /> Ajouter à ma bibliothèque</h3>
         <div className="ref-add" style={{ marginTop: 12, display: "grid", gap: 8 }}>
@@ -8120,6 +8162,45 @@ function MyLibraryView({
           })
         )}
       </div>
+    </LibDrawer>
+  );
+}
+
+// ALE-223 : onglet unique « Ma bibliothèque » regroupant, en tiroirs repliables,
+// les contenus sauvegardés + les posts programmés (LibraryView) et la bibliothèque
+// de références/templates (MyLibraryView).
+function MyContentHub({
+  isAuthed,
+  requireAuth,
+  onReuse,
+  onRework,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onReuse: (topic: string) => void;
+  onRework?: (post: string) => void;
+}) {
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <ListChecks size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Ma bibliothèque</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Connecte-toi pour retrouver tes contenus sauvegardés, tes posts programmés et ta bibliothèque de références.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour retrouver tes contenus.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <p className="section-desc" style={{ marginTop: 0, marginBottom: 20 }}>
+        Tes contenus sauvegardés, tes posts programmés et ta bibliothèque de références — repliés en tiroirs pour t&apos;y retrouver facilement.
+      </p>
+      <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
+      <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
     </div>
   );
 }
@@ -8150,9 +8231,9 @@ function ContentHub({
   const subTabs: { key: ContentTab; label: string; icon: React.ReactNode }[] = [
     { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} /> },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} /> },
-    { key: "library", label: "Mes contenus", icon: <Bookmark size={14} /> },
-    // ⚠️ La clé interne reste "templates" ("library" = Mes contenus) ; seul le label change (ALE-222).
-    { key: "templates", label: "Ma bibliothèque", icon: <ListChecks size={14} /> },
+    // ALE-223 : onglet unique regroupant contenus sauvegardés, posts programmés
+    // et bibliothèque de références/templates (voir MyContentHub).
+    { key: "library", label: "Ma bibliothèque", icon: <ListChecks size={14} /> },
   ];
 
   // Compte client restreint : on ne montre que le réservoir d'idées, sans sous-onglets.
@@ -8183,10 +8264,7 @@ function ContentHub({
       {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />}
       {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} onRework={onRework} />}
       {tab === "library" && (
-        <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
-      )}
-      {tab === "templates" && (
-        <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
+        <MyContentHub isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
       )}
     </div>
   );
