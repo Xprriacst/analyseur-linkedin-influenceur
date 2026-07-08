@@ -14,14 +14,17 @@ test("onglet Veille : sous-onglets Analyser / Mes influenceurs (Dashboard fusion
   await expect(page.locator(".tab", { hasText: "Dashboard" })).toHaveCount(0);
   // Sous-onglet par défaut : la zone de soumission de série.
   await expect(page.getByRole("heading", { name: /Analyser des profils/i })).toBeVisible();
-  // Bascule vers « Mes influenceurs » : la liste ET le dashboard global y sont rendus.
+  // Bascule vers « Mes influenceurs » : bloc « Tendances de ta veille » + classement épuré
+  // (l'ancien Dashboard global à 3 tableaux a été remplacé par cette vue).
   await page.locator(".tab", { hasText: "Mes influenceurs" }).click();
   await expect(page.getByRole("heading", { name: /^Mes influenceurs$/i })).toBeVisible();
-  await expect(page.getByRole("heading", { name: /Dashboard global/i })).toBeVisible();
+  await expect(page.getByText(/Tendances de ta veille/i).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: /Dashboard global/i })).toHaveCount(0);
   // ALE-214 : si des influenceurs sont listés, la colonne de veille (suivi) est présente.
   const influencersTable = page.locator("table.dash-table").first();
   if (await influencersTable.count()) {
     await expect(influencersTable.locator("th", { hasText: "Veille" })).toBeVisible();
+    await expect(influencersTable.locator("th", { hasText: "Rapport" })).toBeVisible();
   }
   await expect(page.locator(".error")).toHaveCount(0);
 });

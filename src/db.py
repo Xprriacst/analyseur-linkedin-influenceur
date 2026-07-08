@@ -321,6 +321,33 @@ def list_analyses(access_token: str, limit: int = 20) -> list[dict]:
     return resp.data or []
 
 
+def list_analysis_stats(access_token: str, platform: str = "linkedin") -> list[dict]:
+    """Current analyses with their stats + influencer metadata (no markdown).
+
+    Feeds the cross-report trends computation (src/trends.py).
+    """
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("analyses")
+        .select("id,handle,influencer_id,updated_at,stats,influencers(name,follower_count,platform)")
+        .eq("user_id", user["id"])
+        .order("updated_at", desc=True)
+        .execute()
+    )
+    rows = []
+    for row in resp.data or []:
+        inf = row.get("influencers") or {}
+        if isinstance(inf, list):
+            inf = inf[0] if inf else {}
+        if (inf.get("platform") or "linkedin") != platform:
+            continue
+        rows.append(row)
+    return rows
+
+
 def list_influencer_library(access_token: str) -> list[dict]:
     """One row per analyzed influencer — current analysis metadata only (no markdown)."""
     user = get_user(access_token)

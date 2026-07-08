@@ -203,45 +203,56 @@ type EditorialProfile = {
   market?: string | null;
   extra_context?: string | null;
 };
-type DashboardData = {
-  influencer_count: number;
-  influencers: {
-    handle: string;
-    name: string;
-    headline: string;
-    followers: number;
-    posts_analyzed: number;
-    posts_per_week: number | null;
-    avg_engagement: number;
-    median_comments: number;
-    engagement_rate_pct: number | null;
-    top_format: string;
-  }[];
-  aggregated: {
-    total_posts: number;
-    total_followers: number;
-    avg_likes: number;
-    median_likes: number;
-    avg_comments: number;
-    median_comments: number;
-    avg_reposts: number;
-    avg_engagement: number;
-    median_engagement: number;
-    format_distribution: Record<string, number>;
-    hook_distribution: Record<string, number>;
-    weekday_distribution: Record<string, number>;
-  };
+/** Tendances transverses calculées sur l'ensemble des rapports (GET /me/influencer-trends). */
+type TrendRow = {
+  key?: string;
+  label: string;
+  lift_pct: number;
+  posts: number;
+  reports?: number;
+  wins?: number;
 };
-
-type GrowthRow = {
+type TrendsRankingRow = {
+  influencer_id: string;
+  analysis_id: string;
   handle: string;
   name: string;
-  total_posts: number;
-  split_at: number;
-  date_post_split: string;
-  avg_eng_before: number;
-  avg_eng_after: number | null;
-  growth_pct: number | null;
+  followers: number;
+  median_engagement: number;
+  engagement_rate_pct: number | null;
+  posts: number;
+};
+type InfluencerTrends = {
+  insufficient?: boolean;
+  report_count: number;
+  post_count: number;
+  updated_at?: string | null;
+  min_reports?: number;
+  cta?: {
+    accounts: number;
+    winning: number;
+    ratio_median: number;
+    ratio_min: number;
+    ratio_max: number;
+    posts_with: number;
+    posts_without: number;
+  } | null;
+  comments_share?: { top_accounts: number; share_median_pct: number; share_max_pct: number } | null;
+  hooks?: TrendRow[];
+  stages?: TrendRow[];
+  formats?: TrendRow[];
+  length_buckets?: TrendRow[];
+  weekdays?: TrendRow[];
+  benchmark?: {
+    best: { name: string; followers: number; rate_pct: number };
+    biggest: { name: string; followers: number; rate_pct: number };
+    high_freq?: { threshold: number; accounts: number; max_rate_pct: number };
+  } | null;
+  frequency?: {
+    buckets: { label: string; accounts: number; median_rate_pct: number }[];
+    ratio: number | null;
+  } | null;
+  ranking: TrendsRankingRow[];
 };
 
 const mainViews = ["analyze", "profile", "assistant", "content", "inbox"] as const;
@@ -3234,7 +3245,7 @@ function DailyIdeasView({
       const res = await fetch(`${DIRECT_API_URL}/ideas`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ count: 15, web_search: batchWebSearch }),
+        body: JSON.stringify({ count: 3, web_search: batchWebSearch }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Génération impossible");
@@ -3613,7 +3624,7 @@ function DailyIdeasView({
           <div>
             <h3 style={{ margin: "0 0 4px" }}>💡 Générer des idées</h3>
             <p className="section-desc" style={{ margin: 0 }}>
-              Un lot de 15 idées en une ligne, ancrées dans tes vrais posts performants. 3 crédits/lot.
+              Un lot de 3 idées en une ligne, ancrées dans tes vrais posts performants. 3 crédits/lot.
             </p>
           </div>
           <div className="ideas-batch-actions">
@@ -6834,190 +6845,385 @@ function ProfileView({
   );
 }
 
-function GlobalDashboard() {
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [growth, setGrowth] = useState<GrowthRow[]>([]);
-  const [loading, setLoading] = useState(true);
+/* ─── Tendances de la veille : agrégation de tous les rapports (remplace le Dashboard global, ALE-132). ───
+   Les chiffres viennent de GET /me/influencer-trends (agrégation pure, aucun coût LLM) ; ce composant
+   ne fait que la mise en récit. Chaque « lift » compare une catégorie de posts à la performance
+   habituelle de son auteur, pour neutraliser les écarts de taille d'audience. */
 
-  useEffect(() => {
-    (async () => {
-      const headers = await authHeaders();
-      fetch(`${API_URL}/dashboard`, { headers })
-        .then((r) => r.json())
-        .then((d) => { setData(d); setLoading(false); })
-        .catch(() => setLoading(false));
-      fetch(`${API_URL}/dashboard/growth`, { headers })
-        .then((r) => r.json())
-        .then((d) => Array.isArray(d) && setGrowth(d))
-        .catch(() => null);
-    })();
-  }, []);
+function fmtLift(n: number) {
+  return n > 0 ? `+${n} %` : n < 0 ? `−${Math.abs(n)} %` : "±0 %";
+}
+function fmtKAbo(n: number) {
+  if (!n) return "—";
+  return n >= 1000 ? `${(n / 1000).toFixed(n < 10000 ? 1 : 0).replace(".", ",")} k` : String(n);
+}
+function fmtRatio(n: number) {
+  return `×${String(n).replace(".", ",")}`;
+}
+function fmtRatePct(n: number | null | undefined) {
+  if (n === null || n === undefined) return "—";
+  return `${n.toFixed(n >= 1 ? 1 : 2).replace(".", ",")} %`;
+}
+function initialsOf(name: string) {
+  return name.split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+}
 
-  if (loading) return <div className="hero"><div className="hero-content"><p>Chargement du dashboard en cours…</p></div></div>;
-  if (!data || data.influencer_count === 0) {
-    return (
-      <div className="hero">
-        <div className="hero-content">
-          <p className="eyebrow">Dashboard global</p>
-          <h1>Aucun influenceur <span className="gradient-text">analysé</span></h1>
-          <p>Lance d'abord des analyses dans l'onglet Analyser pour voir les stats cumulées ici.</p>
+function TrendBars({ rows, ariaLabel }: { rows: TrendRow[]; ariaLabel: string }) {
+  const max = Math.max(1, ...rows.map((r) => Math.abs(r.lift_pct)));
+  return (
+    <div className="tr-bars" role="img" aria-label={ariaLabel}>
+      {rows.map((r) => (
+        <div className="tr-bar-row" key={r.label}>
+          <span className="tr-bar-lbl" title={`${r.posts} posts`}>{r.label}</span>
+          <span className="tr-bar-track">
+            <span
+              className={`tr-bar-fill ${r.lift_pct >= 0 ? "pos" : "neg"}`}
+              style={{ width: `${Math.round((Math.abs(r.lift_pct) / max) * 50)}%` }}
+            />
+          </span>
+          <span className="tr-bar-val">{fmtLift(r.lift_pct)}</span>
         </div>
+      ))}
+    </div>
+  );
+}
+
+function escHtml(s: string) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+}
+
+/** Document imprimable (→ « Enregistrer en PDF » du navigateur) reprenant toutes les tendances + le classement. */
+function trendsPrintHtml(trends: InfluencerTrends): string {
+  const updated = trends.updated_at
+    ? new Date(trends.updated_at).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })
+    : "";
+  const barTable = (title: string, rows?: TrendRow[]) => {
+    if (!rows || !rows.length) return "";
+    const body = rows.map((r) =>
+      `<tr><td>${escHtml(r.label)}</td><td class="num ${r.lift_pct >= 0 ? "pos" : "neg"}">${fmtLift(r.lift_pct)}</td><td class="n">${r.posts} posts</td></tr>`
+    ).join("");
+    return `<section><h2>${escHtml(title)}</h2><table>${body}</table></section>`;
+  };
+  const cta = trends.cta;
+  const share = trends.comments_share;
+  const bench = trends.benchmark;
+  const freq = trends.frequency && trends.frequency.buckets.length ? trends.frequency : null;
+  const ranking = trends.ranking || [];
+  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Tendances de ma veille LinkedIn</title><style>
+    body{font-family:-apple-system,"Segoe UI",Roboto,sans-serif;color:#111;margin:40px auto;max-width:720px;padding:0 24px;font-size:13px;line-height:1.55}
+    h1{font-size:24px;letter-spacing:-.02em;margin:0 0 4px}.meta{color:#666;font-size:12px;margin:0 0 26px}
+    h2{font-size:15px;margin:26px 0 8px}.hero{font-size:40px;font-weight:700;letter-spacing:-.03em;margin:6px 0}
+    table{border-collapse:collapse;width:100%}td{padding:5px 8px;border-bottom:1px solid #e5e5e5}
+    td.num{text-align:right;font-weight:600;white-space:nowrap}td.n{text-align:right;color:#888;font-size:11px;white-space:nowrap}
+    .pos{color:#0b7a55}.neg{color:#b91c1c}.note{color:#777;font-size:11px;margin:6px 0 0}
+    section{break-inside:avoid}@media print{body{margin:0 auto}}
+  </style></head><body>
+  <h1>Tendances de ma veille LinkedIn</h1>
+  <p class="meta">${trends.report_count} rapports · ${trends.post_count} posts analysés${updated ? ` · ${escHtml(updated)}` : ""} — chaque écart compare les posts à la performance habituelle de leur auteur.</p>
+  ${cta ? `<section><h2>La mécanique des commentaires</h2><div class="hero">${fmtRatio(cta.ratio_median)}</div><p>Les posts « commente et je t&#39;envoie la ressource » multiplient l&#39;engagement médian par ${String(cta.ratio_median).replace(".", ",")} (${cta.winning}/${cta.accounts} comptes gagnants, de ${fmtRatio(cta.ratio_min)} à ${fmtRatio(cta.ratio_max)}).${share ? ` ${share.share_median_pct} % de l&#39;engagement des ${share.top_accounts} comptes les plus performants vient des commentaires.` : ""}</p><p class="note">Basé sur ${cta.posts_with} posts avec appel à commenter vs ${cta.posts_without} sans.</p></section>` : ""}
+  ${barTable("Formats", trends.formats)}
+  ${barTable("Sujets", trends.stages)}
+  ${barTable("Accroches", trends.hooks)}
+  ${barTable("Longueur des posts", trends.length_buckets)}
+  ${barTable("Jour de publication", trends.weekdays)}
+  ${freq ? `<section><h2>Rythme de publication</h2><table>${freq.buckets.map((b) => `<tr><td>${escHtml(b.label)}</td><td class="num">${fmtRatePct(b.median_rate_pct)}</td><td class="n">${b.accounts} comptes</td></tr>`).join("")}</table><p class="note">Taux d'engagement médian par tranche de fréquence (comparaison entre comptes).</p></section>` : ""}
+  ${bench ? `<section><h2>Benchmark</h2><p>Meilleur taux d&#39;engagement : <b>${escHtml(bench.best.name)}</b> (${fmtKAbo(bench.best.followers)} abonnés, ${fmtRatePct(bench.best.rate_pct)})${bench.biggest.name !== bench.best.name ? ` — plus gros compte : ${escHtml(bench.biggest.name)} (${fmtKAbo(bench.biggest.followers)}, ${fmtRatePct(bench.biggest.rate_pct)})` : ""}.${bench.high_freq ? ` Au-delà de ${bench.high_freq.threshold} posts/semaine, aucun compte ne dépasse ${fmtRatePct(bench.high_freq.max_rate_pct)} de taux.` : ""}</p></section>` : ""}
+  ${ranking.length ? `<section><h2>Classement</h2><table>${ranking.map((r, i) => `<tr><td class="n">${i + 1}</td><td>${escHtml(r.name)}</td><td class="n">${fmtKAbo(r.followers)} abonnés</td><td class="num">${r.median_engagement}</td><td class="n">taux ${fmtRatePct(r.engagement_rate_pct)}</td></tr>`).join("")}</table><p class="note">Engagement médian par post (likes + commentaires + partages).</p></section>` : ""}
+  </body></html>`;
+}
+
+function exportTrendsPdf(trends: InfluencerTrends) {
+  const w = window.open("", "_blank");
+  if (!w) return;
+  w.document.write(trendsPrintHtml(trends));
+  w.document.close();
+  w.focus();
+  setTimeout(() => {
+    try { w.print(); } catch { /* l'utilisateur peut imprimer manuellement (Cmd+P) */ }
+  }, 400);
+}
+
+function InfluencerTrendsBlock({
+  trends,
+  loading,
+  onRefresh,
+}: {
+  trends: InfluencerTrends | null;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  if (loading && !trends) {
+    return (
+      <div className="card" style={{ padding: 24, textAlign: "center", marginBottom: 20 }}>
+        <Loader2 size={20} className="spinning" style={{ opacity: 0.5 }} />
+        <p style={{ margin: "10px 0 0", color: "var(--muted)", fontSize: 13 }}>Calcul des tendances de ta veille…</p>
+      </div>
+    );
+  }
+  if (!trends) return null;
+
+  const updated = trends.updated_at
+    ? new Date(trends.updated_at).toLocaleDateString("fr-FR", { day: "numeric", month: "long" })
+    : null;
+
+  if (trends.insufficient) {
+    return (
+      <div className="card" style={{ padding: 20, marginBottom: 20 }}>
+        <span className="tr-eyebrow">Tendances de ta veille</span>
+        <p style={{ margin: "8px 0 0", fontSize: 13.5, color: "var(--muted)" }}>
+          Analyse au moins {trends.min_reports || 3} influenceurs pour voir les tendances transverses
+          ({trends.report_count} analysé{trends.report_count > 1 ? "s" : ""} pour l’instant).
+        </p>
       </div>
     );
   }
 
-  const agg = data.aggregated;
-  const hookEntries = Object.entries(agg.hook_distribution || {});
-  const formatEntries = Object.entries(agg.format_distribution || {});
-  const maxHook = Math.max(1, ...hookEntries.map(([, n]) => n));
-  const maxFormat = Math.max(1, ...formatEntries.map(([, n]) => n));
-  const weekdays = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"];
-  const wdEntries = weekdays.map((d) => [d, agg.weekday_distribution?.[d] || 0] as [string, number]);
-  const maxWd = Math.max(1, ...wdEntries.map(([, n]) => n));
+  const hooks = trends.hooks || [];
+  const stages = trends.stages || [];
+  const formats = trends.formats || [];
+  const lengths = trends.length_buckets || [];
+  const weekdays = trends.weekdays || [];
+  const cta = trends.cta;
+  const share = trends.comments_share;
+  const bench = trends.benchmark;
+  const freq = trends.frequency && trends.frequency.buckets.length ? trends.frequency : null;
+  const maxFreqRate = freq ? Math.max(...freq.buckets.map((b) => b.median_rate_pct)) : 0;
+
+  const worstFormat = formats.length ? formats[formats.length - 1] : null;
+  const topStage = stages[0] || null;
+  const lastStage = stages.length > 1 ? stages[stages.length - 1] : null;
+  const topHook = hooks[0] || null;
+  const worstHook = hooks.length > 1 ? hooks[hooks.length - 1] : null;
+  const reliableHook = hooks
+    .filter((h) => (h.reports || 0) >= 8)
+    .sort((a, b) => (b.wins || 0) / (b.reports || 1) - (a.wins || 0) / (a.reports || 1))[0] || null;
+
+  const lenMax = lengths.length ? Math.max(...lengths.map((r) => Math.abs(r.lift_pct))) : 0;
+  const sortedDays = [...weekdays].sort((a, b) => b.lift_pct - a.lift_pct);
+  const bestDay = sortedDays[0] || null;
+  const worstDay = sortedDays.length > 1 ? sortedDays[sortedDays.length - 1] : null;
+  const dayMax = Math.max(Math.abs(bestDay?.lift_pct || 0), Math.abs(worstDay?.lift_pct || 0));
+  const mythsFlat = lenMax <= 15 && dayMax <= 15;
+
+  const leverCount = (cta ? 1 : 0) + (formats.length ? 1 : 0) + (stages.length ? 1 : 0) + (hooks.length ? 1 : 0);
+  let lever = 0;
+  const no = () => String(++lever).padStart(2, "0");
 
   return (
-    <div>
-      <div className="section-header" style={{ marginBottom: 16 }}>
-        <div>
-          <h2 className="section-title"><TrendingUp size={20} /> Dashboard global</h2>
-          <p className="section-desc">{data.influencer_count} influenceur{data.influencer_count > 1 ? "s" : ""} analysé{data.influencer_count > 1 ? "s" : ""} — {agg.total_posts} posts au total</p>
+    <section aria-label="Tendances de ta veille">
+      <div className="tr-intro">
+        <span className="tr-eyebrow">Tendances de ta veille</span>
+        <h3>
+          {leverCount > 1
+            ? `${["Un", "Deux", "Trois", "Quatre"][leverCount - 1]} leviers pèsent vraiment. Le reste est du bruit.`
+            : "Ce que tes rapports disent quand on les lit ensemble."}
+        </h3>
+        <p className="tr-lede">
+          Lus ensemble, tes {trends.report_count} rapports racontent une stratégie précise. Chaque chiffre compare
+          les posts à la performance habituelle de leur auteur, pour neutraliser les écarts de taille d’audience.
+        </p>
+        <div className="tr-meta-row">
+          <span className="tr-meta">
+            {trends.report_count} rapports · {fmt(trends.post_count)} posts{updated ? ` · mise à jour le ${updated}` : ""}
+          </span>
+          <button type="button" className="tr-pill-btn" onClick={onRefresh} disabled={loading}>
+            {loading ? <Loader2 size={13} className="spinning" /> : <RefreshCw size={13} />} Actualiser l’analyse
+          </button>
+          <button type="button" className="tr-pill-btn" onClick={() => exportTrendsPdf(trends)}>
+            <FileText size={13} /> Exporter en PDF
+          </button>
         </div>
       </div>
 
-      {/* Global KPIs */}
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(6, 1fr)" }}>
-        <div className="kpi-card"><span>Influenceurs</span><div className="metric">{data.influencer_count}</div></div>
-        <div className="kpi-card"><span>Posts analysés</span><div className="metric">{fmt(agg.total_posts)}</div></div>
-        <div className="kpi-card"><span>Abonnés cumulés</span><div className="metric">{fmt(agg.total_followers)}</div></div>
-        <div className="kpi-card"><span>Eng. moyen</span><div className="metric">{fmt(Math.round(agg.avg_engagement))}</div></div>
-        <div className="kpi-card"><span>Comments moyen</span><div className="metric">{fmt(Math.round(agg.avg_comments * 10) / 10)}</div></div>
-        <div className="kpi-card"><span>Likes moyen</span><div className="metric">{fmt(Math.round(agg.avg_likes * 10) / 10)}</div></div>
-      </div>
-
-      {/* Influencer comparison table */}
-      <div className="card" style={{ marginTop: 16 }}>
-        <h3>Comparatif des influenceurs</h3>
-        <div style={{ overflowX: "auto" }}>
-          <table className="dash-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Influenceur</th>
-                <th>Handle</th>
-                <th>Followers</th>
-                <th>Posts</th>
-                <th>Posts/sem</th>
-                <th>Eng. moyen</th>
-                <th>Likes moyen</th>
-                <th>Comments méd.</th>
-                <th>Taux eng.</th>
-                <th>Format principal</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...data.influencers].sort((a, b) => b.avg_engagement - a.avg_engagement).map((inf, i) => (
-                <tr key={inf.handle}>
-                  <td><span className="rank">{i + 1}</span></td>
-                  <td><strong>{inf.name || inf.handle}</strong></td>
-                  <td style={{ color: "var(--muted)", fontSize: 12 }}>{inf.handle}</td>
-                  <td>{fmt(inf.followers)}</td>
-                  <td>{inf.posts_analyzed}</td>
-                  <td>{inf.posts_per_week ?? "—"}</td>
-                  <td><strong>{fmt(inf.avg_engagement)}</strong></td>
-                  <td>{fmt(Math.round((inf.avg_engagement * 0.7)))}</td>
-                  <td>{fmt(inf.median_comments)}</td>
-                  <td>{inf.engagement_rate_pct ? `${inf.engagement_rate_pct}%` : "—"}</td>
-                  <td><span className="badge">{inf.top_format}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Distributions */}
-      <div className="pattern-grid" style={{ marginTop: 16 }}>
-        <div className="card">
-          <h3>Hooks (tous les influenceurs)</h3>
-          {hookEntries.map(([label, n]) => <Bar key={label} label={label} value={n} max={maxHook} />)}
-        </div>
-        <div className="card">
-          <h3>Formats (tous les influenceurs)</h3>
-          {formatEntries.map(([label, n]) => <Bar key={label} label={label} value={n} max={maxFormat} />)}
-        </div>
-        <div className="card">
-          <h3>Jours de publication</h3>
-          {wdEntries.map(([label, n]) => <Bar key={label} label={label} value={n} max={maxWd} />)}
-        </div>
-        <div className="card">
-          <h3>Stats d'engagement</h3>
-          <div className="dash-stat-grid">
-            <div><span className="eyebrow">Likes médian</span><div className="metric" style={{ fontSize: 18 }}>{fmt(agg.median_likes)}</div></div>
-            <div><span className="eyebrow">Comments médian</span><div className="metric" style={{ fontSize: 18 }}>{fmt(agg.median_comments)}</div></div>
-            <div><span className="eyebrow">Repartages moyen</span><div className="metric" style={{ fontSize: 18 }}>{fmt(Math.round(agg.avg_reposts * 10) / 10)}</div></div>
-            <div><span className="eyebrow">Eng. médian</span><div className="metric" style={{ fontSize: 18 }}>{fmt(agg.median_engagement)}</div></div>
-          </div>
-        </div>
-      </div>
-
-      {/* Growth since 25th post */}
-      {growth.length > 0 && (
-        <div className="card" style={{ marginTop: 16 }}>
-          <h3>📈 Croissance depuis le 25e post</h3>
-          <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-            Compare l'engagement moyen des 25 premiers posts vs les posts suivants — classé par meilleure croissance.
-          </p>
-          <div style={{ overflowX: "auto" }}>
-            <table className="dash-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Influenceur</th>
-                  <th>Posts totaux</th>
-                  <th>Date post #25</th>
-                  <th>Eng. moy (1–25)</th>
-                  <th>Eng. moy (26+)</th>
-                  <th>Croissance</th>
-                </tr>
-              </thead>
-              <tbody>
-                {growth.map((row, i) => {
-                  const pct = row.growth_pct;
-                  const color = pct === null ? "var(--muted)" : pct >= 0 ? "#10b981" : "#ef4444";
-                  return (
-                    <tr key={row.handle}>
-                      <td><span className="rank">{i + 1}</span></td>
-                      <td><strong>{row.name}</strong></td>
-                      <td>{row.total_posts}</td>
-                      <td>{row.date_post_split}</td>
-                      <td>{fmt(row.avg_eng_before)}</td>
-                      <td>{row.avg_eng_after !== null ? fmt(row.avg_eng_after) : "—"}</td>
-                      <td><strong style={{ color }}>{pct !== null ? `${pct > 0 ? "+" : ""}${pct}%` : "—"}</strong></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+      {cta && (
+        <div className="tr-hero" role="group" aria-label="Levier n°1 : la mécanique des commentaires">
+          <div className="tr-hero-grid">
+            <div>
+              <span className="tr-eyebrow"><span className="tr-no">{no()}</span> · La mécanique des commentaires</span>
+              <div className="tr-hero-num">{fmtRatio(cta.ratio_median)}</div>
+              <p className="tr-hero-title">L’engagement se fabrique dans les commentaires.</p>
+              <p className="tr-hero-body">
+                Les posts « commente et je t’envoie la ressource » multiplient l’engagement médian par {String(cta.ratio_median).replace(".", ",")}.{" "}
+                <b>
+                  {cta.winning === cta.accounts
+                    ? `Les ${cta.accounts} comptes qui utilisent ce levier y gagnent tous`
+                    : `${cta.winning} des ${cta.accounts} comptes qui l’utilisent y gagnent`}
+                </b>
+                , de {fmtRatio(cta.ratio_min)} à {fmtRatio(cta.ratio_max)} — c’est la mécanique qui fabrique les « gros » chiffres de ta niche.
+              </p>
+            </div>
+            {share && (
+              <div className="tr-hero-side">
+                <span className="tr-hero-side-num">{share.share_median_pct} %</span>
+                <span className="tr-hero-side-lbl">
+                  de l’engagement des {share.top_accounts} comptes les plus performants vient des commentaires (jusqu’à {share.share_max_pct} %)
+                </span>
+              </div>
+            )}
+            <span className="tr-hero-action">À tester — offrir un guide ou un template contre un commentaire</span>
+            <span className="tr-hero-foot">
+              Basé sur {cta.posts_with} posts avec appel à commenter vs {cta.posts_without} sans, sur {cta.accounts} comptes.
+            </span>
           </div>
         </div>
       )}
 
-      {/* AI Strategic Analysis — temporairement désactivée (données en cours d'amélioration) */}
-      <div className="card" style={{ marginTop: 16, opacity: 0.55 }}>
-        <div className="section-header" style={{ marginBottom: 12 }}>
-          <div>
-            <h3 style={{ margin: 0 }}>🧠 Analyse stratégique IA</h3>
-            <p style={{ fontSize: 13, color: "var(--muted)", margin: "4px 0 0" }}>
-              Bientôt disponible — fonctionnalité en cours d'amélioration.
+      <div className="tr-exhibits">
+        {formats.length > 0 && worstFormat && (
+          <article className="tr-exhibit">
+            <span className="tr-eyebrow"><span className="tr-no">{no()}</span> Formats</span>
+            <div className="tr-exhibit-top">
+              <span className={`tr-exhibit-num ${worstFormat.lift_pct < 0 ? "neg" : "pos"}`}>{fmtLift(worstFormat.lift_pct)}</span>
+              <p className="tr-exhibit-title">
+                {worstFormat.lift_pct <= -30 ? "Le contenu natif écrase le contenu partagé." : "Ce que chaque format rapporte."}
+              </p>
+            </div>
+            <TrendBars rows={formats} ariaLabel="Impact de chaque format sur l’engagement" />
+            <span className="tr-exhibit-foot">
+              {formats.reduce((s, r) => s + r.posts, 0)} posts — écart vs la performance habituelle de chaque compte.
+            </span>
+          </article>
+        )}
+        {topStage && (
+          <article className="tr-exhibit">
+            <span className="tr-eyebrow"><span className="tr-no">{no()}</span> Sujets</span>
+            <div className="tr-exhibit-top">
+              <span className={`tr-exhibit-num ${topStage.lift_pct >= 0 ? "pos" : "neg"}`}>{fmtLift(topStage.lift_pct)}</span>
+              <p className="tr-exhibit-title">
+                {topStage.key === "BOFU"
+                  ? "Les posts qui proposent quelque chose engagent le plus."
+                  : `« ${topStage.label} » : la catégorie qui engage le plus.`}
+              </p>
+            </div>
+            <TrendBars rows={stages} ariaLabel="Impact de chaque catégorie de contenu sur l’engagement" />
+            <p className="tr-exhibit-body">
+              Chaque post est classé selon son intention : attirer l’attention (opinion, actu), éduquer
+              (méthode, tuto) ou proposer quelque chose — un guide à récupérer, une offre, une preuve client.
+              {lastStage && (
+                <> Les posts « {topStage.label.toLowerCase()} » font <b>{fmtLift(topStage.lift_pct)}</b>,
+                quand « {lastStage.label.toLowerCase()} » fait <b>{fmtLift(lastStage.lift_pct)}</b>.</>
+              )}
+            </p>
+            <span className="tr-exhibit-foot">{stages.reduce((s, r) => s + r.posts, 0)} posts classés par catégorie.</span>
+          </article>
+        )}
+        {topHook && (
+          <article className="tr-exhibit">
+            <span className="tr-eyebrow"><span className="tr-no">{no()}</span> Accroches</span>
+            <div className="tr-exhibit-top">
+              <span className={`tr-exhibit-num ${topHook.lift_pct >= 0 ? "pos" : "neg"}`}>{fmtLift(topHook.lift_pct)}</span>
+              <p className="tr-exhibit-title">« {topHook.label} » : l’accroche qui porte le plus.</p>
+            </div>
+            <TrendBars rows={hooks} ariaLabel="Impact de chaque type d’accroche sur l’engagement" />
+            <p className="tr-exhibit-body">
+              {reliableHook
+                ? <>La valeur sûre : « {reliableHook.label} », qui gagne ou fait jeu égal dans <b>{reliableHook.wins} rapports sur {reliableHook.reports}</b>.</>
+                : null}
+              {worstHook && worstHook.lift_pct < 0
+                ? <> « {worstHook.label} » sous-performe ({fmtLift(worstHook.lift_pct)}).</>
+                : null}
+            </p>
+            <span className="tr-exhibit-foot">{hooks.reduce((s, r) => s + r.posts, 0)} posts classés par type d’accroche.</span>
+          </article>
+        )}
+        {bench && (
+          <article className="tr-exhibit">
+            <span className="tr-eyebrow">Benchmark</span>
+            <div className="tr-exhibit-top">
+              <span className="tr-exhibit-num">{fmtRatePct(bench.best.rate_pct)}</span>
+              <p className="tr-exhibit-title">Le taux d’engagement ne suit pas la taille.</p>
+            </div>
+            <div className="tr-compare">
+              <div className="tr-compare-row">
+                <span className="tr-compare-dot" style={{ background: "var(--success)" }} />
+                <span><b>{bench.best.name}</b> <span style={{ color: "var(--muted)" }}>— {fmtKAbo(bench.best.followers)} abonnés</span></span>
+                <span className="tr-compare-num" style={{ color: "var(--success)" }}>{fmtRatePct(bench.best.rate_pct)}</span>
+              </div>
+              {bench.biggest.name !== bench.best.name && (
+                <div className="tr-compare-row">
+                  <span className="tr-compare-dot" style={{ background: "var(--muted)" }} />
+                  <span><b>{bench.biggest.name}</b> <span style={{ color: "var(--muted)" }}>— {fmtKAbo(bench.biggest.followers)} abonnés, le plus gros compte</span></span>
+                  <span className="tr-compare-num" style={{ color: "var(--muted)" }}>{fmtRatePct(bench.biggest.rate_pct)}</span>
+                </div>
+              )}
+            </div>
+            {bench.high_freq && (
+              <p className="tr-exhibit-body">
+                Publier plus ne rattrape rien : au-delà de <b>{bench.high_freq.threshold} posts/semaine</b>{" "}
+                ({bench.high_freq.accounts} comptes), aucun ne dépasse {fmtRatePct(bench.high_freq.max_rate_pct)} de taux.
+              </p>
+            )}
+          </article>
+        )}
+        {freq && (
+          <article className="tr-exhibit">
+            <span className="tr-eyebrow">Rythme</span>
+            <div className="tr-exhibit-top">
+              <span className="tr-exhibit-num">
+                {freq.ratio ? `÷${String(freq.ratio).replace(".", ",")}` : fmtRatePct(freq.buckets[0].median_rate_pct)}
+              </span>
+              <p className="tr-exhibit-title">Publier plus dilue chaque post.</p>
+            </div>
+            <div className="tr-compare">
+              {freq.buckets.map((b) => (
+                <div className="tr-compare-row" key={b.label}>
+                  <span
+                    className="tr-compare-dot"
+                    style={{ background: b.median_rate_pct === maxFreqRate ? "var(--success)" : "var(--muted)" }}
+                  />
+                  <span><b>{b.label}</b> <span style={{ color: "var(--muted)" }}>— {b.accounts} comptes</span></span>
+                  <span
+                    className="tr-compare-num"
+                    style={{ color: b.median_rate_pct === maxFreqRate ? "var(--success)" : "var(--muted)" }}
+                  >
+                    {fmtRatePct(b.median_rate_pct)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="tr-exhibit-body">
+              {freq.ratio && freq.ratio > 1.5
+                ? <>Le taux d’engagement médian est divisé par <b>{String(freq.ratio).replace(".", ",")}</b> entre les comptes
+                les moins actifs et les plus actifs. Publier plus peut élargir la portée totale, mais chaque post touche
+                proportionnellement moins — la régularité bat le volume.</>
+                : <>Sur ton corpus, la fréquence de publication ne change pas nettement le taux d’engagement par post.</>}
+            </p>
+            <span className="tr-exhibit-foot">Taux d’engagement médian par tranche de fréquence — comparaison entre comptes, à lire comme une tendance.</span>
+          </article>
+        )}
+      </div>
+
+      {(lengths.length > 0 || (bestDay && worstDay)) && (
+        <div className="tr-myths" role="group" aria-label="Longueur et jour de publication">
+          <div style={{ maxWidth: "22ch", display: "flex", flexDirection: "column", gap: 6 }}>
+            <span className="tr-eyebrow">{mythsFlat ? "Mythes cassés" : "Longueur & timing"}</span>
+            <p className="tr-exhibit-title" style={{ fontSize: 15 }}>
+              {mythsFlat ? "Deux variables qu’on surveille pour rien." : "L’effet mesuré sur ton corpus."}
             </p>
           </div>
-          <button className="primary-button" disabled aria-disabled title="Bientôt disponible">
-            <Sparkles size={14} />
-            Bientôt disponible
-          </button>
+          {lengths.length > 0 && (
+            <div>
+              <span className="tr-myth-num">±{lenMax} %</span>
+              <span className="tr-myth-lbl" style={{ display: "block" }}>La longueur du post</span>
+              <p className="tr-myth-body">
+                De moins de 150 mots à 350 et plus, l’écart d’engagement médian reste dans ±{lenMax} %.
+                {mythsFlat ? " Écris la longueur que ton sujet demande." : ""}
+              </p>
+            </div>
+          )}
+          {bestDay && worstDay && (
+            <div>
+              <span className="tr-myth-num">±{dayMax} %</span>
+              <span className="tr-myth-lbl" style={{ display: "block" }}>Le jour de publication</span>
+              <p className="tr-myth-body">
+                {bestDay.label} {fmtLift(bestDay.lift_pct)}, {worstDay.label.toLowerCase()} {fmtLift(worstDay.lift_pct)} —
+                aucun jour ne justifie de retenir un bon post.
+              </p>
+            </div>
+          )}
         </div>
-      </div>
-    </div>
+      )}
+    </section>
   );
 }
 
@@ -7035,7 +7241,8 @@ function InfluencersView({
   onOpenReport: (entry: InfluencerLibraryEntry) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<"date" | "name">("date");
+  const [trends, setTrends] = useState<InfluencerTrends | null>(null);
+  const [trendsLoading, setTrendsLoading] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
@@ -7062,6 +7269,24 @@ function InfluencersView({
         .catch(() => {})
     );
     return () => { cancelled = true; };
+  }, [isAuthed]);
+
+  async function loadTrends() {
+    setTrendsLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/me/influencer-trends`, { headers: await authHeaders() });
+      if (res.ok) setTrends(await res.json());
+    } catch {
+      /* best-effort : le classement reste utilisable sans tendances */
+    } finally {
+      setTrendsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAuthed) loadTrends();
+    else setTrends(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
   async function toggleFollow(handle: string) {
@@ -7128,6 +7353,7 @@ function InfluencersView({
     );
   }
 
+  const statsByInf = new Map<string, TrendsRankingRow>((trends?.ranking || []).map((r) => [r.influencer_id, r]));
   const q = query.trim().toLowerCase();
   const filtered = entries
     .filter((e) => {
@@ -7139,7 +7365,9 @@ function InfluencersView({
       );
     })
     .sort((a, b) => {
-      if (sort === "name") return a.name.localeCompare(b.name, "fr");
+      const ea = statsByInf.get(a.influencer_id)?.median_engagement ?? -1;
+      const eb = statsByInf.get(b.influencer_id)?.median_engagement ?? -1;
+      if (eb !== ea) return eb - ea;
       return (b.analyzed_at || 0) - (a.analyzed_at || 0);
     });
 
@@ -7161,139 +7389,146 @@ function InfluencersView({
         <div>
           <h2 className="section-title"><Users size={20} /> Mes influenceurs</h2>
           <p className="section-desc">
-            Tous tes profils analysés — une ligne par influenceur, avec la dernière analyse à date.
+            Les tendances de ta veille, puis le classement de tes profils analysés.
           </p>
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 16, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-        <input
-          type="search"
-          className="url-input"
-          style={{ flex: "1 1 220px", minHeight: 40, padding: "8px 12px" }}
-          placeholder="Rechercher par nom, handle ou headline…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <label className="control" style={{ margin: 0 }}>
-          <span>Trier par</span>
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as "date" | "name")}
-            style={{ marginLeft: 8, padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)" }}
-          >
-            <option value="date">Date d'analyse</option>
-            <option value="name">Nom</option>
-          </select>
-        </label>
-        <span style={{ fontSize: 13, color: "var(--muted)" }}>
-          {filtered.length} profil{filtered.length > 1 ? "s" : ""}
-        </span>
-        {followedCount > 0 && (
-          <button
-            type="button"
-            className="secondary-button"
-            style={{ fontSize: 13, whiteSpace: "nowrap" }}
-            disabled={checking}
-            title="Scrape les derniers posts de tes influenceurs suivis et enregistre les nouveaux"
-            onClick={checkNow}
-          >
-            {checking ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />} Vérifier les nouveaux posts
-          </button>
-        )}
-      </div>
+      <InfluencerTrendsBlock trends={trends} loading={trendsLoading} onRefresh={loadTrends} />
 
-      {checkMsg && <div className="card" style={{ marginBottom: 12, padding: "10px 14px", fontSize: 13, color: "var(--muted)" }}>{checkMsg}</div>}
-      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+      {checkMsg && <div className="card" style={{ margin: "12px 0", padding: "10px 14px", fontSize: 13, color: "var(--muted)" }}>{checkMsg}</div>}
+      {error && <div className="error" style={{ margin: "12px 0" }}>{error}</div>}
 
       {loading ? (
-        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+        <div className="card" style={{ textAlign: "center", padding: 32, marginTop: 20 }}>
           <Loader2 size={24} className="spinning" style={{ opacity: 0.5 }} />
           <p style={{ marginTop: 12, color: "var(--muted)" }}>Chargement de tes influenceurs…</p>
         </div>
-      ) : filtered.length === 0 ? (
-        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+      ) : entries.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: 32, marginTop: 20 }}>
           <FileText size={24} style={{ opacity: 0.35, marginBottom: 8 }} />
           <p style={{ margin: 0, color: "var(--muted)" }}>
-            {entries.length === 0
-              ? "Aucun profil analysé pour l'instant. Lance une série dans l'onglet Analyser."
-              : "Aucun profil ne correspond à ta recherche."}
+            Aucun profil analysé pour l’instant. Lance une série dans l’onglet Analyser.
           </p>
         </div>
       ) : (
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          <div style={{ overflowX: "auto" }}>
-            <table className="dash-table">
-              <thead>
-                <tr>
-                  <th>Influenceur</th>
-                  <th>Handle</th>
-                  <th>Abonnés</th>
-                  <th>Dernière analyse</th>
-                  <th>Veille</th>
-                  <th>Profil</th>
-                  <th>Rapport</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((entry) => (
-                  <tr key={entry.influencer_id}>
-                    <td>
-                      <strong>{entry.name}</strong>
-                      {entry.headline ? (
-                        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2, maxWidth: 280 }}>
-                          {entry.headline.slice(0, 80)}{entry.headline.length > 80 ? "…" : ""}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td style={{ color: "var(--muted)", fontSize: 12 }}>{entry.handle}</td>
-                    <td>{entry.follower_count ? fmt(entry.follower_count) : "—"}</td>
-                    <td>
-                      {entry.analyzed_at
-                        ? new Date(entry.analyzed_at * 1000).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" })
-                        : "—"}
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className={followed[entry.handle] ? "primary-button" : "secondary-button"}
-                        style={{ padding: "4px 10px", fontSize: 12, whiteSpace: "nowrap" }}
-                        disabled={togglingHandle === entry.handle}
-                        title={followed[entry.handle]
-                          ? "Ne plus surveiller cet influenceur"
-                          : `Surveiller ses nouveaux posts (max ${followCap} influenceurs)`}
-                        onClick={() => toggleFollow(entry.handle)}
-                      >
-                        {togglingHandle === entry.handle
-                          ? <Loader2 size={12} className="spinning" />
-                          : <Eye size={12} />}
-                        {followed[entry.handle] ? " Suivi ✓" : " Suivre"}
-                      </button>
-                    </td>
-                    <td>
-                      <a href={entry.profile_url} target="_blank" rel="noopener noreferrer" className="secondary-button" style={{ padding: "4px 10px", fontSize: 12 }}>
-                        LinkedIn
-                      </a>
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="primary-button"
-                        style={{ padding: "4px 12px", fontSize: 12 }}
-                        disabled={openingId === entry.analysis_id}
-                        onClick={() => open(entry)}
-                      >
-                        {openingId === entry.analysis_id
-                          ? <Loader2 size={12} className="spinning" />
-                          : <FileText size={12} />}
-                        Voir
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <div className="card" style={{ padding: 0, overflow: "hidden", marginTop: 20 }}>
+          <div className="tr-table-head">
+            <h3 style={{ margin: 0, fontSize: 16 }}>Classement</h3>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>
+              Veille : <b style={{ color: "var(--ink)" }}>{followedCount}</b>/{followCap} suivis
+            </span>
+            {followedCount > 0 && (
+              <button
+                type="button"
+                className="secondary-button"
+                style={{ fontSize: 12, whiteSpace: "nowrap", padding: "5px 10px" }}
+                disabled={checking}
+                title="Scrape les derniers posts de tes influenceurs suivis et enregistre les nouveaux"
+                onClick={checkNow}
+              >
+                {checking ? <Loader2 size={13} className="spinning" /> : <RefreshCw size={13} />} Vérifier les nouveaux posts
+              </button>
+            )}
+            <input
+              type="search"
+              className="tr-search"
+              placeholder="Rechercher un influenceur…"
+              aria-label="Rechercher un influenceur"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
           </div>
+          {filtered.length === 0 ? (
+            <p style={{ margin: 0, padding: 24, textAlign: "center", color: "var(--muted)", fontSize: 13 }}>
+              Aucun profil ne correspond à ta recherche.
+            </p>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="dash-table tr-ranking">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Influenceur</th>
+                    <th style={{ textAlign: "right" }}>Eng. médian / post</th>
+                    <th style={{ textAlign: "center" }}>Veille</th>
+                    <th style={{ textAlign: "center" }}>Rapport</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((entry, i) => {
+                    const s = statsByInf.get(entry.influencer_id);
+                    return (
+                      <tr key={entry.influencer_id} className={i < 3 && s ? "tr-top3" : ""}>
+                        <td><span className="tr-rank">{i + 1}</span></td>
+                        <td>
+                          <span className="tr-who">
+                            <span className="tr-avatar" aria-hidden="true">{initialsOf(entry.name)}</span>
+                            <span>
+                              <a
+                                href={entry.profile_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="tr-name"
+                                title="Voir le profil LinkedIn"
+                              >
+                                {entry.name}
+                              </a>
+                              <span className="tr-sub">
+                                {entry.follower_count ? `${fmt(entry.follower_count)} abonnés` : decodeHandle(entry.handle)}
+                              </span>
+                            </span>
+                          </span>
+                        </td>
+                        <td style={{ textAlign: "right" }}>
+                          {s ? (
+                            <>
+                              <span className="tr-eng">{fmt(s.median_engagement)}</span>
+                              <br />
+                              <span className="tr-rate">taux {fmtRatePct(s.engagement_rate_pct)}</span>
+                            </>
+                          ) : (
+                            <span style={{ color: "var(--muted)" }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: "center" }}>
+                          <button
+                            type="button"
+                            className={followed[entry.handle] ? "primary-button" : "secondary-button"}
+                            style={{ padding: "4px 10px", fontSize: 12, whiteSpace: "nowrap" }}
+                            disabled={togglingHandle === entry.handle}
+                            title={followed[entry.handle]
+                              ? "Ne plus surveiller cet influenceur"
+                              : `Surveiller ses nouveaux posts (max ${followCap} influenceurs)`}
+                            onClick={() => toggleFollow(entry.handle)}
+                          >
+                            {togglingHandle === entry.handle
+                              ? <Loader2 size={12} className="spinning" />
+                              : <Eye size={12} />}
+                            {followed[entry.handle] ? " Suivi ✓" : " Suivre"}
+                          </button>
+                        </td>
+                        <td style={{ textAlign: "center" }}>
+                          <button
+                            type="button"
+                            className="primary-button"
+                            style={{ padding: "4px 12px", fontSize: 12 }}
+                            disabled={openingId === entry.analysis_id}
+                            onClick={() => open(entry)}
+                          >
+                            {openingId === entry.analysis_id
+                              ? <Loader2 size={12} className="spinning" />
+                              : <FileText size={12} />}
+                            Rapport
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -7609,8 +7844,8 @@ function MonitoringFeedView({
 
 /**
  * Vue « Analyser » fusionnée : barre de sous-onglets qui regroupe l'ancien
- * onglet Analyser (séries) et Mes influenceurs. Le Dashboard global (ALE-132)
- * est désormais affiché sous la liste des influenceurs (plus de sous-onglet dédié).
+ * onglet Analyser (séries) et Mes influenceurs. L'ancien Dashboard global (ALE-132)
+ * est remplacé par le bloc « Tendances de ta veille » rendu par InfluencersView.
  */
 function AnalyzeHub({
   tab,
@@ -7675,20 +7910,13 @@ function AnalyzeHub({
         />
       )}
       {tab === "influencers" && (
-        <>
-          <InfluencersView
-            entries={influencers}
-            loading={influencersLoading}
-            isAuthed={isAuthed}
-            requireAuth={requireAuth}
-            onOpenReport={onOpenLibraryReport}
-          />
-          {isAuthed && (
-            <div style={{ marginTop: 32, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
-              <GlobalDashboard />
-            </div>
-          )}
-        </>
+        <InfluencersView
+          entries={influencers}
+          loading={influencersLoading}
+          isAuthed={isAuthed}
+          requireAuth={requireAuth}
+          onOpenReport={onOpenLibraryReport}
+        />
       )}
       {tab === "monitoring" && (
         <MonitoringFeedView isAuthed={isAuthed} requireAuth={requireAuth} onInspire={onInspire} />

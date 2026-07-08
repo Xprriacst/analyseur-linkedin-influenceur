@@ -139,16 +139,22 @@ def _date_directive() -> str:
 
 
 def _extract_json(text: str) -> dict:
-    """Strip Claude's prose / markdown fences and parse JSON."""
+    """Strip Claude's prose / markdown fences and parse JSON.
+
+    `strict=False` : les champs texte libre (ex. le corps d'un post) peuvent
+    contenir des retours à la ligne littéraux que le modèle oublie d'échapper
+    en `\\n` — le mode strict de json.loads rejette ça avec "Invalid control
+    character", alors que le JSON est par ailleurs valide et complet.
+    """
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fence:
-        return json.loads(fence.group(1))
+        return json.loads(fence.group(1), strict=False)
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
-        return json.loads(text[start : end + 1])
-    return json.loads(text)
+        return json.loads(text[start : end + 1], strict=False)
+    return json.loads(text, strict=False)
 
 
 def _track(resp) -> None:
@@ -668,13 +674,14 @@ Schéma JSON attendu :
 }}"""
     )
     data = _call(system, user, max_tokens=4096, temperature=0.8, tools=_web_search_tools(web_search or None))
-    return data.get("ideas", [])
+    # Le modèle peut sur-générer malgré « exactement {count} » (cf. fix « 7 posts »).
+    return data.get("ideas", [])[:count]
 
 
 def generate_one_line_ideas(
     real_posts: list[dict],
     benchmark: dict,
-    count: int = 15,
+    count: int = 3,
     user_context: dict | None = None,
     web_search: bool = False,
     recent_idea_lines: list[str] | None = None,
@@ -736,7 +743,8 @@ Schéma JSON attendu :
 }}"""
     )
     data = _call(system, user, max_tokens=2048, temperature=1.0, tools=_web_search_tools(web_search or None))
-    return data.get("ideas", [])
+    # Le modèle peut sur-générer malgré « exactement {count} » (cf. fix « 7 posts »).
+    return data.get("ideas", [])[:count]
 
 
 def analyze_dashboard_strategy(influencers_data: list[dict], growth_data: list[dict] | None = None) -> str:
