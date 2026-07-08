@@ -3394,6 +3394,25 @@ def list_ig_messages_admin(user_id: str, conversation_id: str, limit: int = 40) 
     return resp.data or []
 
 
+def update_ig_message_text_admin(message_id: str, text: str) -> dict | None:
+    """Mettre à jour le texte d'un message IG (service-role) — note vocale transcrite.
+
+    Un vocal entrant est d'abord persisté avec un texte d'attente (« transcription
+    en cours ») pour être **immédiatement visible** dans l'inbox, puis ce texte est
+    remplacé par la transcription (ou un message d'échec) quand Whisper a fini.
+    """
+    if not admin_enabled():
+        return None
+    resp = (
+        admin_client()
+        .table("ig_messages")
+        .update({"text": text or ""})
+        .eq("id", message_id)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def create_ig_draft_admin(
     user_id: str,
     conversation_id: str,

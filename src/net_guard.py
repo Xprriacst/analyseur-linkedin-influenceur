@@ -13,7 +13,23 @@ import ipaddress
 import os
 import socket
 import urllib.request
+from email.message import Message
 from urllib.parse import urlparse
+
+
+def _disposition_ext(disposition: str) -> str:
+    """Extension déduite du nom de fichier d'un en-tête Content-Disposition.
+
+    Signal le plus fiable pour les CDN signés : le Content-Type peut mentir
+    (Meta sert un vocal `.ogg` en `video/mp4`) alors que le
+    `Content-Disposition: inline;filename=audioclip-….ogg` porte le vrai nom.
+    """
+    if not disposition:
+        return ""
+    msg = Message()
+    msg["content-disposition"] = disposition
+    filename = msg.get_filename() or ""
+    return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
 
 class NetGuardError(RuntimeError):
@@ -97,6 +113,7 @@ def guarded_download(
         req = urllib.request.Request(url, headers={"User-Agent": user_agent})
         with opener.open(req, timeout=timeout) as resp:
             content_type = resp.headers.get_content_type() or ""
+            disposition = resp.headers.get("Content-Disposition", "") or ""
             data = resp.read(max_bytes + 1)
     except error_cls:
         raise
@@ -107,8 +124,14 @@ def guarded_download(
     if len(data) > max_bytes:
         raise error_cls(f"Fichier > {max_bytes // (1024 * 1024)} Mo (limite).")
 
-    ext = (content_type_ext_map or {}).get(content_type.lower(), "")
-    if not ext:
+    # Ordre de fiabilité pour l'extension : nom de fichier Content-Disposition (le
+    # CDN nomme le vrai fichier) → mapping Content-Type fourni par l'appelant →
+    # suffixe de l'URL → repli. Le Content-Type seul n'est pas fiable (Meta sert
+    # un vocal .ogg en video/mp4), d'où la priorité au Content-Disposition.
+    ext = _disposition_ext(disposition)
+    if ext not in allowed_exts:
+        ext = (content_type_ext_map or {}).get(content_type.lower(), "")
+    if ext not in allowed_exts:
         path = urlparse(url).path
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
     if ext not in allowed_exts:
