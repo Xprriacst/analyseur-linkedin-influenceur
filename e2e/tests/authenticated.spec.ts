@@ -69,7 +69,9 @@ test("onglet Mon profil : contexte éditorial direct (plus de sous-onglet Tablea
   // Le bouton de sauvegarde manuelle reste présent…
   await expect(page.getByRole("button", { name: /Sauvegarder/i })).toBeVisible();
   // …et la barre de pré-remplissage IA (qui auto-sauve désormais) aussi.
-  await expect(page.getByPlaceholder(/Description, URL LinkedIn ou site web/i)).toBeVisible();
+  // Timeout généreux : ce bloc n'apparaît qu'une fois `/me/profile` chargé, et
+  // le backend dev free-tier peut mettre 30-50 s au 1er appel (cold-start).
+  await expect(page.getByPlaceholder(/Description, URL LinkedIn ou site web/i)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByRole("button", { name: /Pré-remplir/i })).toBeVisible();
 });
 
