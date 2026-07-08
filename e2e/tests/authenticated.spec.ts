@@ -111,14 +111,15 @@ test("onglet Agent IA : interface chat rendue", async ({ page }) => {
   await expect(page.locator(".nav-item.active", { hasText: "Agent IA" })).toBeVisible();
 });
 
-test("Contenu › Idée du jour : idée + réservoir + opt-in sans erreur", async ({ page }) => {
+test("Contenu › Idée du jour : idée + réservoir sans erreur", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Idée du jour");
   await expect(page.getByRole("heading", { name: /^Idée du jour$/i })).toBeVisible();
-  // Le réservoir et son switch d'opt-in sont rendus.
+  // Le réservoir est rendu.
   await expect(page.getByRole("heading", { name: /Mon réservoir d'idées/i })).toBeVisible();
-  await expect(page.getByText(/Recevoir une idée chaque matin/i)).toBeVisible();
   await expect(page.getByPlaceholder(/Une idée de post/i)).toBeVisible();
+  // ALE-224 : le switch d'opt-in a été déplacé dans Mon profil → plus ici.
+  await expect(page.getByText(/Recevoir une idée chaque matin/i)).toHaveCount(0);
   // Aucun bandeau d'erreur de chargement (daily-ideas + idea-seeds).
   await expect(page.locator(".error")).toHaveCount(0);
 });

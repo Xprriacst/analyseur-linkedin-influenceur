@@ -3130,7 +3130,6 @@ function DailyIdeasView({
 }) {
   const [ideas, setIdeas] = useState<DailyIdea[]>([]);
   const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
-  const [enabled, setEnabled] = useState(false);
   const [draft, setDraft] = useState("");
   const [draftComment, setDraftComment] = useState("");
   const [loading, setLoading] = useState(false);
@@ -3313,7 +3312,6 @@ function DailyIdeasView({
         const dData = await dRes.json();
         if (!dRes.ok) throw new Error(dData.detail || "Chargement des idées impossible");
         setIdeas(Array.isArray(dData?.ideas) ? dData.ideas : []);
-        setEnabled(!!dData?.enabled);
       }
     } catch (err: any) {
       setError(err.message || "Chargement impossible");
@@ -3324,7 +3322,7 @@ function DailyIdeasView({
 
   useEffect(() => {
     if (isAuthed) void loadAll();
-    else { setIdeas([]); setSeeds([]); setEnabled(false); }
+    else { setIdeas([]); setSeeds([]); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
@@ -3447,21 +3445,6 @@ function DailyIdeasView({
     }
   }
 
-  async function toggleEnabled() {
-    const next = !enabled;
-    setEnabled(next);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/daily-ideas/enabled`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ enabled: next }),
-      });
-      if (!res.ok) throw new Error();
-    } catch {
-      setEnabled(!next);
-      setError("Impossible de mettre à jour l'option.");
-    }
-  }
 
   if (!isAuthed) {
     return (
@@ -3582,8 +3565,8 @@ function DailyIdeasView({
             <><Loader2 size={20} className="spinning" style={{ opacity: 0.45 }} /><p>Chargement…</p></>
           ) : (
             <p style={{ margin: 0 }}>
-              Pas encore d'idée générée. Active l'option ci-dessous et ajoute des idées à ton réservoir —
-              la première arrivera demain matin.
+              Pas encore d'idée générée. Active « Recevoir une idée chaque matin » dans <strong>Mon profil</strong> et
+              ajoute des idées à ton réservoir — la première arrivera demain matin.
             </p>
           )}
         </div>
@@ -3789,12 +3772,6 @@ function DailyIdeasView({
             <h3 className="daily-subtitle" style={{ margin: 0 }}><Lightbulb size={16} /> Mon réservoir d'idées</h3>
             <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées : l'idée du jour piochera dedans en priorité.</p>
           </div>
-          {!reservoirOnly && (
-            <label className="daily-switch">
-              <input type="checkbox" checked={enabled} onChange={toggleEnabled} />
-              <span>Recevoir une idée chaque matin</span>
-            </label>
-          )}
         </div>
 
         {reservoirOnly && error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
