@@ -248,6 +248,10 @@ type InfluencerTrends = {
     biggest: { name: string; followers: number; rate_pct: number };
     high_freq?: { threshold: number; accounts: number; max_rate_pct: number };
   } | null;
+  frequency?: {
+    buckets: { label: string; accounts: number; median_rate_pct: number }[];
+    ratio: number | null;
+  } | null;
   ranking: TrendsRankingRow[];
 };
 
@@ -6903,6 +6907,7 @@ function trendsPrintHtml(trends: InfluencerTrends): string {
   const cta = trends.cta;
   const share = trends.comments_share;
   const bench = trends.benchmark;
+  const freq = trends.frequency && trends.frequency.buckets.length ? trends.frequency : null;
   const ranking = trends.ranking || [];
   return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Tendances de ma veille LinkedIn</title><style>
     body{font-family:-apple-system,"Segoe UI",Roboto,sans-serif;color:#111;margin:40px auto;max-width:720px;padding:0 24px;font-size:13px;line-height:1.55}
@@ -6921,6 +6926,7 @@ function trendsPrintHtml(trends: InfluencerTrends): string {
   ${barTable("Accroches", trends.hooks)}
   ${barTable("Longueur des posts", trends.length_buckets)}
   ${barTable("Jour de publication", trends.weekdays)}
+  ${freq ? `<section><h2>Rythme de publication</h2><table>${freq.buckets.map((b) => `<tr><td>${escHtml(b.label)}</td><td class="num">${fmtRatePct(b.median_rate_pct)}</td><td class="n">${b.accounts} comptes</td></tr>`).join("")}</table><p class="note">Taux d'engagement médian par tranche de fréquence (comparaison entre comptes).</p></section>` : ""}
   ${bench ? `<section><h2>Benchmark</h2><p>Meilleur taux d&#39;engagement : <b>${escHtml(bench.best.name)}</b> (${fmtKAbo(bench.best.followers)} abonnés, ${fmtRatePct(bench.best.rate_pct)})${bench.biggest.name !== bench.best.name ? ` — plus gros compte : ${escHtml(bench.biggest.name)} (${fmtKAbo(bench.biggest.followers)}, ${fmtRatePct(bench.biggest.rate_pct)})` : ""}.${bench.high_freq ? ` Au-delà de ${bench.high_freq.threshold} posts/semaine, aucun compte ne dépasse ${fmtRatePct(bench.high_freq.max_rate_pct)} de taux.` : ""}</p></section>` : ""}
   ${ranking.length ? `<section><h2>Classement</h2><table>${ranking.map((r, i) => `<tr><td class="n">${i + 1}</td><td>${escHtml(r.name)}</td><td class="n">${fmtKAbo(r.followers)} abonnés</td><td class="num">${r.median_engagement}</td><td class="n">taux ${fmtRatePct(r.engagement_rate_pct)}</td></tr>`).join("")}</table><p class="note">Engagement médian par post (likes + commentaires + partages).</p></section>` : ""}
   </body></html>`;
@@ -6980,6 +6986,8 @@ function InfluencerTrendsBlock({
   const cta = trends.cta;
   const share = trends.comments_share;
   const bench = trends.benchmark;
+  const freq = trends.frequency && trends.frequency.buckets.length ? trends.frequency : null;
+  const maxFreqRate = freq ? Math.max(...freq.buckets.map((b) => b.median_rate_pct)) : 0;
 
   const worstFormat = formats.length ? formats[formats.length - 1] : null;
   const topStage = stages[0] || null;
@@ -7081,15 +7089,21 @@ function InfluencerTrendsBlock({
             <span className="tr-eyebrow"><span className="tr-no">{no()}</span> Sujets</span>
             <div className="tr-exhibit-top">
               <span className={`tr-exhibit-num ${topStage.lift_pct >= 0 ? "pos" : "neg"}`}>{fmtLift(topStage.lift_pct)}</span>
-              <p className="tr-exhibit-title">« {topStage.label} » : la catégorie qui engage le plus.</p>
+              <p className="tr-exhibit-title">
+                {topStage.key === "BOFU"
+                  ? "Les posts qui proposent quelque chose engagent le plus."
+                  : `« ${topStage.label} » : la catégorie qui engage le plus.`}
+              </p>
             </div>
             <TrendBars rows={stages} ariaLabel="Impact de chaque catégorie de contenu sur l’engagement" />
-            {lastStage && (
-              <p className="tr-exhibit-body">
-                Les posts « {topStage.label} » font <b>{fmtLift(topStage.lift_pct)}</b> vs la performance habituelle du compte,
-                quand « {lastStage.label} » fait <b>{fmtLift(lastStage.lift_pct)}</b>.
-              </p>
-            )}
+            <p className="tr-exhibit-body">
+              Chaque post est classé selon son intention : attirer l’attention (opinion, actu), éduquer
+              (méthode, tuto) ou proposer quelque chose — un guide à récupérer, une offre, une preuve client.
+              {lastStage && (
+                <> Les posts « {topStage.label.toLowerCase()} » font <b>{fmtLift(topStage.lift_pct)}</b>,
+                quand « {lastStage.label.toLowerCase()} » fait <b>{fmtLift(lastStage.lift_pct)}</b>.</>
+              )}
+            </p>
             <span className="tr-exhibit-foot">{stages.reduce((s, r) => s + r.posts, 0)} posts classés par catégorie.</span>
           </article>
         )}
@@ -7139,6 +7153,42 @@ function InfluencerTrendsBlock({
                 ({bench.high_freq.accounts} comptes), aucun ne dépasse {fmtRatePct(bench.high_freq.max_rate_pct)} de taux.
               </p>
             )}
+          </article>
+        )}
+        {freq && (
+          <article className="tr-exhibit">
+            <span className="tr-eyebrow">Rythme</span>
+            <div className="tr-exhibit-top">
+              <span className="tr-exhibit-num">
+                {freq.ratio ? `÷${String(freq.ratio).replace(".", ",")}` : fmtRatePct(freq.buckets[0].median_rate_pct)}
+              </span>
+              <p className="tr-exhibit-title">Publier plus dilue chaque post.</p>
+            </div>
+            <div className="tr-compare">
+              {freq.buckets.map((b) => (
+                <div className="tr-compare-row" key={b.label}>
+                  <span
+                    className="tr-compare-dot"
+                    style={{ background: b.median_rate_pct === maxFreqRate ? "var(--success)" : "var(--muted)" }}
+                  />
+                  <span><b>{b.label}</b> <span style={{ color: "var(--muted)" }}>— {b.accounts} comptes</span></span>
+                  <span
+                    className="tr-compare-num"
+                    style={{ color: b.median_rate_pct === maxFreqRate ? "var(--success)" : "var(--muted)" }}
+                  >
+                    {fmtRatePct(b.median_rate_pct)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="tr-exhibit-body">
+              {freq.ratio && freq.ratio > 1.5
+                ? <>Le taux d’engagement médian est divisé par <b>{String(freq.ratio).replace(".", ",")}</b> entre les comptes
+                les moins actifs et les plus actifs. Publier plus peut élargir la portée totale, mais chaque post touche
+                proportionnellement moins — la régularité bat le volume.</>
+                : <>Sur ton corpus, la fréquence de publication ne change pas nettement le taux d’engagement par post.</>}
+            </p>
+            <span className="tr-exhibit-foot">Taux d’engagement médian par tranche de fréquence — comparaison entre comptes, à lire comme une tendance.</span>
           </article>
         )}
       </div>
