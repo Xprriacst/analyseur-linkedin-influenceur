@@ -89,6 +89,9 @@ test("Contenu › Générateur de posts : formulaires rendus", async ({ page }) 
   // Sections idées + posts fusionnées en un seul bloc « Générer des idées de posts » (idée = post).
   await expect(page.getByRole("heading", { name: /Générer des idées de posts/i })).toBeVisible();
   await expect(page.getByPlaceholder(/Sujet du post/i)).toBeVisible();
+  // ALE-222 : le menu Template est toujours visible pour un compte connecté
+  // (texte d'aide si la bibliothèque est vide).
+  await expect(page.getByText(/Template :/)).toBeVisible();
 });
 
 test("onglet Agent IA : interface chat rendue", async ({ page }) => {
