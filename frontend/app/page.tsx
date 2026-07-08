@@ -2762,7 +2762,9 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                 <option value={3}>3</option>
               </select>
             </label>
-            {templates.length > 0 && (
+            {/* Toujours visible (retour Alex ALE-222) : caché derrière le chargement de la
+                bibliothèque, le menu semblait ne pas exister. Vide → texte d'aide. */}
+            {isAuthed && (
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", flexWrap: "wrap" }}>
                 Template :
                 <select
@@ -2775,7 +2777,11 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     <option key={t.id} value={t.id}>{libraryEntryTitle(t)}</option>
                   ))}
                 </select>
-                {templateId && templates.find((t) => t.id === templateId)?.image_note ? (
+                {templates.length === 0 ? (
+                  <span style={{ fontSize: 12 }}>
+                    Ajoute des posts dans Contenu › Ma bibliothèque pour avoir des templates de structure.
+                  </span>
+                ) : templateId && templates.find((t) => t.id === templateId)?.image_note ? (
                   <span style={{ fontSize: 12 }}>
                     🖼 {templates.find((t) => t.id === templateId)?.image_note}
                   </span>
