@@ -29,39 +29,56 @@ test("onglet Veille : sous-onglets Analyser / Mes influenceurs (Dashboard fusion
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Contenu › Ma bibliothèque : bibliothèque unifiée rendue sans erreur (ALE-222)", async ({ page }) => {
+test("Contenu › Ma bibliothèque : onglet fusionné à tiroirs (ALE-223)", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Ma bibliothèque");
-  await expect(page.getByRole("heading", { name: /^Ma bibliothèque$/i })).toBeVisible();
-  // Saisie principale : le lien du post (import auto texte + auteur + image + structure).
+  // ALE-223 : le sous-onglet « Mes contenus » a été fusionné ici → il n'existe plus.
+  await expect(page.locator(".tab", { hasText: "Mes contenus" })).toHaveCount(0);
+  // Tiroir 1 (ouvert par défaut) : les contenus sauvegardés.
+  await expect(page.getByRole("heading", { name: /Mes contenus sauvegardés/i })).toBeVisible();
+  // Tiroir « Posts de référence & templates » : replié par défaut → le champ d'ajout
+  // par lien est masqué tant qu'on n'a pas ouvert le tiroir.
+  const libToggle = page.getByRole("button", { name: /Posts de référence & templates/i });
+  await expect(libToggle).toBeVisible();
+  await expect(page.getByPlaceholder(/Colle le lien du post LinkedIn/i)).toHaveCount(0);
+  await libToggle.click();
   await expect(page.getByPlaceholder(/Colle le lien du post LinkedIn/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /Ajouter à ma bibliothèque/i })).toBeVisible();
-  // Le tiroir « Plus d'options » expose texte collé, note, structure à la main (ex-ALE-67/216).
+  // Le tiroir interne « Plus d'options » expose texte collé, note, structure à la main.
   await page.getByText(/Plus d'options/i).click();
   await expect(page.getByPlaceholder(/colle le texte du post directement/i)).toBeVisible();
-  await expect(page.getByPlaceholder(/Pourquoi il te plaît/i)).toBeVisible();
   await expect(page.getByPlaceholder(/Nom de la structure/i)).toBeVisible();
-  await expect(page.getByPlaceholder(/Structure à la main/i)).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Veille › Nouveaux posts : fil de veille rendu sans erreur (ALE-215)", async ({ page }) => {
+test("Veille › Monitoring d'influenceurs : fil de veille rendu sans erreur (ALE-215)", async ({ page }) => {
   await gotoTab(page, "Veille");
-  await page.locator(".tab", { hasText: "Nouveaux posts" }).click();
-  await expect(page.getByRole("heading", { name: /^Nouveaux posts$/i })).toBeVisible();
+  await page.locator(".tab", { hasText: "Monitoring d'influenceurs" }).click();
+  await expect(page.getByRole("heading", { name: /^Monitoring d'influenceurs$/i })).toBeVisible();
   // Bouton de rafraîchissement toujours présent ; l'état vide invite à suivre des influenceurs.
   await expect(page.getByRole("button", { name: /Rafraîchir/i })).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("onglet Mon profil : contexte éditorial + pré-remplissage IA + sauvegarde", async ({ page }) => {
+test("onglet Mon profil : contexte éditorial direct (plus de sous-onglet Tableau de bord, ALE-224)", async ({ page }) => {
   await gotoTab(page, "Mon profil");
+  // ALE-224 : le sous-onglet « Tableau de bord » a été retiré → le contexte éditorial
+  // s'affiche directement, sans onglet intermédiaire.
   await expect(page.getByRole("heading", { name: /Contexte éditorial/i })).toBeVisible();
+  await expect(page.locator(".tab", { hasText: "Tableau de bord" })).toHaveCount(0);
   // Le bouton de sauvegarde manuelle reste présent…
   await expect(page.getByRole("button", { name: /Sauvegarder/i })).toBeVisible();
   // …et la barre de pré-remplissage IA (qui auto-sauve désormais) aussi.
   await expect(page.getByPlaceholder(/Description, URL LinkedIn ou site web/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /Pré-remplir/i })).toBeVisible();
+});
+
+test("onglet Mon profil : 2ᵉ switch « idée du jour » présent et synchronisé (ALE-224)", async ({ page }) => {
+  await gotoTab(page, "Mon profil");
+  // Le switch d'opt-in « idée du jour » est aussi accessible depuis le profil
+  // (en plus de Contenu › Idée du jour), sans bandeau d'erreur.
+  await expect(page.getByText(/Recevoir une idée chaque matin/i)).toBeVisible();
+  await expect(page.locator(".error")).toHaveCount(0);
 });
 
 test("onglet Mon profil : encart de publication X (Twitter) rendu", async ({ page }) => {
@@ -75,13 +92,8 @@ test("onglet Mon profil : encart de publication X (Twitter) rendu", async ({ pag
   await expect(connectBtn.or(connectedPill).first()).toBeVisible();
 });
 
-test("Contenu › Mes contenus : liste de posts sauvegardés sans erreur", async ({ page }) => {
-  await gotoTab(page, "Contenu");
-  await gotoSubTab(page, "Mes contenus");
-  await expect(page.getByRole("heading", { name: /Mes contenus sauvegardés/i })).toBeVisible();
-  // Aucun bandeau d'erreur de chargement.
-  await expect(page.locator(".error")).toHaveCount(0);
-});
+// ALE-223 : le sous-onglet « Mes contenus » a été fusionné dans « Ma bibliothèque »
+// (tiroir « Mes contenus sauvegardés ») — couvert par le test « onglet fusionné à tiroirs ».
 
 test("Contenu › Générateur de posts : formulaires rendus", async ({ page }) => {
   await gotoTab(page, "Contenu");
@@ -100,23 +112,25 @@ test("onglet Agent IA : interface chat rendue", async ({ page }) => {
   await expect(page.locator(".nav-item.active", { hasText: "Agent IA" })).toBeVisible();
 });
 
-test("Contenu › Idée du jour : idée + réservoir + opt-in sans erreur", async ({ page }) => {
+test("Contenu › Idée du jour : idée + réservoir sans erreur", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Idée du jour");
   await expect(page.getByRole("heading", { name: /^Idée du jour$/i })).toBeVisible();
-  // Le réservoir et son switch d'opt-in sont rendus.
+  // Le réservoir est rendu.
   await expect(page.getByRole("heading", { name: /Mon réservoir d'idées/i })).toBeVisible();
-  await expect(page.getByText(/Recevoir une idée chaque matin/i)).toBeVisible();
   await expect(page.getByPlaceholder(/Une idée de post/i)).toBeVisible();
+  // ALE-224 : le switch d'opt-in a été déplacé dans Mon profil → plus ici.
+  await expect(page.getByText(/Recevoir une idée chaque matin/i)).toHaveCount(0);
   // Aucun bandeau d'erreur de chargement (daily-ideas + idea-seeds).
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Contenu › Idée du jour : les posts de référence ont déménagé (ALE-222)", async ({ page }) => {
+test("Contenu › Idée du jour : plus de posts de référence ni de note de renvoi (ALE-222/224)", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Idée du jour");
-  // L'ancienne section ALE-67 n'existe plus ici : un renvoi pointe vers Ma bibliothèque.
+  // L'ancienne section ALE-67 n'existe plus ici (déménagée dans Ma bibliothèque)…
   await expect(page.getByRole("heading", { name: /Mes posts de référence/i })).toHaveCount(0);
-  await expect(page.getByText(/Tes posts de référence sont désormais dans/i)).toBeVisible();
+  // …et la note de renvoi temporaire a été retirée (ALE-224).
+  await expect(page.getByText(/Tes posts de référence sont désormais dans/i)).toHaveCount(0);
   await expect(page.locator(".error")).toHaveCount(0);
 });
