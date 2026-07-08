@@ -146,6 +146,17 @@ def _extract_media(post: dict) -> list[dict]:
             _push("image", media.get("thumbnail"))
         elif not items:
             _push("image", media.get("thumbnail"))
+    # Schéma apimaestro post-detail : media = liste déjà typée [{"type": ..., "url": ...}].
+    elif isinstance(media, list):
+        for entry in media:
+            if not isinstance(entry, dict):
+                continue
+            kind = str(entry.get("type") or "image").lower()
+            if "video" in kind:
+                _push("video", entry.get("url"))
+                _push("image", entry.get("thumbnail"))
+            else:
+                _push("image", entry.get("url"))
     # Schémas harvestapi et variantes : listes d'images à plat.
     for key in ("images", "imageUrls", "postImages"):
         value = post.get(key)

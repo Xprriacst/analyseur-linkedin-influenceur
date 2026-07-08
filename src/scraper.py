@@ -93,8 +93,11 @@ def fetch_post_detail(post_url: str) -> dict[str, Any] | None:
             continue
         track_apify(actor, 1, cached=False)
         author = (item.get("author") or {}).get("name")
+        # apimaestro post-detail range les médias à la racine de l'item, pas dans
+        # le bloc post (vérifié sur le dataset réel) — on regarde les deux.
+        media_source = {**post, "media": item.get("media") or post.get("media")}
         image_url = next(
-            (m["url"] for m in extract_media(post) if m.get("type") == "image"), None
+            (m["url"] for m in extract_media(media_source) if m.get("type") == "image"), None
         )
         return {
             "text": text,

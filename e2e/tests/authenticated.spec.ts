@@ -104,7 +104,7 @@ test("Contenu › Idée du jour : idée + réservoir + opt-in sans erreur", asyn
   // Le réservoir et son switch d'opt-in sont rendus.
   await expect(page.getByRole("heading", { name: /Mon réservoir d'idées/i })).toBeVisible();
   await expect(page.getByText(/Recevoir une idée chaque matin/i)).toBeVisible();
-  await expect(page.getByPlaceholder(/Mon retour sur/i)).toBeVisible();
+  await expect(page.getByPlaceholder(/Une idée de post/i)).toBeVisible();
   // Aucun bandeau d'erreur de chargement (daily-ideas + idea-seeds).
   await expect(page.locator(".error")).toHaveCount(0);
 });
