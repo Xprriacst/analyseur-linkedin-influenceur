@@ -674,13 +674,14 @@ Schéma JSON attendu :
 }}"""
     )
     data = _call(system, user, max_tokens=4096, temperature=0.8, tools=_web_search_tools(web_search or None))
-    return data.get("ideas", [])
+    # Le modèle peut sur-générer malgré « exactement {count} » (cf. fix « 7 posts »).
+    return data.get("ideas", [])[:count]
 
 
 def generate_one_line_ideas(
     real_posts: list[dict],
     benchmark: dict,
-    count: int = 15,
+    count: int = 3,
     user_context: dict | None = None,
     web_search: bool = False,
     recent_idea_lines: list[str] | None = None,
@@ -742,7 +743,8 @@ Schéma JSON attendu :
 }}"""
     )
     data = _call(system, user, max_tokens=2048, temperature=1.0, tools=_web_search_tools(web_search or None))
-    return data.get("ideas", [])
+    # Le modèle peut sur-générer malgré « exactement {count} » (cf. fix « 7 posts »).
+    return data.get("ideas", [])[:count]
 
 
 def analyze_dashboard_strategy(influencers_data: list[dict], growth_data: list[dict] | None = None) -> str:

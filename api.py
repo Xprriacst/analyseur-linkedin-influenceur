@@ -1044,7 +1044,9 @@ def dashboard_ai_analysis(token: Optional[str] = Depends(optional_token)) -> dic
 
 
 class IdeasRequest(BaseModel):
-    count: int = Field(default=15, ge=1, le=20)
+    # Un lot = 3 idées max : au-delà, la réponse JSON déborde le budget de tokens
+    # (réponse tronquée → erreur) et la liste devient inutilisable côté client.
+    count: int = Field(default=3, ge=1, le=3)
     web_search: bool = Field(default=False)
 
 
