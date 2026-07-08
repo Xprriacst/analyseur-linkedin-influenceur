@@ -112,16 +112,23 @@ liste des triggers**. Voici le parcours équivalent, écran par écran.
 > tu peux construire le flow mais l'exécution réelle du webhook nécessitera le
 > passage en Pro.
 
-## Notes vocales (optionnel)
+## Notes vocales
 
-Si ManyChat expose l'URL du fichier audio d'un message vocal, ajoute au body :
+Bonne nouvelle : **aucun champ supplémentaire à ajouter au body**. Quand un
+prospect envoie une note vocale sur Instagram, ManyChat range **l'URL du fichier
+audio directement dans le champ « Last Text Input »** (ManyChat n'a pas de champ
+dédié pour l'audio entrant). Ton body actuel envoie donc déjà cette URL dans
+`text` — le backend la **reconnaît** (URL se terminant par `.ogg`, `.mp3`, …) et
+la **transcrit** automatiquement (Speech-to-Text) au lieu de l'afficher brute.
 
-```json
-"audio_url": "{{URL du fichier audio}}"
-```
+⚠️ **Condition indispensable** : ton automation doit se déclencher sur **tous**
+les messages entrants — utilise la **Réponse par défaut (Default Reply) attrape-
+tout**, pas un mot-clé. Un vocal ne contient aucun texte : un déclencheur par
+mot-clé ne se déclenchera jamais dessus, et le vocal n'arrivera pas au backend.
 
-L'agent transcrit alors le vocal (Speech-to-Text) et le traite comme un DM texte.
-Sans ce champ, seuls les DM texte sont pris en charge.
+> ManyChat expose aussi une condition **« Last Reply Type : text/audio »** pour
+> router selon le type — connue pour être peu fiable ; inutile ici puisque le
+> backend distingue lui-même texte et audio.
 
 ## Dépannage
 

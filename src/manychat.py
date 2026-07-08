@@ -21,9 +21,23 @@ import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import deque
 from typing import Any
+
+# Extensions de fichiers audio que ManyChat peut pousser pour une note vocale IG.
+# ManyChat range l'URL du fichier audio dans « Last Text Input » (le même champ que
+# le texte) — les vocaux Instagram sortent en .ogg, on garde les autres par sûreté.
+_AUDIO_URL_EXTS = {"ogg", "oga", "mp3", "m4a", "wav", "webm", "mpeg", "mpga", "flac"}
+
+# Pièces jointes de la messagerie Meta (Instagram/Messenger). Une note vocale IG
+# arrive sous cette forme, **sans extension dans le path** : l'identifiant est dans
+# la query (`?asset_id=…&signature=…`) et le vrai nom (`audioclip-….ogg`) n'est que
+# dans l'en-tête Content-Disposition à la récupération. On la reconnaît donc à
+# l'hôte + un marqueur de chemin, pas à l'extension.
+_META_ATTACHMENT_HOST = "fbsbx.com"
+_META_ATTACHMENT_MARKERS = ("messaging_cdn", "attachment")
 
 # Base API ManyChat. Surchargeable par env si le compte utilise un autre host.
 BASE_URL = os.environ.get("MANYCHAT_BASE_URL", "https://api.manychat.com").rstrip("/")
@@ -162,6 +176,28 @@ def validate_token(api_token: str) -> dict:
     return _request("GET", "/fb/page/getInfo", api_token=token)
 
 
+def _looks_like_media_url(value: str) -> bool:
+    """True si `value` est une URL http(s) vers une pièce jointe / un fichier audio.
+
+    Cas ManyChat Instagram : une note vocale arrive avec l'URL du fichier
+    **dans le champ « Last Text Input »** (ManyChat n'a pas de champ dédié pour
+    l'audio entrant). Deux formes reconnues, sans confondre avec un lien texte
+    que le prospect aurait tapé (qui n'est ni un CDN Meta, ni un fichier audio) :
+      1. l'URL signée d'une pièce jointe de la messagerie Meta (sans extension) ;
+      2. une URL directe avec extension audio explicite (autres middlewares).
+    """
+    value = (value or "").strip()
+    if " " in value or not value.lower().startswith(("http://", "https://")):
+        return False
+    parsed = urllib.parse.urlparse(value)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    if host.endswith(_META_ATTACHMENT_HOST) and any(m in path for m in _META_ATTACHMENT_MARKERS):
+        return True
+    ext = path.rsplit(".", 1)[-1] if "." in path else ""
+    return ext in _AUDIO_URL_EXTS
+
+
 def parse_inbound(payload: dict) -> dict:
     """Normaliser un webhook entrant ManyChat en champs exploités par le backend.
 
@@ -169,6 +205,12 @@ def parse_inbound(payload: dict) -> dict:
     accepte plusieurs alias de clés pour rester robuste à la façon dont le champ
     est mappé. Renvoie {prospect_id, prospect_name, text, audio_url}.
     `text` OU `audio_url` peut être vide ; l'appelant décide (203 gère l'audio).
+
+    Note vocale : ManyChat pousse l'URL du fichier audio dans « Last Text Input »
+    (donc dans `text`). Si `text` est une URL de pièce jointe / audio et qu'aucun
+    `audio_url` dédié n'est fourni, on la bascule vers `audio_url` → transcription
+    au lieu d'afficher l'URL brute comme un message texte (et de laisser l'IA y
+    répondre comme si c'était un vrai message).
     """
     payload = payload or {}
 
@@ -185,6 +227,11 @@ def parse_inbound(payload: dict) -> dict:
     prospect_name = _first("name", "prospect_name", "first_name", "full_name")
     text = _first("text", "last_text_input", "lastTextInput", "message", "last_input_text")
     audio_url = _first("audio_url", "audioUrl", "voice_url", "attachment_url", "file_url")
+
+    if not audio_url and _looks_like_media_url(text):
+        audio_url = text
+        text = ""
+
     return {
         "prospect_id": prospect_id,
         "prospect_name": prospect_name,

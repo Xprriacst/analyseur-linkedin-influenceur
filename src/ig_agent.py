@@ -201,26 +201,45 @@ def handle_inbound_voice_async(
     """Transcrire une note vocale entrante puis alimenter le même pipeline (ALE-203).
 
     En tâche de fond (transcription + LLM peuvent être longs → ne bloque pas le
-    webhook ManyChat) : Whisper → persiste le texte comme un `ig_messages` normal
-    (source=prospect, kind=voice) → génère le draft. Indistinguable d'un DM texte
-    pour la suite du pipeline. Best-effort : tout échec est loggé.
+    webhook ManyChat). Le message vocal est **d'abord persisté avec un texte
+    d'attente** pour être immédiatement visible dans l'inbox (kind=voice), puis
+    Whisper remplace ce texte par la transcription → génère le draft. Si la
+    transcription échoue/est vide, le message reste visible avec une mention
+    d'échec (l'humain sait qu'un vocal est arrivé et peut répondre à la main).
+    Best-effort : tout échec est loggé.
     """
     def _run() -> None:
         import logging
 
+        # 1. Rendre le vocal visible tout de suite — ne jamais laisser un message
+        #    entrant invisible parce que la transcription a raté (cf. inbox vide).
+        msg = db.add_ig_message_admin(
+            user_id, conversation_id, role="in", source="prospect",
+            text="Note vocale reçue — transcription en cours…", kind="voice",
+        )
+
+        # 2. Transcrire, puis remplacer le texte d'attente.
         try:
             text = transcription.transcribe_audio_url(audio_url)
         except Exception as exc:  # noqa: BLE001
             logging.error("Transcription vocale IG échouée (conv=%s): %s", conversation_id, exc)
+            if msg:
+                db.update_ig_message_text_admin(
+                    msg["id"], "Pièce jointe reçue — à consulter directement sur Instagram."
+                )
             return
         if not text:
             logging.warning("Transcription vocale IG vide (conv=%s)", conversation_id)
+            if msg:
+                db.update_ig_message_text_admin(
+                    msg["id"], "Note vocale reçue — inaudible ou vide (à écouter sur Instagram)."
+                )
             return
-        msg = db.add_ig_message_admin(
-            user_id, conversation_id, role="in", source="prospect", text=text, kind="voice"
-        )
         if not msg:
             return
+        db.update_ig_message_text_admin(msg["id"], text)
+
+        # 3. Même pipeline qu'un DM texte : génère la réponse suggérée.
         try:
             generate_draft(user_id, conversation_id, msg["id"], text)
         except Exception as exc:  # noqa: BLE001
