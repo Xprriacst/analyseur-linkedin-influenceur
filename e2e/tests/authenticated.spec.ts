@@ -29,19 +29,25 @@ test("onglet Veille : sous-onglets Analyser / Mes influenceurs (Dashboard fusion
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Contenu › Ma bibliothèque : bibliothèque unifiée rendue sans erreur (ALE-222)", async ({ page }) => {
+test("Contenu › Ma bibliothèque : onglet fusionné à tiroirs (ALE-223)", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Ma bibliothèque");
-  await expect(page.getByRole("heading", { name: /^Ma bibliothèque$/i })).toBeVisible();
-  // Saisie principale : le lien du post (import auto texte + auteur + image + structure).
+  // ALE-223 : le sous-onglet « Mes contenus » a été fusionné ici → il n'existe plus.
+  await expect(page.locator(".tab", { hasText: "Mes contenus" })).toHaveCount(0);
+  // Tiroir 1 (ouvert par défaut) : les contenus sauvegardés.
+  await expect(page.getByRole("heading", { name: /Mes contenus sauvegardés/i })).toBeVisible();
+  // Tiroir « Posts de référence & templates » : replié par défaut → le champ d'ajout
+  // par lien est masqué tant qu'on n'a pas ouvert le tiroir.
+  const libToggle = page.getByRole("button", { name: /Posts de référence & templates/i });
+  await expect(libToggle).toBeVisible();
+  await expect(page.getByPlaceholder(/Colle le lien du post LinkedIn/i)).toHaveCount(0);
+  await libToggle.click();
   await expect(page.getByPlaceholder(/Colle le lien du post LinkedIn/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /Ajouter à ma bibliothèque/i })).toBeVisible();
-  // Le tiroir « Plus d'options » expose texte collé, note, structure à la main (ex-ALE-67/216).
+  // Le tiroir interne « Plus d'options » expose texte collé, note, structure à la main.
   await page.getByText(/Plus d'options/i).click();
   await expect(page.getByPlaceholder(/colle le texte du post directement/i)).toBeVisible();
-  await expect(page.getByPlaceholder(/Pourquoi il te plaît/i)).toBeVisible();
   await expect(page.getByPlaceholder(/Nom de la structure/i)).toBeVisible();
-  await expect(page.getByPlaceholder(/Structure à la main/i)).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
@@ -86,13 +92,8 @@ test("onglet Mon profil : encart de publication X (Twitter) rendu", async ({ pag
   await expect(connectBtn.or(connectedPill).first()).toBeVisible();
 });
 
-test("Contenu › Mes contenus : liste de posts sauvegardés sans erreur", async ({ page }) => {
-  await gotoTab(page, "Contenu");
-  await gotoSubTab(page, "Mes contenus");
-  await expect(page.getByRole("heading", { name: /Mes contenus sauvegardés/i })).toBeVisible();
-  // Aucun bandeau d'erreur de chargement.
-  await expect(page.locator(".error")).toHaveCount(0);
-});
+// ALE-223 : le sous-onglet « Mes contenus » a été fusionné dans « Ma bibliothèque »
+// (tiroir « Mes contenus sauvegardés ») — couvert par le test « onglet fusionné à tiroirs ».
 
 test("Contenu › Générateur de posts : formulaires rendus", async ({ page }) => {
   await gotoTab(page, "Contenu");
