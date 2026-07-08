@@ -35,11 +35,20 @@ _LENGTH_BUCKETS = [
 ]
 _WEEKDAYS_FR = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
 
+# Libellés grand public des stages funnel : chaque post est classé par l'IA
+# selon son intention au moment de l'analyse du profil.
 _STAGE_PUBLIC_LABELS = {
-    "BOFU": "Offre / ressource (conversion)",
-    "MOFU": "Éducation / méthode",
-    "TOFU": "Visibilité large (attraction)",
+    "BOFU": "Proposer (guide, offre, preuve)",
+    "MOFU": "Éduquer (méthode, tuto)",
+    "TOFU": "Attirer (opinion, actu)",
 }
+
+_FREQ_BUCKETS = [
+    (0, 3, "Moins de 3 posts/sem"),
+    (3, 7, "3 à 7 posts/sem"),
+    (7, 10**9, "7 posts/sem et plus"),
+]
+_MIN_ACCOUNTS_PER_FREQ = 3
 
 
 def _lift_pct(value: float, base: float) -> int:
@@ -98,6 +107,7 @@ def compute_trends(corpus: list[dict], analyses: list[dict]) -> dict:
         "length_buckets": _length_lifts(posts_by_handle, base_by_handle),
         "weekdays": _weekday_lifts(posts_by_handle, base_by_handle),
         "benchmark": _benchmark(analyses, profile_by_handle),
+        "frequency": _frequency(analyses),
         "ranking": ranking,
     }
 
@@ -295,6 +305,36 @@ def _benchmark(analyses: list[dict], profile_by_handle: dict) -> dict | None:
             "max_rate_pct": max(a["rate_pct"] for a in high_freq),
         }
     return result
+
+
+def _frequency(analyses: list[dict]) -> dict | None:
+    """Taux d'engagement médian par tranche de fréquence de publication.
+
+    Comparaison entre comptes (pas entre posts) : indicatif, mais le signal
+    « publier plus dilue chaque post » est net sur les corpus réels.
+    """
+    points = []
+    for analysis in analyses:
+        stats = analysis.get("stats") or {}
+        rate = (stats.get("engagement") or {}).get("engagement_rate_pct")
+        ppw = stats.get("posts_per_week")
+        if rate is None or ppw is None:
+            continue
+        points.append((float(ppw), float(rate)))
+    buckets = []
+    for lo, hi, label in _FREQ_BUCKETS:
+        rates = [rate for ppw, rate in points if lo <= ppw < hi]
+        if len(rates) >= _MIN_ACCOUNTS_PER_FREQ:
+            buckets.append({
+                "label": label,
+                "accounts": len(rates),
+                "median_rate_pct": round(median(rates), 2),
+            })
+    if len(buckets) < 2:
+        return None
+    first, last = buckets[0], buckets[-1]
+    ratio = round(first["median_rate_pct"] / last["median_rate_pct"], 1) if last["median_rate_pct"] > 0 else None
+    return {"buckets": buckets, "ratio": ratio}
 
 
 def _followers(analysis: dict, profile_by_handle: dict) -> int:
