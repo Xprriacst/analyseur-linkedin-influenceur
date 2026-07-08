@@ -3076,148 +3076,6 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   );
 }
 
-// ── ALE-69 : Dashboard de progression ────────────────────────────────────────
-
-type ProgressData = {
-  corpus: { influencer_count: number; analysis_count: number; last_analysis_at: string | null; active_jobs: number; done_jobs: number };
-  content: { ideas_count: number; posts_count: number };
-  publishing: { linkedin_connected: boolean; slack_connected: boolean };
-  profile: { filled: boolean; has_linkedin_url: boolean };
-  credits: { balance: number };
-  next_action: string;
-};
-
-function ProgressStep({ done, label }: { done: boolean; label: string }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
-      <span style={{ width: 20, height: 20, borderRadius: "50%", background: done ? "var(--primary)" : "var(--border)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-        {done ? <CheckCircle2 size={12} color="#fff" /> : <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--muted)", display: "block" }} />}
-      </span>
-      <span style={{ fontSize: 13, color: done ? "var(--fg)" : "var(--muted)" }}>{label}</span>
-    </div>
-  );
-}
-
-function ProgressView({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
-  const [data, setData] = useState<ProgressData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  async function load() {
-    if (!isAuthed) return;
-    setLoading(true);
-    setError("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/dashboard/progress`, { headers: await authHeaders() });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.detail || "Impossible de charger la progression");
-      setData(json);
-    } catch (err: any) {
-      setError(err.message || "Chargement impossible");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    if (isAuthed) void load();
-    else setData(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthed]);
-
-  if (!isAuthed) {
-    return (
-      <div className="card" style={{ textAlign: "center", padding: 40 }}>
-        <Activity size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
-        <h2 style={{ margin: "0 0 8px" }}>Tableau de bord</h2>
-        <p style={{ color: "var(--muted)", marginBottom: 16 }}>Connecte-toi pour voir ton avancement.</p>
-        <button type="button" className="primary-button" onClick={() => requireAuth()}>Se connecter</button>
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      <div className="section-header">
-        <div>
-          <h2 className="section-title"><Activity size={20} /> Tableau de bord</h2>
-          <p className="section-desc">Ton avancement global sur Cibl.</p>
-        </div>
-        <button className="secondary-button" onClick={load} disabled={loading}>
-          {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
-          Rafraîchir
-        </button>
-      </div>
-
-      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
-
-      {loading && !data && (
-        <div className="card" style={{ padding: 32, textAlign: "center" }}>
-          <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
-        </div>
-      )}
-
-      {data && (
-        <>
-          {/* Prochaine action recommandée */}
-          <div className="card" style={{ marginBottom: 16, borderLeft: "3px solid var(--primary)", background: "var(--surface2)" }}>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-              <Zap size={18} style={{ color: "var(--primary)", flexShrink: 0, marginTop: 2 }} />
-              <div>
-                <p style={{ margin: 0, fontWeight: 600, fontSize: 14 }}>Prochaine action</p>
-                <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--muted)" }}>{data.next_action}</p>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12, marginBottom: 16 }}>
-            <div className="card" style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: "var(--primary)" }}>{data.corpus.influencer_count}</div>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Influenceurs analysés</div>
-            </div>
-            <div className="card" style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: "var(--primary)" }}>{data.content.ideas_count}</div>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Idées générées</div>
-            </div>
-            <div className="card" style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: "var(--primary)" }}>{data.content.posts_count}</div>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Posts générés</div>
-            </div>
-            <div className="card" style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: data.credits.balance <= 5 ? "var(--error)" : "var(--primary)" }}>
-                {data.credits.balance}
-              </div>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Crédits restants</div>
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div className="card">
-              <p style={{ margin: "0 0 12px", fontWeight: 600, fontSize: 14 }}>Configuration</p>
-              <ProgressStep done={data.profile.filled} label="Profil éditorial rempli" />
-              <ProgressStep done={data.profile.has_linkedin_url} label="URL LinkedIn renseignée" />
-              <ProgressStep done={data.corpus.influencer_count > 0} label="Au moins 1 influenceur analysé" />
-            </div>
-            <div className="card">
-              <p style={{ margin: "0 0 12px", fontWeight: 600, fontSize: 14 }}>Publication</p>
-              <ProgressStep done={data.publishing.linkedin_connected} label="LinkedIn connecté (Zernio)" />
-              <ProgressStep done={data.publishing.slack_connected} label="Slack connecté" />
-            </div>
-          </div>
-
-          {data.corpus.active_jobs > 0 && (
-            <div className="auth-info" style={{ marginTop: 12 }}>
-              <Loader2 size={14} className="spinning" style={{ verticalAlign: "-2px", marginRight: 6 }} />
-              {data.corpus.active_jobs} analyse(s) en cours dans la queue.
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-// ── Fin ALE-69 ────────────────────────────────────────────────────────────────
 
 type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null; image_url?: string | null; source_url?: string | null };
 type IdeaSeed = { id: string; text: string; comment?: string | null; used_at?: string | null; created_at?: string };
@@ -3272,7 +3130,6 @@ function DailyIdeasView({
 }) {
   const [ideas, setIdeas] = useState<DailyIdea[]>([]);
   const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
-  const [enabled, setEnabled] = useState(false);
   const [draft, setDraft] = useState("");
   const [draftComment, setDraftComment] = useState("");
   const [loading, setLoading] = useState(false);
@@ -3455,7 +3312,6 @@ function DailyIdeasView({
         const dData = await dRes.json();
         if (!dRes.ok) throw new Error(dData.detail || "Chargement des idées impossible");
         setIdeas(Array.isArray(dData?.ideas) ? dData.ideas : []);
-        setEnabled(!!dData?.enabled);
       }
     } catch (err: any) {
       setError(err.message || "Chargement impossible");
@@ -3466,7 +3322,7 @@ function DailyIdeasView({
 
   useEffect(() => {
     if (isAuthed) void loadAll();
-    else { setIdeas([]); setSeeds([]); setEnabled(false); }
+    else { setIdeas([]); setSeeds([]); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
@@ -3589,21 +3445,6 @@ function DailyIdeasView({
     }
   }
 
-  async function toggleEnabled() {
-    const next = !enabled;
-    setEnabled(next);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/daily-ideas/enabled`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ enabled: next }),
-      });
-      if (!res.ok) throw new Error();
-    } catch {
-      setEnabled(!next);
-      setError("Impossible de mettre à jour l'option.");
-    }
-  }
 
   if (!isAuthed) {
     return (
@@ -3724,8 +3565,8 @@ function DailyIdeasView({
             <><Loader2 size={20} className="spinning" style={{ opacity: 0.45 }} /><p>Chargement…</p></>
           ) : (
             <p style={{ margin: 0 }}>
-              Pas encore d'idée générée. Active l'option ci-dessous et ajoute des idées à ton réservoir —
-              la première arrivera demain matin.
+              Pas encore d'idée générée. Active « Recevoir une idée chaque matin » dans <strong>Mon profil</strong> et
+              ajoute des idées à ton réservoir — la première arrivera demain matin.
             </p>
           )}
         </div>
@@ -3931,12 +3772,6 @@ function DailyIdeasView({
             <h3 className="daily-subtitle" style={{ margin: 0 }}><Lightbulb size={16} /> Mon réservoir d'idées</h3>
             <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées : l'idée du jour piochera dedans en priorité.</p>
           </div>
-          {!reservoirOnly && (
-            <label className="daily-switch">
-              <input type="checkbox" checked={enabled} onChange={toggleEnabled} />
-              <span>Recevoir une idée chaque matin</span>
-            </label>
-          )}
         </div>
 
         {reservoirOnly && error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
@@ -4048,15 +3883,6 @@ function DailyIdeasView({
           </ul>
         )}
       </div>
-
-      {/* ALE-222 : les posts de référence ont déménagé dans « Ma bibliothèque ».
-          Renvoi affiché une release, le temps que les habitudes suivent. */}
-      {!reservoirOnly && (
-        <p style={{ color: "var(--muted)", marginTop: 16, fontSize: 13 }}>
-          <Bookmark size={12} style={{ verticalAlign: "-2px" }} /> Tes posts de référence sont désormais dans
-          {" "}<strong>Contenu › Ma bibliothèque</strong>, avec tes templates.
-        </p>
-      )}
     </div>
   );
 }
@@ -5146,6 +4972,22 @@ type IgManychatStatus = {
   connected_at?: string | null;
 };
 
+// ALE-224 : pastille du mode d'une conversation (auto vs supervisé), stylée
+// via .mode-badge (globals.css) — remplace les anciens emojis 🤖 / 🙋.
+function ConversationModeBadge({ mode }: { mode: IgConversation["mode"] }) {
+  const isAuto = mode === "autopilot";
+  return (
+    <span
+      className={`mode-badge ${isAuto ? "auto" : "supervised"}`}
+      title={isAuto
+        ? "Autopilot — les réponses partent automatiquement"
+        : "Supervisé — chaque réponse est validée à la main avant envoi"}
+    >
+      {isAuto ? "Auto" : "Supervisé"}
+    </span>
+  );
+}
+
 // Corps JSON à coller dans l'action « External Request » ManyChat. Les valeurs
 // sont des libellés à remplacer par les champs système ManyChat (Contact ID, etc.).
 const MANYCHAT_BODY_TEMPLATE = `{
@@ -5759,17 +5601,19 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
               background: activeId === c.id ? "rgba(120,120,255,0.12)" : "transparent",
             }}
           >
-            <span style={{ fontWeight: isUnread(c) ? 700 : 600, fontSize: 14, display: "inline-flex", alignItems: "center", gap: 6 }}>
-              {isUnread(c) && (
-                <span
-                  aria-label="Nouveau message"
-                  title="Nouveau message"
-                  style={{ width: 8, height: 8, borderRadius: "50%", background: "#e5484d", flex: "0 0 auto" }}
-                />
-              )}
-              {c.prospect_name || c.prospect_id}
+            <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <span style={{ fontWeight: isUnread(c) ? 700 : 600, fontSize: 14, display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                {isUnread(c) && (
+                  <span
+                    aria-label="Nouveau message"
+                    title="Nouveau message"
+                    style={{ width: 8, height: 8, borderRadius: "50%", background: "#e5484d", flex: "0 0 auto" }}
+                  />
+                )}
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.prospect_name || c.prospect_id}</span>
+              </span>
+              <ConversationModeBadge mode={c.mode} />
             </span>
-            <span style={{ float: "right", fontSize: 11, opacity: 0.7 }}>{c.mode === "autopilot" ? "🤖 auto" : "🙋 supervisé"}</span>
           </button>
         ))}
       </aside>
@@ -6177,7 +6021,6 @@ function ProfileView({
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 }) {
-  const [profileTab, setProfileTab] = useState<"dashboard" | "context">("dashboard");
   const [profile, setProfile] = useState<EditorialProfile>(EMPTY_EDITORIAL_PROFILE);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -6196,6 +6039,10 @@ function ProfileView({
   const [weeklyRunning, setWeeklyRunning] = useState(false);
   const [weeklyRunMsg, setWeeklyRunMsg] = useState("");
   const [weeklyRunErr, setWeeklyRunErr] = useState("");
+  // ALE-224 : 2ᵉ point d'accès à l'opt-in « idée du jour » (l'autre est dans
+  // Contenu › Idée du jour). Les deux tapent les mêmes endpoints → toujours en
+  // phase à l'affichage (chaque onglet recharge l'état au montage).
+  const [dailyEnabled, setDailyEnabled] = useState(false);
   // `Field` lit toujours la dernière valeur du profil via cette ref, ce qui
   // permet de garder une identité de composant stable (useCallback ci-dessous)
   // sans capturer un `profile` périmé.
@@ -6240,6 +6087,30 @@ function ProfileView({
       } catch { /* silencieux */ }
     })();
   }, [isAuthed]);
+
+  // ALE-224 : opt-in « idée du jour » (mêmes endpoints que Contenu › Idée du jour).
+  useEffect(() => {
+    if (!isAuthed) { setDailyEnabled(false); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/daily-ideas`, { headers: await authHeaders() });
+        if (res.ok) setDailyEnabled(!!(await res.json()).enabled);
+      } catch { /* silencieux */ }
+    })();
+  }, [isAuthed]);
+
+  async function toggleDailyEnabled() {
+    const next = !dailyEnabled;
+    setDailyEnabled(next);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/daily-ideas/enabled`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (!res.ok) throw new Error();
+    } catch { setDailyEnabled(!next); }
+  }
 
   async function toggleWeeklyEnabled() {
     const next = !weeklyEnabled;
@@ -6466,26 +6337,6 @@ function ProfileView({
 
   return (
     <div>
-      <div className="tabs">
-        <button
-          className={`tab ${profileTab === "dashboard" ? "active" : ""}`}
-          onClick={() => setProfileTab("dashboard")}
-          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-        >
-          <Activity size={14} /> Tableau de bord
-        </button>
-        <button
-          className={`tab ${profileTab === "context" ? "active" : ""}`}
-          onClick={() => setProfileTab("context")}
-          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-        >
-          <UserRound size={14} /> Contexte éditorial
-        </button>
-      </div>
-      {profileTab === "dashboard" ? (
-        <ProgressView isAuthed={isAuthed} requireAuth={requireAuth} />
-      ) : (
-      <>
       <div className="section-header">
         <div>
           <h2 className="section-title"><UserRound size={20} /> Contexte éditorial</h2>
@@ -6681,6 +6532,26 @@ function ProfileView({
         )}
       </section>
 
+      {/* ALE-224 : opt-in « idée du jour » aussi accessible depuis le profil.
+          Synchronisé avec le switch de Contenu › Idée du jour (mêmes endpoints). */}
+      <section className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Sparkles size={20} style={{ flexShrink: 0, color: "var(--coral)" }} />
+            <div>
+              <strong>Idée du jour</strong>
+              <p className="section-desc" style={{ margin: 0 }}>
+                Chaque matin, une idée de post est générée à partir de ton benchmark d'influenceurs et de ton réservoir d'idées. Retrouve-la dans <strong>Contenu › Idée du jour</strong>.
+              </p>
+            </div>
+          </div>
+          <label className="daily-switch">
+            <input type="checkbox" checked={dailyEnabled} onChange={toggleDailyEnabled} />
+            <span>Recevoir une idée chaque matin</span>
+          </label>
+        </div>
+      </section>
+
       {error ? <div className="error" style={{ marginBottom: 12 }}>{error}</div> : null}
       {draftInfo ? <div className="auth-info" style={{ marginBottom: 12 }}>{draftInfo}</div> : null}
       {saved ? <div className="auth-info" style={{ marginBottom: 12 }}>Profil éditorial sauvegardé. Les prochaines générations utiliseront ce contexte.</div> : null}
@@ -6766,8 +6637,6 @@ function ProfileView({
             </div>
           </details>
         </div>
-      )}
-      </>
       )}
     </div>
   );
