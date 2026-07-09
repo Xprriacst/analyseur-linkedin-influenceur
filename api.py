@@ -21,7 +21,8 @@ from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread
-from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template
+from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
+from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
@@ -1788,6 +1789,130 @@ def add_me_post_template_from_post(payload: TemplateFromPostRequest, token: str 
         image_note=None,
         source="influencer",
     )
+
+
+# --------------------------------------------------------------------------- #
+# Prospection LinkedIn (ALE-227) — sources lead-magnet + leads commentateurs
+# --------------------------------------------------------------------------- #
+
+class LeadSourceRequest(BaseModel):
+    url: str = Field(..., max_length=2000)
+    max_comments: int | None = Field(default=None, ge=1, le=500)
+
+
+class LeadCollectRequest(BaseModel):
+    max_comments: int | None = Field(default=None, ge=1, le=500)
+
+
+def _collect_lead_source(token: str, source: dict, max_comments: int | None) -> dict[str, Any]:
+    """Scrape les commentateurs d'une source et les persiste en leads dédupliqués."""
+    if not os.environ.get("APIFY_TOKEN"):
+        raise HTTPException(status_code=503, detail="Scraping non configuré (APIFY_TOKEN manquant).")
+    try:
+        commenters = fetch_post_commenters(
+            source["post_url"], max_items=max_comments or LEAD_COMMENTS_DEFAULT
+        )
+    except Exception as exc:  # noqa: BLE001 — erreur actor/réseau remontée telle quelle
+        raise HTTPException(status_code=502, detail=f"Collecte des commentaires échouée : {exc}")
+    counts = db.save_leads(token, source, commenters)
+    updated = db.update_lead_source(
+        token,
+        source["id"],
+        {
+            "comments_count": len(commenters),
+            "collected_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    # Journalisation coût (garde-fou ALE-227) : volume récupéré à chaque collecte.
+    print(
+        f"[leads] source {source['id']} ({source['post_url']}): "
+        f"{len(commenters)} commentaire(s) récupéré(s), leads {counts}",
+        flush=True,
+    )
+    return {"source": updated or source, "comments_count": len(commenters), "leads": counts}
+
+
+@app.get("/me/lead-sources")
+def me_lead_sources(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Posts sources de prospection de l'utilisateur."""
+    return {"sources": db.list_lead_sources(token)}
+
+
+@app.post("/me/lead-sources")
+def add_me_lead_source(payload: LeadSourceRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Importe un post concurrent par lien : verdict lead-magnet + mot-clé, puis
+    collecte des commentateurs si lead magnet (leads dédupliqués).
+
+    Garde-fou coût : si une source existe déjà pour ce post, on la renvoie sans
+    re-scraper — la recollecte passe par POST /me/lead-sources/{id}/collect.
+    """
+    url = (payload.url or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="Colle le lien du post LinkedIn à analyser.")
+
+    existing = db.get_lead_source_by_url(token, url)
+    if existing:
+        return {"source": existing, "existing": True}
+
+    detail = fetch_post_detail(url)
+    if not detail:
+        raise HTTPException(
+            status_code=422,
+            detail="Impossible de lire le post depuis ce lien — vérifie qu'il est public.",
+        )
+    # L'actor peut renvoyer une URL canonique différente du lien collé : on
+    # re-vérifie dessus, sinon un second import violerait l'unicité user+post.
+    canonical = detail.get("url") or url
+    if canonical != url:
+        existing = db.get_lead_source_by_url(token, canonical)
+        if existing:
+            return {"source": existing, "existing": True}
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=503, detail="Classification IA non configurée.")
+    try:
+        verdict = classify_lead_magnet(detail["text"])
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Classification lead-magnet échouée : {exc}")
+
+    source = db.add_lead_source(
+        token,
+        canonical,
+        author=detail.get("author"),
+        post_text=detail["text"],
+        is_lead_magnet=verdict["is_lead_magnet"],
+        trigger_keyword=verdict["trigger_keyword"],
+    )
+    if not source:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer la source.")
+
+    if not verdict["is_lead_magnet"]:
+        return {"source": source, "leads": {"inserted": 0, "updated": 0, "skipped": 0}}
+    return _collect_lead_source(token, source, payload.max_comments)
+
+
+@app.post("/me/lead-sources/{source_id}/collect")
+def collect_me_lead_source(
+    source_id: str,
+    payload: LeadCollectRequest | None = None,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """(Re)collecte explicite des commentateurs d'une source (seul chemin de relance)."""
+    source = db.get_lead_source(token, source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source introuvable.")
+    return _collect_lead_source(token, source, payload.max_comments if payload else None)
+
+
+@app.delete("/me/lead-sources/{source_id}")
+def delete_me_lead_source(source_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Supprime une source (les leads déjà collectés restent)."""
+    return {"deleted": db.delete_lead_source(token, source_id)}
+
+
+@app.get("/me/leads")
+def me_leads(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Leads de prospection de l'utilisateur (multi-signaux d'abord)."""
+    return {"leads": db.list_leads(token)}
 
 
 @app.get("/me/daily-ideas")

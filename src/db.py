@@ -3773,3 +3773,257 @@ def get_ig_manychat_token_admin(user_id: str) -> str | None:
     if not resp.data:
         return None
     return resp.data[0].get("access_token") or None
+
+
+# --------------------------------------------------------------------------- #
+# Prospection LinkedIn (ALE-227) — sources lead-magnet + leads commentateurs
+# --------------------------------------------------------------------------- #
+
+def list_lead_sources(access_token: str) -> list[dict]:
+    """Posts sources de prospection de l'utilisateur (RLS scope)."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("lead_sources")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_lead_source(access_token: str, source_id: str) -> dict | None:
+    if not supabase_enabled() or not source_id:
+        return None
+    db = client_for_token(access_token)
+    resp = db.table("lead_sources").select("*").eq("id", source_id).limit(1).execute()
+    return resp.data[0] if resp.data else None
+
+
+def get_lead_source_by_url(access_token: str, post_url: str) -> dict | None:
+    if not supabase_enabled() or not post_url:
+        return None
+    db = client_for_token(access_token)
+    resp = db.table("lead_sources").select("*").eq("post_url", post_url).limit(1).execute()
+    return resp.data[0] if resp.data else None
+
+
+def add_lead_source(
+    access_token: str,
+    post_url: str,
+    *,
+    author: str | None = None,
+    post_text: str | None = None,
+    is_lead_magnet: bool = False,
+    trigger_keyword: str | None = None,
+    origin: str = "manual",
+) -> dict | None:
+    """Crée une source de prospection (RLS scope)."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "post_url": post_url,
+        "is_lead_magnet": is_lead_magnet,
+        "origin": origin,
+    }
+    if author:
+        row["author"] = author
+    if post_text:
+        row["post_text"] = post_text[:6000]
+    if trigger_keyword:
+        row["trigger_keyword"] = trigger_keyword
+    resp = db.table("lead_sources").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def update_lead_source(access_token: str, source_id: str, fields: dict) -> dict | None:
+    """Met à jour une source (collecte : collected_at + comments_count)."""
+    if not supabase_enabled() or not source_id or not fields:
+        return None
+    db = client_for_token(access_token)
+    resp = db.table("lead_sources").update(fields).eq("id", source_id).execute()
+    return resp.data[0] if resp.data else None
+
+
+def delete_lead_source(access_token: str, source_id: str) -> bool:
+    if not supabase_enabled() or not source_id:
+        return False
+    db = client_for_token(access_token)
+    db.table("lead_sources").delete().eq("id", source_id).execute()
+    return True
+
+
+def add_lead_source_admin(
+    user_id: str,
+    post_url: str,
+    *,
+    author: str | None = None,
+    post_text: str | None = None,
+    trigger_keyword: str | None = None,
+) -> dict | None:
+    """[veille] Source détectée automatiquement pour un utilisateur (service-role).
+
+    Idempotent : si l'utilisateur a déjà une source sur ce post (manuelle ou
+    monitoring), on ne crée rien — la collecte reste à sa main. Scope strict :
+    la ligne écrite appartient au user_id passé (suiveur vérifié en amont).
+    """
+    if not admin_enabled() or not user_id or not post_url:
+        return None
+    db = admin_client()
+    existing = (
+        db.table("lead_sources")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("post_url", post_url)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return None
+    row: dict[str, Any] = {
+        "user_id": user_id,
+        "post_url": post_url,
+        "is_lead_magnet": True,
+        "origin": "monitoring",
+    }
+    if author:
+        row["author"] = author
+    if post_text:
+        row["post_text"] = post_text[:6000]
+    if trigger_keyword:
+        row["trigger_keyword"] = trigger_keyword
+    resp = db.table("lead_sources").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def list_user_ids_following_handle(handle: str, platform: str = "linkedin") -> list[str]:
+    """[veille] Utilisateurs qui suivent un handle donné (service-role)."""
+    if not admin_enabled() or not handle:
+        return []
+    resp = (
+        admin_client()
+        .table("followed_influencers")
+        .select("user_id")
+        .eq("handle", handle)
+        .eq("platform", platform)
+        .execute()
+    )
+    return sorted({r["user_id"] for r in (resp.data or []) if r.get("user_id")})
+
+
+def save_leads(access_token: str, source: dict, commenters: list[dict]) -> dict:
+    """Persiste les commentateurs d'une source en leads dédupliqués (RLS scope).
+
+    Dédup par (personne, source) : une personne = UNE ligne par utilisateur
+    (unique user_id + profile_url) ; commenter chez plusieurs concurrents
+    ajoute un signal (`signals`) au lieu de dupliquer — `signal_count` > 1
+    = « multi-signaux ». Recollecter la même source ne recrée rien.
+    """
+    if not supabase_enabled():
+        return {"inserted": 0, "updated": 0, "skipped": 0}
+    user = get_user(access_token)
+    if not user:
+        return {"inserted": 0, "updated": 0, "skipped": 0}
+    db = client_for_token(access_token)
+
+    def _iso_or_none(value: Any) -> str | None:
+        # La colonne `commented_at` est un timestamptz : on ne passe que des
+        # dates ISO valides (l'actor peut renvoyer un format inattendu).
+        if not value:
+            return None
+        try:
+            datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return str(value)
+
+    valid = [c for c in commenters if c.get("profile_url")]
+    for c in valid:
+        c["commented_at"] = _iso_or_none(c.get("commented_at"))
+    urls = [c["profile_url"] for c in valid]
+    existing_by_url: dict[str, dict] = {}
+    for i in range(0, len(urls), 100):  # borne la taille de la clause in()
+        resp = (
+            db.table("leads")
+            .select("id, profile_url, signals, signal_count, status")
+            .in_("profile_url", urls[i : i + 100])
+            .execute()
+        )
+        for row in resp.data or []:
+            existing_by_url[row["profile_url"]] = row
+
+    def _signal(c: dict) -> dict:
+        return {
+            "source_id": source.get("id"),
+            "post_url": source.get("post_url"),
+            "author": source.get("author"),
+            "trigger_keyword": source.get("trigger_keyword"),
+            "comment_text": c.get("comment_text"),
+            "commented_at": c.get("commented_at"),
+        }
+
+    inserted, updated, skipped = 0, 0, 0
+    to_insert: list[dict] = []
+    for c in valid:
+        row = existing_by_url.get(c["profile_url"])
+        if row is None:
+            to_insert.append(
+                {
+                    "user_id": user["id"],
+                    "profile_url": c["profile_url"],
+                    "name": c.get("name"),
+                    "headline": c.get("headline"),
+                    "source_id": source.get("id"),
+                    "comment_text": c.get("comment_text"),
+                    "commented_at": c.get("commented_at"),
+                    "reaction_count": int(c.get("reaction_count") or 0),
+                    "signals": [_signal(c)],
+                    "signal_count": 1,
+                }
+            )
+            continue
+        signals = list(row.get("signals") or [])
+        if any(s.get("source_id") == source.get("id") for s in signals):
+            skipped += 1  # déjà vu sur cette source (dédup personne + source)
+            continue
+        signals.append(_signal(c))
+        db.table("leads").update(
+            {
+                "signals": signals,
+                "signal_count": len(signals),
+                "source_id": source.get("id"),
+                "comment_text": c.get("comment_text"),
+                "commented_at": c.get("commented_at"),
+                "reaction_count": int(c.get("reaction_count") or 0),
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+        ).eq("id", row["id"]).execute()
+        updated += 1
+
+    for i in range(0, len(to_insert), 100):
+        resp = db.table("leads").insert(to_insert[i : i + 100]).execute()
+        inserted += len(resp.data or [])
+
+    return {"inserted": inserted, "updated": updated, "skipped": skipped}
+
+
+def list_leads(access_token: str, limit: int = 500) -> list[dict]:
+    """Leads de l'utilisateur, multi-signaux d'abord puis plus récents (RLS scope)."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("leads")
+        .select("*")
+        .order("signal_count", desc=True)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
