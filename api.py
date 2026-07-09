@@ -2254,9 +2254,42 @@ def me_linkedin_outreach_connect(
     return {"auth_url": url}
 
 
+def _resolve_unipile_account(token: str, user_id: str) -> dict[str, Any] | None:
+    """Retrouve le compte Unipile fraîchement connecté par cet utilisateur.
+
+    ⚠️ Piège Unipile : `GET /accounts` renvoie le NOM LinkedIn du compte, pas le
+    `name` (=user_id) qu'on a passé à la connexion (celui-ci n'arrive que via le
+    webhook notify_url). On tente donc : (1) correspondance exacte par `name` (si
+    Unipile l'expose un jour), sinon (2) fallback robuste pour les connexions
+    séquentielles/supervisées — le compte le plus récent NON déjà rattaché à un
+    autre utilisateur (en gardant le nôtre en cas de reconnexion). Limite assumée :
+    2 connexions simultanées pourraient se croiser → durcissement via notify_url."""
+    accounts = unipile.list_accounts()
+    if not accounts:
+        return None
+
+    def _most_recent(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not items:
+            return None
+        return sorted(items, key=lambda a: str(a.get("created_at") or ""), reverse=True)[0]
+
+    exact = [a for a in accounts if a.get("name") == user_id]
+    if exact:
+        return _most_recent(exact)
+
+    current = db.get_linkedin_outreach_account(token) or {}
+    my_id = current.get("unipile_account_id")
+    claimed = db.list_claimed_unipile_account_ids()
+    candidates = [
+        a for a in accounts
+        if unipile.account_id_of(a) == my_id or unipile.account_id_of(a) not in claimed
+    ]
+    return _most_recent(candidates)
+
+
 @app.post("/me/linkedin/outreach/refresh")
 def me_linkedin_outreach_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
-    """Retrouve le compte fraîchement connecté (par notre `name` = user_id) et le stocke.
+    """Retrouve le compte fraîchement connecté et le rattache à l'utilisateur.
     À appeler au retour de la page d'auth Unipile."""
     if not unipile.enabled():
         raise HTTPException(status_code=400, detail="UNIPILE_DSN / UNIPILE_API_KEY manquants côté serveur.")
@@ -2265,7 +2298,7 @@ def me_linkedin_outreach_refresh(token: str = Depends(require_token)) -> dict[st
     if not user_id:
         raise HTTPException(status_code=401, detail="Utilisateur inconnu.")
     try:
-        account = unipile.find_account_by_name(str(user_id))
+        account = _resolve_unipile_account(token, str(user_id))
     except unipile.UnipileError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if account:
