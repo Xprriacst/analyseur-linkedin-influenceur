@@ -639,6 +639,63 @@ def score_leads(
     return results
 
 
+def generate_first_message(targeting: dict, lead: dict) -> str:
+    """Rédige le premier message LinkedIn à envoyer à un lead accepté (ALE-230).
+
+    Ancré sur : ce qui a déclenché le contact (le lead a commenté un post
+    lead-magnet concurrent), le client idéal + l'offre de l'utilisateur, et ses
+    consignes de premier message. Volontairement court, humain, sans lien ni
+    argumentaire commercial agressif — l'objectif est d'ouvrir une conversation.
+    Retourne le texte du message (pas de JSON exposé à l'appelant).
+    """
+    ideal = str(targeting.get("ideal_client") or "").strip()
+    offer = str(targeting.get("offer") or "").strip()
+    instructions = str(targeting.get("first_message_instructions") or "").strip()
+
+    name = str(lead.get("name") or "").strip()
+    headline = str(lead.get("headline") or "").strip()
+    comment = str(lead.get("comment_text") or "").strip()
+    trigger = str(lead.get("trigger_keyword") or "").strip()
+    author = str(lead.get("author") or "").strip()
+
+    system = (
+        "Tu es l'utilisateur lui-même qui écrit un premier message LinkedIn, en son "
+        "nom, à une personne avec qui il vient de se connecter. Cette personne a "
+        "montré un signal d'intérêt : elle a commenté un post « lead magnet » (du "
+        "type « commente X pour recevoir la ressource »). Le message doit être COURT "
+        "(2-4 phrases), humain, chaleureux, personnalisé sur ce qui l'a fait réagir, "
+        "SANS lien, SANS pitch agressif, SANS emoji à outrance. Objectif : ouvrir une "
+        "vraie conversation, pas vendre au premier message. Écris en français, sauf si "
+        "l'intitulé de poste indique clairement une autre langue. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown."
+    )
+    ctx = [
+        f"CE QUE JE VENDS (offre) : {offer or '(non précisé)'}",
+        f"MON CLIENT IDÉAL : {ideal or '(non précisé)'}",
+        f"LA PERSONNE — nom : {name or '(inconnu)'} · intitulé : {headline or '(inconnu)'}",
+    ]
+    if comment:
+        ctx.append(f"SON COMMENTAIRE (ce qui a déclenché le contact) : « {comment[:400]} »")
+    if trigger:
+        ctx.append(f"MOT-CLÉ COMMENTÉ : {trigger}")
+    if author:
+        ctx.append(f"POST D'ORIGINE (concurrent) : {author}")
+    if instructions:
+        ctx.append(f"MES CONSIGNES POUR CE MESSAGE (à respecter en priorité) : {instructions[:1000]}")
+
+    user = (
+        "\n".join(ctx)
+        + "\n\nSchéma JSON attendu :\n"
+        + '{"message": "le texte du premier message, prêt à envoyer"}'
+    )
+    data = _call(system, user, max_tokens=700, temperature=0.7)
+    message = str(data.get("message") or "").strip()
+    if not message:
+        raise RuntimeError("Le modèle n'a pas produit de message.")
+    # Garde-fou : LinkedIn borne les messages ; on reste bien en-deçà.
+    return message[:1500]
+
+
 def _format_template(template: dict | None) -> str:
     """Render a chosen post template (ALE-216) as a strict structure directive."""
     if not template:

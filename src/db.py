@@ -4152,3 +4152,182 @@ def upsert_lead_targeting(access_token: str, payload: dict[str, Any]) -> dict | 
         .execute()
     )
     return resp.data[0] if resp.data else None
+
+
+# --------------------------------------------------------------------------- #
+# Prospection LinkedIn (ALE-230) — envoi via Unipile + quotas
+# `linkedin_outreach_accounts` : compte Unipile connecté + config quota (1/user).
+# `linkedin_outreach_actions`  : journal des envois → base des compteurs de quota
+#                                (calculés sur fenêtres glissantes, sans reset cron).
+# --------------------------------------------------------------------------- #
+
+
+def get_linkedin_outreach_account(access_token: str) -> dict | None:
+    """Compte Unipile connecté de l'utilisateur (config quota incluse), ou None."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("linkedin_outreach_accounts")
+        .select("*")
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def upsert_linkedin_outreach_account(
+    access_token: str,
+    *,
+    unipile_account_id: str | None = None,
+    account_name: str | None = None,
+    daily_cap: int | None = None,
+    weekly_invite_cap: int | None = None,
+    status: str | None = None,
+) -> dict | None:
+    """Crée/met à jour le compte Unipile + la config quota (RLS scope, upsert).
+
+    Seules les colonnes fournies sont écrites : maj partielle sûre (changer le
+    plafond ne réinitialise pas l'account_id, et inversement)."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    if unipile_account_id is not None:
+        row["unipile_account_id"] = unipile_account_id
+    if account_name is not None:
+        row["account_name"] = account_name
+    if status is not None:
+        row["status"] = status
+    if daily_cap is not None:
+        row["daily_cap"] = max(1, min(100, int(daily_cap)))
+    if weekly_invite_cap is not None:
+        row["weekly_invite_cap"] = max(1, min(500, int(weekly_invite_cap)))
+    resp = (
+        db.table("linkedin_outreach_accounts")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def disconnect_linkedin_outreach(access_token: str) -> bool:
+    """Délie le compte Unipile de l'utilisateur (le journal d'actions reste)."""
+    if not supabase_enabled():
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("linkedin_outreach_accounts")
+        .delete()
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def log_outreach_action(
+    access_token: str,
+    *,
+    action_type: str,
+    status: str = "sent",
+    lead_id: str | None = None,
+    provider_id: str | None = None,
+    chat_id: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Journalise une action d'envoi (invitation/message). Best-effort."""
+    if not supabase_enabled():
+        return
+    user = get_user(access_token)
+    if not user:
+        return
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "action_type": action_type,
+        "status": status,
+    }
+    if lead_id:
+        row["lead_id"] = lead_id
+    if provider_id:
+        row["provider_id"] = provider_id
+    if chat_id:
+        row["chat_id"] = chat_id
+    if error:
+        row["error"] = error[:2000]
+    try:
+        db.table("linkedin_outreach_actions").insert(row).execute()
+    except Exception as exc:  # noqa: BLE001 — la journalisation ne doit rien casser
+        print(f"[outreach] log action échoué : {exc}", flush=True)
+
+
+def outreach_counts(access_token: str) -> dict[str, int]:
+    """Compteurs de quota sur fenêtres glissantes : invitations & messages sur
+    24 h, invitations sur 7 j. Seules les actions RÉUSSIES (status='sent') comptent.
+    Calcul depuis le journal → auto-correctif, aucun compteur à réinitialiser.
+
+    ⚠️ Lève en cas d'échec de lecture (Supabase indisponible…) : le quota est un
+    garde-fou anti-restriction, il doit échouer FERMÉ. L'appelant traite l'erreur
+    en bloquant l'envoi, jamais en le laissant passer. `supabase_enabled()` False
+    ou pas d'utilisateur → 0 (feature simplement inactive, pas un échec de lecture)."""
+    zero = {"invites_today": 0, "messages_today": 0, "invites_week": 0}
+    if not supabase_enabled():
+        return zero
+    user = get_user(access_token)
+    if not user:
+        return zero
+    now = datetime.datetime.now(datetime.timezone.utc)
+    day_ago = (now - datetime.timedelta(hours=24)).isoformat()
+    week_ago = (now - datetime.timedelta(days=7)).isoformat()
+    db = client_for_token(access_token)
+
+    def _count(action_type: str, since: str) -> int:
+        # Pas de try/except ici : une erreur de lecture doit remonter (fail closed).
+        resp = (
+            db.table("linkedin_outreach_actions")
+            .select("id")
+            .eq("action_type", action_type)
+            .eq("status", "sent")
+            .gte("created_at", since)
+            .execute()
+        )
+        return len(resp.data or [])
+
+    return {
+        "invites_today": _count("invite", day_ago),
+        "messages_today": _count("message", day_ago),
+        "invites_week": _count("invite", week_ago),
+    }
+
+
+def get_lead(access_token: str, lead_id: str) -> dict | None:
+    """Un lead par id (RLS scope)."""
+    if not supabase_enabled() or not lead_id:
+        return None
+    db = client_for_token(access_token)
+    resp = db.table("leads").select("*").eq("id", lead_id).limit(1).execute()
+    return resp.data[0] if resp.data else None
+
+
+def update_lead_outreach(access_token: str, lead_id: str, fields: dict[str, Any]) -> dict | None:
+    """Met à jour l'état d'outreach d'un lead (status, provider_id, chat_id…)."""
+    if not supabase_enabled() or not lead_id or not fields:
+        return None
+    db = client_for_token(access_token)
+    payload = dict(fields)
+    payload["outreach_updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    resp = db.table("leads").update(payload).eq("id", lead_id).execute()
+    return resp.data[0] if resp.data else None
