@@ -8322,9 +8322,9 @@ function ProspectingView({
                 </span>
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}>
-                    <strong style={{ whiteSpace: "nowrap" }}>{l.name || "Profil LinkedIn"}</strong>
+                    <strong style={{ whiteSpace: "nowrap", flexShrink: 0 }}>{l.name || "Profil LinkedIn"}</strong>
                     {l.headline && (
-                      <span style={{ color: "var(--muted)", fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <span style={{ flex: "1 1 auto", minWidth: 0, color: "var(--muted)", fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {l.headline}
                       </span>
                     )}
