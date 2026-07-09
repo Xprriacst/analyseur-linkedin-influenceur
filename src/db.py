@@ -4238,6 +4238,27 @@ def disconnect_linkedin_outreach(access_token: str) -> bool:
     return bool(resp.data)
 
 
+def list_claimed_unipile_account_ids() -> set[str]:
+    """Tous les `unipile_account_id` déjà rattachés à un utilisateur (service-role).
+
+    Sert au rattachement du compte fraîchement connecté : /accounts d'Unipile ne
+    renvoie pas notre `name` (=user_id) mais le nom LinkedIn du compte, donc on
+    réclame un compte NON déjà pris — d'où ce set des comptes déjà attribués.
+    Service-role car il faut voir les lignes de TOUS les utilisateurs (RLS bypass)."""
+    if not admin_enabled():
+        return set()
+    try:
+        resp = (
+            admin_client()
+            .table("linkedin_outreach_accounts")
+            .select("unipile_account_id")
+            .execute()
+        )
+    except Exception:
+        return set()
+    return {r["unipile_account_id"] for r in (resp.data or []) if r.get("unipile_account_id")}
+
+
 def log_outreach_action(
     access_token: str,
     *,
