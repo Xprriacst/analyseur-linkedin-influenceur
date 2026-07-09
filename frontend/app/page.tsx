@@ -8165,7 +8165,8 @@ function MyLibraryView({
 
 // ─── ALE-229 : onglet Prospection — liste des leads + panneau latéral de détail ───
 // V1 volontairement sans import (l'alimentation vient de la veille ALE-227 et de
-// Ma bibliothèque ALE-234), sans score ICP (ALE-228) ni envoi (ALE-230).
+// Ma bibliothèque ALE-234). Le ciblage ICP + score (ALE-228) sont ici ; l'envoi
+// du premier message reste à venir (ALE-230).
 
 type LeadSignal = {
   source_id?: string | null;
@@ -8188,7 +8189,24 @@ type Lead = {
   signal_count?: number;
   status?: string;
   created_at?: string;
+  score?: number | null;
+  score_reason?: string | null;
 };
+
+type LeadTargeting = {
+  ideal_client?: string | null;
+  offer?: string | null;
+  interest_keywords?: string[] | null;
+  score_threshold?: number | null;
+  first_message_instructions?: string | null;
+};
+
+/** Couleur d'une pastille de score ICP : vert (fort) / ambre (moyen) / gris (faible). */
+function scoreColor(score: number): string {
+  if (score >= 70) return "var(--success)";
+  if (score >= 40) return "var(--warning, #b8860b)";
+  return "var(--muted)";
+}
 
 function leadInitials(l: Lead): string {
   const parts = (l.name || "").trim().split(/\s+/).filter(Boolean);
@@ -8233,6 +8251,18 @@ function ProspectingView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Lead | null>(null);
+  // Ciblage ICP (ALE-228)
+  const [targeting, setTargeting] = useState<LeadTargeting | null>(null);
+  const [targetOpen, setTargetOpen] = useState(false);
+  const [savingTarget, setSavingTarget] = useState(false);
+  const [targetMsg, setTargetMsg] = useState("");
+
+  const loadLeads = async () => {
+    const res = await fetch(`${DIRECT_API_URL}/me/leads`, { headers: await authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Chargement des leads impossible");
+    return Array.isArray(data.leads) ? (data.leads as Lead[]) : [];
+  };
 
   useEffect(() => {
     if (!isAuthed) return;
@@ -8241,20 +8271,64 @@ function ProspectingView({
       setLoading(true);
       setError("");
       try {
-        const res = await fetch(`${DIRECT_API_URL}/me/leads`, { headers: await authHeaders() });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || "Chargement des leads impossible");
-        if (!cancelled) setLeads(Array.isArray(data.leads) ? data.leads : []);
+        const rows = await loadLeads();
+        if (!cancelled) setLeads(rows);
       } catch (err: any) {
         if (!cancelled) setError(err.message || "Chargement impossible");
       } finally {
         if (!cancelled) setLoading(false);
+      }
+      // Ciblage (best-effort, ne bloque pas la liste).
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/lead-targeting`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (!cancelled && res.ok && data.targeting) setTargeting(data.targeting);
+      } catch {
+        /* silencieux */
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [isAuthed]);
+
+  const saveTargeting = async () => {
+    if (!targeting) return;
+    setSavingTarget(true);
+    setTargetMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-targeting`, {
+        method: "PUT",
+        headers: { ...(await authHeaders()), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ideal_client: targeting.ideal_client || "",
+          offer: targeting.offer || "",
+          interest_keywords: targeting.interest_keywords || [],
+          score_threshold: targeting.score_threshold ?? 60,
+          first_message_instructions: targeting.first_message_instructions || "",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
+      if (data.targeting) setTargeting(data.targeting);
+      // Recalcule les scores puis recharge la liste (le classement change).
+      setTargetMsg("Ciblage enregistré, recalcul des scores…");
+      try {
+        await fetch(`${DIRECT_API_URL}/me/leads/rescore`, {
+          method: "POST",
+          headers: await authHeaders(),
+        });
+        setLeads(await loadLeads());
+      } catch {
+        /* le rescore peut échouer (ex. aucun lead) sans invalider la sauvegarde */
+      }
+      setTargetMsg("Ciblage enregistré ✓ Les leads sont reclassés par pertinence.");
+    } catch (err: any) {
+      setTargetMsg(err.message || "Enregistrement impossible");
+    } finally {
+      setSavingTarget(false);
+    }
+  };
 
   useEffect(() => {
     if (!selected) return;
@@ -8287,6 +8361,100 @@ function ProspectingView({
         Les personnes qui viennent de commenter les posts lead-magnet de tes concurrents — le signal
         d&apos;intention le plus chaud de LinkedIn. Clique une ligne pour le détail.
       </p>
+
+      {/* ALE-228 : ciblage ICP — note chaque lead vs le client idéal, masque les hors-cible */}
+      {targeting && (
+        <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
+          <button
+            type="button"
+            onClick={() => setTargetOpen((o) => !o)}
+            style={{
+              display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+              padding: "12px 16px", background: "none", border: "none", cursor: "pointer",
+              font: "inherit", color: "inherit",
+            }}
+          >
+            <ChevronRight size={18} style={{ flexShrink: 0, transform: targetOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+            <Target size={16} style={{ flexShrink: 0 }} />
+            <strong>Mon ciblage</strong>
+            <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12.5, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              — chaque lead est noté selon ton client idéal
+            </span>
+          </button>
+          {targetOpen && (
+            <div style={{ padding: "0 16px 16px", display: "grid", gap: 12 }}>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Ton client idéal
+                <textarea
+                  value={targeting.ideal_client || ""}
+                  onChange={(e) => setTargeting({ ...targeting, ideal_client: e.target.value })}
+                  placeholder="Ex. Dirigeants et responsables marketing de PME B2B (10-200 salariés)…"
+                  rows={2}
+                  style={{ width: "100%", padding: 8, fontSize: 13, fontWeight: 400, resize: "vertical" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Ton offre
+                <textarea
+                  value={targeting.offer || ""}
+                  onChange={(e) => setTargeting({ ...targeting, offer: e.target.value })}
+                  placeholder="Ex. Accompagnement à la prospection LinkedIn automatisée…"
+                  rows={2}
+                  style={{ width: "100%", padding: 8, fontSize: 13, fontWeight: 400, resize: "vertical" }}
+                />
+              </label>
+              <p style={{ margin: "-4px 0 0", fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
+                Pré-remplis depuis ton profil éditorial ; les modifier ici ne change pas ton profil.
+              </p>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Signaux d&apos;intérêt (mots-clés, séparés par des virgules)
+                <input
+                  value={(targeting.interest_keywords || []).join(", ")}
+                  onChange={(e) => setTargeting({ ...targeting, interest_keywords: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
+                  placeholder="Ex. automatisation, IA, growth, closing"
+                  style={{ width: "100%", padding: 8, fontSize: 13, fontWeight: 400 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Seuil de score : afficher les leads notés ≥ {targeting.score_threshold ?? 60}/100
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={targeting.score_threshold ?? 60}
+                  onChange={(e) => setTargeting({ ...targeting, score_threshold: Number(e.target.value) })}
+                  style={{ width: "100%" }}
+                />
+                <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
+                  Les leads sous le seuil restent enregistrés mais masqués de la liste.
+                </span>
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Instructions du premier message
+                <textarea
+                  value={targeting.first_message_instructions || ""}
+                  onChange={(e) => setTargeting({ ...targeting, first_message_instructions: e.target.value })}
+                  placeholder="Ton, longueur, ce qu'il faut mentionner ou éviter, appel à l'action…"
+                  rows={3}
+                  style={{ width: "100%", padding: 8, fontSize: 13, fontWeight: 400, resize: "vertical" }}
+                />
+                <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
+                  Serviront à rédiger le premier message quand l&apos;envoi sera disponible.
+                </span>
+              </label>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                <button type="button" className="primary-button" onClick={saveTargeting} disabled={savingTarget}>
+                  {savingTarget ? <Loader2 size={14} className="spinning" /> : <Target size={14} />}
+                  {savingTarget ? "Enregistrement…" : "Enregistrer & recalculer les scores"}
+                </button>
+                {targetMsg && <span style={{ fontSize: 12.5, color: "var(--muted)" }}>{targetMsg}</span>}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
       {loading && leads.length === 0 ? (
         <div className="card" style={{ textAlign: "center", padding: 24 }}>
@@ -8336,6 +8504,17 @@ function ProspectingView({
                     {multi ? <strong style={{ color: "var(--success)" }}> · {l.signal_count} signaux</strong> : null}
                   </span>
                 </span>
+                {typeof l.score === "number" && (
+                  <span
+                    title={l.score_reason || "Score de pertinence vs ton client idéal"}
+                    style={{
+                      flexShrink: 0, fontSize: 12, fontWeight: 700, color: scoreColor(l.score),
+                      border: `1px solid ${scoreColor(l.score)}`, borderRadius: 99, padding: "2px 8px",
+                    }}
+                  >
+                    {l.score}
+                  </span>
+                )}
                 {l.status === "new" && (
                   <span className="daily-seed-tag" style={{ flexShrink: 0 }}>Nouveau</span>
                 )}
@@ -8376,7 +8555,17 @@ function ProspectingView({
               </div>
               <button className="icon-button" title="Fermer" onClick={() => setSelected(null)}><X size={16} /></button>
             </div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              {typeof selected.score === "number" && (
+                <span
+                  style={{
+                    fontSize: 12, fontWeight: 700, color: scoreColor(selected.score),
+                    border: `1px solid ${scoreColor(selected.score)}`, borderRadius: 99, padding: "2px 9px",
+                  }}
+                >
+                  Score {selected.score}/100
+                </span>
+              )}
               {selected.status === "new" && <span className="daily-seed-tag">Nouveau</span>}
               {(selected.signal_count ?? 1) > 1 && (
                 <span className="daily-seed-tag" style={{ color: "var(--success)", fontWeight: 600 }}>
@@ -8384,6 +8573,11 @@ function ProspectingView({
                 </span>
               )}
             </div>
+            {selected.score_reason && (
+              <p style={{ margin: 0, fontSize: 12.5, color: "var(--muted)", fontStyle: "italic" }}>
+                {selected.score_reason}
+              </p>
+            )}
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontWeight: 700, marginTop: 4 }}>
               Signaux d&apos;intention
             </div>

@@ -265,6 +265,7 @@ def _call(
     temperature: float = 0.2,
     tools: list[dict] | None = None,
     on_web_search: Callable[[dict[str, Any]], None] | None = None,
+    model: str | None = None,
 ) -> dict:
     if on_web_search:
         return _call_streaming(
@@ -279,7 +280,7 @@ def _call(
     client = _client()
     messages: list[dict] = [{"role": "user", "content": user}]
     kwargs: dict[str, Any] = dict(
-        model=_model(),
+        model=model or _model(),
         max_tokens=max_tokens,
         system=system,
     )
@@ -533,6 +534,109 @@ Schéma JSON attendu :
         "is_lead_magnet": bool(data.get("is_lead_magnet")),
         "trigger_keyword": keyword[:100] or None,
     }
+
+
+# Scoring ICP (ALE-228) : un modèle léger suffit (comparaison intitulé/commentaire
+# ↔ ciblage). Surchargeable par LEAD_SCORING_MODEL sur Render ; à défaut on
+# retombe sur le modèle configuré (ANTHROPIC_MODEL) pour ne rien casser.
+_SCORING_BATCH = 25
+
+
+def _scoring_model() -> str:
+    return os.environ.get("LEAD_SCORING_MODEL", _model())
+
+
+def _clamp_score(value: Any) -> int:
+    try:
+        return max(0, min(100, int(round(float(value)))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def score_leads(
+    targeting: dict,
+    leads: list[dict],
+    source_post_text: str | None = None,
+) -> list[dict]:
+    """Note chaque lead de 0 à 100 vs le ciblage ICP + justification (ALE-228).
+
+    `leads` : liste de dicts {name, headline, comment_text, trigger_keyword, author}.
+    Retourne une liste alignée sur l'entrée : [{score:int, reason:str}]. Le LLM
+    compare l'intitulé de poste + le commentaire + le contexte de la source au
+    client idéal / à l'offre décrits dans le ciblage. Traité par lots pour borner
+    les tokens. Un lot en échec renvoie des scores neutres (0) plutôt que de tout
+    faire échouer.
+    """
+    if not leads:
+        return []
+
+    ideal = str(targeting.get("ideal_client") or "").strip()
+    offer = str(targeting.get("offer") or "").strip()
+    kws = targeting.get("interest_keywords") or []
+    if isinstance(kws, str):
+        kws = [kws]
+    keywords = ", ".join(str(k).strip() for k in kws if str(k).strip())
+
+    system = (
+        "Tu es un analyste de prospection B2B. On te donne le profil du CLIENT IDÉAL "
+        "d'un utilisateur et une liste de personnes qui ont commenté un post lead-magnet "
+        "concurrent. Pour chaque personne, note de 0 à 100 son adéquation avec ce client "
+        "idéal, en te basant sur son intitulé de poste (qui elle est), son commentaire, et "
+        "le sujet auquel elle a réagi. 100 = correspond parfaitement (bon poste, bon "
+        "secteur, intention cohérente avec l'offre). 0 = hors cible (mauvais rôle, "
+        "concurrent, hors sujet). Sois discriminant : n'attribue pas 80 à tout le monde. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    ctx_lines = [
+        f"CLIENT IDÉAL : {ideal or '(non précisé)'}",
+        f"OFFRE : {offer or '(non précisée)'}",
+    ]
+    if keywords:
+        ctx_lines.append(f"SIGNAUX D'INTÉRÊT (mots-clés) : {keywords}")
+    if source_post_text:
+        ctx_lines.append(
+            "POST SOURCE (ce à quoi les gens ont réagi) :\n" + source_post_text[:800]
+        )
+    context = "\n".join(ctx_lines)
+
+    results: list[dict] = [{"score": 0, "reason": ""} for _ in leads]
+    for start in range(0, len(leads), _SCORING_BATCH):
+        chunk = leads[start : start + _SCORING_BATCH]
+        payload = [
+            {
+                "index": i,
+                "headline": (lead.get("headline") or "")[:200],
+                "comment": (lead.get("comment_text") or "")[:400],
+                "reacted_to": lead.get("trigger_keyword") or lead.get("author") or "",
+            }
+            for i, lead in enumerate(chunk)
+        ]
+        user = (
+            context
+            + "\n\nPersonnes à noter :\n"
+            + json.dumps(payload, ensure_ascii=False)
+            + '\n\nSchéma JSON attendu :\n'
+            + '{"scores": [{"index": int, "score": int (0-100), '
+            + '"reason": "justification en une phrase courte (max 20 mots)"}, ...]}'
+        )
+        try:
+            data = _call(
+                system,
+                user,
+                max_tokens=2048,
+                temperature=0.0,
+                model=_scoring_model(),
+            )
+            for row in data.get("scores") or []:
+                idx = row.get("index")
+                if isinstance(idx, int) and 0 <= idx < len(chunk):
+                    results[start + idx] = {
+                        "score": _clamp_score(row.get("score")),
+                        "reason": str(row.get("reason") or "").strip()[:300],
+                    }
+        except Exception as exc:  # noqa: BLE001 — un lot raté ne casse pas la collecte
+            print(f"[leads] scoring lot {start} échoué : {exc}", flush=True)
+    return results
 
 
 def _format_template(template: dict | None) -> str:

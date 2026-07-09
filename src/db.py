@@ -3970,6 +3970,10 @@ def save_leads(access_token: str, source: dict, commenters: list[dict]) -> dict:
 
     inserted, updated, skipped = 0, 0, 0
     to_insert: list[dict] = []
+    # profile_url → lead id des leads touchés (insérés ou mis à jour) : sert au
+    # scoring ICP à l'ingestion (ALE-228). Les « skipped » (déjà vus sur cette
+    # source, inchangés) n'ont pas besoin d'être re-notés.
+    ids_by_url: dict[str, str] = {}
     for c in valid:
         row = existing_by_url.get(c["profile_url"])
         if row is None:
@@ -4004,17 +4008,32 @@ def save_leads(access_token: str, source: dict, commenters: list[dict]) -> dict:
                 "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
         ).eq("id", row["id"]).execute()
+        ids_by_url[c["profile_url"]] = row["id"]
         updated += 1
 
     for i in range(0, len(to_insert), 100):
         resp = db.table("leads").insert(to_insert[i : i + 100]).execute()
+        for r in resp.data or []:
+            if r.get("profile_url") and r.get("id"):
+                ids_by_url[r["profile_url"]] = r["id"]
         inserted += len(resp.data or [])
 
-    return {"inserted": inserted, "updated": updated, "skipped": skipped}
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "ids_by_url": ids_by_url,
+    }
 
 
 def list_leads(access_token: str, limit: int = 500) -> list[dict]:
-    """Leads de l'utilisateur, multi-signaux d'abord puis plus récents (RLS scope)."""
+    """Leads de l'utilisateur pour la liste Prospection (RLS scope).
+
+    Tri : mieux notés d'abord (score ICP décroissant), puis les non-notés — à
+    l'intérieur d'un même groupe, multi-signaux puis plus récents (ordre du fetch,
+    tri stable). Les leads sous le seuil de score du ciblage sont masqués ; les
+    leads non encore notés (score null) restent toujours visibles.
+    """
     if not supabase_enabled():
         return []
     db = client_for_token(access_token)
@@ -4026,4 +4045,117 @@ def list_leads(access_token: str, limit: int = 500) -> list[dict]:
         .limit(limit)
         .execute()
     )
+    rows = resp.data or []
+
+    targeting = get_lead_targeting(access_token)
+    threshold = int((targeting or {}).get("score_threshold") or 0)
+    if threshold > 0:
+        rows = [
+            r for r in rows
+            if r.get("score") is None or int(r.get("score") or 0) >= threshold
+        ]
+    # Tri stable : scorés (par score décroissant) avant non-scorés.
+    rows.sort(key=lambda r: (0 if r.get("score") is not None else 1, -(int(r.get("score") or 0))))
+    return rows
+
+
+def list_leads_for_scoring(access_token: str, limit: int = 1000) -> list[dict]:
+    """Tous les leads du user (non filtrés par seuil) pour un recalcul de score."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("leads")
+        .select("id, name, headline, comment_text, signals")
+        .limit(limit)
+        .execute()
+    )
     return resp.data or []
+
+
+def update_lead_scores(access_token: str, scored: list[dict]) -> int:
+    """Écrit score + justification sur des leads (RLS scope). `scored` = liste de
+    {id, score, reason}. Retourne le nombre de leads mis à jour."""
+    if not supabase_enabled() or not scored:
+        return 0
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    n = 0
+    for item in scored:
+        lead_id = item.get("id")
+        if not lead_id:
+            continue
+        db.table("leads").update(
+            {
+                "score": int(item.get("score") or 0),
+                "score_reason": (item.get("reason") or None),
+                "scored_at": now,
+            }
+        ).eq("id", lead_id).execute()
+        n += 1
+    return n
+
+
+# ── Ciblage ICP (ALE-228) : config de prospection par utilisateur ──────────────
+_LEAD_TARGETING_FIELDS = (
+    "ideal_client",
+    "offer",
+    "interest_keywords",
+    "score_threshold",
+    "first_message_instructions",
+)
+
+
+def get_lead_targeting(access_token: str) -> dict | None:
+    """Config de ciblage de l'utilisateur, ou None si jamais enregistrée."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("lead_targeting")
+        .select("*")
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def upsert_lead_targeting(access_token: str, payload: dict[str, Any]) -> dict | None:
+    """Crée ou met à jour la config de ciblage (RLS scope)."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    for key in _LEAD_TARGETING_FIELDS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if key == "score_threshold":
+            try:
+                row[key] = max(0, min(100, int(value)))
+            except (TypeError, ValueError):
+                row[key] = 60
+        elif key == "interest_keywords":
+            if isinstance(value, str):
+                value = [v.strip() for v in value.split(",")]
+            row[key] = [str(v).strip() for v in (value or []) if str(v).strip()]
+        elif isinstance(value, str):
+            row[key] = value.strip() or None
+        else:
+            row[key] = value
+    resp = (
+        db.table("lead_targeting")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None

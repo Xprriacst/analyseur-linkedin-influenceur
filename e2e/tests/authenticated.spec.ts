@@ -142,6 +142,13 @@ test("LinkedIn › Prospection : liste des leads + panneau de détail (ALE-229)"
   await expect(page.getByRole("heading", { name: /^Prospection$/i })).toBeVisible();
   // Liste de leads OU état vide qui renvoie vers la Veille / Ma bibliothèque.
   await expect(page.getByText(/Aucun lead pour l'instant|lead\(s\)/i).first()).toBeVisible({ timeout: 60_000 });
+  // ALE-228 : panneau de ciblage ICP (toujours présent, pré-rempli depuis le profil).
+  // Lecture seule : on déplie/replie sans enregistrer (aucune écriture, aucun coût).
+  await expect(page.getByText(/Mon ciblage/i)).toBeVisible();
+  await page.getByText(/Mon ciblage/i).click();
+  await expect(page.getByText(/Ton client idéal/i)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Enregistrer & recalculer/i })).toBeVisible();
+  await page.getByText(/Mon ciblage/i).click(); // replie
   // Si des leads existent (le compte QA en a via les tests ALE-227) : panneau de détail au clic.
   const firstLead = page.locator("main button.card").first();
   if (await firstLead.count()) {
