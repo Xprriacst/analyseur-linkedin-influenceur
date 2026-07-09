@@ -42,6 +42,7 @@ import {
   TrendingUp,
   UserRound,
   Users,
+  X,
   Zap,
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
@@ -255,7 +256,7 @@ type InfluencerTrends = {
   ranking: TrendsRankingRow[];
 };
 
-const mainViews = ["analyze", "profile", "assistant", "content", "inbox"] as const;
+const mainViews = ["analyze", "profile", "assistant", "content", "inbox", "prospecting"] as const;
 type MainView = typeof mainViews[number];
 
 type Platform = "linkedin" | "instagram";
@@ -1125,7 +1126,7 @@ function Sidebar({
 
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {!restricted && (() => {
-        const isNetworkView = view === "content" || view === "analyze";
+        const isNetworkView = view === "content" || view === "analyze" || view === "prospecting";
         const networks: { key: Platform; label: string; icon: React.ReactNode }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
           { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
@@ -1181,6 +1182,36 @@ function Sidebar({
                         </button>
                       );
                     })}
+                    {/* ALE-229 : Prospection — actif sous LinkedIn, jumeau grisé « Bientôt » sous Instagram */}
+                    {expanded && net.key === "linkedin" && (
+                      <button
+                        className={`nav-item nav-item-sub ${view === "prospecting" ? "active" : ""} ${!isAuthed ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                        title={collapsed ? "Prospection" : undefined}
+                        onClick={() => {
+                          if (!isAuthed) {
+                            requireAuth("Crée un compte gratuit pour débloquer la prospection.");
+                            return;
+                          }
+                          onNavigate("prospecting");
+                        }}
+                      >
+                        <Target size={14} />
+                        {!collapsed && <span>Prospection</span>}
+                        {!isAuthed ? <Lock size={12} className="lock-ico" /> : null}
+                      </button>
+                    )}
+                    {expanded && net.key === "instagram" && !collapsed && (
+                      <button
+                        className="nav-item nav-item-sub locked"
+                        title="La prospection Instagram arrive bientôt"
+                        disabled
+                        style={{ cursor: "default", opacity: 0.55 }}
+                      >
+                        <Target size={14} />
+                        <span>Prospection</span>
+                        <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 600, color: "var(--muted)", border: "1px solid var(--border)", borderRadius: 99, padding: "1px 7px" }}>Bientôt</span>
+                      </button>
+                    )}
                   </React.Fragment>
                 );
               })}
@@ -1504,6 +1535,7 @@ function TopHeader({
     assistant: "Agent IA",
     content: "Contenu",
     inbox: "Inbox",
+    prospecting: "Prospection LinkedIn",
   };
 
   return (
@@ -1913,6 +1945,91 @@ function useLinkedIn(isAuthed: boolean) {
   }
 
   return { status, busy, error, connect, disconnect };
+}
+
+// ─── ALE-230 : messagerie LinkedIn (prospection) via Unipile + quotas ───
+type OutreachQuota = {
+  daily_cap: number;
+  weekly_invite_cap: number;
+  invites_today: number;
+  messages_today: number;
+  invites_week: number;
+  can_invite: boolean;
+  can_message: boolean;
+  invite_blocked_reason?: string | null;
+  message_blocked_reason?: string | null;
+};
+
+type OutreachStatus = {
+  configured: boolean;
+  connected: boolean;
+  account_name?: string | null;
+  connected_at?: string | null;
+  quota: OutreachQuota;
+};
+
+type OutreachChat = { id: string; name?: string | null; last_message_at?: string | null; provider_url?: string | null };
+type OutreachMessage = { id: string; text: string; from_me: boolean; created_at?: string | null };
+
+/** Statut de connexion Unipile (compte LinkedIn de prospection) + quotas + flux d'auth hébergée. */
+function useLinkedInOutreach(isAuthed: boolean) {
+  const [status, setStatus] = useState<OutreachStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const reload = useCallback(async () => {
+    if (!isAuthed) { setStatus(null); return; }
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/status`, { headers: await authHeaders() });
+      if (res.ok) setStatus(await res.json());
+    } catch { /* non bloquant */ }
+  }, [isAuthed]);
+
+  useEffect(() => { void reload(); }, [reload]);
+
+  async function connect() {
+    setError(""); setBusy(true);
+    try {
+      const redirect = `${window.location.origin}${window.location.pathname}?linkedin_outreach=connected`;
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ redirect_url: redirect }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion impossible");
+      window.location.href = data.auth_url; // Unipile gère l'auth LinkedIn puis renvoie vers l'app
+    } catch (err: any) {
+      setError(err.message); setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!window.confirm("Délier le compte LinkedIn de prospection ?")) return;
+    setError(""); setBusy(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach`, { method: "DELETE", headers: await authHeaders() });
+      if (res.ok) setStatus(await res.json());
+    } catch (err: any) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function setDailyCap(daily_cap: number) {
+    setError(""); setBusy(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ daily_cap }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
+      setStatus(data);
+    } catch (err: any) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return { status, busy, error, reload, connect, disconnect, setDailyCap, setStatus };
 }
 
 type XStatus = {
@@ -5041,6 +5158,99 @@ const MANYCHAT_BODY_TEMPLATE = `{
   "text": "{{Last Text Input}}"
 }`;
 
+// ALE-230 : connexion du compte LinkedIn de PROSPECTION via Unipile (envoi de
+// demandes de connexion + messages aux leads). Modèle multi-client comme ManyChat :
+// chaque client relie SON compte LinkedIn. Porte aussi le plafond quotidien de
+// quota (garde-fou anti-restriction). Distinct de la connexion « Publier sur
+// LinkedIn » (Zernio) : Zernio publie des posts, Unipile fait la messagerie.
+function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
+  const outreach = useLinkedInOutreach(isAuthed);
+  const [capOpen, setCapOpen] = useState(false);
+  const [capDraft, setCapDraft] = useState<number>(25);
+
+  const st = outreach.status;
+  const connected = !!st?.connected;
+  const q = st?.quota;
+
+  useEffect(() => { if (q?.daily_cap) setCapDraft(q.daily_cap); }, [q?.daily_cap]);
+
+  if (!isAuthed) return null;
+
+  return (
+    <>
+      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Send size={20} style={{ flexShrink: 0, color: "#0a66c2" }} />
+          <div>
+            <strong>Contacter tes leads sur LinkedIn (prospection)</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              {!st?.configured
+                ? "Messagerie LinkedIn non configurée sur le serveur (Unipile)."
+                : connected
+                  ? "Compte LinkedIn relié — tu peux envoyer des demandes de connexion et des messages à tes leads depuis l'onglet Prospection."
+                  : "Connecte ton compte LinkedIn pour envoyer des invitations et des messages à tes leads, sans quitter l'app."}
+            </p>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {connected ? (
+            <>
+              <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+              <button className="secondary-button" onClick={() => setCapOpen((v) => !v)} style={{ fontSize: 12 }}>
+                <Settings2 size={13} /> {capOpen ? "Masquer les quotas" : "Quotas"}
+              </button>
+              <button className="secondary-button" onClick={outreach.disconnect} disabled={outreach.busy} style={{ fontSize: 12 }}>
+                {outreach.busy ? <Loader2 size={12} className="spinning" /> : null} Délier
+              </button>
+            </>
+          ) : st?.configured ? (
+            <button className="primary-button" onClick={outreach.connect} disabled={outreach.busy}>
+              {outreach.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+              {outreach.busy ? "Redirection…" : "Connecter LinkedIn"}
+            </button>
+          ) : null}
+        </div>
+      </section>
+
+      {connected && q && capOpen && (
+        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
+          <p style={{ fontSize: 13, margin: "0 0 10px" }}>
+            <strong>Garde-fous quota</strong> — ils protègent ton compte LinkedIn d&apos;une restriction.
+            Le plafond quotidien s&apos;applique séparément aux invitations et aux messages ; une sécurité
+            hebdomadaire glissante (~{q.weekly_invite_cap} invitations / 7 jours) s&apos;ajoute par-dessus.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 12 }}>
+            <div className="card" style={{ padding: "10px 12px" }}>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>Invitations aujourd&apos;hui</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{q.invites_today}<span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}> / {q.daily_cap}</span></div>
+              <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{q.invites_week}/{q.weekly_invite_cap} sur 7 jours</div>
+            </div>
+            <div className="card" style={{ padding: "10px 12px" }}>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>Messages aujourd&apos;hui</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{q.messages_today}<span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}> / {q.daily_cap}</span></div>
+            </div>
+          </div>
+          <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, fontWeight: 600, flexWrap: "wrap" }}>
+            Plafond quotidien
+            <input
+              type="number" min={1} max={100} value={capDraft}
+              onChange={(e) => setCapDraft(Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
+              style={{ width: 80, padding: 8, fontSize: 13, fontWeight: 400 }}
+            />
+            <button className="primary-button" onClick={() => outreach.setDailyCap(capDraft)} disabled={outreach.busy || capDraft === q.daily_cap} style={{ fontSize: 13 }}>
+              {outreach.busy ? <Loader2 size={13} className="spinning" /> : <CheckCircle2 size={13} />} Enregistrer
+            </button>
+          </label>
+          <p style={{ fontSize: 11.5, color: "var(--muted)", margin: "8px 0 0" }}>
+            Recommandé : 25 max/jour pour un compte établi. Monte progressivement pour un compte récent.
+          </p>
+        </section>
+      )}
+      {outreach.error && <div className="error" style={{ marginBottom: 12 }}>{outreach.error}</div>}
+    </>
+  );
+}
+
 // Connexion ManyChat (par client), affichée dans le profil à côté des autres
 // connexions (LinkedIn/X/Slack). ManyChat est le pont d'envoi vers les DM
 // Instagram : clé API + webhook à coller côté ManyChat. C'est une étape de
@@ -5315,7 +5525,7 @@ function AgentFaqEditor({ isAuthed }: { isAuthed: boolean }) {
   );
 }
 
-function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null }) {
+function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalActiveId = null }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; hideChrome?: boolean; externalActiveId?: string | null }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
   // Faux tant que le premier /me/ig/conversations n'a pas répondu : évite d'afficher
   // « Aucune conversation » pendant le chargement initial (backend dev lent).
@@ -5465,6 +5675,13 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
     loadThread(id);
   }
 
+  // Inbox unifiée (ALE-244) : quand le parent pilote la sélection (mode headless),
+  // on ouvre la conversation demandée.
+  useEffect(() => {
+    if (externalActiveId && externalActiveId !== activeId) selectConversation(externalActiveId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalActiveId]);
+
   useEffect(() => {
     if (!isAuthed) {
       selectedConvRef.current = null;
@@ -5605,7 +5822,8 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - var(--header-h) - var(--dev-banner-h) - 40px)", minHeight: 420 }}>
+    <div style={{ display: "flex", flexDirection: "column", height: hideChrome ? "100%" : "calc(100vh - var(--header-h) - var(--dev-banner-h) - 40px)", minHeight: hideChrome ? 0 : 420 }}>
+    {!hideChrome && (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: killSwitch ? "rgba(224,108,0,0.12)" : "rgba(128,128,128,0.08)", flex: "none" }}>
       <span style={{ fontSize: 13 }}>
         {killSwitch
@@ -5625,7 +5843,9 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
         </button>
       </div>
     </div>
-    <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
+    )}
+    <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: hideChrome ? "1fr" : "280px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
+      {!hideChrome && (
       <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
         <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
         {conversations.length === 0 && (
@@ -5662,6 +5882,7 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
           </button>
         ))}
       </aside>
+      )}
 
       <section className="card" style={{ display: "flex", flexDirection: "column", padding: 0, minHeight: 0 }}>
         {!active ? (
@@ -5778,6 +5999,266 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
         )}
       </section>
     </div>
+    </div>
+  );
+}
+
+// ALE-244 : fil LinkedIn (messages Unipile lus en direct) pour l'Inbox unifiée.
+function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: OutreachQuota; onQuota: (q: OutreachQuota) => void }) {
+  const [messages, setMessages] = useState<OutreachMessage[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [reply, setReply] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const endRef = useRef<HTMLDivElement | null>(null);
+  const chatId = chat.id;
+
+  async function loadMessages() {
+    setLoading(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats/${encodeURIComponent(chatId)}/messages`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Messages introuvables");
+      setMessages(Array.isArray(data.messages) ? data.messages : []);
+    } catch (err: any) { setError(err.message); }
+    finally { setLoading(false); }
+  }
+
+  // Monté par conversation (key=chatId) → chargement + rafraîchissement 15 s.
+  useEffect(() => {
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadMessages(); if (!stop) timer = setTimeout(loop, 15000); };
+    loop();
+    return () => { stop = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+
+  async function sendReply() {
+    if (!reply.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats/${encodeURIComponent(chatId)}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text: reply.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi impossible");
+      if (data.quota) onQuota(data.quota);
+      setReply("");
+      await loadMessages();
+    } catch (err: any) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <section className="card" style={{ display: "flex", flexDirection: "column", minHeight: 0, padding: 0, height: "100%" }}>
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+        <Linkedin size={15} style={{ color: "#0a66c2", flexShrink: 0 }} />
+        {chat.name || "Conversation LinkedIn"}
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+        {loading && messages.length === 0 ? (
+          <div style={{ margin: "auto", opacity: 0.6 }}><Loader2 size={18} className="spinning" /></div>
+        ) : messages.length === 0 ? (
+          <div style={{ margin: "auto", opacity: 0.6, fontSize: 13 }}>Aucun message.</div>
+        ) : null}
+        {messages.map((m) => (
+          <div
+            key={m.id}
+            style={{ alignSelf: m.from_me ? "flex-end" : "flex-start", maxWidth: "78%", padding: "8px 12px", borderRadius: 12, background: m.from_me ? "rgba(10,102,194,0.14)" : "var(--surface-high)", fontSize: 13.5, whiteSpace: "pre-wrap" }}
+          >
+            {m.text}
+          </div>
+        ))}
+        <div ref={endRef} />
+      </div>
+      {error && <div className="error" style={{ margin: "0 12px 8px" }}>{error}</div>}
+      <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "flex-end" }}>
+        <textarea
+          value={reply}
+          onChange={(e) => setReply(e.target.value)}
+          rows={2}
+          placeholder="Écris ta réponse… (Cmd/Ctrl+Entrée pour envoyer)"
+          style={{ flex: 1, resize: "none", padding: 8, fontSize: 13 }}
+          onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") sendReply(); }}
+        />
+        <button
+          className="primary-button"
+          disabled={busy || !reply.trim() || !quota?.can_message}
+          title={!quota?.can_message ? (quota?.message_blocked_reason || "") : "Envoyer"}
+          onClick={sendReply}
+        >
+          {busy ? <Loader2 size={14} className="spinning" /> : <Send size={14} />}
+        </button>
+      </div>
+      {!quota?.can_message && quota?.message_blocked_reason && (
+        <p style={{ margin: "0 12px 10px", fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{quota.message_blocked_reason}</p>
+      )}
+    </section>
+  );
+}
+
+// ALE-244 : Inbox UNIQUE regroupant Instagram (DM ManyChat) + LinkedIn (messagerie
+// Unipile). Une seule liste de conversations, chaque ligne taguée par réseau ; à
+// l'ouverture le fil et l'envoi s'adaptent au réseau. L'inbox Instagram garde
+// toute sa logique d'agent (réutilisée via IgInbox en mode headless `hideChrome`).
+type InboxNetwork = "instagram" | "linkedin";
+
+function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null }) {
+  const outreach = useLinkedInOutreach(isAuthed);
+  const lnConnected = !!outreach.status?.connected;
+  const [igConvs, setIgConvs] = useState<IgConversation[]>([]);
+  const [lnChats, setLnChats] = useState<OutreachChat[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [sel, setSel] = useState<{ network: InboxNetwork; id: string } | null>(null);
+
+  async function loadIg() {
+    if (!isAuthed) return;
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setIgConvs(Array.isArray(data) ? data : []);
+    } catch { /* non bloquant */ } finally { setLoaded(true); }
+  }
+  async function loadLn() {
+    if (!isAuthed || !lnConnected) { setLnChats([]); return; }
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setLnChats(Array.isArray(data.chats) ? data.chats : []);
+    } catch { /* non bloquant */ }
+  }
+
+  // Poll IG (6 s, non-chevauchant) — nouvelles conversations sans recharger.
+  useEffect(() => {
+    if (!isAuthed) { setIgConvs([]); setLnChats([]); setSel(null); return; }
+    let stop = false; let t: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadIg(); if (!stop) t = setTimeout(loop, 6000); };
+    loop();
+    return () => { stop = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  // Poll LinkedIn (30 s) uniquement si le compte est connecté.
+  useEffect(() => {
+    if (!isAuthed || !lnConnected) return;
+    let stop = false; let t: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadLn(); if (!stop) t = setTimeout(loop, 30000); };
+    loop();
+    return () => { stop = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, lnConnected]);
+
+  const ts = (v?: string | null) => (v ? new Date(v).getTime() : 0);
+  type Row = { network: InboxNetwork; id: string; name: string; time: number; mode?: IgConversation["mode"] };
+  const rows: Row[] = [
+    ...igConvs.map((c) => ({ network: "instagram" as const, id: c.id, name: c.prospect_name || c.prospect_id, time: ts(c.last_message_at), mode: c.mode })),
+    ...lnChats.map((c) => ({ network: "linkedin" as const, id: c.id, name: c.name || "Conversation LinkedIn", time: ts(c.last_message_at) })),
+  ].sort((a, b) => b.time - a.time);
+
+  // Pastille « non lu » unifiée (localStorage par utilisateur, clé network:id).
+  const readKey = userId ? `inbox_conv_read:${userId}` : null;
+  const [readMap, setReadMap] = useState<Record<string, number>>({});
+  const seededRef = useRef(false);
+  const rowKey = (r: { network: InboxNetwork; id: string }) => `${r.network}:${r.id}`;
+  useEffect(() => {
+    seededRef.current = false;
+    if (!readKey) { setReadMap({}); return; }
+    try { const raw = localStorage.getItem(readKey); if (raw !== null) { setReadMap(JSON.parse(raw) || {}); seededRef.current = true; } else setReadMap({}); }
+    catch { setReadMap({}); }
+  }, [readKey]);
+  useEffect(() => {
+    if (!readKey || seededRef.current || !loaded) return;
+    const seed: Record<string, number> = {};
+    rows.forEach((r) => { seed[rowKey(r)] = r.time; });
+    seededRef.current = true;
+    try { localStorage.setItem(readKey, JSON.stringify(seed)); } catch { /* ignore */ }
+    setReadMap(seed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readKey, loaded, igConvs, lnChats]);
+  const markRead = (r: { network: InboxNetwork; id: string }, time: number) => {
+    setReadMap((prev) => {
+      const k = rowKey(r);
+      if ((prev[k] || 0) >= time) return prev;
+      const next = { ...prev, [k]: time };
+      if (readKey) { try { localStorage.setItem(readKey, JSON.stringify(next)); } catch { /* ignore */ } }
+      return next;
+    });
+  };
+  const selKey = sel ? `${sel.network}:${sel.id}` : "";
+  const isUnread = (r: Row) => rowKey(r) !== selKey && r.time > (readMap[rowKey(r)] || 0);
+
+  function selectRow(r: Row) { setSel({ network: r.network, id: r.id }); markRead(r, r.time); }
+
+  const selectedIg = sel?.network === "instagram" ? igConvs.find((c) => c.id === sel.id) || null : null;
+  const selectedLn = sel?.network === "linkedin" ? lnChats.find((c) => c.id === sel.id) || null : null;
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <p>Connecte-toi pour accéder à ton inbox.</p>
+        <button className="primary-button" onClick={() => requireAuth("Crée un compte pour accéder à l'inbox.")}>Se connecter</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - var(--header-h) - var(--dev-banner-h) - 40px)", minHeight: 420 }}>
+      <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
+        <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
+          <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
+          {rows.length === 0 && (
+            <p style={{ padding: 8, fontSize: 13, opacity: 0.7 }}>
+              {loaded
+                ? "Aucune conversation pour l'instant. Elles apparaîtront dès qu'un prospect écrit en DM (Instagram) ou après ton premier message à un lead (LinkedIn)."
+                : "Chargement des conversations…"}
+            </p>
+          )}
+          {rows.map((r) => (
+            <button
+              key={rowKey(r)}
+              onClick={() => selectRow(r)}
+              className="ig-conv-item"
+              style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 4, borderRadius: 8, border: "1px solid transparent", cursor: "pointer", background: rowKey(r) === selKey ? "rgba(120,120,255,0.12)" : "transparent" }}
+            >
+              <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontWeight: isUnread(r) ? 700 : 600, fontSize: 14, display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                  {isUnread(r) && (
+                    <span aria-label="Nouveau message" title="Nouveau message" style={{ width: 8, height: 8, borderRadius: "50%", background: "#e5484d", flex: "0 0 auto" }} />
+                  )}
+                  <span title={r.network === "instagram" ? "Instagram" : "LinkedIn"} style={{ display: "inline-flex", flex: "0 0 auto" }}>
+                    {r.network === "instagram"
+                      ? <MessageSquare size={13} style={{ color: "#c13584" }} />
+                      : <Linkedin size={13} style={{ color: "#0a66c2" }} />}
+                  </span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
+                </span>
+                {r.network === "instagram" && r.mode ? <ConversationModeBadge mode={r.mode} /> : null}
+              </span>
+            </button>
+          ))}
+        </aside>
+        <div style={{ minHeight: 0 }}>
+          {selectedIg ? (
+            <IgInbox key="ig-thread" isAuthed={isAuthed} requireAuth={requireAuth} userId={userId} hideChrome externalActiveId={selectedIg.id} />
+          ) : selectedLn ? (
+            <LinkedInThread
+              key={`ln:${selectedLn.id}`}
+              chat={selectedLn}
+              quota={outreach.status?.quota}
+              onQuota={(q) => outreach.setStatus((p) => (p ? { ...p, quota: q } : p))}
+            />
+          ) : (
+            <div className="card" style={{ height: "100%", display: "flex" }}>
+              <div style={{ margin: "auto", opacity: 0.7 }}>Sélectionne une conversation.</div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -6438,6 +6919,8 @@ function ProfileView({
         )}
       </section>
       {linkedin.error ? <div className="error" style={{ marginBottom: 12 }}>{linkedin.error}</div> : null}
+
+      <UnipileOutreachConnect isAuthed={isAuthed} />
 
       <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -7737,6 +8220,16 @@ type PostTemplate = {
   created_at?: string;
 };
 
+// ALE-234 : source de prospection rattachée à une entrée de bibliothèque (même post).
+type LibraryLeadSource = {
+  id: string;
+  post_url: string;
+  is_lead_magnet?: boolean;
+  trigger_keyword?: string | null;
+  collected_at?: string | null;
+  comments_count?: number | null;
+};
+
 function libraryEntryTitle(t: PostTemplate): string {
   if (t.structure_label) return t.structure_label;
   if (t.source_author) return t.source_author;
@@ -7767,6 +8260,10 @@ function MyLibraryView({
   const [imageUrl, setImageUrl] = useState("");
   const [adding, setAdding] = useState(false);
   const [extractingId, setExtractingId] = useState<string | null>(null);
+  // ALE-234 : sources de prospection croisées avec la bibliothèque par URL de post.
+  const [leadSources, setLeadSources] = useState<Record<string, LibraryLeadSource>>({});
+  const [collectingId, setCollectingId] = useState<string | null>(null);
+  const [collectMsg, setCollectMsg] = useState("");
 
   async function load() {
     if (!isAuthed) return;
@@ -7781,6 +8278,47 @@ function MyLibraryView({
       setError(err.message || "Chargement impossible");
     } finally {
       setLoading(false);
+    }
+    // Best-effort : sans les sources, la bibliothèque reste pleinement utilisable.
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-sources`, { headers: await authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        const map: Record<string, LibraryLeadSource> = {};
+        for (const s of data.sources || []) {
+          if (s.is_lead_magnet && s.post_url) map[s.post_url] = s;
+        }
+        setLeadSources(map);
+      }
+    } catch { /* pastilles indisponibles, tant pis */ }
+  }
+
+  async function collectCommenters(source: LibraryLeadSource) {
+    if (collectingId) return;
+    setCollectingId(source.id);
+    setError("");
+    setCollectMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-sources/${source.id}/collect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Collecte impossible");
+      setLeadSources((prev) => ({ ...prev, [source.post_url]: { ...source, ...data.source } }));
+      const counts = data.leads || {};
+      const fresh = counts.inserted ?? 0;
+      const enriched = counts.updated ?? 0;
+      setCollectMsg(
+        `${data.comments_count} commentaire(s) analysé(s) — ${fresh} nouveau(x) lead(s)` +
+          (enriched ? `, ${enriched} enrichi(s)` : "") +
+          ". Retrouve-les dans l'onglet Prospection."
+      );
+    } catch (err: any) {
+      setError(err.message || "Collecte impossible");
+    } finally {
+      setCollectingId(null);
     }
   }
 
@@ -7815,6 +8353,20 @@ function MyLibraryView({
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Ajout impossible");
       setEntries((prev) => [data, ...prev]);
+      // ALE-234 : l'import par lien peut détecter un lead magnet → pastille immédiate.
+      if (data.lead_magnet && data.source_post_url) {
+        setLeadSources((prev) => ({
+          ...prev,
+          [data.source_post_url]: {
+            id: data.lead_magnet.source_id,
+            post_url: data.source_post_url,
+            is_lead_magnet: true,
+            trigger_keyword: data.lead_magnet.trigger_keyword,
+            collected_at: data.lead_magnet.collected_at,
+            comments_count: data.lead_magnet.comments_count,
+          },
+        }));
+      }
       setUrl(""); setText(""); setNote(""); setLabel(""); setStructure(""); setImageNote(""); setImageUrl("");
     } catch (err: any) {
       setError(err.message || "Ajout impossible");
@@ -7941,6 +8493,9 @@ function MyLibraryView({
           </details>
         </div>
         {error && <div className="error" style={{ marginTop: 8 }}>{error}</div>}
+        {collectMsg && (
+          <div style={{ marginTop: 8, fontSize: 13, color: "var(--success)" }}>✓ {collectMsg}</div>
+        )}
       </div>
 
       <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
@@ -7959,6 +8514,7 @@ function MyLibraryView({
           entries.map((t) => {
             const postText = (t.post_text || "").trim();
             const structureText = (t.structure_text || "").trim();
+            const leadSource = t.source_post_url ? leadSources[t.source_post_url] : undefined;
             return (
               <div key={t.id} className="card" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -7969,6 +8525,15 @@ function MyLibraryView({
                     {t.image_url && <span className="daily-seed-tag">image</span>}
                     {t.source === "influencer" && (
                       <span className="daily-seed-tag">depuis la veille{t.source_author ? ` · ${t.source_author}` : ""}</span>
+                    )}
+                    {leadSource && (
+                      <span
+                        className="daily-seed-tag"
+                        style={{ color: "var(--success)", fontWeight: 600 }}
+                        title="Ce post demande de commenter un mot-clé pour recevoir une ressource — ses commentateurs sont des prospects chauds"
+                      >
+                        🎯 lead magnet{leadSource.trigger_keyword ? ` · « ${leadSource.trigger_keyword} »` : ""}
+                      </span>
                     )}
                   </div>
                   {postText && (
@@ -8019,6 +8584,20 @@ function MyLibraryView({
                         {extractingId === t.id ? <Loader2 size={12} className="spinning" /> : <ListChecks size={12} />} Extraire la structure
                       </button>
                     )}
+                    {leadSource && (
+                      <button
+                        className="secondary-button"
+                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
+                        title="Récupère les personnes qui ont commenté ce post — elles deviennent des leads dans l'onglet Prospection"
+                        onClick={() => collectCommenters(leadSource)}
+                        disabled={collectingId === leadSource.id}
+                      >
+                        {collectingId === leadSource.id ? <Loader2 size={12} className="spinning" /> : <Users size={12} />}{" "}
+                        {leadSource.collected_at
+                          ? `Mettre à jour les commentateurs (${leadSource.comments_count ?? 0} récupérés)`
+                          : "Récupérer les commentateurs"}
+                      </button>
+                    )}
                   </div>
                 </div>
                 {t.image_url && (
@@ -8032,6 +8611,649 @@ function MyLibraryView({
         )}
       </div>
     </LibDrawer>
+  );
+}
+
+// ─── ALE-229 : onglet Prospection — liste des leads + panneau latéral de détail ───
+// V1 volontairement sans import (l'alimentation vient de la veille ALE-227 et de
+// Ma bibliothèque ALE-234). Le ciblage ICP + score (ALE-228) sont ici ; l'envoi
+// du premier message reste à venir (ALE-230).
+
+type LeadSignal = {
+  source_id?: string | null;
+  post_url?: string | null;
+  author?: string | null;
+  trigger_keyword?: string | null;
+  comment_text?: string | null;
+  commented_at?: string | null;
+};
+
+type Lead = {
+  id: string;
+  profile_url: string;
+  name?: string | null;
+  headline?: string | null;
+  comment_text?: string | null;
+  commented_at?: string | null;
+  reaction_count?: number | null;
+  signals?: LeadSignal[];
+  signal_count?: number;
+  status?: string;
+  created_at?: string;
+  score?: number | null;
+  score_reason?: string | null;
+  // ALE-230 : état d'outreach LinkedIn (envoi via Unipile).
+  outreach_status?: string | null;   // none | invite_sent | connected | messaged
+  provider_id?: string | null;
+  outreach_chat_id?: string | null;
+};
+
+/** Libellé court de l'état d'outreach d'un lead (badge de liste). */
+function outreachLabel(s?: string | null): string | null {
+  switch (s) {
+    case "invite_sent": return "Invité";
+    case "connected": return "En relation";
+    case "messaged": return "Contacté";
+    default: return null;
+  }
+}
+
+type LeadTargeting = {
+  ideal_client?: string | null;
+  offer?: string | null;
+  interest_keywords?: string[] | null;
+  score_threshold?: number | null;
+  first_message_instructions?: string | null;
+};
+
+/** Couleur d'une pastille de score ICP : vert (fort) / ambre (moyen) / gris (faible). */
+function scoreColor(score: number): string {
+  if (score >= 70) return "var(--success)";
+  if (score >= 40) return "var(--warning, #b8860b)";
+  return "var(--muted)";
+}
+
+function leadInitials(l: Lead): string {
+  const parts = (l.name || "").trim().split(/\s+/).filter(Boolean);
+  const ini = ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase();
+  return ini || "?";
+}
+
+function leadDate(iso?: string | null): string {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+  } catch {
+    return "";
+  }
+}
+
+/** Dernier signal d'un lead (le plus récent ajouté) — porte mot-clé, auteur source et commentaire. */
+function leadLastSignal(l: Lead): LeadSignal {
+  if (l.signals && l.signals.length) return l.signals[l.signals.length - 1];
+  return { comment_text: l.comment_text, commented_at: l.commented_at };
+}
+
+/** Les URLs de leads viennent du scraping (non fiables) : on ne rend que http(s). */
+function safeHttpUrl(u?: string | null): string | undefined {
+  if (!u) return undefined;
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function ProspectingView({
+  isAuthed,
+  requireAuth,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState<Lead | null>(null);
+  // Ciblage ICP (ALE-228)
+  const [targeting, setTargeting] = useState<LeadTargeting | null>(null);
+  const [targetOpen, setTargetOpen] = useState(false);
+  const [savingTarget, setSavingTarget] = useState(false);
+  const [targetMsg, setTargetMsg] = useState("");
+  // Envoi via Unipile (ALE-230)
+  const outreach = useLinkedInOutreach(isAuthed);
+  const [outreachBusy, setOutreachBusy] = useState(false);
+  const [genBusy, setGenBusy] = useState(false);
+  const [outreachMsg, setOutreachMsg] = useState("");
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [messageText, setMessageText] = useState("");
+
+  // Réinitialise le bloc d'envoi quand on change de lead sélectionné.
+  useEffect(() => {
+    setComposeOpen(false);
+    setMessageText("");
+    setOutreachMsg("");
+  }, [selected?.id]);
+
+  // Applique le lead mis à jour renvoyé par le serveur (liste + panneau).
+  const patchLead = (updated: Lead) => {
+    setLeads((prev) => prev.map((l) => (l.id === updated.id ? { ...l, ...updated } : l)));
+    setSelected((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev));
+  };
+  const applyQuota = (quota?: OutreachQuota) => {
+    if (quota) outreach.setStatus((prev) => (prev ? { ...prev, quota } : prev));
+  };
+
+  async function inviteLead(lead: Lead) {
+    setOutreachBusy(true); setOutreachMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/invite`, { method: "POST", headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi impossible");
+      if (data.lead) patchLead(data.lead);
+      applyQuota(data.quota);
+      setOutreachMsg(data.already_connected ? "Vous êtes déjà en relation — prêt pour un message." : "Demande de connexion envoyée ✓");
+    } catch (err: any) { setOutreachMsg(err.message); }
+    finally { setOutreachBusy(false); }
+  }
+
+  async function checkConnection(lead: Lead) {
+    setOutreachBusy(true); setOutreachMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/check-connection`, { method: "POST", headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Vérification impossible");
+      if (data.lead) patchLead(data.lead);
+      setOutreachMsg(data.connected
+        ? "Invitation acceptée ✓ Tu peux envoyer ton premier message."
+        : "Pas encore acceptée — LinkedIn peut mettre un moment. Réessaie plus tard.");
+    } catch (err: any) { setOutreachMsg(err.message); }
+    finally { setOutreachBusy(false); }
+  }
+
+  async function generateMessage(lead: Lead) {
+    setGenBusy(true); setOutreachMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/message/preview`, { method: "POST", headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Génération impossible");
+      setMessageText(data.message || "");
+    } catch (err: any) { setOutreachMsg(err.message); }
+    finally { setGenBusy(false); }
+  }
+
+  async function sendFirstMessage(lead: Lead) {
+    if (!messageText.trim()) return;
+    setOutreachBusy(true); setOutreachMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text: messageText.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi impossible");
+      if (data.lead) patchLead(data.lead);
+      applyQuota(data.quota);
+      setComposeOpen(false); setMessageText("");
+      setOutreachMsg("Premier message envoyé ✓ Retrouve la conversation dans l'Inbox › LinkedIn.");
+    } catch (err: any) { setOutreachMsg(err.message); }
+    finally { setOutreachBusy(false); }
+  }
+
+  const loadLeads = async () => {
+    const res = await fetch(`${DIRECT_API_URL}/me/leads`, { headers: await authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Chargement des leads impossible");
+    return Array.isArray(data.leads) ? (data.leads as Lead[]) : [];
+  };
+
+  useEffect(() => {
+    if (!isAuthed) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const rows = await loadLeads();
+        if (!cancelled) setLeads(rows);
+      } catch (err: any) {
+        if (!cancelled) setError(err.message || "Chargement impossible");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+      // Ciblage (best-effort, ne bloque pas la liste).
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/lead-targeting`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (!cancelled && res.ok && data.targeting) setTargeting(data.targeting);
+      } catch {
+        /* silencieux */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthed]);
+
+  const saveTargeting = async () => {
+    if (!targeting) return;
+    setSavingTarget(true);
+    setTargetMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-targeting`, {
+        method: "PUT",
+        headers: { ...(await authHeaders()), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ideal_client: targeting.ideal_client || "",
+          offer: targeting.offer || "",
+          interest_keywords: targeting.interest_keywords || [],
+          first_message_instructions: targeting.first_message_instructions || "",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
+      if (data.targeting) setTargeting(data.targeting);
+      // Recalcule les scores puis recharge la liste (le classement change).
+      setTargetMsg("Ciblage enregistré, recalcul des scores…");
+      try {
+        await fetch(`${DIRECT_API_URL}/me/leads/rescore`, {
+          method: "POST",
+          headers: await authHeaders(),
+        });
+        setLeads(await loadLeads());
+      } catch {
+        /* le rescore peut échouer (ex. aucun lead) sans invalider la sauvegarde */
+      }
+      setTargetMsg("Ciblage enregistré ✓ Les leads sont reclassés par pertinence.");
+    } catch (err: any) {
+      setTargetMsg(err.message || "Enregistrement impossible");
+    } finally {
+      setSavingTarget(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!selected) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelected(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Lock size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Prospection</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Connecte-toi pour retrouver les personnes qui commentent les posts lead-magnet de tes concurrents.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour débloquer la prospection.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h2 className="section-title"><Target size={20} /> Prospection</h2>
+      <p style={{ color: "var(--muted)", margin: "0 0 16px", fontSize: 14, maxWidth: 640 }}>
+        Les personnes qui viennent de commenter les posts lead-magnet de tes concurrents — le signal
+        d&apos;intention le plus chaud de LinkedIn. Clique une ligne pour le détail.
+      </p>
+
+      {/* ALE-228 : ciblage ICP — note chaque lead vs le client idéal, masque les hors-cible */}
+      {targeting && (
+        <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
+          <button
+            type="button"
+            onClick={() => setTargetOpen((o) => !o)}
+            style={{
+              display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+              padding: "12px 16px", background: "none", border: "none", cursor: "pointer",
+              font: "inherit", color: "inherit",
+            }}
+          >
+            <ChevronRight size={18} style={{ flexShrink: 0, transform: targetOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+            <Target size={16} style={{ flexShrink: 0 }} />
+            <strong>Mon ciblage</strong>
+            <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12.5, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              — chaque lead est noté selon ton client idéal
+            </span>
+          </button>
+          {targetOpen && (
+            <div style={{ padding: "0 16px 16px", display: "grid", gap: 12 }}>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Ton client idéal
+                <textarea
+                  value={targeting.ideal_client || ""}
+                  onChange={(e) => setTargeting({ ...targeting, ideal_client: e.target.value })}
+                  placeholder="Ex. Dirigeants et responsables marketing de PME B2B (10-200 salariés)…"
+                  rows={2}
+                  style={{ width: "100%", padding: 8, fontSize: 13, fontWeight: 400, resize: "vertical" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Ton offre
+                <textarea
+                  value={targeting.offer || ""}
+                  onChange={(e) => setTargeting({ ...targeting, offer: e.target.value })}
+                  placeholder="Ex. Accompagnement à la prospection LinkedIn automatisée…"
+                  rows={2}
+                  style={{ width: "100%", padding: 8, fontSize: 13, fontWeight: 400, resize: "vertical" }}
+                />
+              </label>
+              <p style={{ margin: "-4px 0 0", fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
+                Pré-remplis depuis ton profil éditorial ; les modifier ici ne change pas ton profil.
+              </p>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Thèmes qui trahissent un bon prospect (séparés par des virgules)
+                <input
+                  value={(targeting.interest_keywords || []).join(", ")}
+                  onChange={(e) => setTargeting({ ...targeting, interest_keywords: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
+                  placeholder="Ex. automatisation, IA, growth, closing"
+                  style={{ width: "100%", padding: 8, fontSize: 13, fontWeight: 400 }}
+                />
+                <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
+                  Les sujets qui indiquent un prospect intéressant — rien à voir avec le mot-clé
+                  à commenter (« LEADS », « CLAUDE »…), lui est détecté automatiquement par post.
+                </span>
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Instructions du premier message
+                <textarea
+                  value={targeting.first_message_instructions || ""}
+                  onChange={(e) => setTargeting({ ...targeting, first_message_instructions: e.target.value })}
+                  placeholder="Ton, longueur, ce qu'il faut mentionner ou éviter, appel à l'action…"
+                  rows={3}
+                  style={{ width: "100%", padding: 8, fontSize: 13, fontWeight: 400, resize: "vertical" }}
+                />
+                <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
+                  Serviront à rédiger le premier message quand l&apos;envoi sera disponible.
+                </span>
+              </label>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                <button type="button" className="primary-button" onClick={saveTargeting} disabled={savingTarget}>
+                  {savingTarget ? <Loader2 size={14} className="spinning" /> : <Target size={14} />}
+                  {savingTarget ? "Enregistrement…" : "Enregistrer & recalculer les scores"}
+                </button>
+                {targetMsg && <span style={{ fontSize: 12.5, color: "var(--muted)" }}>{targetMsg}</span>}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+      {loading && leads.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: 24 }}>
+          <Loader2 size={20} className="spinning" style={{ opacity: 0.5 }} />
+        </div>
+      ) : leads.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+          <p style={{ margin: 0, color: "var(--muted)" }}>
+            Aucun lead pour l&apos;instant. Ils arrivent automatiquement des posts lead-magnet détectés
+            dans la <strong>Veille</strong> et de ceux que tu importes dans <strong>Contenu › Ma bibliothèque</strong>
+            {" "}(bouton « Récupérer les commentateurs »).
+          </p>
+        </div>
+      ) : (
+        // minmax(0, 1fr) : sans ça, la colonne `auto` du grid se dimensionne sur
+        // le max-content (intitulés en nowrap) et déborde du <main> → l'ellipsis
+        // ne se déclenche jamais. Le floor à 0 force les cartes à la largeur dispo.
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 6 }}>
+          {leads.map((l) => {
+            const sig = leadLastSignal(l);
+            const multi = (l.signal_count ?? 1) > 1;
+            return (
+              <button
+                key={l.id}
+                type="button"
+                className="card"
+                onClick={() => setSelected(l)}
+                style={{
+                  display: "flex", gap: 12, alignItems: "center", width: "100%", textAlign: "left",
+                  cursor: "pointer", padding: "10px 14px", font: "inherit", color: "inherit",
+                  border: selected?.id === l.id ? "1px solid var(--accent, #2e6bd6)" : undefined,
+                }}
+              >
+                <span style={{ width: 34, height: 34, borderRadius: 99, background: "var(--surface-high)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }}>
+                  {leadInitials(l)}
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}>
+                    <strong style={{ whiteSpace: "nowrap", flexShrink: 0 }}>{l.name || "Profil LinkedIn"}</strong>
+                    {l.headline && (
+                      <span style={{ flex: "1 1 auto", minWidth: 0, color: "var(--muted)", fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {l.headline}
+                      </span>
+                    )}
+                  </span>
+                  <span style={{ display: "block", color: "var(--muted)", fontSize: 12, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    a commenté{sig.trigger_keyword ? <> « <strong>{sig.trigger_keyword}</strong> »</> : null}
+                    {sig.author ? ` chez ${sig.author}` : ""}
+                    {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
+                    {multi ? <strong style={{ color: "var(--success)" }}> · {l.signal_count} signaux</strong> : null}
+                  </span>
+                </span>
+                {typeof l.score === "number" && (
+                  <span
+                    title={l.score_reason || "Score de pertinence vs ton client idéal"}
+                    style={{
+                      flexShrink: 0, fontSize: 12, fontWeight: 700, color: scoreColor(l.score),
+                      border: `1px solid ${scoreColor(l.score)}`, borderRadius: 99, padding: "2px 8px",
+                    }}
+                  >
+                    {l.score}
+                  </span>
+                )}
+                {outreachLabel(l.outreach_status) ? (
+                  <span className="daily-seed-tag" style={{ flexShrink: 0, color: l.outreach_status === "messaged" ? "var(--success)" : undefined }}>
+                    {outreachLabel(l.outreach_status)}
+                  </span>
+                ) : l.status === "new" ? (
+                  <span className="daily-seed-tag" style={{ flexShrink: 0 }}>Nouveau</span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {leads.length > 0 && (
+        <p style={{ color: "var(--muted)", fontSize: 12, textAlign: "center", marginTop: 14 }}>
+          {leads.length} lead(s) · classés par pertinence (score) — les moins pertinents restent en bas, rien n&apos;est masqué.
+        </p>
+      )}
+
+      {/* Panneau latéral de détail */}
+      {selected && (
+        <>
+          <div
+            onClick={() => setSelected(null)}
+            style={{ position: "fixed", inset: 0, background: "rgba(15,18,25,.35)", zIndex: 40 }}
+          />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            style={{
+              position: "fixed", top: 0, right: 0, height: "100vh", width: 400, maxWidth: "92vw",
+              background: "var(--surface)", borderLeft: "1px solid var(--border)", zIndex: 50,
+              overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 14,
+            }}
+          >
+            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              <span style={{ width: 46, height: 46, borderRadius: 99, background: "var(--surface-high)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 15, flexShrink: 0 }}>
+                {leadInitials(selected)}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 16 }}>{selected.name || "Profil LinkedIn"}</div>
+                {selected.headline && <div style={{ color: "var(--muted)", fontSize: 12.5 }}>{selected.headline}</div>}
+              </div>
+              <button className="icon-button" title="Fermer" onClick={() => setSelected(null)}><X size={16} /></button>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              {typeof selected.score === "number" && (
+                <span
+                  style={{
+                    fontSize: 12, fontWeight: 700, color: scoreColor(selected.score),
+                    border: `1px solid ${scoreColor(selected.score)}`, borderRadius: 99, padding: "2px 9px",
+                  }}
+                >
+                  Score {selected.score}/100
+                </span>
+              )}
+              {selected.status === "new" && <span className="daily-seed-tag">Nouveau</span>}
+              {(selected.signal_count ?? 1) > 1 && (
+                <span className="daily-seed-tag" style={{ color: "var(--success)", fontWeight: 600 }}>
+                  {selected.signal_count} signaux
+                </span>
+              )}
+            </div>
+            {selected.score_reason && (
+              <p style={{ margin: 0, fontSize: 12.5, color: "var(--muted)", fontStyle: "italic" }}>
+                {selected.score_reason}
+              </p>
+            )}
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontWeight: 700, marginTop: 4 }}>
+              Signaux d&apos;intention
+            </div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {(selected.signals && selected.signals.length
+                ? [...selected.signals].reverse()
+                : [leadLastSignal(selected)]
+              ).map((sig, i) => (
+                <div key={i} className="card" style={{ padding: "10px 12px" }}>
+                  {sig.comment_text && (
+                    <p style={{ margin: 0, fontSize: 13, whiteSpace: "pre-wrap" }}>« {sig.comment_text} »</p>
+                  )}
+                  <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                    {sig.trigger_keyword ? <>mot-clé « <strong>{sig.trigger_keyword}</strong> » · </> : null}
+                    {sig.author ? `chez ${sig.author}` : "post concurrent"}
+                    {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
+                    {safeHttpUrl(sig.post_url) ? (
+                      <> · <a href={safeHttpUrl(sig.post_url)} target="_blank" rel="noreferrer">voir le post</a></>
+                    ) : null}
+                  </p>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: "auto", display: "grid", gap: 10 }}>
+              {/* ALE-230 : envoi via Unipile — demande de connexion → acceptation → 1er message */}
+              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, display: "grid", gap: 8 }}>
+                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontWeight: 700 }}>
+                  Contacter sur LinkedIn
+                </div>
+                {!outreach.status?.connected ? (
+                  <p style={{ margin: 0, fontSize: 12.5, color: "var(--muted)" }}>
+                    Connecte ton compte LinkedIn dans <strong>Mon profil</strong> pour envoyer une demande
+                    de connexion et un premier message depuis ici.
+                  </p>
+                ) : (() => {
+                  const q = outreach.status?.quota;
+                  const oStatus = selected.outreach_status || "none";
+                  return (
+                    <>
+                      {q && (
+                        <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                          Invitations {q.invites_today}/{q.daily_cap} · Messages {q.messages_today}/{q.daily_cap} (aujourd&apos;hui)
+                        </div>
+                      )}
+                      {oStatus === "none" && (
+                        <>
+                          <button
+                            className="primary-button"
+                            disabled={outreachBusy || !q?.can_invite}
+                            title={!q?.can_invite ? (q?.invite_blocked_reason || "") : "Demande de connexion sans note"}
+                            onClick={() => inviteLead(selected)}
+                          >
+                            {outreachBusy ? <Loader2 size={14} className="spinning" /> : <UserRound size={14} />}
+                            Envoyer une demande de connexion
+                          </button>
+                          {!q?.can_invite && q?.invite_blocked_reason && (
+                            <p style={{ margin: 0, fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{q.invite_blocked_reason}</p>
+                          )}
+                        </>
+                      )}
+                      {oStatus === "invite_sent" && (
+                        <>
+                          <div style={{ fontSize: 13 }}>⏳ Demande envoyée — en attente d&apos;acceptation.</div>
+                          <button className="secondary-button" disabled={outreachBusy} onClick={() => checkConnection(selected)}>
+                            {outreachBusy ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+                            Vérifier l&apos;acceptation
+                          </button>
+                        </>
+                      )}
+                      {oStatus === "connected" && (
+                        <>
+                          <div style={{ fontSize: 13, color: "var(--success)" }}>✓ En relation — prêt pour le premier message.</div>
+                          {!composeOpen ? (
+                            <button
+                              className="primary-button"
+                              disabled={!q?.can_message}
+                              title={!q?.can_message ? (q?.message_blocked_reason || "") : ""}
+                              onClick={() => { setComposeOpen(true); if (!messageText) generateMessage(selected); }}
+                            >
+                              <Send size={14} /> Rédiger le premier message
+                            </button>
+                          ) : (
+                            <div style={{ display: "grid", gap: 8 }}>
+                              <textarea
+                                value={messageText}
+                                onChange={(e) => setMessageText(e.target.value)}
+                                rows={5}
+                                placeholder={genBusy ? "Génération du message…" : "Ton premier message…"}
+                                style={{ width: "100%", padding: 8, fontSize: 13, resize: "vertical" }}
+                              />
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <button className="secondary-button" disabled={genBusy} onClick={() => generateMessage(selected)} style={{ fontSize: 12 }}>
+                                  {genBusy ? <Loader2 size={13} className="spinning" /> : <Sparkles size={13} />} Régénérer
+                                </button>
+                                <button
+                                  className="primary-button"
+                                  disabled={outreachBusy || genBusy || !messageText.trim() || !q?.can_message}
+                                  onClick={() => sendFirstMessage(selected)}
+                                  style={{ fontSize: 12 }}
+                                >
+                                  {outreachBusy ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} Envoyer
+                                </button>
+                              </div>
+                              {!q?.can_message && q?.message_blocked_reason && (
+                                <p style={{ margin: 0, fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{q.message_blocked_reason}</p>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {oStatus === "messaged" && (
+                        <div style={{ fontSize: 13, color: "var(--success)" }}>
+                          ✓ Premier message envoyé. Retrouve la conversation dans <strong>Inbox › LinkedIn</strong>.
+                        </div>
+                      )}
+                      {outreachMsg && <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>{outreachMsg}</p>}
+                    </>
+                  );
+                })()}
+              </div>
+              {safeHttpUrl(selected.profile_url) && (
+                <a
+                  className="secondary-button"
+                  style={{ textAlign: "center", textDecoration: "none" }}
+                  href={safeHttpUrl(selected.profile_url)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <Linkedin size={14} /> Voir le profil LinkedIn
+                </a>
+              )}
+            </div>
+          </aside>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -8869,6 +10091,23 @@ export default function Home() {
     })();
   }, [isAuthed]);
 
+  // ALE-230 — retour du flux d'auth hébergée Unipile (messagerie LinkedIn) :
+  // on retrouve le compte connecté côté serveur, on nettoie l'URL, on va au Profil.
+  useEffect(() => {
+    if (!isAuthed) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("linkedin_outreach") !== "connected") return;
+    (async () => {
+      try {
+        await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/refresh`, { method: "POST", headers: await authHeaders() });
+      } catch { /* ignore */ }
+      params.delete("linkedin_outreach");
+      const qs = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+      setView("profile");
+    })();
+  }, [isAuthed]);
+
   // Retour du flux OAuth X (Zernio) : même logique que LinkedIn.
   useEffect(() => {
     if (!isAuthed) return;
@@ -9037,7 +10276,7 @@ export default function Home() {
         <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA, Inbox IG et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "inbox" ? (
-            <IgInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} />
+            <UnifiedInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} />
           ) : view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} />
           ) : view === "profile" ? (
@@ -9124,6 +10363,9 @@ export default function Home() {
                     setView("assistant");
                   }}
                 />
+              )}
+              {view === "prospecting" && (
+                <ProspectingView isAuthed={isAuthed} requireAuth={requireAuth} />
               )}
             </>
           )}

@@ -136,3 +136,30 @@ test("Contenu › Idée du jour : plus de posts de référence ni de note de ren
   await expect(page.getByText(/Tes posts de référence sont désormais dans/i)).toHaveCount(0);
   await expect(page.locator(".error")).toHaveCount(0);
 });
+
+test("LinkedIn › Prospection : liste des leads + panneau de détail (ALE-229)", async ({ page }) => {
+  await gotoTab(page, "Prospection");
+  await expect(page.getByRole("heading", { name: /^Prospection$/i })).toBeVisible();
+  // Liste de leads OU état vide qui renvoie vers la Veille / Ma bibliothèque.
+  await expect(page.getByText(/Aucun lead pour l'instant|lead\(s\)/i).first()).toBeVisible({ timeout: 60_000 });
+  // ALE-228 : panneau de ciblage ICP (toujours présent, pré-rempli depuis le profil).
+  // Lecture seule : on déplie/replie sans enregistrer (aucune écriture, aucun coût).
+  await expect(page.getByText(/Mon ciblage/i)).toBeVisible();
+  await page.getByText(/Mon ciblage/i).click();
+  await expect(page.getByText(/Ton client idéal/i)).toBeVisible();
+  await expect(page.getByRole("button", { name: /Enregistrer & recalculer/i })).toBeVisible();
+  await page.getByText(/Mon ciblage/i).click(); // replie
+  // Si des leads existent (le compte QA en a via les tests ALE-227) : panneau de détail au clic.
+  const firstLead = page.locator("main button.card").first();
+  if (await firstLead.count()) {
+    await firstLead.click();
+    await expect(page.getByText(/Signaux d'intention/i)).toBeVisible();
+    await expect(page.getByRole("link", { name: /Voir le profil LinkedIn/i })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByText(/Signaux d'intention/i)).toHaveCount(0);
+  }
+  await expect(page.locator(".error")).toHaveCount(0);
+  // Jumeau grisé « Bientôt » sous Instagram (maquette ALE-226).
+  await page.locator(".nav-item", { hasText: "Instagram" }).first().click();
+  await expect(page.locator(".nav-item", { hasText: "Bientôt" })).toBeVisible();
+});

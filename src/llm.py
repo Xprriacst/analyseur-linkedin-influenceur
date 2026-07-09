@@ -265,6 +265,7 @@ def _call(
     temperature: float = 0.2,
     tools: list[dict] | None = None,
     on_web_search: Callable[[dict[str, Any]], None] | None = None,
+    model: str | None = None,
 ) -> dict:
     if on_web_search:
         return _call_streaming(
@@ -279,7 +280,7 @@ def _call(
     client = _client()
     messages: list[dict] = [{"role": "user", "content": user}]
     kwargs: dict[str, Any] = dict(
-        model=_model(),
+        model=model or _model(),
         max_tokens=max_tokens,
         system=system,
     )
@@ -497,6 +498,202 @@ Schéma JSON attendu :
         "structure_text": str(data.get("structure_text") or "").strip(),
         "format": str(data.get("format") or "").strip() or None,
     }
+
+
+def classify_lead_magnet(post_text: str) -> dict:
+    """Verdict « lead magnet ou non » d'un post concurrent (ALE-227).
+
+    Un lead magnet demande explicitement de COMMENTER un mot-clé pour recevoir
+    une ressource (« commente CLOUD et je t'envoie le guide »). Retourne
+    {is_lead_magnet: bool, trigger_keyword: str|None}.
+    """
+    system = (
+        "Tu es un analyste de prospection LinkedIn. Tu détermines si un post est un "
+        "« lead magnet » : un post qui demande explicitement aux lecteurs de COMMENTER "
+        "un mot-clé (ou simplement de commenter) pour recevoir une ressource en message "
+        "privé (guide, template, liste, formation…). Un post qui invite seulement à "
+        "liker, s'abonner, cliquer un lien ou donner son avis n'est PAS un lead magnet. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    user = (
+        "Post à analyser :\n\n"
+        + post_text[:4000]
+        + """
+
+Schéma JSON attendu :
+{
+  "is_lead_magnet": true | false,
+  "trigger_keyword": "le mot-clé exact à commenter (ex: 'CLOUD'), ou null si le post demande juste de commenter sans mot-clé précis, ou si ce n'est pas un lead magnet"
+}"""
+    )
+    data = _call(system, user, max_tokens=512, temperature=0.0)
+    keyword = str(data.get("trigger_keyword") or "").strip()
+    if keyword.lower() in ("null", "none", ""):
+        keyword = ""
+    return {
+        "is_lead_magnet": bool(data.get("is_lead_magnet")),
+        "trigger_keyword": keyword[:100] or None,
+    }
+
+
+# Scoring ICP (ALE-228) : un modèle léger suffit (comparaison intitulé/commentaire
+# ↔ ciblage). Surchargeable par LEAD_SCORING_MODEL sur Render ; à défaut on
+# retombe sur le modèle configuré (ANTHROPIC_MODEL) pour ne rien casser.
+_SCORING_BATCH = 25
+
+
+def _scoring_model() -> str:
+    return os.environ.get("LEAD_SCORING_MODEL", _model())
+
+
+def _clamp_score(value: Any) -> int:
+    try:
+        return max(0, min(100, int(round(float(value)))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def score_leads(
+    targeting: dict,
+    leads: list[dict],
+    source_post_text: str | None = None,
+) -> list[dict]:
+    """Note chaque lead de 0 à 100 vs le ciblage ICP + justification (ALE-228).
+
+    `leads` : liste de dicts {name, headline, comment_text, trigger_keyword, author}.
+    Retourne une liste alignée sur l'entrée : [{score:int, reason:str}]. Le LLM
+    compare l'intitulé de poste + le commentaire + le contexte de la source au
+    client idéal / à l'offre décrits dans le ciblage. Traité par lots pour borner
+    les tokens. Un lot en échec renvoie des scores neutres (0) plutôt que de tout
+    faire échouer.
+    """
+    if not leads:
+        return []
+
+    ideal = str(targeting.get("ideal_client") or "").strip()
+    offer = str(targeting.get("offer") or "").strip()
+    kws = targeting.get("interest_keywords") or []
+    if isinstance(kws, str):
+        kws = [kws]
+    keywords = ", ".join(str(k).strip() for k in kws if str(k).strip())
+
+    system = (
+        "Tu es un analyste de prospection B2B. On te donne le profil du CLIENT IDÉAL "
+        "d'un utilisateur et une liste de personnes qui ont commenté un post lead-magnet "
+        "concurrent. Pour chaque personne, note de 0 à 100 son adéquation avec ce client "
+        "idéal, en te basant sur son intitulé de poste (qui elle est), son commentaire, et "
+        "le sujet auquel elle a réagi. 100 = correspond parfaitement (bon poste, bon "
+        "secteur, intention cohérente avec l'offre). 0 = hors cible (mauvais rôle, "
+        "concurrent, hors sujet). Sois discriminant : n'attribue pas 80 à tout le monde. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    ctx_lines = [
+        f"CLIENT IDÉAL : {ideal or '(non précisé)'}",
+        f"OFFRE : {offer or '(non précisée)'}",
+    ]
+    if keywords:
+        ctx_lines.append(f"SIGNAUX D'INTÉRÊT (mots-clés) : {keywords}")
+    if source_post_text:
+        ctx_lines.append(
+            "POST SOURCE (ce à quoi les gens ont réagi) :\n" + source_post_text[:800]
+        )
+    context = "\n".join(ctx_lines)
+
+    results: list[dict] = [{"score": 0, "reason": ""} for _ in leads]
+    for start in range(0, len(leads), _SCORING_BATCH):
+        chunk = leads[start : start + _SCORING_BATCH]
+        payload = [
+            {
+                "index": i,
+                "headline": (lead.get("headline") or "")[:200],
+                "comment": (lead.get("comment_text") or "")[:400],
+                "reacted_to": lead.get("trigger_keyword") or lead.get("author") or "",
+            }
+            for i, lead in enumerate(chunk)
+        ]
+        user = (
+            context
+            + "\n\nPersonnes à noter :\n"
+            + json.dumps(payload, ensure_ascii=False)
+            + '\n\nSchéma JSON attendu :\n'
+            + '{"scores": [{"index": int, "score": int (0-100), '
+            + '"reason": "justification en une phrase courte (max 20 mots)"}, ...]}'
+        )
+        try:
+            data = _call(
+                system,
+                user,
+                max_tokens=2048,
+                temperature=0.0,
+                model=_scoring_model(),
+            )
+            for row in data.get("scores") or []:
+                idx = row.get("index")
+                if isinstance(idx, int) and 0 <= idx < len(chunk):
+                    results[start + idx] = {
+                        "score": _clamp_score(row.get("score")),
+                        "reason": str(row.get("reason") or "").strip()[:300],
+                    }
+        except Exception as exc:  # noqa: BLE001 — un lot raté ne casse pas la collecte
+            print(f"[leads] scoring lot {start} échoué : {exc}", flush=True)
+    return results
+
+
+def generate_first_message(targeting: dict, lead: dict) -> str:
+    """Rédige le premier message LinkedIn à envoyer à un lead accepté (ALE-230).
+
+    Ancré sur : ce qui a déclenché le contact (le lead a commenté un post
+    lead-magnet concurrent), le client idéal + l'offre de l'utilisateur, et ses
+    consignes de premier message. Volontairement court, humain, sans lien ni
+    argumentaire commercial agressif — l'objectif est d'ouvrir une conversation.
+    Retourne le texte du message (pas de JSON exposé à l'appelant).
+    """
+    ideal = str(targeting.get("ideal_client") or "").strip()
+    offer = str(targeting.get("offer") or "").strip()
+    instructions = str(targeting.get("first_message_instructions") or "").strip()
+
+    name = str(lead.get("name") or "").strip()
+    headline = str(lead.get("headline") or "").strip()
+    comment = str(lead.get("comment_text") or "").strip()
+    trigger = str(lead.get("trigger_keyword") or "").strip()
+    author = str(lead.get("author") or "").strip()
+
+    system = (
+        "Tu es l'utilisateur lui-même qui écrit un premier message LinkedIn, en son "
+        "nom, à une personne avec qui il vient de se connecter. Cette personne a "
+        "montré un signal d'intérêt : elle a commenté un post « lead magnet » (du "
+        "type « commente X pour recevoir la ressource »). Le message doit être COURT "
+        "(2-4 phrases), humain, chaleureux, personnalisé sur ce qui l'a fait réagir, "
+        "SANS lien, SANS pitch agressif, SANS emoji à outrance. Objectif : ouvrir une "
+        "vraie conversation, pas vendre au premier message. Écris en français, sauf si "
+        "l'intitulé de poste indique clairement une autre langue. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown."
+    )
+    ctx = [
+        f"CE QUE JE VENDS (offre) : {offer or '(non précisé)'}",
+        f"MON CLIENT IDÉAL : {ideal or '(non précisé)'}",
+        f"LA PERSONNE — nom : {name or '(inconnu)'} · intitulé : {headline or '(inconnu)'}",
+    ]
+    if comment:
+        ctx.append(f"SON COMMENTAIRE (ce qui a déclenché le contact) : « {comment[:400]} »")
+    if trigger:
+        ctx.append(f"MOT-CLÉ COMMENTÉ : {trigger}")
+    if author:
+        ctx.append(f"POST D'ORIGINE (concurrent) : {author}")
+    if instructions:
+        ctx.append(f"MES CONSIGNES POUR CE MESSAGE (à respecter en priorité) : {instructions[:1000]}")
+
+    user = (
+        "\n".join(ctx)
+        + "\n\nSchéma JSON attendu :\n"
+        + '{"message": "le texte du premier message, prêt à envoyer"}'
+    )
+    data = _call(system, user, max_tokens=700, temperature=0.7)
+    message = str(data.get("message") or "").strip()
+    if not message:
+        raise RuntimeError("Le modèle n'a pas produit de message.")
+    # Garde-fou : LinkedIn borne les messages ; on reste bien en-deçà.
+    return message[:1500]
 
 
 def _format_template(template: dict | None) -> str:

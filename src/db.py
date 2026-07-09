@@ -3773,3 +3773,582 @@ def get_ig_manychat_token_admin(user_id: str) -> str | None:
     if not resp.data:
         return None
     return resp.data[0].get("access_token") or None
+
+
+# --------------------------------------------------------------------------- #
+# Prospection LinkedIn (ALE-227) — sources lead-magnet + leads commentateurs
+# --------------------------------------------------------------------------- #
+
+def list_lead_sources(access_token: str) -> list[dict]:
+    """Posts sources de prospection de l'utilisateur (RLS scope)."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("lead_sources")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_lead_source(access_token: str, source_id: str) -> dict | None:
+    if not supabase_enabled() or not source_id:
+        return None
+    db = client_for_token(access_token)
+    resp = db.table("lead_sources").select("*").eq("id", source_id).limit(1).execute()
+    return resp.data[0] if resp.data else None
+
+
+def get_lead_source_by_url(access_token: str, post_url: str) -> dict | None:
+    if not supabase_enabled() or not post_url:
+        return None
+    db = client_for_token(access_token)
+    resp = db.table("lead_sources").select("*").eq("post_url", post_url).limit(1).execute()
+    return resp.data[0] if resp.data else None
+
+
+def add_lead_source(
+    access_token: str,
+    post_url: str,
+    *,
+    author: str | None = None,
+    post_text: str | None = None,
+    is_lead_magnet: bool = False,
+    trigger_keyword: str | None = None,
+    origin: str = "manual",
+) -> dict | None:
+    """Crée une source de prospection (RLS scope)."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "post_url": post_url,
+        "is_lead_magnet": is_lead_magnet,
+        "origin": origin,
+    }
+    if author:
+        row["author"] = author
+    if post_text:
+        row["post_text"] = post_text[:6000]
+    if trigger_keyword:
+        row["trigger_keyword"] = trigger_keyword
+    resp = db.table("lead_sources").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def update_lead_source(access_token: str, source_id: str, fields: dict) -> dict | None:
+    """Met à jour une source (collecte : collected_at + comments_count)."""
+    if not supabase_enabled() or not source_id or not fields:
+        return None
+    db = client_for_token(access_token)
+    resp = db.table("lead_sources").update(fields).eq("id", source_id).execute()
+    return resp.data[0] if resp.data else None
+
+
+def delete_lead_source(access_token: str, source_id: str) -> bool:
+    if not supabase_enabled() or not source_id:
+        return False
+    db = client_for_token(access_token)
+    db.table("lead_sources").delete().eq("id", source_id).execute()
+    return True
+
+
+def add_lead_source_admin(
+    user_id: str,
+    post_url: str,
+    *,
+    author: str | None = None,
+    post_text: str | None = None,
+    trigger_keyword: str | None = None,
+) -> dict | None:
+    """[veille] Source détectée automatiquement pour un utilisateur (service-role).
+
+    Idempotent : si l'utilisateur a déjà une source sur ce post (manuelle ou
+    monitoring), on ne crée rien — la collecte reste à sa main. Scope strict :
+    la ligne écrite appartient au user_id passé (suiveur vérifié en amont).
+    """
+    if not admin_enabled() or not user_id or not post_url:
+        return None
+    db = admin_client()
+    existing = (
+        db.table("lead_sources")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("post_url", post_url)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return None
+    row: dict[str, Any] = {
+        "user_id": user_id,
+        "post_url": post_url,
+        "is_lead_magnet": True,
+        "origin": "monitoring",
+    }
+    if author:
+        row["author"] = author
+    if post_text:
+        row["post_text"] = post_text[:6000]
+    if trigger_keyword:
+        row["trigger_keyword"] = trigger_keyword
+    resp = db.table("lead_sources").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def list_user_ids_following_handle(handle: str, platform: str = "linkedin") -> list[str]:
+    """[veille] Utilisateurs qui suivent un handle donné (service-role)."""
+    if not admin_enabled() or not handle:
+        return []
+    resp = (
+        admin_client()
+        .table("followed_influencers")
+        .select("user_id")
+        .eq("handle", handle)
+        .eq("platform", platform)
+        .execute()
+    )
+    return sorted({r["user_id"] for r in (resp.data or []) if r.get("user_id")})
+
+
+def save_leads(access_token: str, source: dict, commenters: list[dict]) -> dict:
+    """Persiste les commentateurs d'une source en leads dédupliqués (RLS scope).
+
+    Dédup par (personne, source) : une personne = UNE ligne par utilisateur
+    (unique user_id + profile_url) ; commenter chez plusieurs concurrents
+    ajoute un signal (`signals`) au lieu de dupliquer — `signal_count` > 1
+    = « multi-signaux ». Recollecter la même source ne recrée rien.
+    """
+    if not supabase_enabled():
+        return {"inserted": 0, "updated": 0, "skipped": 0}
+    user = get_user(access_token)
+    if not user:
+        return {"inserted": 0, "updated": 0, "skipped": 0}
+    db = client_for_token(access_token)
+
+    def _iso_or_none(value: Any) -> str | None:
+        # La colonne `commented_at` est un timestamptz : on ne passe que des
+        # dates ISO valides (l'actor peut renvoyer un format inattendu).
+        if not value:
+            return None
+        try:
+            datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return str(value)
+
+    valid = [c for c in commenters if c.get("profile_url")]
+    for c in valid:
+        c["commented_at"] = _iso_or_none(c.get("commented_at"))
+    urls = [c["profile_url"] for c in valid]
+    existing_by_url: dict[str, dict] = {}
+    for i in range(0, len(urls), 100):  # borne la taille de la clause in()
+        resp = (
+            db.table("leads")
+            .select("id, profile_url, signals, signal_count, status")
+            .in_("profile_url", urls[i : i + 100])
+            .execute()
+        )
+        for row in resp.data or []:
+            existing_by_url[row["profile_url"]] = row
+
+    def _signal(c: dict) -> dict:
+        return {
+            "source_id": source.get("id"),
+            "post_url": source.get("post_url"),
+            "author": source.get("author"),
+            "trigger_keyword": source.get("trigger_keyword"),
+            "comment_text": c.get("comment_text"),
+            "commented_at": c.get("commented_at"),
+        }
+
+    inserted, updated, skipped = 0, 0, 0
+    to_insert: list[dict] = []
+    # profile_url → lead id des leads touchés (insérés ou mis à jour) : sert au
+    # scoring ICP à l'ingestion (ALE-228). Les « skipped » (déjà vus sur cette
+    # source, inchangés) n'ont pas besoin d'être re-notés.
+    ids_by_url: dict[str, str] = {}
+    for c in valid:
+        row = existing_by_url.get(c["profile_url"])
+        if row is None:
+            to_insert.append(
+                {
+                    "user_id": user["id"],
+                    "profile_url": c["profile_url"],
+                    "name": c.get("name"),
+                    "headline": c.get("headline"),
+                    "source_id": source.get("id"),
+                    "comment_text": c.get("comment_text"),
+                    "commented_at": c.get("commented_at"),
+                    "reaction_count": int(c.get("reaction_count") or 0),
+                    "signals": [_signal(c)],
+                    "signal_count": 1,
+                }
+            )
+            continue
+        signals = list(row.get("signals") or [])
+        if any(s.get("source_id") == source.get("id") for s in signals):
+            skipped += 1  # déjà vu sur cette source (dédup personne + source)
+            continue
+        signals.append(_signal(c))
+        db.table("leads").update(
+            {
+                "signals": signals,
+                "signal_count": len(signals),
+                "source_id": source.get("id"),
+                "comment_text": c.get("comment_text"),
+                "commented_at": c.get("commented_at"),
+                "reaction_count": int(c.get("reaction_count") or 0),
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+        ).eq("id", row["id"]).execute()
+        ids_by_url[c["profile_url"]] = row["id"]
+        updated += 1
+
+    for i in range(0, len(to_insert), 100):
+        resp = db.table("leads").insert(to_insert[i : i + 100]).execute()
+        for r in resp.data or []:
+            if r.get("profile_url") and r.get("id"):
+                ids_by_url[r["profile_url"]] = r["id"]
+        inserted += len(resp.data or [])
+
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "ids_by_url": ids_by_url,
+    }
+
+
+def list_leads(access_token: str, limit: int = 500) -> list[dict]:
+    """Leads de l'utilisateur pour la liste Prospection (RLS scope).
+
+    On garde TOUTE la liste (aucun masquage) : les leads sont classés par score
+    ICP décroissant — les moins pertinents descendent mais restent visibles ; les
+    non-notés (score null) passent après. À l'intérieur d'un même groupe :
+    multi-signaux puis plus récents (ordre du fetch, tri stable). La curation
+    manuelle « ne pas contacter » est un sujet à part (ALE-243).
+    """
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("leads")
+        .select("*")
+        .order("signal_count", desc=True)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    rows = resp.data or []
+    # Tri stable : scorés (par score décroissant) avant non-scorés.
+    rows.sort(key=lambda r: (0 if r.get("score") is not None else 1, -(int(r.get("score") or 0))))
+    return rows
+
+
+def list_leads_for_scoring(access_token: str, limit: int = 1000) -> list[dict]:
+    """Tous les leads du user (non filtrés par seuil) pour un recalcul de score."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("leads")
+        .select("id, name, headline, comment_text, signals")
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def update_lead_scores(access_token: str, scored: list[dict]) -> int:
+    """Écrit score + justification sur des leads (RLS scope). `scored` = liste de
+    {id, score, reason}. Retourne le nombre de leads mis à jour."""
+    if not supabase_enabled() or not scored:
+        return 0
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    n = 0
+    for item in scored:
+        lead_id = item.get("id")
+        if not lead_id:
+            continue
+        db.table("leads").update(
+            {
+                "score": int(item.get("score") or 0),
+                "score_reason": (item.get("reason") or None),
+                "scored_at": now,
+            }
+        ).eq("id", lead_id).execute()
+        n += 1
+    return n
+
+
+# ── Ciblage ICP (ALE-228) : config de prospection par utilisateur ──────────────
+_LEAD_TARGETING_FIELDS = (
+    "ideal_client",
+    "offer",
+    "interest_keywords",
+    "score_threshold",
+    "first_message_instructions",
+)
+
+
+def get_lead_targeting(access_token: str) -> dict | None:
+    """Config de ciblage de l'utilisateur, ou None si jamais enregistrée."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("lead_targeting")
+        .select("*")
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def upsert_lead_targeting(access_token: str, payload: dict[str, Any]) -> dict | None:
+    """Crée ou met à jour la config de ciblage (RLS scope)."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    for key in _LEAD_TARGETING_FIELDS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if key == "score_threshold":
+            try:
+                row[key] = max(0, min(100, int(value)))
+            except (TypeError, ValueError):
+                row[key] = 60
+        elif key == "interest_keywords":
+            if isinstance(value, str):
+                value = [v.strip() for v in value.split(",")]
+            row[key] = [str(v).strip() for v in (value or []) if str(v).strip()]
+        elif isinstance(value, str):
+            row[key] = value.strip() or None
+        else:
+            row[key] = value
+    resp = (
+        db.table("lead_targeting")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+# --------------------------------------------------------------------------- #
+# Prospection LinkedIn (ALE-230) — envoi via Unipile + quotas
+# `linkedin_outreach_accounts` : compte Unipile connecté + config quota (1/user).
+# `linkedin_outreach_actions`  : journal des envois → base des compteurs de quota
+#                                (calculés sur fenêtres glissantes, sans reset cron).
+# --------------------------------------------------------------------------- #
+
+
+def get_linkedin_outreach_account(access_token: str) -> dict | None:
+    """Compte Unipile connecté de l'utilisateur (config quota incluse), ou None."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("linkedin_outreach_accounts")
+        .select("*")
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def upsert_linkedin_outreach_account(
+    access_token: str,
+    *,
+    unipile_account_id: str | None = None,
+    account_name: str | None = None,
+    daily_cap: int | None = None,
+    weekly_invite_cap: int | None = None,
+    status: str | None = None,
+) -> dict | None:
+    """Crée/met à jour le compte Unipile + la config quota (RLS scope, upsert).
+
+    Seules les colonnes fournies sont écrites : maj partielle sûre (changer le
+    plafond ne réinitialise pas l'account_id, et inversement)."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    if unipile_account_id is not None:
+        row["unipile_account_id"] = unipile_account_id
+    if account_name is not None:
+        row["account_name"] = account_name
+    if status is not None:
+        row["status"] = status
+    if daily_cap is not None:
+        row["daily_cap"] = max(1, min(100, int(daily_cap)))
+    if weekly_invite_cap is not None:
+        row["weekly_invite_cap"] = max(1, min(500, int(weekly_invite_cap)))
+    resp = (
+        db.table("linkedin_outreach_accounts")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def disconnect_linkedin_outreach(access_token: str) -> bool:
+    """Délie le compte Unipile de l'utilisateur (le journal d'actions reste)."""
+    if not supabase_enabled():
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("linkedin_outreach_accounts")
+        .delete()
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def list_claimed_unipile_account_ids() -> set[str]:
+    """Tous les `unipile_account_id` déjà rattachés à un utilisateur (service-role).
+
+    Sert au rattachement du compte fraîchement connecté : /accounts d'Unipile ne
+    renvoie pas notre `name` (=user_id) mais le nom LinkedIn du compte, donc on
+    réclame un compte NON déjà pris — d'où ce set des comptes déjà attribués.
+    Service-role car il faut voir les lignes de TOUS les utilisateurs (RLS bypass)."""
+    if not admin_enabled():
+        return set()
+    try:
+        resp = (
+            admin_client()
+            .table("linkedin_outreach_accounts")
+            .select("unipile_account_id")
+            .execute()
+        )
+    except Exception:
+        return set()
+    return {r["unipile_account_id"] for r in (resp.data or []) if r.get("unipile_account_id")}
+
+
+def log_outreach_action(
+    access_token: str,
+    *,
+    action_type: str,
+    status: str = "sent",
+    lead_id: str | None = None,
+    provider_id: str | None = None,
+    chat_id: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Journalise une action d'envoi (invitation/message). Best-effort."""
+    if not supabase_enabled():
+        return
+    user = get_user(access_token)
+    if not user:
+        return
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "action_type": action_type,
+        "status": status,
+    }
+    if lead_id:
+        row["lead_id"] = lead_id
+    if provider_id:
+        row["provider_id"] = provider_id
+    if chat_id:
+        row["chat_id"] = chat_id
+    if error:
+        row["error"] = error[:2000]
+    try:
+        db.table("linkedin_outreach_actions").insert(row).execute()
+    except Exception as exc:  # noqa: BLE001 — la journalisation ne doit rien casser
+        print(f"[outreach] log action échoué : {exc}", flush=True)
+
+
+def outreach_counts(access_token: str) -> dict[str, int]:
+    """Compteurs de quota sur fenêtres glissantes : invitations & messages sur
+    24 h, invitations sur 7 j. Seules les actions RÉUSSIES (status='sent') comptent.
+    Calcul depuis le journal → auto-correctif, aucun compteur à réinitialiser.
+
+    ⚠️ Lève en cas d'échec de lecture (Supabase indisponible…) : le quota est un
+    garde-fou anti-restriction, il doit échouer FERMÉ. L'appelant traite l'erreur
+    en bloquant l'envoi, jamais en le laissant passer. `supabase_enabled()` False
+    ou pas d'utilisateur → 0 (feature simplement inactive, pas un échec de lecture)."""
+    zero = {"invites_today": 0, "messages_today": 0, "invites_week": 0}
+    if not supabase_enabled():
+        return zero
+    user = get_user(access_token)
+    if not user:
+        return zero
+    now = datetime.datetime.now(datetime.timezone.utc)
+    day_ago = (now - datetime.timedelta(hours=24)).isoformat()
+    week_ago = (now - datetime.timedelta(days=7)).isoformat()
+    db = client_for_token(access_token)
+
+    def _count(action_type: str, since: str) -> int:
+        # Pas de try/except ici : une erreur de lecture doit remonter (fail closed).
+        resp = (
+            db.table("linkedin_outreach_actions")
+            .select("id")
+            .eq("action_type", action_type)
+            .eq("status", "sent")
+            .gte("created_at", since)
+            .execute()
+        )
+        return len(resp.data or [])
+
+    return {
+        "invites_today": _count("invite", day_ago),
+        "messages_today": _count("message", day_ago),
+        "invites_week": _count("invite", week_ago),
+    }
+
+
+def get_lead(access_token: str, lead_id: str) -> dict | None:
+    """Un lead par id (RLS scope)."""
+    if not supabase_enabled() or not lead_id:
+        return None
+    db = client_for_token(access_token)
+    resp = db.table("leads").select("*").eq("id", lead_id).limit(1).execute()
+    return resp.data[0] if resp.data else None
+
+
+def update_lead_outreach(access_token: str, lead_id: str, fields: dict[str, Any]) -> dict | None:
+    """Met à jour l'état d'outreach d'un lead (status, provider_id, chat_id…)."""
+    if not supabase_enabled() or not lead_id or not fields:
+        return None
+    db = client_for_token(access_token)
+    payload = dict(fields)
+    payload["outreach_updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    resp = db.table("leads").update(payload).eq("id", lead_id).execute()
+    return resp.data[0] if resp.data else None

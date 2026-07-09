@@ -6,7 +6,7 @@ import secrets
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -16,12 +16,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor
+from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread
-from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template
+from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
+from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
@@ -1662,6 +1663,9 @@ def _add_library_entry(
         author = author or detail.get("author")
         url = detail.get("url") or url
         image_url = image_url or detail.get("image_url")
+        imported_from_link = True
+    else:
+        imported_from_link = False
 
     if text and len(text) < 10:
         raise HTTPException(status_code=422, detail="Le texte du post est trop court (10 caractères minimum).")
@@ -1696,7 +1700,51 @@ def _add_library_entry(
     )
     if not entry:
         raise HTTPException(status_code=400, detail="Impossible d'enregistrer dans la bibliothèque.")
+    # ALE-234 : un post importé par lien peut être un lead magnet — on le détecte
+    # et on crée la source de prospection (sans collecte payante). La clé
+    # `lead_magnet` n'est pas persistée sur l'entrée : le front la lit dans la
+    # réponse, puis recroise bibliothèque × sources via l'URL du post.
+    if imported_from_link and text:
+        lead_magnet = _detect_library_lead_magnet(token, url=url, text=text, author=author)
+        if lead_magnet:
+            entry["lead_magnet"] = lead_magnet
     return entry
+
+
+def _detect_library_lead_magnet(token: str, *, url: str, text: str, author: str | None) -> dict[str, Any] | None:
+    """Verdict lead-magnet à l'import bibliothèque (ALE-234), best-effort.
+
+    Ne bloque jamais la sauvegarde de l'entrée. Réutilise la source existante
+    si le post est déjà connu de la prospection (import direct ou veille).
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    try:
+        source = db.get_lead_source_by_url(token, url)
+        if source is None:
+            verdict = classify_lead_magnet(text)
+            if not verdict["is_lead_magnet"]:
+                return None
+            source = db.add_lead_source(
+                token,
+                url,
+                author=author,
+                post_text=text,
+                is_lead_magnet=True,
+                trigger_keyword=verdict["trigger_keyword"],
+                origin="library",
+            )
+        if not source or not source.get("is_lead_magnet"):
+            return None
+        return {
+            "source_id": source["id"],
+            "trigger_keyword": source.get("trigger_keyword"),
+            "collected_at": source.get("collected_at"),
+            "comments_count": source.get("comments_count"),
+        }
+    except Exception as exc:  # noqa: BLE001 — détection bonus, jamais bloquante
+        print(f"[library] détection lead-magnet échouée (entrée sauvée quand même) : {exc}", flush=True)
+        return None
 
 
 @app.get("/me/post-templates")
@@ -1788,6 +1836,679 @@ def add_me_post_template_from_post(payload: TemplateFromPostRequest, token: str 
         image_note=None,
         source="influencer",
     )
+
+
+# --------------------------------------------------------------------------- #
+# Prospection LinkedIn (ALE-227) — sources lead-magnet + leads commentateurs
+# --------------------------------------------------------------------------- #
+
+class LeadSourceRequest(BaseModel):
+    url: str = Field(..., max_length=2000)
+    max_comments: int | None = Field(default=None, ge=1, le=500)
+
+
+class LeadCollectRequest(BaseModel):
+    max_comments: int | None = Field(default=None, ge=1, le=500)
+
+
+class LeadTargetingRequest(BaseModel):
+    ideal_client: str | None = Field(default=None, max_length=4000)
+    offer: str | None = Field(default=None, max_length=4000)
+    interest_keywords: list[str] | None = Field(default=None)
+    score_threshold: int | None = Field(default=None, ge=0, le=100)
+    first_message_instructions: str | None = Field(default=None, max_length=4000)
+
+
+def _score_leads_for_source(token: str, source: dict, counts: dict) -> None:
+    """Note (ICP) les leads fraîchement touchés par une collecte, si un ciblage
+    est configuré. Best-effort : un échec de scoring ne casse pas la collecte."""
+    ids_by_url = (counts or {}).get("ids_by_url") or {}
+    if not ids_by_url:
+        return
+    targeting = db.get_lead_targeting(token)
+    if not targeting:
+        return  # pas de ciblage → on n'invente pas de score (tous les leads restent visibles)
+    try:
+        leads = db.list_leads_for_scoring(token)
+        by_id = {l["id"]: l for l in leads}
+        to_score = [by_id[lid] for lid in ids_by_url.values() if lid in by_id]
+        lead_inputs = [
+            {
+                "headline": l.get("headline"),
+                "comment_text": l.get("comment_text"),
+                "trigger_keyword": (source or {}).get("trigger_keyword"),
+                "author": (source or {}).get("author"),
+            }
+            for l in to_score
+        ]
+        scores = score_leads(targeting, lead_inputs, source_post_text=(source or {}).get("post_text"))
+        scored = [
+            {"id": l["id"], "score": s.get("score"), "reason": s.get("reason")}
+            for l, s in zip(to_score, scores)
+        ]
+        db.update_lead_scores(token, scored)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[leads] scoring à l'ingestion échoué : {exc}", flush=True)
+
+
+def _collect_lead_source(token: str, source: dict, max_comments: int | None) -> dict[str, Any]:
+    """Scrape les commentateurs d'une source et les persiste en leads dédupliqués."""
+    if not os.environ.get("APIFY_TOKEN"):
+        raise HTTPException(status_code=503, detail="Scraping non configuré (APIFY_TOKEN manquant).")
+    try:
+        commenters = fetch_post_commenters(
+            source["post_url"], max_items=max_comments or LEAD_COMMENTS_DEFAULT
+        )
+    except Exception as exc:  # noqa: BLE001 — erreur actor/réseau remontée telle quelle
+        raise HTTPException(status_code=502, detail=f"Collecte des commentaires échouée : {exc}")
+    counts = db.save_leads(token, source, commenters)
+    # Scoring ICP (ALE-228) : note les leads fraîchement touchés contre le ciblage.
+    _score_leads_for_source(token, source, counts)
+    updated = db.update_lead_source(
+        token,
+        source["id"],
+        {
+            "comments_count": len(commenters),
+            "collected_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    # Journalisation coût (garde-fou ALE-227) : volume récupéré à chaque collecte.
+    print(
+        f"[leads] source {source['id']} ({source['post_url']}): "
+        f"{len(commenters)} commentaire(s) récupéré(s), leads {counts}",
+        flush=True,
+    )
+    return {"source": updated or source, "comments_count": len(commenters), "leads": counts}
+
+
+@app.get("/me/lead-sources")
+def me_lead_sources(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Posts sources de prospection de l'utilisateur."""
+    return {"sources": db.list_lead_sources(token)}
+
+
+@app.post("/me/lead-sources")
+def add_me_lead_source(payload: LeadSourceRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Importe un post concurrent par lien : verdict lead-magnet + mot-clé, puis
+    collecte des commentateurs si lead magnet (leads dédupliqués).
+
+    Garde-fou coût : si une source existe déjà pour ce post, on la renvoie sans
+    re-scraper — la recollecte passe par POST /me/lead-sources/{id}/collect.
+    """
+    url = (payload.url or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="Colle le lien du post LinkedIn à analyser.")
+
+    existing = db.get_lead_source_by_url(token, url)
+    if existing:
+        return {"source": existing, "existing": True}
+
+    detail = fetch_post_detail(url)
+    if not detail:
+        raise HTTPException(
+            status_code=422,
+            detail="Impossible de lire le post depuis ce lien — vérifie qu'il est public.",
+        )
+    # L'actor peut renvoyer une URL canonique différente du lien collé : on
+    # re-vérifie dessus, sinon un second import violerait l'unicité user+post.
+    canonical = detail.get("url") or url
+    if canonical != url:
+        existing = db.get_lead_source_by_url(token, canonical)
+        if existing:
+            return {"source": existing, "existing": True}
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=503, detail="Classification IA non configurée.")
+    try:
+        verdict = classify_lead_magnet(detail["text"])
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Classification lead-magnet échouée : {exc}")
+
+    source = db.add_lead_source(
+        token,
+        canonical,
+        author=detail.get("author"),
+        post_text=detail["text"],
+        is_lead_magnet=verdict["is_lead_magnet"],
+        trigger_keyword=verdict["trigger_keyword"],
+    )
+    if not source:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer la source.")
+
+    if not verdict["is_lead_magnet"]:
+        return {"source": source, "leads": {"inserted": 0, "updated": 0, "skipped": 0}}
+    return _collect_lead_source(token, source, payload.max_comments)
+
+
+@app.post("/me/lead-sources/{source_id}/collect")
+def collect_me_lead_source(
+    source_id: str,
+    payload: LeadCollectRequest | None = None,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """(Re)collecte explicite des commentateurs d'une source (seul chemin de relance)."""
+    source = db.get_lead_source(token, source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source introuvable.")
+    return _collect_lead_source(token, source, payload.max_comments if payload else None)
+
+
+@app.delete("/me/lead-sources/{source_id}")
+def delete_me_lead_source(source_id: str, token: str = Depends(require_token)) -> dict[str, bool]:
+    """Supprime une source (les leads déjà collectés restent)."""
+    return {"deleted": db.delete_lead_source(token, source_id)}
+
+
+@app.get("/me/leads")
+def me_leads(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Leads de prospection de l'utilisateur (mieux notés d'abord, sous-seuil masqués)."""
+    return {"leads": db.list_leads(token)}
+
+
+@app.get("/me/lead-targeting")
+def me_lead_targeting(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Config de ciblage ICP. Si jamais enregistrée, on renvoie un brouillon
+    pré-rempli depuis le profil éditorial (client idéal ← audience cible, offre ←
+    offre principale) — éditable puis à enregistrer via PUT. On ne réécrit jamais
+    dans le profil éditorial (ALE-228)."""
+    targeting = db.get_lead_targeting(token)
+    if targeting:
+        return {"targeting": targeting, "exists": True}
+    profile = db.get_editorial_profile(token) or {}
+    draft = {
+        "ideal_client": profile.get("target_audience") or "",
+        "offer": profile.get("core_offer") or "",
+        "interest_keywords": [],
+        "score_threshold": 60,
+        "first_message_instructions": "",
+    }
+    return {"targeting": draft, "exists": False}
+
+
+@app.put("/me/lead-targeting")
+def update_me_lead_targeting(
+    payload: LeadTargetingRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Enregistre la config de ciblage ICP."""
+    saved = db.upsert_lead_targeting(token, payload.model_dump(exclude_unset=True))
+    if not saved:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer le ciblage.")
+    return {"targeting": saved, "exists": True}
+
+
+@app.post("/me/leads/rescore")
+def rescore_me_leads(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Recalcule le score ICP de tous les leads avec le ciblage courant (ALE-228).
+
+    À appeler après une modification du ciblage : change le classement et le
+    filtrage par seuil. Sans ciblage enregistré → 400."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=503, detail="Scoring IA non configuré.")
+    targeting = db.get_lead_targeting(token)
+    if not targeting:
+        raise HTTPException(status_code=400, detail="Configure d'abord ton ciblage.")
+    leads = db.list_leads_for_scoring(token)
+    if not leads:
+        return {"rescored": 0}
+
+    def _last_signal(lead: dict) -> dict:
+        signals = lead.get("signals") or []
+        return signals[-1] if signals else {}
+
+    lead_inputs = [
+        {
+            "headline": l.get("headline"),
+            "comment_text": l.get("comment_text"),
+            "trigger_keyword": _last_signal(l).get("trigger_keyword"),
+            "author": _last_signal(l).get("author"),
+        }
+        for l in leads
+    ]
+    scores = score_leads(targeting, lead_inputs)
+    scored = [
+        {"id": l["id"], "score": s.get("score"), "reason": s.get("reason")}
+        for l, s in zip(leads, scores)
+    ]
+    n = db.update_lead_scores(token, scored)
+    return {"rescored": n}
+
+
+# ── ALE-230 : envoi via Unipile + garde-fous quota ────────────────────────────
+# Chaque client connecte SON compte LinkedIn via Unipile (modèle multi-client).
+# Deux compteurs séparés (invitations / messages) sont calculés depuis le journal
+# `linkedin_outreach_actions` sur des fenêtres glissantes, et bornés par un plafond
+# quotidien configurable (défaut 25) + une sécurité hebdo glissante (~100 invit./sem).
+
+UNIPILE_DAILY_CAP_DEFAULT = 25
+UNIPILE_WEEKLY_INVITE_CAP_DEFAULT = 100
+
+
+class UnipileConnectRequest(BaseModel):
+    redirect_url: Optional[str] = Field(default=None, max_length=1000)
+
+
+class UnipileSettingsRequest(BaseModel):
+    daily_cap: int | None = Field(default=None, ge=1, le=100)
+    weekly_invite_cap: int | None = Field(default=None, ge=1, le=500)
+
+
+class OutreachMessageRequest(BaseModel):
+    # Texte final (édité par l'utilisateur). Vide → généré par l'IA côté serveur.
+    text: str | None = Field(default=None, max_length=1500)
+
+
+class OutreachChatSendRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=1500)
+
+
+def _outreach_quota(account: dict[str, Any], counts: dict[str, int], counts_ok: bool = True) -> dict[str, Any]:
+    """État de quota lisible par l'UI : compteurs, plafonds, autorisations + raisons.
+
+    `counts_ok=False` (lecture des compteurs échouée) → fail CLOSED : tout est
+    bloqué avec un message clair, jamais autorisé sans compteur fiable (protège
+    le compte LinkedIn d'une restriction)."""
+    daily_cap = int((account or {}).get("daily_cap") or UNIPILE_DAILY_CAP_DEFAULT)
+    weekly_cap = int((account or {}).get("weekly_invite_cap") or UNIPILE_WEEKLY_INVITE_CAP_DEFAULT)
+    invites_today = int(counts.get("invites_today", 0))
+    messages_today = int(counts.get("messages_today", 0))
+    invites_week = int(counts.get("invites_week", 0))
+
+    if not counts_ok:
+        unavailable = "Vérification du quota temporairement indisponible — réessaie dans un instant."
+        return {
+            "daily_cap": daily_cap,
+            "weekly_invite_cap": weekly_cap,
+            "invites_today": invites_today,
+            "messages_today": messages_today,
+            "invites_week": invites_week,
+            "can_invite": False,
+            "can_message": False,
+            "invite_blocked_reason": unavailable,
+            "message_blocked_reason": unavailable,
+            "counts_available": False,
+        }
+
+    if invites_week >= weekly_cap:
+        invite_reason = (
+            f"Sécurité hebdomadaire atteinte ({invites_week}/{weekly_cap} invitations sur 7 jours "
+            "glissants). En pause pour protéger le compte — réessaie plus tard."
+        )
+    elif invites_today >= daily_cap:
+        invite_reason = f"Plafond du jour atteint ({invites_today}/{daily_cap} invitations). Réessaie dans 24 h."
+    else:
+        invite_reason = None
+
+    message_reason = (
+        f"Plafond du jour atteint ({messages_today}/{daily_cap} messages). Réessaie dans 24 h."
+        if messages_today >= daily_cap
+        else None
+    )
+    return {
+        "daily_cap": daily_cap,
+        "weekly_invite_cap": weekly_cap,
+        "invites_today": invites_today,
+        "messages_today": messages_today,
+        "invites_week": invites_week,
+        "can_invite": invite_reason is None,
+        "can_message": message_reason is None,
+        "invite_blocked_reason": invite_reason,
+        "message_blocked_reason": message_reason,
+        "counts_available": True,
+    }
+
+
+def _safe_counts(token: str) -> tuple[dict[str, int], bool]:
+    """Compteurs de quota + drapeau de fiabilité. Sur échec de lecture on renvoie
+    (zéros, False) : les zéros ne sont JAMAIS utilisés pour autoriser (fail closed
+    via `counts_ok=False`), seulement pour l'affichage."""
+    try:
+        return db.outreach_counts(token), True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[outreach] lecture des compteurs de quota échouée : {exc}", flush=True)
+        return {"invites_today": 0, "messages_today": 0, "invites_week": 0}, False
+
+
+def _unipile_outreach_status(token: str) -> dict[str, Any]:
+    account = db.get_linkedin_outreach_account(token)
+    connected = bool(account and account.get("unipile_account_id"))
+    if connected:
+        counts, ok = _safe_counts(token)
+    else:
+        counts, ok = {"invites_today": 0, "messages_today": 0, "invites_week": 0}, True
+    return {
+        "configured": unipile.enabled(),
+        "connected": connected,
+        "account_name": (account or {}).get("account_name"),
+        "connected_at": (account or {}).get("connected_at"),
+        "quota": _outreach_quota(account or {}, counts, ok),
+    }
+
+
+def _require_outreach_account(token: str) -> dict[str, Any]:
+    """Compte Unipile connecté de l'utilisateur, ou 400 explicite."""
+    if not unipile.enabled():
+        raise HTTPException(status_code=400, detail="Messagerie LinkedIn non configurée côté serveur (Unipile).")
+    account = db.get_linkedin_outreach_account(token)
+    if not account or not account.get("unipile_account_id"):
+        raise HTTPException(status_code=400, detail="Connecte d'abord ton compte LinkedIn de prospection (Mon profil).")
+    return account
+
+
+def _require_owned_chat(account: dict[str, Any], chat_id: str) -> None:
+    """Vérifie que la conversation appartient bien au compte Unipile du caller.
+
+    Garde-fou IDOR/multi-tenant : la clé API Unipile est partagée entre tous les
+    clients, donc un `chat_id` arbitraire pourrait viser la conversation d'un
+    autre utilisateur. On refuse (404) toute conversation dont l'`account_id`
+    propriétaire ne correspond pas à celui de l'utilisateur courant."""
+    try:
+        chat = unipile.get_chat(chat_id)
+    except unipile.UnipileError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    owner = unipile.chat_account_id_of(chat)
+    if not chat or not owner or owner != account.get("unipile_account_id"):
+        raise HTTPException(status_code=404, detail="Conversation introuvable.")
+
+
+def _lead_message_context(lead: dict[str, Any]) -> dict[str, Any]:
+    signals = lead.get("signals") or []
+    last = signals[-1] if signals else {}
+    return {
+        "name": lead.get("name"),
+        "headline": lead.get("headline"),
+        "comment_text": lead.get("comment_text"),
+        "trigger_keyword": last.get("trigger_keyword"),
+        "author": last.get("author"),
+    }
+
+
+@app.get("/me/linkedin/outreach/status")
+def me_linkedin_outreach_status(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Connexion Unipile + état des quotas (compteurs invitations/messages)."""
+    return _unipile_outreach_status(token)
+
+
+@app.post("/me/linkedin/outreach/connect")
+def me_linkedin_outreach_connect(
+    payload: UnipileConnectRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Lien d'auth hébergée Unipile : le client s'y connecte à son LinkedIn."""
+    if not unipile.enabled():
+        raise HTTPException(status_code=400, detail="UNIPILE_DSN / UNIPILE_API_KEY manquants côté serveur.")
+    user = db.get_user(token) or {}
+    user_id = user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Utilisateur inconnu.")
+    # Unipile exige `expiresOn` en ISO 8601 UTC MILLIsecondes + suffixe `Z`
+    # (pattern `...\.\d{3}Z$`) — pas de microsecondes ni d'offset `+00:00`, sinon
+    # 400 « Expected union value ». Lien court-vécu (1 h).
+    expires_on = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    try:
+        url = unipile.create_hosted_auth_link(
+            name=str(user_id),
+            success_redirect_url=payload.redirect_url,
+            failure_redirect_url=payload.redirect_url,
+            expires_on=expires_on,
+        )
+    except unipile.UnipileError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"auth_url": url}
+
+
+def _resolve_unipile_account(token: str, user_id: str) -> dict[str, Any] | None:
+    """Retrouve le compte Unipile fraîchement connecté par cet utilisateur.
+
+    ⚠️ Piège Unipile : `GET /accounts` renvoie le NOM LinkedIn du compte, pas le
+    `name` (=user_id) qu'on a passé à la connexion (celui-ci n'arrive que via le
+    webhook notify_url). On tente donc : (1) correspondance exacte par `name` (si
+    Unipile l'expose un jour), sinon (2) fallback robuste pour les connexions
+    séquentielles/supervisées — le compte le plus récent NON déjà rattaché à un
+    autre utilisateur (en gardant le nôtre en cas de reconnexion). Limite assumée :
+    2 connexions simultanées pourraient se croiser → durcissement via notify_url."""
+    accounts = unipile.list_accounts()
+    if not accounts:
+        return None
+
+    def _most_recent(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not items:
+            return None
+        return sorted(items, key=lambda a: str(a.get("created_at") or ""), reverse=True)[0]
+
+    exact = [a for a in accounts if a.get("name") == user_id]
+    if exact:
+        return _most_recent(exact)
+
+    current = db.get_linkedin_outreach_account(token) or {}
+    my_id = current.get("unipile_account_id")
+    claimed = db.list_claimed_unipile_account_ids()
+    candidates = [
+        a for a in accounts
+        if unipile.account_id_of(a) == my_id or unipile.account_id_of(a) not in claimed
+    ]
+    return _most_recent(candidates)
+
+
+@app.post("/me/linkedin/outreach/refresh")
+def me_linkedin_outreach_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Retrouve le compte fraîchement connecté et le rattache à l'utilisateur.
+    À appeler au retour de la page d'auth Unipile."""
+    if not unipile.enabled():
+        raise HTTPException(status_code=400, detail="UNIPILE_DSN / UNIPILE_API_KEY manquants côté serveur.")
+    user = db.get_user(token) or {}
+    user_id = user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Utilisateur inconnu.")
+    try:
+        account = _resolve_unipile_account(token, str(user_id))
+    except unipile.UnipileError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if account:
+        db.upsert_linkedin_outreach_account(
+            token,
+            unipile_account_id=unipile.account_id_of(account),
+            account_name=unipile.account_display_name(account),
+            status="connected",
+        )
+    return _unipile_outreach_status(token)
+
+
+@app.put("/me/linkedin/outreach/settings")
+def me_linkedin_outreach_settings(
+    payload: UnipileSettingsRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Configure les plafonds de quota (plafond quotidien, sécurité hebdo)."""
+    _require_outreach_account(token)
+    db.upsert_linkedin_outreach_account(
+        token, daily_cap=payload.daily_cap, weekly_invite_cap=payload.weekly_invite_cap
+    )
+    return _unipile_outreach_status(token)
+
+
+@app.delete("/me/linkedin/outreach")
+def me_linkedin_outreach_disconnect(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Délie le compte Unipile de l'utilisateur."""
+    db.disconnect_linkedin_outreach(token)
+    return _unipile_outreach_status(token)
+
+
+@app.post("/me/leads/{lead_id}/invite")
+def me_lead_invite(lead_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Envoie une demande de connexion SANS note au lead (garde-fous quota)."""
+    account = _require_outreach_account(token)
+    account_id = account["unipile_account_id"]
+    lead = db.get_lead(token, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead introuvable.")
+
+    counts, ok = _safe_counts(token)
+    quota = _outreach_quota(account, counts, ok)
+    if not quota["can_invite"]:
+        raise HTTPException(status_code=(429 if ok else 503), detail=quota["invite_blocked_reason"] or "Plafond d'invitations atteint.")
+
+    identifier = unipile.profile_identifier(lead.get("profile_url"))
+    if not identifier:
+        raise HTTPException(status_code=422, detail="Impossible de lire l'identifiant LinkedIn de ce profil.")
+    try:
+        profile = unipile.get_user_profile(account_id, identifier)
+    except unipile.UnipileError as exc:
+        raise HTTPException(status_code=502, detail=f"Profil LinkedIn illisible via Unipile : {exc}") from exc
+    provider_id = unipile.provider_id_of(profile)
+    if not provider_id:
+        raise HTTPException(status_code=502, detail="Unipile n'a pas renvoyé d'identifiant pour ce profil.")
+
+    # Déjà relié (1er niveau) : inutile d'inviter, on passe direct en « connecté ».
+    if unipile.is_first_degree(profile):
+        updated = db.update_lead_outreach(
+            token, lead_id, {"outreach_status": "connected", "provider_id": provider_id}
+        )
+        return {"lead": updated or lead, "already_connected": True,
+                "quota": _outreach_quota(account, *_safe_counts(token))}
+
+    try:
+        unipile.send_invitation(account_id, provider_id)
+    except unipile.UnipileError as exc:
+        db.log_outreach_action(token, action_type="invite", status="failed",
+                               lead_id=lead_id, provider_id=provider_id, error=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    db.log_outreach_action(token, action_type="invite", status="sent", lead_id=lead_id, provider_id=provider_id)
+    updated = db.update_lead_outreach(
+        token, lead_id, {"outreach_status": "invite_sent", "provider_id": provider_id}
+    )
+    return {"lead": updated or lead, "quota": _outreach_quota(account, *_safe_counts(token))}
+
+
+@app.post("/me/leads/{lead_id}/check-connection")
+def me_lead_check_connection(lead_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Vérifie si l'invitation a été acceptée (network_distance == 1er niveau)."""
+    account = _require_outreach_account(token)
+    account_id = account["unipile_account_id"]
+    lead = db.get_lead(token, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead introuvable.")
+    identifier = lead.get("provider_id") or unipile.profile_identifier(lead.get("profile_url"))
+    if not identifier:
+        raise HTTPException(status_code=422, detail="Identifiant LinkedIn indisponible.")
+    try:
+        profile = unipile.get_user_profile(account_id, identifier)
+    except unipile.UnipileError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    connected = unipile.is_first_degree(profile)
+    if connected and lead.get("outreach_status") not in ("connected", "messaged"):
+        provider_id = unipile.provider_id_of(profile) or lead.get("provider_id")
+        lead = db.update_lead_outreach(
+            token, lead_id, {"outreach_status": "connected", "provider_id": provider_id}
+        ) or lead
+    return {"lead": lead, "connected": connected}
+
+
+@app.post("/me/leads/{lead_id}/message/preview")
+def me_lead_message_preview(lead_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Génère (sans envoyer, sans consommer de quota) le premier message IA à relire."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=503, detail="Génération IA non configurée.")
+    lead = db.get_lead(token, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead introuvable.")
+    targeting = db.get_lead_targeting(token) or {}
+    try:
+        text = generate_first_message(targeting, _lead_message_context(lead))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Génération du message échouée : {exc}") from exc
+    return {"message": text}
+
+
+@app.post("/me/leads/{lead_id}/message")
+def me_lead_message(
+    lead_id: str,
+    payload: OutreachMessageRequest | None = None,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Envoie le premier message au lead (texte fourni édité, ou généré par l'IA).
+    Crée une conversation visible dans l'Inbox LinkedIn. Garde-fou quota messages."""
+    account = _require_outreach_account(token)
+    account_id = account["unipile_account_id"]
+    lead = db.get_lead(token, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead introuvable.")
+    provider_id = lead.get("provider_id")
+    if not provider_id:
+        raise HTTPException(status_code=400, detail="Envoie d'abord une demande de connexion à ce lead.")
+
+    counts, ok = _safe_counts(token)
+    quota = _outreach_quota(account, counts, ok)
+    if not quota["can_message"]:
+        raise HTTPException(status_code=(429 if ok else 503), detail=quota["message_blocked_reason"] or "Plafond de messages atteint.")
+
+    text = ((payload.text if payload else None) or "").strip()
+    if not text:
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise HTTPException(status_code=503, detail="Génération IA non configurée.")
+        targeting = db.get_lead_targeting(token) or {}
+        try:
+            text = generate_first_message(targeting, _lead_message_context(lead))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Génération du message échouée : {exc}") from exc
+
+    try:
+        result = unipile.start_new_chat(account_id, provider_id, text)
+    except unipile.UnipileError as exc:
+        db.log_outreach_action(token, action_type="message", status="failed",
+                               lead_id=lead_id, provider_id=provider_id, error=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    chat_id = unipile.chat_id_of(result)
+    db.log_outreach_action(token, action_type="message", status="sent",
+                           lead_id=lead_id, provider_id=provider_id, chat_id=chat_id)
+    updated = db.update_lead_outreach(
+        token, lead_id, {"outreach_status": "messaged", "outreach_chat_id": chat_id}
+    )
+    return {"lead": updated or lead, "message": text, "chat_id": chat_id,
+            "quota": _outreach_quota(account, *_safe_counts(token))}
+
+
+@app.get("/me/linkedin/outreach/chats")
+def me_linkedin_outreach_chats(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Conversations LinkedIn du compte connecté (onglet LinkedIn de l'Inbox)."""
+    account = _require_outreach_account(token)
+    try:
+        chats = unipile.list_chats(account["unipile_account_id"])
+    except unipile.UnipileError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"chats": [unipile.normalize_chat(c) for c in chats]}
+
+
+@app.get("/me/linkedin/outreach/chats/{chat_id}/messages")
+def me_linkedin_outreach_chat_messages(
+    chat_id: str, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Messages d'une conversation LinkedIn."""
+    account = _require_outreach_account(token)
+    _require_owned_chat(account, chat_id)
+    try:
+        msgs = unipile.list_chat_messages(chat_id)
+    except unipile.UnipileError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"messages": [unipile.normalize_message(m) for m in msgs]}
+
+
+@app.post("/me/linkedin/outreach/chats/{chat_id}/messages")
+def me_linkedin_outreach_chat_send(
+    chat_id: str, payload: OutreachChatSendRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Répond dans une conversation LinkedIn (compté dans le quota messages)."""
+    account = _require_outreach_account(token)
+    _require_owned_chat(account, chat_id)
+    counts, ok = _safe_counts(token)
+    quota = _outreach_quota(account, counts, ok)
+    if not quota["can_message"]:
+        raise HTTPException(status_code=(429 if ok else 503), detail=quota["message_blocked_reason"] or "Plafond de messages atteint.")
+    try:
+        unipile.send_message(chat_id, payload.text.strip())
+    except unipile.UnipileError as exc:
+        db.log_outreach_action(token, action_type="message", status="failed", chat_id=chat_id, error=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.log_outreach_action(token, action_type="message", status="sent", chat_id=chat_id)
+    return {"ok": True, "quota": _outreach_quota(account, *_safe_counts(token))}
 
 
 @app.get("/me/daily-ideas")
