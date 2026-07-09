@@ -1663,6 +1663,9 @@ def _add_library_entry(
         author = author or detail.get("author")
         url = detail.get("url") or url
         image_url = image_url or detail.get("image_url")
+        imported_from_link = True
+    else:
+        imported_from_link = False
 
     if text and len(text) < 10:
         raise HTTPException(status_code=422, detail="Le texte du post est trop court (10 caractères minimum).")
@@ -1697,7 +1700,51 @@ def _add_library_entry(
     )
     if not entry:
         raise HTTPException(status_code=400, detail="Impossible d'enregistrer dans la bibliothèque.")
+    # ALE-234 : un post importé par lien peut être un lead magnet — on le détecte
+    # et on crée la source de prospection (sans collecte payante). La clé
+    # `lead_magnet` n'est pas persistée sur l'entrée : le front la lit dans la
+    # réponse, puis recroise bibliothèque × sources via l'URL du post.
+    if imported_from_link and text:
+        lead_magnet = _detect_library_lead_magnet(token, url=url, text=text, author=author)
+        if lead_magnet:
+            entry["lead_magnet"] = lead_magnet
     return entry
+
+
+def _detect_library_lead_magnet(token: str, *, url: str, text: str, author: str | None) -> dict[str, Any] | None:
+    """Verdict lead-magnet à l'import bibliothèque (ALE-234), best-effort.
+
+    Ne bloque jamais la sauvegarde de l'entrée. Réutilise la source existante
+    si le post est déjà connu de la prospection (import direct ou veille).
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    try:
+        source = db.get_lead_source_by_url(token, url)
+        if source is None:
+            verdict = classify_lead_magnet(text)
+            if not verdict["is_lead_magnet"]:
+                return None
+            source = db.add_lead_source(
+                token,
+                url,
+                author=author,
+                post_text=text,
+                is_lead_magnet=True,
+                trigger_keyword=verdict["trigger_keyword"],
+                origin="library",
+            )
+        if not source or not source.get("is_lead_magnet"):
+            return None
+        return {
+            "source_id": source["id"],
+            "trigger_keyword": source.get("trigger_keyword"),
+            "collected_at": source.get("collected_at"),
+            "comments_count": source.get("comments_count"),
+        }
+    except Exception as exc:  # noqa: BLE001 — détection bonus, jamais bloquante
+        print(f"[library] détection lead-magnet échouée (entrée sauvée quand même) : {exc}", flush=True)
+        return None
 
 
 @app.get("/me/post-templates")
