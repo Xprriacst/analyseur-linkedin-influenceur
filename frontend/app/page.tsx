@@ -8469,7 +8469,10 @@ function ProspectingView({
           </p>
         </div>
       ) : (
-        <div style={{ display: "grid", gap: 6 }}>
+        // minmax(0, 1fr) : sans ça, la colonne `auto` du grid se dimensionne sur
+        // le max-content (intitulés en nowrap) et déborde du <main> → l'ellipsis
+        // ne se déclenche jamais. Le floor à 0 force les cartes à la largeur dispo.
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 6 }}>
           {leads.map((l) => {
             const sig = leadLastSignal(l);
             const multi = (l.signal_count ?? 1) > 1;
