@@ -499,6 +499,42 @@ Schéma JSON attendu :
     }
 
 
+def classify_lead_magnet(post_text: str) -> dict:
+    """Verdict « lead magnet ou non » d'un post concurrent (ALE-227).
+
+    Un lead magnet demande explicitement de COMMENTER un mot-clé pour recevoir
+    une ressource (« commente CLOUD et je t'envoie le guide »). Retourne
+    {is_lead_magnet: bool, trigger_keyword: str|None}.
+    """
+    system = (
+        "Tu es un analyste de prospection LinkedIn. Tu détermines si un post est un "
+        "« lead magnet » : un post qui demande explicitement aux lecteurs de COMMENTER "
+        "un mot-clé (ou simplement de commenter) pour recevoir une ressource en message "
+        "privé (guide, template, liste, formation…). Un post qui invite seulement à "
+        "liker, s'abonner, cliquer un lien ou donner son avis n'est PAS un lead magnet. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    user = (
+        "Post à analyser :\n\n"
+        + post_text[:4000]
+        + """
+
+Schéma JSON attendu :
+{
+  "is_lead_magnet": true | false,
+  "trigger_keyword": "le mot-clé exact à commenter (ex: 'CLOUD'), ou null si le post demande juste de commenter sans mot-clé précis, ou si ce n'est pas un lead magnet"
+}"""
+    )
+    data = _call(system, user, max_tokens=512, temperature=0.0)
+    keyword = str(data.get("trigger_keyword") or "").strip()
+    if keyword.lower() in ("null", "none", ""):
+        keyword = ""
+    return {
+        "is_lead_magnet": bool(data.get("is_lead_magnet")),
+        "trigger_keyword": keyword[:100] or None,
+    }
+
+
 def _format_template(template: dict | None) -> str:
     """Render a chosen post template (ALE-216) as a strict structure directive."""
     if not template:
