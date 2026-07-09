@@ -7737,6 +7737,16 @@ type PostTemplate = {
   created_at?: string;
 };
 
+// ALE-234 : source de prospection rattachée à une entrée de bibliothèque (même post).
+type LibraryLeadSource = {
+  id: string;
+  post_url: string;
+  is_lead_magnet?: boolean;
+  trigger_keyword?: string | null;
+  collected_at?: string | null;
+  comments_count?: number | null;
+};
+
 function libraryEntryTitle(t: PostTemplate): string {
   if (t.structure_label) return t.structure_label;
   if (t.source_author) return t.source_author;
@@ -7767,6 +7777,10 @@ function MyLibraryView({
   const [imageUrl, setImageUrl] = useState("");
   const [adding, setAdding] = useState(false);
   const [extractingId, setExtractingId] = useState<string | null>(null);
+  // ALE-234 : sources de prospection croisées avec la bibliothèque par URL de post.
+  const [leadSources, setLeadSources] = useState<Record<string, LibraryLeadSource>>({});
+  const [collectingId, setCollectingId] = useState<string | null>(null);
+  const [collectMsg, setCollectMsg] = useState("");
 
   async function load() {
     if (!isAuthed) return;
@@ -7781,6 +7795,47 @@ function MyLibraryView({
       setError(err.message || "Chargement impossible");
     } finally {
       setLoading(false);
+    }
+    // Best-effort : sans les sources, la bibliothèque reste pleinement utilisable.
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-sources`, { headers: await authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        const map: Record<string, LibraryLeadSource> = {};
+        for (const s of data.sources || []) {
+          if (s.is_lead_magnet && s.post_url) map[s.post_url] = s;
+        }
+        setLeadSources(map);
+      }
+    } catch { /* pastilles indisponibles, tant pis */ }
+  }
+
+  async function collectCommenters(source: LibraryLeadSource) {
+    if (collectingId) return;
+    setCollectingId(source.id);
+    setError("");
+    setCollectMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-sources/${source.id}/collect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Collecte impossible");
+      setLeadSources((prev) => ({ ...prev, [source.post_url]: { ...source, ...data.source } }));
+      const counts = data.leads || {};
+      const fresh = counts.inserted ?? 0;
+      const enriched = counts.updated ?? 0;
+      setCollectMsg(
+        `${data.comments_count} commentaire(s) analysé(s) — ${fresh} nouveau(x) lead(s)` +
+          (enriched ? `, ${enriched} enrichi(s)` : "") +
+          ". Retrouve-les dans l'onglet Prospection."
+      );
+    } catch (err: any) {
+      setError(err.message || "Collecte impossible");
+    } finally {
+      setCollectingId(null);
     }
   }
 
@@ -7815,6 +7870,20 @@ function MyLibraryView({
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Ajout impossible");
       setEntries((prev) => [data, ...prev]);
+      // ALE-234 : l'import par lien peut détecter un lead magnet → pastille immédiate.
+      if (data.lead_magnet && data.source_post_url) {
+        setLeadSources((prev) => ({
+          ...prev,
+          [data.source_post_url]: {
+            id: data.lead_magnet.source_id,
+            post_url: data.source_post_url,
+            is_lead_magnet: true,
+            trigger_keyword: data.lead_magnet.trigger_keyword,
+            collected_at: data.lead_magnet.collected_at,
+            comments_count: data.lead_magnet.comments_count,
+          },
+        }));
+      }
       setUrl(""); setText(""); setNote(""); setLabel(""); setStructure(""); setImageNote(""); setImageUrl("");
     } catch (err: any) {
       setError(err.message || "Ajout impossible");
@@ -7941,6 +8010,9 @@ function MyLibraryView({
           </details>
         </div>
         {error && <div className="error" style={{ marginTop: 8 }}>{error}</div>}
+        {collectMsg && (
+          <div style={{ marginTop: 8, fontSize: 13, color: "var(--success)" }}>✓ {collectMsg}</div>
+        )}
       </div>
 
       <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
@@ -7959,6 +8031,7 @@ function MyLibraryView({
           entries.map((t) => {
             const postText = (t.post_text || "").trim();
             const structureText = (t.structure_text || "").trim();
+            const leadSource = t.source_post_url ? leadSources[t.source_post_url] : undefined;
             return (
               <div key={t.id} className="card" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -7969,6 +8042,15 @@ function MyLibraryView({
                     {t.image_url && <span className="daily-seed-tag">image</span>}
                     {t.source === "influencer" && (
                       <span className="daily-seed-tag">depuis la veille{t.source_author ? ` · ${t.source_author}` : ""}</span>
+                    )}
+                    {leadSource && (
+                      <span
+                        className="daily-seed-tag"
+                        style={{ color: "var(--success)", fontWeight: 600 }}
+                        title="Ce post demande de commenter un mot-clé pour recevoir une ressource — ses commentateurs sont des prospects chauds"
+                      >
+                        🎯 lead magnet{leadSource.trigger_keyword ? ` · « ${leadSource.trigger_keyword} »` : ""}
+                      </span>
                     )}
                   </div>
                   {postText && (
@@ -8017,6 +8099,20 @@ function MyLibraryView({
                         disabled={extractingId === t.id}
                       >
                         {extractingId === t.id ? <Loader2 size={12} className="spinning" /> : <ListChecks size={12} />} Extraire la structure
+                      </button>
+                    )}
+                    {leadSource && (
+                      <button
+                        className="secondary-button"
+                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
+                        title="Récupère les personnes qui ont commenté ce post — elles deviennent des leads dans l'onglet Prospection"
+                        onClick={() => collectCommenters(leadSource)}
+                        disabled={collectingId === leadSource.id}
+                      >
+                        {collectingId === leadSource.id ? <Loader2 size={12} className="spinning" /> : <Users size={12} />}{" "}
+                        {leadSource.collected_at
+                          ? `Mettre à jour les commentateurs (${leadSource.comments_count ?? 0} récupérés)`
+                          : "Récupérer les commentateurs"}
                       </button>
                     )}
                   </div>
