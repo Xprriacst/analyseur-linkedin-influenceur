@@ -8304,7 +8304,6 @@ function ProspectingView({
           ideal_client: targeting.ideal_client || "",
           offer: targeting.offer || "",
           interest_keywords: targeting.interest_keywords || [],
-          score_threshold: targeting.score_threshold ?? 60,
           first_message_instructions: targeting.first_message_instructions || "",
         }),
       });
@@ -8407,27 +8406,16 @@ function ProspectingView({
                 Pré-remplis depuis ton profil éditorial ; les modifier ici ne change pas ton profil.
               </p>
               <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
-                Signaux d&apos;intérêt (mots-clés, séparés par des virgules)
+                Thèmes qui trahissent un bon prospect (séparés par des virgules)
                 <input
                   value={(targeting.interest_keywords || []).join(", ")}
                   onChange={(e) => setTargeting({ ...targeting, interest_keywords: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
                   placeholder="Ex. automatisation, IA, growth, closing"
                   style={{ width: "100%", padding: 8, fontSize: 13, fontWeight: 400 }}
                 />
-              </label>
-              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
-                Seuil de score : afficher les leads notés ≥ {targeting.score_threshold ?? 60}/100
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={5}
-                  value={targeting.score_threshold ?? 60}
-                  onChange={(e) => setTargeting({ ...targeting, score_threshold: Number(e.target.value) })}
-                  style={{ width: "100%" }}
-                />
                 <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>
-                  Les leads sous le seuil restent enregistrés mais masqués de la liste.
+                  Les sujets qui indiquent un prospect intéressant — rien à voir avec le mot-clé
+                  à commenter (« LEADS », « CLAUDE »…), lui est détecté automatiquement par post.
                 </span>
               </label>
               <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
@@ -8528,7 +8516,7 @@ function ProspectingView({
       )}
       {leads.length > 0 && (
         <p style={{ color: "var(--muted)", fontSize: 12, textAlign: "center", marginTop: 14 }}>
-          {leads.length} lead(s) · les multi-signaux (plusieurs concurrents) remontent en premier.
+          {leads.length} lead(s) · classés par pertinence (score) — les moins pertinents restent en bas, rien n&apos;est masqué.
         </p>
       )}
 

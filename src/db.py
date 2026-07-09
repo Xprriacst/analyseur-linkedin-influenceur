@@ -4029,10 +4029,11 @@ def save_leads(access_token: str, source: dict, commenters: list[dict]) -> dict:
 def list_leads(access_token: str, limit: int = 500) -> list[dict]:
     """Leads de l'utilisateur pour la liste Prospection (RLS scope).
 
-    Tri : mieux notés d'abord (score ICP décroissant), puis les non-notés — à
-    l'intérieur d'un même groupe, multi-signaux puis plus récents (ordre du fetch,
-    tri stable). Les leads sous le seuil de score du ciblage sont masqués ; les
-    leads non encore notés (score null) restent toujours visibles.
+    On garde TOUTE la liste (aucun masquage) : les leads sont classés par score
+    ICP décroissant — les moins pertinents descendent mais restent visibles ; les
+    non-notés (score null) passent après. À l'intérieur d'un même groupe :
+    multi-signaux puis plus récents (ordre du fetch, tri stable). La curation
+    manuelle « ne pas contacter » est un sujet à part (ALE-243).
     """
     if not supabase_enabled():
         return []
@@ -4046,14 +4047,6 @@ def list_leads(access_token: str, limit: int = 500) -> list[dict]:
         .execute()
     )
     rows = resp.data or []
-
-    targeting = get_lead_targeting(access_token)
-    threshold = int((targeting or {}).get("score_threshold") or 0)
-    if threshold > 0:
-        rows = [
-            r for r in rows
-            if r.get("score") is None or int(r.get("score") or 0) >= threshold
-        ]
     # Tri stable : scorés (par score décroissant) avant non-scorés.
     rows.sort(key=lambda r: (0 if r.get("score") is not None else 1, -(int(r.get("score") or 0))))
     return rows
