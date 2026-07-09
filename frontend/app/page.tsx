@@ -8211,6 +8211,17 @@ function leadLastSignal(l: Lead): LeadSignal {
   return { comment_text: l.comment_text, commented_at: l.commented_at };
 }
 
+/** Les URLs de leads viennent du scraping (non fiables) : on ne rend que http(s). */
+function safeHttpUrl(u?: string | null): string | undefined {
+  if (!u) return undefined;
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function ProspectingView({
   isAuthed,
   requireAuth,
@@ -8389,23 +8400,25 @@ function ProspectingView({
                     {sig.trigger_keyword ? <>mot-clé « <strong>{sig.trigger_keyword}</strong> » · </> : null}
                     {sig.author ? `chez ${sig.author}` : "post concurrent"}
                     {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
-                    {sig.post_url ? (
-                      <> · <a href={sig.post_url} target="_blank" rel="noreferrer">voir le post</a></>
+                    {safeHttpUrl(sig.post_url) ? (
+                      <> · <a href={safeHttpUrl(sig.post_url)} target="_blank" rel="noreferrer">voir le post</a></>
                     ) : null}
                   </p>
                 </div>
               ))}
             </div>
             <div style={{ marginTop: "auto", display: "grid", gap: 8 }}>
-              <a
-                className="primary-button"
-                style={{ textAlign: "center", textDecoration: "none" }}
-                href={selected.profile_url}
-                target="_blank"
-                rel="noreferrer"
-              >
-                <Linkedin size={14} /> Voir le profil LinkedIn
-              </a>
+              {safeHttpUrl(selected.profile_url) && (
+                <a
+                  className="primary-button"
+                  style={{ textAlign: "center", textDecoration: "none" }}
+                  href={safeHttpUrl(selected.profile_url)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <Linkedin size={14} /> Voir le profil LinkedIn
+                </a>
+              )}
               <p style={{ margin: 0, fontSize: 12, color: "var(--muted)", textAlign: "center" }}>
                 La demande de contact et le premier message arrivent bientôt — en attendant, contacte-le depuis LinkedIn.
               </p>
