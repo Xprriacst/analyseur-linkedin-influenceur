@@ -5525,7 +5525,7 @@ function AgentFaqEditor({ isAuthed }: { isAuthed: boolean }) {
   );
 }
 
-function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null }) {
+function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalActiveId = null }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; hideChrome?: boolean; externalActiveId?: string | null }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
   // Faux tant que le premier /me/ig/conversations n'a pas répondu : évite d'afficher
   // « Aucune conversation » pendant le chargement initial (backend dev lent).
@@ -5675,6 +5675,13 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
     loadThread(id);
   }
 
+  // Inbox unifiée (ALE-244) : quand le parent pilote la sélection (mode headless),
+  // on ouvre la conversation demandée.
+  useEffect(() => {
+    if (externalActiveId && externalActiveId !== activeId) selectConversation(externalActiveId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalActiveId]);
+
   useEffect(() => {
     if (!isAuthed) {
       selectedConvRef.current = null;
@@ -5815,7 +5822,8 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - var(--header-h) - var(--dev-banner-h) - 40px)", minHeight: 420 }}>
+    <div style={{ display: "flex", flexDirection: "column", height: hideChrome ? "100%" : "calc(100vh - var(--header-h) - var(--dev-banner-h) - 40px)", minHeight: hideChrome ? 0 : 420 }}>
+    {!hideChrome && (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: killSwitch ? "rgba(224,108,0,0.12)" : "rgba(128,128,128,0.08)", flex: "none" }}>
       <span style={{ fontSize: 13 }}>
         {killSwitch
@@ -5835,7 +5843,9 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
         </button>
       </div>
     </div>
-    <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
+    )}
+    <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: hideChrome ? "1fr" : "280px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
+      {!hideChrome && (
       <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
         <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
         {conversations.length === 0 && (
@@ -5872,6 +5882,7 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
           </button>
         ))}
       </aside>
+      )}
 
       <section className="card" style={{ display: "flex", flexDirection: "column", padding: 0, minHeight: 0 }}>
         {!active ? (
@@ -5992,195 +6003,261 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
   );
 }
 
-// ALE-230 : l'Inbox porte deux onglets — Instagram (DM ManyChat) et LinkedIn
-// (messagerie Unipile de prospection). Un seul point d'entrée « Inbox ».
-function InboxTabs({ isAuthed, requireAuth, userId }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null }) {
-  const [tab, setTab] = useState<"instagram" | "linkedin">("instagram");
-  return (
-    <div>
-      <div className="tabs" style={{ marginBottom: 12 }}>
-        <button className={`tab ${tab === "instagram" ? "active" : ""}`} onClick={() => setTab("instagram")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <MessageSquare size={14} /> Instagram
-        </button>
-        <button className={`tab ${tab === "linkedin" ? "active" : ""}`} onClick={() => setTab("linkedin")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <Linkedin size={14} /> LinkedIn
-        </button>
-      </div>
-      {tab === "instagram"
-        ? <IgInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={userId} />
-        : <LinkedInInbox isAuthed={isAuthed} requireAuth={requireAuth} />}
-    </div>
-  );
-}
-
-// Onglet LinkedIn de l'Inbox : conversations lues en direct depuis Unipile (le
-// compte du client est la source de vérité) — pas de persistance côté app.
-function LinkedInInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
-  const outreach = useLinkedInOutreach(isAuthed);
-  const [chats, setChats] = useState<OutreachChat[]>([]);
-  const [chatsLoaded, setChatsLoaded] = useState(false);
-  const [activeId, setActiveId] = useState<string | null>(null);
+// ALE-244 : fil LinkedIn (messages Unipile lus en direct) pour l'Inbox unifiée.
+function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: OutreachQuota; onQuota: (q: OutreachQuota) => void }) {
   const [messages, setMessages] = useState<OutreachMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
-  const selRef = useRef<string | null>(null);
+  const chatId = chat.id;
 
-  const connected = !!outreach.status?.connected;
-  const q = outreach.status?.quota;
-  const active = chats.find((c) => c.id === activeId) || null;
-
-  async function loadChats() {
-    if (!connected) return;
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats`, { headers: await authHeaders() });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Chargement impossible");
-      setChats(Array.isArray(data.chats) ? data.chats : []);
-    } catch (err: any) { setError(err.message); }
-    finally { setChatsLoaded(true); }
-  }
-
-  async function loadMessages(chatId: string) {
+  async function loadMessages() {
     setLoading(true); setError("");
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats/${encodeURIComponent(chatId)}/messages`, { headers: await authHeaders() });
       const data = await res.json();
-      if (selRef.current !== chatId) return;
       if (!res.ok) throw new Error(data.detail || "Messages introuvables");
       setMessages(Array.isArray(data.messages) ? data.messages : []);
-    } catch (err: any) { if (selRef.current === chatId) setError(err.message); }
-    finally { if (selRef.current === chatId) setLoading(false); }
+    } catch (err: any) { setError(err.message); }
+    finally { setLoading(false); }
   }
 
-  function select(id: string) { selRef.current = id; setActiveId(id); setMessages([]); setReply(""); loadMessages(id); }
-
-  useEffect(() => { if (connected) loadChats(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [connected]);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
-
-  // Rafraîchit le fil ouvert (non-chevauchant, 15 s) pour voir arriver les réponses.
+  // Monté par conversation (key=chatId) → chargement + rafraîchissement 15 s.
   useEffect(() => {
-    if (!activeId) return;
     let stop = false;
     let timer: ReturnType<typeof setTimeout>;
-    const loop = async () => { await loadMessages(activeId); if (!stop) timer = setTimeout(loop, 15000); };
-    timer = setTimeout(loop, 15000);
+    const loop = async () => { await loadMessages(); if (!stop) timer = setTimeout(loop, 15000); };
+    loop();
     return () => { stop = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId]);
+  }, [chatId]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
 
   async function sendReply() {
-    if (!active || !reply.trim()) return;
+    if (!reply.trim()) return;
     setBusy(true); setError("");
     try {
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats/${encodeURIComponent(active.id)}/messages`, {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats/${encodeURIComponent(chatId)}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({ text: reply.trim() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi impossible");
-      if (data.quota) outreach.setStatus((prev) => (prev ? { ...prev, quota: data.quota } : prev));
+      if (data.quota) onQuota(data.quota);
       setReply("");
-      await loadMessages(active.id);
+      await loadMessages();
     } catch (err: any) { setError(err.message); }
     finally { setBusy(false); }
   }
 
+  return (
+    <section className="card" style={{ display: "flex", flexDirection: "column", minHeight: 0, padding: 0, height: "100%" }}>
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+        <Linkedin size={15} style={{ color: "#0a66c2", flexShrink: 0 }} />
+        {chat.name || "Conversation LinkedIn"}
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+        {loading && messages.length === 0 ? (
+          <div style={{ margin: "auto", opacity: 0.6 }}><Loader2 size={18} className="spinning" /></div>
+        ) : messages.length === 0 ? (
+          <div style={{ margin: "auto", opacity: 0.6, fontSize: 13 }}>Aucun message.</div>
+        ) : null}
+        {messages.map((m) => (
+          <div
+            key={m.id}
+            style={{ alignSelf: m.from_me ? "flex-end" : "flex-start", maxWidth: "78%", padding: "8px 12px", borderRadius: 12, background: m.from_me ? "rgba(10,102,194,0.14)" : "var(--surface-high)", fontSize: 13.5, whiteSpace: "pre-wrap" }}
+          >
+            {m.text}
+          </div>
+        ))}
+        <div ref={endRef} />
+      </div>
+      {error && <div className="error" style={{ margin: "0 12px 8px" }}>{error}</div>}
+      <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "flex-end" }}>
+        <textarea
+          value={reply}
+          onChange={(e) => setReply(e.target.value)}
+          rows={2}
+          placeholder="Écris ta réponse… (Cmd/Ctrl+Entrée pour envoyer)"
+          style={{ flex: 1, resize: "none", padding: 8, fontSize: 13 }}
+          onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") sendReply(); }}
+        />
+        <button
+          className="primary-button"
+          disabled={busy || !reply.trim() || !quota?.can_message}
+          title={!quota?.can_message ? (quota?.message_blocked_reason || "") : "Envoyer"}
+          onClick={sendReply}
+        >
+          {busy ? <Loader2 size={14} className="spinning" /> : <Send size={14} />}
+        </button>
+      </div>
+      {!quota?.can_message && quota?.message_blocked_reason && (
+        <p style={{ margin: "0 12px 10px", fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{quota.message_blocked_reason}</p>
+      )}
+    </section>
+  );
+}
+
+// ALE-244 : Inbox UNIQUE regroupant Instagram (DM ManyChat) + LinkedIn (messagerie
+// Unipile). Une seule liste de conversations, chaque ligne taguée par réseau ; à
+// l'ouverture le fil et l'envoi s'adaptent au réseau. L'inbox Instagram garde
+// toute sa logique d'agent (réutilisée via IgInbox en mode headless `hideChrome`).
+type InboxNetwork = "instagram" | "linkedin";
+
+function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null }) {
+  const outreach = useLinkedInOutreach(isAuthed);
+  const lnConnected = !!outreach.status?.connected;
+  const [igConvs, setIgConvs] = useState<IgConversation[]>([]);
+  const [lnChats, setLnChats] = useState<OutreachChat[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [sel, setSel] = useState<{ network: InboxNetwork; id: string } | null>(null);
+
+  async function loadIg() {
+    if (!isAuthed) return;
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setIgConvs(Array.isArray(data) ? data : []);
+    } catch { /* non bloquant */ } finally { setLoaded(true); }
+  }
+  async function loadLn() {
+    if (!isAuthed || !lnConnected) { setLnChats([]); return; }
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setLnChats(Array.isArray(data.chats) ? data.chats : []);
+    } catch { /* non bloquant */ }
+  }
+
+  // Poll IG (6 s, non-chevauchant) — nouvelles conversations sans recharger.
+  useEffect(() => {
+    if (!isAuthed) { setIgConvs([]); setLnChats([]); setSel(null); return; }
+    let stop = false; let t: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadIg(); if (!stop) t = setTimeout(loop, 6000); };
+    loop();
+    return () => { stop = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  // Poll LinkedIn (30 s) uniquement si le compte est connecté.
+  useEffect(() => {
+    if (!isAuthed || !lnConnected) return;
+    let stop = false; let t: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadLn(); if (!stop) t = setTimeout(loop, 30000); };
+    loop();
+    return () => { stop = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, lnConnected]);
+
+  const ts = (v?: string | null) => (v ? new Date(v).getTime() : 0);
+  type Row = { network: InboxNetwork; id: string; name: string; time: number; mode?: IgConversation["mode"] };
+  const rows: Row[] = [
+    ...igConvs.map((c) => ({ network: "instagram" as const, id: c.id, name: c.prospect_name || c.prospect_id, time: ts(c.last_message_at), mode: c.mode })),
+    ...lnChats.map((c) => ({ network: "linkedin" as const, id: c.id, name: c.name || "Conversation LinkedIn", time: ts(c.last_message_at) })),
+  ].sort((a, b) => b.time - a.time);
+
+  // Pastille « non lu » unifiée (localStorage par utilisateur, clé network:id).
+  const readKey = userId ? `inbox_conv_read:${userId}` : null;
+  const [readMap, setReadMap] = useState<Record<string, number>>({});
+  const seededRef = useRef(false);
+  const rowKey = (r: { network: InboxNetwork; id: string }) => `${r.network}:${r.id}`;
+  useEffect(() => {
+    seededRef.current = false;
+    if (!readKey) { setReadMap({}); return; }
+    try { const raw = localStorage.getItem(readKey); if (raw !== null) { setReadMap(JSON.parse(raw) || {}); seededRef.current = true; } else setReadMap({}); }
+    catch { setReadMap({}); }
+  }, [readKey]);
+  useEffect(() => {
+    if (!readKey || seededRef.current || !loaded) return;
+    const seed: Record<string, number> = {};
+    rows.forEach((r) => { seed[rowKey(r)] = r.time; });
+    seededRef.current = true;
+    try { localStorage.setItem(readKey, JSON.stringify(seed)); } catch { /* ignore */ }
+    setReadMap(seed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readKey, loaded, igConvs, lnChats]);
+  const markRead = (r: { network: InboxNetwork; id: string }, time: number) => {
+    setReadMap((prev) => {
+      const k = rowKey(r);
+      if ((prev[k] || 0) >= time) return prev;
+      const next = { ...prev, [k]: time };
+      if (readKey) { try { localStorage.setItem(readKey, JSON.stringify(next)); } catch { /* ignore */ } }
+      return next;
+    });
+  };
+  const selKey = sel ? `${sel.network}:${sel.id}` : "";
+  const isUnread = (r: Row) => rowKey(r) !== selKey && r.time > (readMap[rowKey(r)] || 0);
+
+  function selectRow(r: Row) { setSel({ network: r.network, id: r.id }); markRead(r, r.time); }
+
+  const selectedIg = sel?.network === "instagram" ? igConvs.find((c) => c.id === sel.id) || null : null;
+  const selectedLn = sel?.network === "linkedin" ? lnChats.find((c) => c.id === sel.id) || null : null;
+
   if (!isAuthed) {
     return (
       <div className="card" style={{ textAlign: "center", padding: 40 }}>
-        <p>Connecte-toi pour accéder à ta messagerie LinkedIn.</p>
-        <button className="primary-button" onClick={() => requireAuth("Crée un compte pour accéder à la messagerie LinkedIn.")}>Se connecter</button>
-      </div>
-    );
-  }
-
-  if (!connected) {
-    return (
-      <div className="card" style={{ textAlign: "center", padding: 32 }}>
-        <Linkedin size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
-        <p style={{ margin: 0 }}>
-          Connecte ton compte LinkedIn de prospection dans <strong>Mon profil</strong> pour retrouver tes
-          conversations ici et répondre à tes leads.
-        </p>
+        <p>Connecte-toi pour accéder à ton inbox.</p>
+        <button className="primary-button" onClick={() => requireAuth("Crée un compte pour accéder à l'inbox.")}>Se connecter</button>
       </div>
     );
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - var(--header-h) - var(--dev-banner-h) - 96px)", minHeight: 420 }}>
-      {error && <div className="error" style={{ marginBottom: 8 }}>{error}</div>}
-      <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - var(--header-h) - var(--dev-banner-h) - 40px)", minHeight: 420 }}>
+      <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
         <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 8px" }}>
-            <span className="eyebrow">Conversations</span>
-            <button className="icon-button" title="Actualiser" onClick={loadChats}><RefreshCw size={14} /></button>
-          </div>
-          {chats.length === 0 && (
+          <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
+          {rows.length === 0 && (
             <p style={{ padding: 8, fontSize: 13, opacity: 0.7 }}>
-              {chatsLoaded ? "Aucune conversation. Elles apparaîtront après ton premier message à un lead (onglet Prospection)." : "Chargement…"}
+              {loaded
+                ? "Aucune conversation pour l'instant. Elles apparaîtront dès qu'un prospect écrit en DM (Instagram) ou après ton premier message à un lead (LinkedIn)."
+                : "Chargement des conversations…"}
             </p>
           )}
-          {chats.map((c) => (
+          {rows.map((r) => (
             <button
-              key={c.id}
-              onClick={() => select(c.id)}
+              key={rowKey(r)}
+              onClick={() => selectRow(r)}
               className="ig-conv-item"
-              style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 4, borderRadius: 8, border: "1px solid transparent", cursor: "pointer", background: activeId === c.id ? "rgba(120,120,255,0.12)" : "transparent" }}
+              style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 4, borderRadius: 8, border: "1px solid transparent", cursor: "pointer", background: rowKey(r) === selKey ? "rgba(120,120,255,0.12)" : "transparent" }}
             >
-              <span style={{ fontWeight: 600, fontSize: 14 }}>{c.name || "Conversation LinkedIn"}</span>
+              <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontWeight: isUnread(r) ? 700 : 600, fontSize: 14, display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                  {isUnread(r) && (
+                    <span aria-label="Nouveau message" title="Nouveau message" style={{ width: 8, height: 8, borderRadius: "50%", background: "#e5484d", flex: "0 0 auto" }} />
+                  )}
+                  <span title={r.network === "instagram" ? "Instagram" : "LinkedIn"} style={{ display: "inline-flex", flex: "0 0 auto" }}>
+                    {r.network === "instagram"
+                      ? <MessageSquare size={13} style={{ color: "#c13584" }} />
+                      : <Linkedin size={13} style={{ color: "#0a66c2" }} />}
+                  </span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
+                </span>
+                {r.network === "instagram" && r.mode ? <ConversationModeBadge mode={r.mode} /> : null}
+              </span>
             </button>
           ))}
         </aside>
-        <section className="card" style={{ display: "flex", flexDirection: "column", minHeight: 0, padding: 0 }}>
-          {!active ? (
-            <div style={{ margin: "auto", opacity: 0.6, fontSize: 14, padding: 20, textAlign: "center" }}>Sélectionne une conversation.</div>
+        <div style={{ minHeight: 0 }}>
+          {selectedIg ? (
+            <IgInbox key="ig-thread" isAuthed={isAuthed} requireAuth={requireAuth} userId={userId} hideChrome externalActiveId={selectedIg.id} />
+          ) : selectedLn ? (
+            <LinkedInThread
+              key={`ln:${selectedLn.id}`}
+              chat={selectedLn}
+              quota={outreach.status?.quota}
+              onQuota={(q) => outreach.setStatus((p) => (p ? { ...p, quota: q } : p))}
+            />
           ) : (
-            <>
-              <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 700 }}>{active.name || "Conversation LinkedIn"}</div>
-              <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
-                {loading && messages.length === 0 ? (
-                  <div style={{ margin: "auto", opacity: 0.6 }}><Loader2 size={18} className="spinning" /></div>
-                ) : messages.length === 0 ? (
-                  <div style={{ margin: "auto", opacity: 0.6, fontSize: 13 }}>Aucun message.</div>
-                ) : null}
-                {messages.map((m) => (
-                  <div
-                    key={m.id}
-                    style={{ alignSelf: m.from_me ? "flex-end" : "flex-start", maxWidth: "78%", padding: "8px 12px", borderRadius: 12, background: m.from_me ? "rgba(10,102,194,0.14)" : "var(--surface-high)", fontSize: 13.5, whiteSpace: "pre-wrap" }}
-                  >
-                    {m.text}
-                  </div>
-                ))}
-                <div ref={endRef} />
-              </div>
-              <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "flex-end" }}>
-                <textarea
-                  value={reply}
-                  onChange={(e) => setReply(e.target.value)}
-                  rows={2}
-                  placeholder="Écris ta réponse… (Cmd/Ctrl+Entrée pour envoyer)"
-                  style={{ flex: 1, resize: "none", padding: 8, fontSize: 13 }}
-                  onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") sendReply(); }}
-                />
-                <button
-                  className="primary-button"
-                  disabled={busy || !reply.trim() || !q?.can_message}
-                  title={!q?.can_message ? (q?.message_blocked_reason || "") : "Envoyer"}
-                  onClick={sendReply}
-                >
-                  {busy ? <Loader2 size={14} className="spinning" /> : <Send size={14} />}
-                </button>
-              </div>
-              {!q?.can_message && q?.message_blocked_reason && (
-                <p style={{ margin: "0 12px 10px", fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{q.message_blocked_reason}</p>
-              )}
-            </>
+            <div className="card" style={{ height: "100%", display: "flex" }}>
+              <div style={{ margin: "auto", opacity: 0.7 }}>Sélectionne une conversation.</div>
+            </div>
           )}
-        </section>
+        </div>
       </div>
     </div>
   );
@@ -10199,7 +10276,7 @@ export default function Home() {
         <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA, Inbox IG et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "inbox" ? (
-            <InboxTabs isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} />
+            <UnifiedInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} />
           ) : view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} />
           ) : view === "profile" ? (
