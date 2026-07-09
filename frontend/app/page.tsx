@@ -1947,6 +1947,91 @@ function useLinkedIn(isAuthed: boolean) {
   return { status, busy, error, connect, disconnect };
 }
 
+// ─── ALE-230 : messagerie LinkedIn (prospection) via Unipile + quotas ───
+type OutreachQuota = {
+  daily_cap: number;
+  weekly_invite_cap: number;
+  invites_today: number;
+  messages_today: number;
+  invites_week: number;
+  can_invite: boolean;
+  can_message: boolean;
+  invite_blocked_reason?: string | null;
+  message_blocked_reason?: string | null;
+};
+
+type OutreachStatus = {
+  configured: boolean;
+  connected: boolean;
+  account_name?: string | null;
+  connected_at?: string | null;
+  quota: OutreachQuota;
+};
+
+type OutreachChat = { id: string; name?: string | null; last_message_at?: string | null; provider_url?: string | null };
+type OutreachMessage = { id: string; text: string; from_me: boolean; created_at?: string | null };
+
+/** Statut de connexion Unipile (compte LinkedIn de prospection) + quotas + flux d'auth hébergée. */
+function useLinkedInOutreach(isAuthed: boolean) {
+  const [status, setStatus] = useState<OutreachStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const reload = useCallback(async () => {
+    if (!isAuthed) { setStatus(null); return; }
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/status`, { headers: await authHeaders() });
+      if (res.ok) setStatus(await res.json());
+    } catch { /* non bloquant */ }
+  }, [isAuthed]);
+
+  useEffect(() => { void reload(); }, [reload]);
+
+  async function connect() {
+    setError(""); setBusy(true);
+    try {
+      const redirect = `${window.location.origin}${window.location.pathname}?linkedin_outreach=connected`;
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ redirect_url: redirect }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion impossible");
+      window.location.href = data.auth_url; // Unipile gère l'auth LinkedIn puis renvoie vers l'app
+    } catch (err: any) {
+      setError(err.message); setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!window.confirm("Délier le compte LinkedIn de prospection ?")) return;
+    setError(""); setBusy(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach`, { method: "DELETE", headers: await authHeaders() });
+      if (res.ok) setStatus(await res.json());
+    } catch (err: any) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function setDailyCap(daily_cap: number) {
+    setError(""); setBusy(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ daily_cap }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
+      setStatus(data);
+    } catch (err: any) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return { status, busy, error, reload, connect, disconnect, setDailyCap, setStatus };
+}
+
 type XStatus = {
   configured: boolean;
   connected: boolean;
@@ -5073,6 +5158,99 @@ const MANYCHAT_BODY_TEMPLATE = `{
   "text": "{{Last Text Input}}"
 }`;
 
+// ALE-230 : connexion du compte LinkedIn de PROSPECTION via Unipile (envoi de
+// demandes de connexion + messages aux leads). Modèle multi-client comme ManyChat :
+// chaque client relie SON compte LinkedIn. Porte aussi le plafond quotidien de
+// quota (garde-fou anti-restriction). Distinct de la connexion « Publier sur
+// LinkedIn » (Zernio) : Zernio publie des posts, Unipile fait la messagerie.
+function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
+  const outreach = useLinkedInOutreach(isAuthed);
+  const [capOpen, setCapOpen] = useState(false);
+  const [capDraft, setCapDraft] = useState<number>(25);
+
+  const st = outreach.status;
+  const connected = !!st?.connected;
+  const q = st?.quota;
+
+  useEffect(() => { if (q?.daily_cap) setCapDraft(q.daily_cap); }, [q?.daily_cap]);
+
+  if (!isAuthed) return null;
+
+  return (
+    <>
+      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Send size={20} style={{ flexShrink: 0, color: "#0a66c2" }} />
+          <div>
+            <strong>Contacter tes leads sur LinkedIn (prospection)</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              {!st?.configured
+                ? "Messagerie LinkedIn non configurée sur le serveur (Unipile)."
+                : connected
+                  ? "Compte LinkedIn relié — tu peux envoyer des demandes de connexion et des messages à tes leads depuis l'onglet Prospection."
+                  : "Connecte ton compte LinkedIn pour envoyer des invitations et des messages à tes leads, sans quitter l'app."}
+            </p>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {connected ? (
+            <>
+              <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+              <button className="secondary-button" onClick={() => setCapOpen((v) => !v)} style={{ fontSize: 12 }}>
+                <Settings2 size={13} /> {capOpen ? "Masquer les quotas" : "Quotas"}
+              </button>
+              <button className="secondary-button" onClick={outreach.disconnect} disabled={outreach.busy} style={{ fontSize: 12 }}>
+                {outreach.busy ? <Loader2 size={12} className="spinning" /> : null} Délier
+              </button>
+            </>
+          ) : st?.configured ? (
+            <button className="primary-button" onClick={outreach.connect} disabled={outreach.busy}>
+              {outreach.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+              {outreach.busy ? "Redirection…" : "Connecter LinkedIn"}
+            </button>
+          ) : null}
+        </div>
+      </section>
+
+      {connected && q && capOpen && (
+        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
+          <p style={{ fontSize: 13, margin: "0 0 10px" }}>
+            <strong>Garde-fous quota</strong> — ils protègent ton compte LinkedIn d&apos;une restriction.
+            Le plafond quotidien s&apos;applique séparément aux invitations et aux messages ; une sécurité
+            hebdomadaire glissante (~{q.weekly_invite_cap} invitations / 7 jours) s&apos;ajoute par-dessus.
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 12 }}>
+            <div className="card" style={{ padding: "10px 12px" }}>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>Invitations aujourd&apos;hui</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{q.invites_today}<span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}> / {q.daily_cap}</span></div>
+              <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{q.invites_week}/{q.weekly_invite_cap} sur 7 jours</div>
+            </div>
+            <div className="card" style={{ padding: "10px 12px" }}>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>Messages aujourd&apos;hui</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{q.messages_today}<span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}> / {q.daily_cap}</span></div>
+            </div>
+          </div>
+          <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, fontWeight: 600, flexWrap: "wrap" }}>
+            Plafond quotidien
+            <input
+              type="number" min={1} max={100} value={capDraft}
+              onChange={(e) => setCapDraft(Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
+              style={{ width: 80, padding: 8, fontSize: 13, fontWeight: 400 }}
+            />
+            <button className="primary-button" onClick={() => outreach.setDailyCap(capDraft)} disabled={outreach.busy || capDraft === q.daily_cap} style={{ fontSize: 13 }}>
+              {outreach.busy ? <Loader2 size={13} className="spinning" /> : <CheckCircle2 size={13} />} Enregistrer
+            </button>
+          </label>
+          <p style={{ fontSize: 11.5, color: "var(--muted)", margin: "8px 0 0" }}>
+            Recommandé : 25 max/jour pour un compte établi. Monte progressivement pour un compte récent.
+          </p>
+        </section>
+      )}
+      {outreach.error && <div className="error" style={{ marginBottom: 12 }}>{outreach.error}</div>}
+    </>
+  );
+}
+
 // Connexion ManyChat (par client), affichée dans le profil à côté des autres
 // connexions (LinkedIn/X/Slack). ManyChat est le pont d'envoi vers les DM
 // Instagram : clé API + webhook à coller côté ManyChat. C'est une étape de
@@ -5814,6 +5992,200 @@ function IgInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; require
   );
 }
 
+// ALE-230 : l'Inbox porte deux onglets — Instagram (DM ManyChat) et LinkedIn
+// (messagerie Unipile de prospection). Un seul point d'entrée « Inbox ».
+function InboxTabs({ isAuthed, requireAuth, userId }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null }) {
+  const [tab, setTab] = useState<"instagram" | "linkedin">("instagram");
+  return (
+    <div>
+      <div className="tabs" style={{ marginBottom: 12 }}>
+        <button className={`tab ${tab === "instagram" ? "active" : ""}`} onClick={() => setTab("instagram")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <MessageSquare size={14} /> Instagram
+        </button>
+        <button className={`tab ${tab === "linkedin" ? "active" : ""}`} onClick={() => setTab("linkedin")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <Linkedin size={14} /> LinkedIn
+        </button>
+      </div>
+      {tab === "instagram"
+        ? <IgInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={userId} />
+        : <LinkedInInbox isAuthed={isAuthed} requireAuth={requireAuth} />}
+    </div>
+  );
+}
+
+// Onglet LinkedIn de l'Inbox : conversations lues en direct depuis Unipile (le
+// compte du client est la source de vérité) — pas de persistance côté app.
+function LinkedInInbox({ isAuthed, requireAuth }: { isAuthed: boolean; requireAuth: (reason?: string) => void }) {
+  const outreach = useLinkedInOutreach(isAuthed);
+  const [chats, setChats] = useState<OutreachChat[]>([]);
+  const [chatsLoaded, setChatsLoaded] = useState(false);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<OutreachMessage[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [reply, setReply] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const endRef = useRef<HTMLDivElement | null>(null);
+  const selRef = useRef<string | null>(null);
+
+  const connected = !!outreach.status?.connected;
+  const q = outreach.status?.quota;
+  const active = chats.find((c) => c.id === activeId) || null;
+
+  async function loadChats() {
+    if (!connected) return;
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Chargement impossible");
+      setChats(Array.isArray(data.chats) ? data.chats : []);
+    } catch (err: any) { setError(err.message); }
+    finally { setChatsLoaded(true); }
+  }
+
+  async function loadMessages(chatId: string) {
+    setLoading(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats/${encodeURIComponent(chatId)}/messages`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (selRef.current !== chatId) return;
+      if (!res.ok) throw new Error(data.detail || "Messages introuvables");
+      setMessages(Array.isArray(data.messages) ? data.messages : []);
+    } catch (err: any) { if (selRef.current === chatId) setError(err.message); }
+    finally { if (selRef.current === chatId) setLoading(false); }
+  }
+
+  function select(id: string) { selRef.current = id; setActiveId(id); setMessages([]); setReply(""); loadMessages(id); }
+
+  useEffect(() => { if (connected) loadChats(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [connected]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+
+  // Rafraîchit le fil ouvert (non-chevauchant, 15 s) pour voir arriver les réponses.
+  useEffect(() => {
+    if (!activeId) return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadMessages(activeId); if (!stop) timer = setTimeout(loop, 15000); };
+    timer = setTimeout(loop, 15000);
+    return () => { stop = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
+
+  async function sendReply() {
+    if (!active || !reply.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats/${encodeURIComponent(active.id)}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text: reply.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi impossible");
+      if (data.quota) outreach.setStatus((prev) => (prev ? { ...prev, quota: data.quota } : prev));
+      setReply("");
+      await loadMessages(active.id);
+    } catch (err: any) { setError(err.message); }
+    finally { setBusy(false); }
+  }
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <p>Connecte-toi pour accéder à ta messagerie LinkedIn.</p>
+        <button className="primary-button" onClick={() => requireAuth("Crée un compte pour accéder à la messagerie LinkedIn.")}>Se connecter</button>
+      </div>
+    );
+  }
+
+  if (!connected) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 32 }}>
+        <Linkedin size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <p style={{ margin: 0 }}>
+          Connecte ton compte LinkedIn de prospection dans <strong>Mon profil</strong> pour retrouver tes
+          conversations ici et répondre à tes leads.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - var(--header-h) - var(--dev-banner-h) - 96px)", minHeight: 420 }}>
+      {error && <div className="error" style={{ marginBottom: 8 }}>{error}</div>}
+      <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
+        <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 8px" }}>
+            <span className="eyebrow">Conversations</span>
+            <button className="icon-button" title="Actualiser" onClick={loadChats}><RefreshCw size={14} /></button>
+          </div>
+          {chats.length === 0 && (
+            <p style={{ padding: 8, fontSize: 13, opacity: 0.7 }}>
+              {chatsLoaded ? "Aucune conversation. Elles apparaîtront après ton premier message à un lead (onglet Prospection)." : "Chargement…"}
+            </p>
+          )}
+          {chats.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => select(c.id)}
+              className="ig-conv-item"
+              style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 4, borderRadius: 8, border: "1px solid transparent", cursor: "pointer", background: activeId === c.id ? "rgba(120,120,255,0.12)" : "transparent" }}
+            >
+              <span style={{ fontWeight: 600, fontSize: 14 }}>{c.name || "Conversation LinkedIn"}</span>
+            </button>
+          ))}
+        </aside>
+        <section className="card" style={{ display: "flex", flexDirection: "column", minHeight: 0, padding: 0 }}>
+          {!active ? (
+            <div style={{ margin: "auto", opacity: 0.6, fontSize: 14, padding: 20, textAlign: "center" }}>Sélectionne une conversation.</div>
+          ) : (
+            <>
+              <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 700 }}>{active.name || "Conversation LinkedIn"}</div>
+              <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+                {loading && messages.length === 0 ? (
+                  <div style={{ margin: "auto", opacity: 0.6 }}><Loader2 size={18} className="spinning" /></div>
+                ) : messages.length === 0 ? (
+                  <div style={{ margin: "auto", opacity: 0.6, fontSize: 13 }}>Aucun message.</div>
+                ) : null}
+                {messages.map((m) => (
+                  <div
+                    key={m.id}
+                    style={{ alignSelf: m.from_me ? "flex-end" : "flex-start", maxWidth: "78%", padding: "8px 12px", borderRadius: 12, background: m.from_me ? "rgba(10,102,194,0.14)" : "var(--surface-high)", fontSize: 13.5, whiteSpace: "pre-wrap" }}
+                  >
+                    {m.text}
+                  </div>
+                ))}
+                <div ref={endRef} />
+              </div>
+              <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "flex-end" }}>
+                <textarea
+                  value={reply}
+                  onChange={(e) => setReply(e.target.value)}
+                  rows={2}
+                  placeholder="Écris ta réponse… (Cmd/Ctrl+Entrée pour envoyer)"
+                  style={{ flex: 1, resize: "none", padding: 8, fontSize: 13 }}
+                  onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") sendReply(); }}
+                />
+                <button
+                  className="primary-button"
+                  disabled={busy || !reply.trim() || !q?.can_message}
+                  title={!q?.can_message ? (q?.message_blocked_reason || "") : "Envoyer"}
+                  onClick={sendReply}
+                >
+                  {busy ? <Loader2 size={14} className="spinning" /> : <Send size={14} />}
+                </button>
+              </div>
+              {!q?.can_message && q?.message_blocked_reason && (
+                <p style={{ margin: "0 12px 10px", fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{q.message_blocked_reason}</p>
+              )}
+            </>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
 function Assistant({ isAuthed, requireAuth, seed }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { post: string; nonce: number } | null }) {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -6470,6 +6842,8 @@ function ProfileView({
         )}
       </section>
       {linkedin.error ? <div className="error" style={{ marginBottom: 12 }}>{linkedin.error}</div> : null}
+
+      <UnipileOutreachConnect isAuthed={isAuthed} />
 
       <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -8191,7 +8565,21 @@ type Lead = {
   created_at?: string;
   score?: number | null;
   score_reason?: string | null;
+  // ALE-230 : état d'outreach LinkedIn (envoi via Unipile).
+  outreach_status?: string | null;   // none | invite_sent | connected | messaged
+  provider_id?: string | null;
+  outreach_chat_id?: string | null;
 };
+
+/** Libellé court de l'état d'outreach d'un lead (badge de liste). */
+function outreachLabel(s?: string | null): string | null {
+  switch (s) {
+    case "invite_sent": return "Invité";
+    case "connected": return "En relation";
+    case "messaged": return "Contacté";
+    default: return null;
+  }
+}
 
 type LeadTargeting = {
   ideal_client?: string | null;
@@ -8256,6 +8644,86 @@ function ProspectingView({
   const [targetOpen, setTargetOpen] = useState(false);
   const [savingTarget, setSavingTarget] = useState(false);
   const [targetMsg, setTargetMsg] = useState("");
+  // Envoi via Unipile (ALE-230)
+  const outreach = useLinkedInOutreach(isAuthed);
+  const [outreachBusy, setOutreachBusy] = useState(false);
+  const [genBusy, setGenBusy] = useState(false);
+  const [outreachMsg, setOutreachMsg] = useState("");
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [messageText, setMessageText] = useState("");
+
+  // Réinitialise le bloc d'envoi quand on change de lead sélectionné.
+  useEffect(() => {
+    setComposeOpen(false);
+    setMessageText("");
+    setOutreachMsg("");
+  }, [selected?.id]);
+
+  // Applique le lead mis à jour renvoyé par le serveur (liste + panneau).
+  const patchLead = (updated: Lead) => {
+    setLeads((prev) => prev.map((l) => (l.id === updated.id ? { ...l, ...updated } : l)));
+    setSelected((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev));
+  };
+  const applyQuota = (quota?: OutreachQuota) => {
+    if (quota) outreach.setStatus((prev) => (prev ? { ...prev, quota } : prev));
+  };
+
+  async function inviteLead(lead: Lead) {
+    setOutreachBusy(true); setOutreachMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/invite`, { method: "POST", headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi impossible");
+      if (data.lead) patchLead(data.lead);
+      applyQuota(data.quota);
+      setOutreachMsg(data.already_connected ? "Vous êtes déjà en relation — prêt pour un message." : "Demande de connexion envoyée ✓");
+    } catch (err: any) { setOutreachMsg(err.message); }
+    finally { setOutreachBusy(false); }
+  }
+
+  async function checkConnection(lead: Lead) {
+    setOutreachBusy(true); setOutreachMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/check-connection`, { method: "POST", headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Vérification impossible");
+      if (data.lead) patchLead(data.lead);
+      setOutreachMsg(data.connected
+        ? "Invitation acceptée ✓ Tu peux envoyer ton premier message."
+        : "Pas encore acceptée — LinkedIn peut mettre un moment. Réessaie plus tard.");
+    } catch (err: any) { setOutreachMsg(err.message); }
+    finally { setOutreachBusy(false); }
+  }
+
+  async function generateMessage(lead: Lead) {
+    setGenBusy(true); setOutreachMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/message/preview`, { method: "POST", headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Génération impossible");
+      setMessageText(data.message || "");
+    } catch (err: any) { setOutreachMsg(err.message); }
+    finally { setGenBusy(false); }
+  }
+
+  async function sendFirstMessage(lead: Lead) {
+    if (!messageText.trim()) return;
+    setOutreachBusy(true); setOutreachMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text: messageText.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Envoi impossible");
+      if (data.lead) patchLead(data.lead);
+      applyQuota(data.quota);
+      setComposeOpen(false); setMessageText("");
+      setOutreachMsg("Premier message envoyé ✓ Retrouve la conversation dans l'Inbox › LinkedIn.");
+    } catch (err: any) { setOutreachMsg(err.message); }
+    finally { setOutreachBusy(false); }
+  }
 
   const loadLeads = async () => {
     const res = await fetch(`${DIRECT_API_URL}/me/leads`, { headers: await authHeaders() });
@@ -8506,9 +8974,13 @@ function ProspectingView({
                     {l.score}
                   </span>
                 )}
-                {l.status === "new" && (
+                {outreachLabel(l.outreach_status) ? (
+                  <span className="daily-seed-tag" style={{ flexShrink: 0, color: l.outreach_status === "messaged" ? "var(--success)" : undefined }}>
+                    {outreachLabel(l.outreach_status)}
+                  </span>
+                ) : l.status === "new" ? (
                   <span className="daily-seed-tag" style={{ flexShrink: 0 }}>Nouveau</span>
-                )}
+                ) : null}
               </button>
             );
           })}
@@ -8592,10 +9064,106 @@ function ProspectingView({
                 </div>
               ))}
             </div>
-            <div style={{ marginTop: "auto", display: "grid", gap: 8 }}>
+            <div style={{ marginTop: "auto", display: "grid", gap: 10 }}>
+              {/* ALE-230 : envoi via Unipile — demande de connexion → acceptation → 1er message */}
+              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, display: "grid", gap: 8 }}>
+                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontWeight: 700 }}>
+                  Contacter sur LinkedIn
+                </div>
+                {!outreach.status?.connected ? (
+                  <p style={{ margin: 0, fontSize: 12.5, color: "var(--muted)" }}>
+                    Connecte ton compte LinkedIn dans <strong>Mon profil</strong> pour envoyer une demande
+                    de connexion et un premier message depuis ici.
+                  </p>
+                ) : (() => {
+                  const q = outreach.status?.quota;
+                  const oStatus = selected.outreach_status || "none";
+                  return (
+                    <>
+                      {q && (
+                        <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                          Invitations {q.invites_today}/{q.daily_cap} · Messages {q.messages_today}/{q.daily_cap} (aujourd&apos;hui)
+                        </div>
+                      )}
+                      {oStatus === "none" && (
+                        <>
+                          <button
+                            className="primary-button"
+                            disabled={outreachBusy || !q?.can_invite}
+                            title={!q?.can_invite ? (q?.invite_blocked_reason || "") : "Demande de connexion sans note"}
+                            onClick={() => inviteLead(selected)}
+                          >
+                            {outreachBusy ? <Loader2 size={14} className="spinning" /> : <UserRound size={14} />}
+                            Envoyer une demande de connexion
+                          </button>
+                          {!q?.can_invite && q?.invite_blocked_reason && (
+                            <p style={{ margin: 0, fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{q.invite_blocked_reason}</p>
+                          )}
+                        </>
+                      )}
+                      {oStatus === "invite_sent" && (
+                        <>
+                          <div style={{ fontSize: 13 }}>⏳ Demande envoyée — en attente d&apos;acceptation.</div>
+                          <button className="secondary-button" disabled={outreachBusy} onClick={() => checkConnection(selected)}>
+                            {outreachBusy ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+                            Vérifier l&apos;acceptation
+                          </button>
+                        </>
+                      )}
+                      {oStatus === "connected" && (
+                        <>
+                          <div style={{ fontSize: 13, color: "var(--success)" }}>✓ En relation — prêt pour le premier message.</div>
+                          {!composeOpen ? (
+                            <button
+                              className="primary-button"
+                              disabled={!q?.can_message}
+                              title={!q?.can_message ? (q?.message_blocked_reason || "") : ""}
+                              onClick={() => { setComposeOpen(true); if (!messageText) generateMessage(selected); }}
+                            >
+                              <Send size={14} /> Rédiger le premier message
+                            </button>
+                          ) : (
+                            <div style={{ display: "grid", gap: 8 }}>
+                              <textarea
+                                value={messageText}
+                                onChange={(e) => setMessageText(e.target.value)}
+                                rows={5}
+                                placeholder={genBusy ? "Génération du message…" : "Ton premier message…"}
+                                style={{ width: "100%", padding: 8, fontSize: 13, resize: "vertical" }}
+                              />
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <button className="secondary-button" disabled={genBusy} onClick={() => generateMessage(selected)} style={{ fontSize: 12 }}>
+                                  {genBusy ? <Loader2 size={13} className="spinning" /> : <Sparkles size={13} />} Régénérer
+                                </button>
+                                <button
+                                  className="primary-button"
+                                  disabled={outreachBusy || genBusy || !messageText.trim() || !q?.can_message}
+                                  onClick={() => sendFirstMessage(selected)}
+                                  style={{ fontSize: 12 }}
+                                >
+                                  {outreachBusy ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} Envoyer
+                                </button>
+                              </div>
+                              {!q?.can_message && q?.message_blocked_reason && (
+                                <p style={{ margin: 0, fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{q.message_blocked_reason}</p>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {oStatus === "messaged" && (
+                        <div style={{ fontSize: 13, color: "var(--success)" }}>
+                          ✓ Premier message envoyé. Retrouve la conversation dans <strong>Inbox › LinkedIn</strong>.
+                        </div>
+                      )}
+                      {outreachMsg && <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>{outreachMsg}</p>}
+                    </>
+                  );
+                })()}
+              </div>
               {safeHttpUrl(selected.profile_url) && (
                 <a
-                  className="primary-button"
+                  className="secondary-button"
                   style={{ textAlign: "center", textDecoration: "none" }}
                   href={safeHttpUrl(selected.profile_url)}
                   target="_blank"
@@ -8604,9 +9172,6 @@ function ProspectingView({
                   <Linkedin size={14} /> Voir le profil LinkedIn
                 </a>
               )}
-              <p style={{ margin: 0, fontSize: 12, color: "var(--muted)", textAlign: "center" }}>
-                La demande de contact et le premier message arrivent bientôt — en attendant, contacte-le depuis LinkedIn.
-              </p>
             </div>
           </aside>
         </>
@@ -9449,6 +10014,23 @@ export default function Home() {
     })();
   }, [isAuthed]);
 
+  // ALE-230 — retour du flux d'auth hébergée Unipile (messagerie LinkedIn) :
+  // on retrouve le compte connecté côté serveur, on nettoie l'URL, on va au Profil.
+  useEffect(() => {
+    if (!isAuthed) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("linkedin_outreach") !== "connected") return;
+    (async () => {
+      try {
+        await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/refresh`, { method: "POST", headers: await authHeaders() });
+      } catch { /* ignore */ }
+      params.delete("linkedin_outreach");
+      const qs = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+      setView("profile");
+    })();
+  }, [isAuthed]);
+
   // Retour du flux OAuth X (Zernio) : même logique que LinkedIn.
   useEffect(() => {
     if (!isAuthed) return;
@@ -9617,7 +10199,7 @@ export default function Home() {
         <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA, Inbox IG et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "inbox" ? (
-            <IgInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} />
+            <InboxTabs isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} />
           ) : view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} />
           ) : view === "profile" ? (
