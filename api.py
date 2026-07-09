@@ -2238,8 +2238,10 @@ def me_linkedin_outreach_connect(
     user_id = user.get("id")
     if not user_id:
         raise HTTPException(status_code=401, detail="Utilisateur inconnu.")
-    # Certaines versions d'Unipile exigent `expiresOn` : lien court-vécu (1 h).
-    expires_on = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    # Unipile exige `expiresOn` en ISO 8601 UTC MILLIsecondes + suffixe `Z`
+    # (pattern `...\.\d{3}Z$`) — pas de microsecondes ni d'offset `+00:00`, sinon
+    # 400 « Expected union value ». Lien court-vécu (1 h).
+    expires_on = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     try:
         url = unipile.create_hosted_auth_link(
             name=str(user_id),
