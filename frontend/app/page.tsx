@@ -42,6 +42,7 @@ import {
   TrendingUp,
   UserRound,
   Users,
+  X,
   Zap,
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
@@ -255,7 +256,7 @@ type InfluencerTrends = {
   ranking: TrendsRankingRow[];
 };
 
-const mainViews = ["analyze", "profile", "assistant", "content", "inbox"] as const;
+const mainViews = ["analyze", "profile", "assistant", "content", "inbox", "prospecting"] as const;
 type MainView = typeof mainViews[number];
 
 type Platform = "linkedin" | "instagram";
@@ -1125,7 +1126,7 @@ function Sidebar({
 
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {!restricted && (() => {
-        const isNetworkView = view === "content" || view === "analyze";
+        const isNetworkView = view === "content" || view === "analyze" || view === "prospecting";
         const networks: { key: Platform; label: string; icon: React.ReactNode }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
           { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
@@ -1181,6 +1182,36 @@ function Sidebar({
                         </button>
                       );
                     })}
+                    {/* ALE-229 : Prospection — actif sous LinkedIn, jumeau grisé « Bientôt » sous Instagram */}
+                    {expanded && net.key === "linkedin" && (
+                      <button
+                        className={`nav-item nav-item-sub ${view === "prospecting" ? "active" : ""} ${!isAuthed ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                        title={collapsed ? "Prospection" : undefined}
+                        onClick={() => {
+                          if (!isAuthed) {
+                            requireAuth("Crée un compte gratuit pour débloquer la prospection.");
+                            return;
+                          }
+                          onNavigate("prospecting");
+                        }}
+                      >
+                        <Target size={14} />
+                        {!collapsed && <span>Prospection</span>}
+                        {!isAuthed ? <Lock size={12} className="lock-ico" /> : null}
+                      </button>
+                    )}
+                    {expanded && net.key === "instagram" && !collapsed && (
+                      <button
+                        className="nav-item nav-item-sub locked"
+                        title="La prospection Instagram arrive bientôt"
+                        disabled
+                        style={{ cursor: "default", opacity: 0.55 }}
+                      >
+                        <Target size={14} />
+                        <span>Prospection</span>
+                        <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 600, color: "var(--muted)", border: "1px solid var(--border)", borderRadius: 99, padding: "1px 7px" }}>Bientôt</span>
+                      </button>
+                    )}
                   </React.Fragment>
                 );
               })}
@@ -1504,6 +1535,7 @@ function TopHeader({
     assistant: "Agent IA",
     content: "Contenu",
     inbox: "Inbox",
+    prospecting: "Prospection LinkedIn",
   };
 
   return (
@@ -8131,6 +8163,273 @@ function MyLibraryView({
   );
 }
 
+// ─── ALE-229 : onglet Prospection — liste des leads + panneau latéral de détail ───
+// V1 volontairement sans import (l'alimentation vient de la veille ALE-227 et de
+// Ma bibliothèque ALE-234), sans score ICP (ALE-228) ni envoi (ALE-230).
+
+type LeadSignal = {
+  source_id?: string | null;
+  post_url?: string | null;
+  author?: string | null;
+  trigger_keyword?: string | null;
+  comment_text?: string | null;
+  commented_at?: string | null;
+};
+
+type Lead = {
+  id: string;
+  profile_url: string;
+  name?: string | null;
+  headline?: string | null;
+  comment_text?: string | null;
+  commented_at?: string | null;
+  reaction_count?: number | null;
+  signals?: LeadSignal[];
+  signal_count?: number;
+  status?: string;
+  created_at?: string;
+};
+
+function leadInitials(l: Lead): string {
+  const parts = (l.name || "").trim().split(/\s+/).filter(Boolean);
+  const ini = ((parts[0]?.[0] || "") + (parts[1]?.[0] || "")).toUpperCase();
+  return ini || "?";
+}
+
+function leadDate(iso?: string | null): string {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+  } catch {
+    return "";
+  }
+}
+
+/** Dernier signal d'un lead (le plus récent ajouté) — porte mot-clé, auteur source et commentaire. */
+function leadLastSignal(l: Lead): LeadSignal {
+  if (l.signals && l.signals.length) return l.signals[l.signals.length - 1];
+  return { comment_text: l.comment_text, commented_at: l.commented_at };
+}
+
+/** Les URLs de leads viennent du scraping (non fiables) : on ne rend que http(s). */
+function safeHttpUrl(u?: string | null): string | undefined {
+  if (!u) return undefined;
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function ProspectingView({
+  isAuthed,
+  requireAuth,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState<Lead | null>(null);
+
+  useEffect(() => {
+    if (!isAuthed) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/leads`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Chargement des leads impossible");
+        if (!cancelled) setLeads(Array.isArray(data.leads) ? data.leads : []);
+      } catch (err: any) {
+        if (!cancelled) setError(err.message || "Chargement impossible");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthed]);
+
+  useEffect(() => {
+    if (!selected) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelected(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
+
+  if (!isAuthed) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: 40 }}>
+        <Lock size={28} style={{ opacity: 0.4, marginBottom: 12 }} />
+        <h2 style={{ margin: "0 0 8px" }}>Prospection</h2>
+        <p style={{ color: "var(--muted)", marginBottom: 16 }}>
+          Connecte-toi pour retrouver les personnes qui commentent les posts lead-magnet de tes concurrents.
+        </p>
+        <button type="button" className="primary-button" onClick={() => requireAuth("Crée un compte gratuit pour débloquer la prospection.")}>
+          <Sparkles size={14} /> Créer un compte gratuit
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h2 className="section-title"><Target size={20} /> Prospection</h2>
+      <p style={{ color: "var(--muted)", margin: "0 0 16px", fontSize: 14, maxWidth: 640 }}>
+        Les personnes qui viennent de commenter les posts lead-magnet de tes concurrents — le signal
+        d&apos;intention le plus chaud de LinkedIn. Clique une ligne pour le détail.
+      </p>
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+      {loading && leads.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: 24 }}>
+          <Loader2 size={20} className="spinning" style={{ opacity: 0.5 }} />
+        </div>
+      ) : leads.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+          <p style={{ margin: 0, color: "var(--muted)" }}>
+            Aucun lead pour l&apos;instant. Ils arrivent automatiquement des posts lead-magnet détectés
+            dans la <strong>Veille</strong> et de ceux que tu importes dans <strong>Contenu › Ma bibliothèque</strong>
+            {" "}(bouton « Récupérer les commentateurs »).
+          </p>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 6 }}>
+          {leads.map((l) => {
+            const sig = leadLastSignal(l);
+            const multi = (l.signal_count ?? 1) > 1;
+            return (
+              <button
+                key={l.id}
+                type="button"
+                className="card"
+                onClick={() => setSelected(l)}
+                style={{
+                  display: "flex", gap: 12, alignItems: "center", width: "100%", textAlign: "left",
+                  cursor: "pointer", padding: "10px 14px", font: "inherit", color: "inherit",
+                  border: selected?.id === l.id ? "1px solid var(--accent, #2e6bd6)" : undefined,
+                }}
+              >
+                <span style={{ width: 34, height: 34, borderRadius: 99, background: "var(--surface-high)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, flexShrink: 0 }}>
+                  {leadInitials(l)}
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}>
+                    <strong style={{ whiteSpace: "nowrap" }}>{l.name || "Profil LinkedIn"}</strong>
+                    {l.headline && (
+                      <span style={{ color: "var(--muted)", fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {l.headline}
+                      </span>
+                    )}
+                  </span>
+                  <span style={{ display: "block", color: "var(--muted)", fontSize: 12, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    a commenté{sig.trigger_keyword ? <> « <strong>{sig.trigger_keyword}</strong> »</> : null}
+                    {sig.author ? ` chez ${sig.author}` : ""}
+                    {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
+                    {multi ? <strong style={{ color: "var(--success)" }}> · {l.signal_count} signaux</strong> : null}
+                  </span>
+                </span>
+                {l.status === "new" && (
+                  <span className="daily-seed-tag" style={{ flexShrink: 0 }}>Nouveau</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {leads.length > 0 && (
+        <p style={{ color: "var(--muted)", fontSize: 12, textAlign: "center", marginTop: 14 }}>
+          {leads.length} lead(s) · les multi-signaux (plusieurs concurrents) remontent en premier.
+        </p>
+      )}
+
+      {/* Panneau latéral de détail */}
+      {selected && (
+        <>
+          <div
+            onClick={() => setSelected(null)}
+            style={{ position: "fixed", inset: 0, background: "rgba(15,18,25,.35)", zIndex: 40 }}
+          />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            style={{
+              position: "fixed", top: 0, right: 0, height: "100vh", width: 400, maxWidth: "92vw",
+              background: "var(--surface)", borderLeft: "1px solid var(--border)", zIndex: 50,
+              overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 14,
+            }}
+          >
+            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              <span style={{ width: 46, height: 46, borderRadius: 99, background: "var(--surface-high)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 15, flexShrink: 0 }}>
+                {leadInitials(selected)}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 16 }}>{selected.name || "Profil LinkedIn"}</div>
+                {selected.headline && <div style={{ color: "var(--muted)", fontSize: 12.5 }}>{selected.headline}</div>}
+              </div>
+              <button className="icon-button" title="Fermer" onClick={() => setSelected(null)}><X size={16} /></button>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {selected.status === "new" && <span className="daily-seed-tag">Nouveau</span>}
+              {(selected.signal_count ?? 1) > 1 && (
+                <span className="daily-seed-tag" style={{ color: "var(--success)", fontWeight: 600 }}>
+                  {selected.signal_count} signaux
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontWeight: 700, marginTop: 4 }}>
+              Signaux d&apos;intention
+            </div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {(selected.signals && selected.signals.length
+                ? [...selected.signals].reverse()
+                : [leadLastSignal(selected)]
+              ).map((sig, i) => (
+                <div key={i} className="card" style={{ padding: "10px 12px" }}>
+                  {sig.comment_text && (
+                    <p style={{ margin: 0, fontSize: 13, whiteSpace: "pre-wrap" }}>« {sig.comment_text} »</p>
+                  )}
+                  <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                    {sig.trigger_keyword ? <>mot-clé « <strong>{sig.trigger_keyword}</strong> » · </> : null}
+                    {sig.author ? `chez ${sig.author}` : "post concurrent"}
+                    {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
+                    {safeHttpUrl(sig.post_url) ? (
+                      <> · <a href={safeHttpUrl(sig.post_url)} target="_blank" rel="noreferrer">voir le post</a></>
+                    ) : null}
+                  </p>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: "auto", display: "grid", gap: 8 }}>
+              {safeHttpUrl(selected.profile_url) && (
+                <a
+                  className="primary-button"
+                  style={{ textAlign: "center", textDecoration: "none" }}
+                  href={safeHttpUrl(selected.profile_url)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <Linkedin size={14} /> Voir le profil LinkedIn
+                </a>
+              )}
+              <p style={{ margin: 0, fontSize: 12, color: "var(--muted)", textAlign: "center" }}>
+                La demande de contact et le premier message arrivent bientôt — en attendant, contacte-le depuis LinkedIn.
+              </p>
+            </div>
+          </aside>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ALE-223 : onglet unique « Ma bibliothèque » regroupant, en tiroirs repliables,
 // les contenus sauvegardés + les posts programmés (LibraryView) et la bibliothèque
 // de références/templates (MyLibraryView).
@@ -9220,6 +9519,9 @@ export default function Home() {
                     setView("assistant");
                   }}
                 />
+              )}
+              {view === "prospecting" && (
+                <ProspectingView isAuthed={isAuthed} requireAuth={requireAuth} />
               )}
             </>
           )}
