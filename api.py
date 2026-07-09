@@ -22,7 +22,7 @@ from src.pipeline import run_analysis
 from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
-from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet
+from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet, score_leads
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
@@ -1851,6 +1851,46 @@ class LeadCollectRequest(BaseModel):
     max_comments: int | None = Field(default=None, ge=1, le=500)
 
 
+class LeadTargetingRequest(BaseModel):
+    ideal_client: str | None = Field(default=None, max_length=4000)
+    offer: str | None = Field(default=None, max_length=4000)
+    interest_keywords: list[str] | None = Field(default=None)
+    score_threshold: int | None = Field(default=None, ge=0, le=100)
+    first_message_instructions: str | None = Field(default=None, max_length=4000)
+
+
+def _score_leads_for_source(token: str, source: dict, counts: dict) -> None:
+    """Note (ICP) les leads fraîchement touchés par une collecte, si un ciblage
+    est configuré. Best-effort : un échec de scoring ne casse pas la collecte."""
+    ids_by_url = (counts or {}).get("ids_by_url") or {}
+    if not ids_by_url:
+        return
+    targeting = db.get_lead_targeting(token)
+    if not targeting:
+        return  # pas de ciblage → on n'invente pas de score (tous les leads restent visibles)
+    try:
+        leads = db.list_leads_for_scoring(token)
+        by_id = {l["id"]: l for l in leads}
+        to_score = [by_id[lid] for lid in ids_by_url.values() if lid in by_id]
+        lead_inputs = [
+            {
+                "headline": l.get("headline"),
+                "comment_text": l.get("comment_text"),
+                "trigger_keyword": (source or {}).get("trigger_keyword"),
+                "author": (source or {}).get("author"),
+            }
+            for l in to_score
+        ]
+        scores = score_leads(targeting, lead_inputs, source_post_text=(source or {}).get("post_text"))
+        scored = [
+            {"id": l["id"], "score": s.get("score"), "reason": s.get("reason")}
+            for l, s in zip(to_score, scores)
+        ]
+        db.update_lead_scores(token, scored)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[leads] scoring à l'ingestion échoué : {exc}", flush=True)
+
+
 def _collect_lead_source(token: str, source: dict, max_comments: int | None) -> dict[str, Any]:
     """Scrape les commentateurs d'une source et les persiste en leads dédupliqués."""
     if not os.environ.get("APIFY_TOKEN"):
@@ -1862,6 +1902,8 @@ def _collect_lead_source(token: str, source: dict, max_comments: int | None) -> 
     except Exception as exc:  # noqa: BLE001 — erreur actor/réseau remontée telle quelle
         raise HTTPException(status_code=502, detail=f"Collecte des commentaires échouée : {exc}")
     counts = db.save_leads(token, source, commenters)
+    # Scoring ICP (ALE-228) : note les leads fraîchement touchés contre le ciblage.
+    _score_leads_for_source(token, source, counts)
     updated = db.update_lead_source(
         token,
         source["id"],
@@ -1958,8 +2000,76 @@ def delete_me_lead_source(source_id: str, token: str = Depends(require_token)) -
 
 @app.get("/me/leads")
 def me_leads(token: str = Depends(require_token)) -> dict[str, Any]:
-    """Leads de prospection de l'utilisateur (multi-signaux d'abord)."""
+    """Leads de prospection de l'utilisateur (mieux notés d'abord, sous-seuil masqués)."""
     return {"leads": db.list_leads(token)}
+
+
+@app.get("/me/lead-targeting")
+def me_lead_targeting(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Config de ciblage ICP. Si jamais enregistrée, on renvoie un brouillon
+    pré-rempli depuis le profil éditorial (client idéal ← audience cible, offre ←
+    offre principale) — éditable puis à enregistrer via PUT. On ne réécrit jamais
+    dans le profil éditorial (ALE-228)."""
+    targeting = db.get_lead_targeting(token)
+    if targeting:
+        return {"targeting": targeting, "exists": True}
+    profile = db.get_editorial_profile(token) or {}
+    draft = {
+        "ideal_client": profile.get("target_audience") or "",
+        "offer": profile.get("core_offer") or "",
+        "interest_keywords": [],
+        "score_threshold": 60,
+        "first_message_instructions": "",
+    }
+    return {"targeting": draft, "exists": False}
+
+
+@app.put("/me/lead-targeting")
+def update_me_lead_targeting(
+    payload: LeadTargetingRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Enregistre la config de ciblage ICP."""
+    saved = db.upsert_lead_targeting(token, payload.model_dump(exclude_unset=True))
+    if not saved:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer le ciblage.")
+    return {"targeting": saved, "exists": True}
+
+
+@app.post("/me/leads/rescore")
+def rescore_me_leads(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Recalcule le score ICP de tous les leads avec le ciblage courant (ALE-228).
+
+    À appeler après une modification du ciblage : change le classement et le
+    filtrage par seuil. Sans ciblage enregistré → 400."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=503, detail="Scoring IA non configuré.")
+    targeting = db.get_lead_targeting(token)
+    if not targeting:
+        raise HTTPException(status_code=400, detail="Configure d'abord ton ciblage.")
+    leads = db.list_leads_for_scoring(token)
+    if not leads:
+        return {"rescored": 0}
+
+    def _last_signal(lead: dict) -> dict:
+        signals = lead.get("signals") or []
+        return signals[-1] if signals else {}
+
+    lead_inputs = [
+        {
+            "headline": l.get("headline"),
+            "comment_text": l.get("comment_text"),
+            "trigger_keyword": _last_signal(l).get("trigger_keyword"),
+            "author": _last_signal(l).get("author"),
+        }
+        for l in leads
+    ]
+    scores = score_leads(targeting, lead_inputs)
+    scored = [
+        {"id": l["id"], "score": s.get("score"), "reason": s.get("reason")}
+        for l, s in zip(leads, scores)
+    ]
+    n = db.update_lead_scores(token, scored)
+    return {"rescored": n}
 
 
 @app.get("/me/daily-ideas")
