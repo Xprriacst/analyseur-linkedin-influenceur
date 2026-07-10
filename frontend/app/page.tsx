@@ -1767,7 +1767,7 @@ function TopPosts({ result, limit, onUnlock }: { result: Analysis; limit?: numbe
               <span className="badge">💬 {fmt(post.comments)}</span>
               <span className="badge">🔁 {fmt(post.reposts)}</span>
             </div>
-            {post.url ? <a className="secondary-button" href={post.url} target="_blank" style={{ fontSize: 12, minHeight: 28 }}>Voir sur LinkedIn</a> : null}
+            {safeHttpUrl(post.url) ? <a className="secondary-button" href={safeHttpUrl(post.url)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, minHeight: 28 }}>Voir sur LinkedIn</a> : null}
           </div>
         </div>
       ))}
@@ -3620,8 +3620,8 @@ function DailyIdeasView({
                 <span className="idea-line-text">{idea.line}</span>
                 {idea.source_ref && (
                   <span className="idea-line-source">
-                    {idea.source_url ? (
-                      <a href={idea.source_url} target="_blank" rel="noopener noreferrer">{idea.source_ref}</a>
+                    {safeHttpUrl(idea.source_url) ? (
+                      <a href={safeHttpUrl(idea.source_url)} target="_blank" rel="noopener noreferrer">{idea.source_ref}</a>
                     ) : (
                       idea.source_ref
                     )}
@@ -3715,7 +3715,7 @@ function DailyIdeasView({
                           />
                           <p className="section-desc" style={{ margin: "6px 0 0", fontSize: 12 }}>
                             <Linkedin size={11} style={{ verticalAlign: "-1px" }} /> Photo de l'annonce — rattachée automatiquement à la publication
-                            {it.source_url && <> · <a href={it.source_url} target="_blank" rel="noreferrer">voir l'annonce</a></>}
+                            {safeHttpUrl(it.source_url) && <> · <a href={safeHttpUrl(it.source_url)} target="_blank" rel="noreferrer">voir l'annonce</a></>}
                           </p>
                         </div>
                       )}
@@ -7790,7 +7790,7 @@ function InfluencersView({
                             <span className="tr-avatar" aria-hidden="true">{initialsOf(entry.name)}</span>
                             <span>
                               <a
-                                href={entry.profile_url}
+                                href={safeHttpUrl(entry.profile_url)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="tr-name"
@@ -8093,8 +8093,8 @@ function MonitoringFeedView({
                         : savedIds[p.id] ? <CheckCircle2 size={12} /> : <BookmarkPlus size={12} />}
                       {savedIds[p.id] ? " Gardé ✓" : savingId === p.id ? " Extraction…" : " Garder dans ma bibliothèque"}
                     </button>
-                    {p.url && (
-                      <a href={p.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "var(--muted)" }}>
+                    {safeHttpUrl(p.url) && (
+                      <a href={safeHttpUrl(p.url)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "var(--muted)" }}>
                         voir sur LinkedIn
                       </a>
                     )}
@@ -8557,8 +8557,8 @@ function MyLibraryView({
                   )}
                   {(t.source_author || t.source_post_url) && !t.structure_label && (
                     <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
-                      {t.source_post_url ? (
-                        <a href={t.source_post_url} target="_blank" rel="noreferrer">voir le post</a>
+                      {safeHttpUrl(t.source_post_url) ? (
+                        <a href={safeHttpUrl(t.source_post_url)} target="_blank" rel="noreferrer">voir le post</a>
                       ) : null}
                     </p>
                   )}
