@@ -271,13 +271,12 @@ function InstagramIcon({ size = 14 }: { size?: number }) {
   );
 }
 
-/** Sous-onglets de la vue « Analyser » (analyse, influenceurs, dashboard fusionnés). */
-type AnalyzeTab = "analyze" | "influencers" | "monitoring";
-
 /** Sous-onglets de la vue « Contenu » (idée du jour, générateur, mes contenus fusionnés). */
 // ALE-223 : « Mes contenus » et « Ma bibliothèque » fusionnés dans un seul
 // sous-onglet (clé "library", label « Ma bibliothèque »), présenté en tiroirs.
-type ContentTab = "daily" | "generator" | "library";
+// ALE-257 : la Veille (analyse de profils, classement, tendances, monitoring) est
+// fusionnée dans Contenu sous un sous-onglet « analyses » (page unique qui défile).
+type ContentTab = "analyses" | "daily" | "generator" | "library";
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
 const steps = [
@@ -522,7 +521,7 @@ function ItemRow({ item, onOpen, opening, onCancel, cancelling, onDelete, deleti
   );
 }
 
-function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth, onJobUpdated }: {
+function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth, onJobUpdated, part = "full" }: {
   jobs: Job[];
   loading: boolean;
   isAuthed: boolean;
@@ -530,6 +529,10 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
   onOpenReport: (markdown: string, name: string) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
   onJobUpdated: (job: Job) => void;
+  // ALE-257 : "launch" = seul le bloc de lancement de série, "series" = seule la
+  // liste des séries (rangée dans un tiroir repliable par le parent), "full" = les
+  // deux (comportement historique, encore utilisé hors de la page Analyses).
+  part?: "launch" | "series" | "full";
 }) {
   const [urls, setUrls] = useState("");
   const [limit, setLimit] = useState(25);
@@ -641,6 +644,8 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
 
   return (
     <div>
+      {part !== "series" && (
+      <>
       <div className="section-header" style={{ marginBottom: 16 }}>
         <div>
           <h2 className="section-title"><ListChecks size={20} /> Analyser des profils</h2>
@@ -678,9 +683,13 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
           </label>
         </div>
       </div>
+      </>
+      )}
 
       {error ? <div className="error">{error}</div> : null}
 
+      {part !== "launch" && (
+      <>
       {/* Séries existantes (connectés uniquement — l'anonyme n'a qu'un essai) */}
       {!isAuthed ? (
         <div className="report-card" style={{ maxWidth: 720, cursor: "pointer" }} onClick={() => requireAuth("Crée un compte gratuit pour lancer des séries de plusieurs profils et conserver ton historique.")}>
@@ -739,13 +748,15 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
           })}
         </div>
       )}
+      </>
+      )}
     </div>
   );
 }
 
 /* ── Instagram analyse hub ─────────────────────────────────────────────── */
 
-function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth, onJobUpdated }: {
+function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAuth, onJobUpdated, part = "full" }: {
   jobs: Job[];
   loading: boolean;
   isAuthed: boolean;
@@ -753,6 +764,8 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
   onOpenReport: (markdown: string, name: string) => void;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
   onJobUpdated: (job: Job) => void;
+  // ALE-257 : "launch" = bloc de lancement, "series" = liste des séries (tiroir), "full" = les deux.
+  part?: "launch" | "series" | "full";
 }) {
   const [handles, setHandles] = useState("");
   const [limit, setLimit] = useState(30);
@@ -840,6 +853,8 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
 
   return (
     <div>
+      {part !== "series" && (
+      <>
       <div className="section-header" style={{ marginBottom: 16 }}>
         <div>
           <h2 className="section-title"><InstagramIcon size={20} /> Analyser des profils Instagram</h2>
@@ -876,9 +891,13 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
           </label>
         </div>
       </div>
+      </>
+      )}
 
       {error ? <div className="error">{error}</div> : null}
 
+      {part !== "launch" && (
+      <>
       {!isAuthed ? (
         <div className="report-card" style={{ maxWidth: 720, cursor: "pointer" }} onClick={() => requireAuth("Crée un compte gratuit pour analyser des profils Instagram et conserver ton historique.")}>
           <div className="report-icon"><Lock size={13} /></div>
@@ -936,6 +955,77 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
           })}
         </div>
       )}
+      </>
+      )}
+    </div>
+  );
+}
+
+/* ── ALE-257 : tiroir « Séries en cours & historique » ─────────────────────
+   Replié par défaut, s'ouvre automatiquement dès qu'une série tourne ou vient
+   d'échouer. Réutilisé pour LinkedIn et Instagram (filtre sur `platform`). */
+function SeriesDrawer({ jobs, platform, children }: {
+  jobs: Job[];
+  platform: Platform;
+  children: React.ReactNode;
+}) {
+  const relevant = jobs.filter((j) =>
+    platform === "instagram" ? j.platform === "instagram" : (j.platform ?? "linkedin") !== "instagram",
+  );
+  const hasActive = relevant.some((j) => jobIsActive(j));
+  const activeCount = relevant.filter((j) => jobIsActive(j)).length;
+  // Signature stable pour ne réagir qu'aux vrais changements d'état des séries.
+  const sig = relevant.map((j) => `${j.id}:${j.status}:${j.failed}:${j.completed}`).join("|");
+  const [open, setOpen] = useState(false);
+  const prevFailedRef = useRef<Record<string, number> | null>(null);
+
+  useEffect(() => {
+    const seeded = prevFailedRef.current !== null;
+    let newlyFailed = false;
+    const snapshot: Record<string, number> = {};
+    for (const j of relevant) {
+      snapshot[j.id] = j.failed;
+      // Au 1er passage on ne fait qu'amorcer le snapshot : un échec HISTORIQUE ne
+      // doit pas rouvrir le tiroir à chaque chargement. Seule une série qui échoue
+      // PENDANT la session compte comme « vient d'échouer ».
+      if (seeded && j.failed > (prevFailedRef.current?.[j.id] ?? 0)) newlyFailed = true;
+    }
+    prevFailedRef.current = snapshot;
+    // Auto-ouverture : une série tourne, ou une série vient d'accumuler un échec.
+    if (hasActive || newlyFailed) setOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig]);
+
+  return (
+    <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          padding: "14px 16px",
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          color: "var(--ink)",
+          font: "inherit",
+        }}
+      >
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <Activity size={16} />
+          <strong style={{ fontSize: 15 }}>Séries en cours &amp; historique</strong>
+          {activeCount > 0 ? (
+            <span className="badge"><Loader2 size={11} className="spinning" /> {activeCount} en cours</span>
+          ) : null}
+        </span>
+        <ChevronRight size={18} style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+      </button>
+      {open ? <div style={{ padding: "0 16px 16px" }}>{children}</div> : null}
     </div>
   );
 }
@@ -1141,8 +1231,9 @@ function Sidebar({
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
           { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
         ];
+        // ALE-257 : « Veille » retirée — l'analyse (profils, classement, tendances,
+        // monitoring) vit désormais dans « Contenu » › sous-onglet « Analyses ».
         const subTabs: { key: MainView; label: string; icon: React.ReactNode; premium?: boolean }[] = [
-          { key: "analyze", label: "Veille", icon: <ListChecks size={14} /> },
           { key: "content", label: "Contenu", icon: <PenTool size={14} />, premium: true },
         ];
         return (
@@ -1166,7 +1257,9 @@ function Sidebar({
                     {expanded && subTabs.map((tab) => {
                       const locked = !!tab.premium && !isAuthed;
                       const badge = jobBadges[net.key];
-                      const showBadge = tab.key === "analyze" && badge;
+                      // ALE-257 : la progression des séries s'affiche sur « Contenu »
+                      // (la Veille n'a plus d'entrée de nav dédiée).
+                      const showBadge = tab.key === "content" && badge;
                       return (
                         <button
                           key={tab.key}
@@ -1371,13 +1464,30 @@ function InstagramContentHub({
   onTab,
   isAuthed,
   requireAuth,
+  // ALE-257 : Veille Instagram fusionnée dans Contenu (lancement + tiroir séries).
+  loadedReport,
+  onCloseReport,
+  jobs,
+  jobsLoading,
+  onJobCreated,
+  onJobUpdated,
+  onOpenReport,
 }: {
   tab: ContentTab;
   onTab: (t: ContentTab) => void;
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
+  loadedReport: Report | null;
+  onCloseReport: () => void;
+  jobs: Job[];
+  jobsLoading: boolean;
+  onJobCreated: (job: Job) => void;
+  onJobUpdated: (job: Job) => void;
+  onOpenReport: (markdown: string, name: string) => void;
 }) {
   const subTabs: { key: ContentTab; label: string; icon: React.ReactNode }[] = [
+    // ALE-257 : « Analyses » en tête (Veille IG = lancement + tiroir séries).
+    { key: "analyses", label: "Analyses", icon: <BarChart3 size={14} /> },
     { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} /> },
     { key: "generator", label: "Générateur de hooks", icon: <PenTool size={14} /> },
     { key: "library", label: "Mes contenus", icon: <Bookmark size={14} /> },
@@ -1397,7 +1507,26 @@ function InstagramContentHub({
           </button>
         ))}
       </div>
-      {tab === "generator" ? (
+      {tab === "analyses" ? (
+        loadedReport ? (
+          <>
+            <button className="secondary-button" style={{ marginBottom: 12 }} onClick={onCloseReport}>
+              ← Retour aux analyses
+            </button>
+            <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
+          </>
+        ) : (
+          <InstagramAnalysesView
+            jobs={jobs}
+            jobsLoading={jobsLoading}
+            onJobCreated={onJobCreated}
+            onJobUpdated={onJobUpdated}
+            onOpenReport={onOpenReport}
+            isAuthed={isAuthed}
+            requireAuth={requireAuth}
+          />
+        )
+      ) : tab === "generator" ? (
         <InstagramGenerator isAuthed={isAuthed} requireAuth={requireAuth} />
       ) : (
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "28px 20px", color: "var(--muted)" }}>
@@ -2536,10 +2665,12 @@ const _genCache: { variants: Variant[]; topic: string; appliedJobId: string | nu
 function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated, onRework }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void; onRework?: (post: string) => void }) {
   const [variants, setVariants] = useState<Variant[]>(_genCache.variants);
   const [topic, setTopic] = useState(_genCache.topic);
+  const topicRef = useRef<HTMLTextAreaElement | null>(null); // ALE-235 : champ Sujet auto-resize
   const [role, setRole] = useState("auto");
-  // ALE-216/ALE-222 : template de structure choisi dans la bibliothèque (optionnel).
-  // Seules les entrées AVEC structure sont proposées (les entrées texte-seul
-  // nourrissent l'inspiration aléatoire, pas le sélecteur).
+  // ALE-233 : template de post choisi dans la bibliothèque (optionnel). Le post
+  // complet EST le template → toute entrée avec un texte de post est proposée ;
+  // fallback rétro-compat : les entrées qui n'ont qu'un squelette (structure_text)
+  // le restent aussi.
   const [templates, setTemplates] = useState<PostTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
 
@@ -2551,11 +2682,11 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
         .then((r) => (r.ok ? r.json() : []))
         .then((data) => {
           if (cancelled) return;
-          const withStructure = (Array.isArray(data) ? data : []).filter(
-            (t: PostTemplate) => (t.structure_text || "").trim()
+          const usable = (Array.isArray(data) ? data : []).filter(
+            (t: PostTemplate) => (t.post_text || "").trim() || (t.structure_text || "").trim()
           );
-          setTemplates(withStructure);
-          setTemplateId((prev) => (prev && !withStructure.some((t: PostTemplate) => t.id === prev) ? "" : prev));
+          setTemplates(usable);
+          setTemplateId((prev) => (prev && !usable.some((t: PostTemplate) => t.id === prev) ? "" : prev));
         })
         .catch(() => {})
     );
@@ -2601,6 +2732,14 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   // pour les restaurer si le composant est démonté puis remonté (changement d'onglet).
   useEffect(() => { _genCache.variants = variants; }, [variants]);
   useEffect(() => { _genCache.topic = topic; }, [topic]);
+
+  // ALE-235 : le champ Sujet grandit avec le contenu (plafonné, scroll au-delà).
+  useEffect(() => {
+    const el = topicRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [topic]);
 
   // ALE-141 : la génération tourne en file d'attente côté serveur (jobs portés par
   // Home). On surveille le job le plus récent : tant qu'il est actif, on affiche
@@ -2853,15 +2992,18 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       <div className="gen-section">
         <h2 className="section-title"><PenTool size={20} /> Générer des idées de posts</h2>
         <div className="gen-form">
-          <div className="url-input">
-            <PenTool size={16} color="var(--primary)" />
-            <input
+          <div className="url-input url-input--multi">
+            <PenTool size={16} color="var(--primary)" style={{ marginTop: 7, flexShrink: 0 }} />
+            <textarea
+              ref={topicRef}
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              placeholder="Sujet du post (optionnel) : ex. les 5 erreurs avec Claude AI…"
-              onKeyDown={(e) => { if (e.key === "Enter" && !(loadingPosts || genJobActive)) generateFromTopic(topic); }}
+              placeholder="Sujet du post (optionnel) : ex. les 5 erreurs avec Claude AI… (Cmd/Ctrl+Entrée pour générer)"
+              rows={1}
+              onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !(loadingPosts || genJobActive)) generateFromTopic(topic); }}
+              style={{ resize: "none", overflow: "auto", maxHeight: 160 }}
             />
-            <button className="primary-button" disabled={loadingPosts || genJobActive} onClick={() => generateFromTopic(topic)}>
+            <button className="primary-button" style={{ flexShrink: 0 }} disabled={loadingPosts || genJobActive} onClick={() => generateFromTopic(topic)}>
               {(loadingPosts || genJobActive) ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
               {genJobActive ? "Génération en cours…" : "Générer"}
             </button>
@@ -2910,7 +3052,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                 </select>
                 {templates.length === 0 ? (
                   <span style={{ fontSize: 12 }}>
-                    Ajoute des posts dans Contenu › Ma bibliothèque pour avoir des templates de structure.
+                    Ajoute des posts dans Contenu › Ma bibliothèque : chaque post devient un template.
                   </span>
                 ) : templateId && templates.find((t) => t.id === templateId)?.image_note ? (
                   <span style={{ fontSize: 12 }}>
@@ -7752,12 +7894,10 @@ function InfluencersView({
         <div>
           <h2 className="section-title"><Users size={20} /> Mes influenceurs</h2>
           <p className="section-desc">
-            Les tendances de ta veille, puis le classement de tes profils analysés.
+            Le classement de tes profils analysés, puis les tendances de ta veille.
           </p>
         </div>
       </div>
-
-      <InfluencerTrendsBlock trends={trends} loading={trendsLoading} onRefresh={loadTrends} />
 
       {checkMsg && <div className="card" style={{ margin: "12px 0", padding: "10px 14px", fontSize: 13, color: "var(--muted)" }}>{checkMsg}</div>}
       {error && <div className="error" style={{ margin: "12px 0" }}>{error}</div>}
@@ -7771,7 +7911,7 @@ function InfluencersView({
         <div className="card" style={{ textAlign: "center", padding: 32, marginTop: 20 }}>
           <FileText size={24} style={{ opacity: 0.35, marginBottom: 8 }} />
           <p style={{ margin: 0, color: "var(--muted)" }}>
-            Aucun profil analysé pour l’instant. Lance une série dans l’onglet Analyser.
+            Aucun profil analysé pour l’instant. Lance une série avec le bloc « Analyser des profils » ci-dessus.
           </p>
         </div>
       ) : (
@@ -7882,6 +8022,11 @@ function InfluencersView({
           )}
         </div>
       )}
+
+      {/* ALE-257 : les tendances passent SOUS le classement (ordre voulu). */}
+      <div style={{ marginTop: 24 }}>
+        <InfluencerTrendsBlock trends={trends} loading={trendsLoading} onRefresh={loadTrends} />
+      </div>
     </div>
   );
 }
@@ -8160,9 +8305,10 @@ function MonitoringFeedView({
  * onglet Analyser (séries) et Mes influenceurs. L'ancien Dashboard global (ALE-132)
  * est remplacé par le bloc « Tendances de ta veille » rendu par InfluencersView.
  */
-function AnalyzeHub({
-  tab,
-  onTab,
+/** ALE-257 : page « Analyses » LinkedIn — tout empilé sur une seule page qui défile
+ *  (lancement → tiroir séries → classement « Mes influenceurs » → tendances →
+ *  monitoring). Remplace l'ancien AnalyzeHub à sous-onglets. */
+function LinkedInAnalysesView({
   jobs,
   jobsLoading,
   onJobCreated,
@@ -8175,8 +8321,6 @@ function AnalyzeHub({
   requireAuth,
   onInspire,
 }: {
-  tab: AnalyzeTab;
-  onTab: (t: AnalyzeTab) => void;
   jobs: Job[];
   jobsLoading: boolean;
   onJobCreated: (job: Job) => void;
@@ -8189,40 +8333,36 @@ function AnalyzeHub({
   requireAuth: (reason?: string, mode?: AuthMode) => void;
   onInspire: (topic: string) => void;
 }) {
-  const subTabs: { key: AnalyzeTab; label: string; icon: React.ReactNode }[] = [
-    { key: "analyze", label: "Analyser", icon: <ListChecks size={14} /> },
-    { key: "influencers", label: "Mes influenceurs", icon: <Users size={14} /> },
-    { key: "monitoring", label: "Monitoring d'influenceurs", icon: <Eye size={14} /> },
-  ];
-
   return (
     <div>
-      <div className="tabs">
-        {subTabs.map((t) => (
-          <button
-            key={t.key}
-            className={`tab ${tab === t.key ? "active" : ""}`}
-            onClick={() => onTab(t.key)}
-            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-          >
-            {t.icon}
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "analyze" && (
-        <JobsView
-          jobs={jobs}
-          loading={jobsLoading}
-          isAuthed={isAuthed}
-          onCreated={onJobCreated}
-          onJobUpdated={onJobUpdated}
-          onOpenReport={onOpenReport}
-          requireAuth={requireAuth}
-        />
+      {/* 1. Lancement d'une série */}
+      <JobsView
+        part="launch"
+        jobs={jobs}
+        loading={jobsLoading}
+        isAuthed={isAuthed}
+        onCreated={onJobCreated}
+        onJobUpdated={onJobUpdated}
+        onOpenReport={onOpenReport}
+        requireAuth={requireAuth}
+      />
+      {/* 2. Séries d'analyse (logs) — dans un tiroir replié par défaut */}
+      {isAuthed && (
+        <SeriesDrawer jobs={jobs} platform="linkedin">
+          <JobsView
+            part="series"
+            jobs={jobs}
+            loading={jobsLoading}
+            isAuthed={isAuthed}
+            onCreated={onJobCreated}
+            onJobUpdated={onJobUpdated}
+            onOpenReport={onOpenReport}
+            requireAuth={requireAuth}
+          />
+        </SeriesDrawer>
       )}
-      {tab === "influencers" && (
+      {/* 3. Mes influenceurs (classement) + 4. Tendances (rendus dans cet ordre par InfluencersView) */}
+      <div style={{ marginTop: 8 }}>
         <InfluencersView
           entries={influencers}
           loading={influencersLoading}
@@ -8230,9 +8370,59 @@ function AnalyzeHub({
           requireAuth={requireAuth}
           onOpenReport={onOpenLibraryReport}
         />
-      )}
-      {tab === "monitoring" && (
+      </div>
+      {/* 5. Monitoring d'influenceurs */}
+      <div style={{ marginTop: 28 }}>
         <MonitoringFeedView isAuthed={isAuthed} requireAuth={requireAuth} onInspire={onInspire} />
+      </div>
+    </div>
+  );
+}
+
+/** ALE-257 : page « Analyses » Instagram — lancement + tiroir séries uniquement
+ *  (pas de classement / tendances / monitoring : features LinkedIn only). */
+function InstagramAnalysesView({
+  jobs,
+  jobsLoading,
+  onJobCreated,
+  onJobUpdated,
+  onOpenReport,
+  isAuthed,
+  requireAuth,
+}: {
+  jobs: Job[];
+  jobsLoading: boolean;
+  onJobCreated: (job: Job) => void;
+  onJobUpdated: (job: Job) => void;
+  onOpenReport: (markdown: string, name: string) => void;
+  isAuthed: boolean;
+  requireAuth: (reason?: string, mode?: AuthMode) => void;
+}) {
+  return (
+    <div>
+      <InstagramAnalyzeHub
+        part="launch"
+        jobs={jobs}
+        loading={jobsLoading}
+        isAuthed={isAuthed}
+        onCreated={onJobCreated}
+        onJobUpdated={onJobUpdated}
+        onOpenReport={onOpenReport}
+        requireAuth={requireAuth}
+      />
+      {isAuthed && (
+        <SeriesDrawer jobs={jobs} platform="instagram">
+          <InstagramAnalyzeHub
+            part="series"
+            jobs={jobs}
+            loading={jobsLoading}
+            isAuthed={isAuthed}
+            onCreated={onJobCreated}
+            onJobUpdated={onJobUpdated}
+            onOpenReport={onOpenReport}
+            requireAuth={requireAuth}
+          />
+        </SeriesDrawer>
       )}
     </div>
   );
@@ -8278,14 +8468,12 @@ function libraryEntryTitle(t: PostTemplate): string {
 function MyLibraryView({
   isAuthed,
   requireAuth,
-  onReuse,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
-  onReuse: (topic: string) => void;
 }) {
   // ALE-223 : rendu en tiroir repliable au sein de l'onglet « Ma bibliothèque ».
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true); // ALE-231 : ouvert par défaut (import rapide en haut)
   const [entries, setEntries] = useState<PostTemplate[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -8297,7 +8485,8 @@ function MyLibraryView({
   const [imageNote, setImageNote] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [adding, setAdding] = useState(false);
-  const [extractingId, setExtractingId] = useState<string | null>(null);
+  // ALE-233 : déplier un post tronqué pour voir le texte complet (chaque post = template).
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   // ALE-234 : sources de prospection croisées avec la bibliothèque par URL de post.
   const [leadSources, setLeadSources] = useState<Record<string, LibraryLeadSource>>({});
   const [collectingId, setCollectingId] = useState<string | null>(null);
@@ -8410,24 +8599,6 @@ function MyLibraryView({
       setError(err.message || "Ajout impossible");
     } finally {
       setAdding(false);
-    }
-  }
-
-  async function extractStructure(id: string) {
-    setExtractingId(id);
-    setError("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/post-templates/${id}/extract-structure`, {
-        method: "POST",
-        headers: await authHeaders(),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Extraction impossible");
-      setEntries((prev) => prev.map((t) => (t.id === id ? data : t)));
-    } catch (err: any) {
-      setError(err.message || "Extraction impossible");
-    } finally {
-      setExtractingId(null);
     }
   }
 
@@ -8575,9 +8746,21 @@ function MyLibraryView({
                     )}
                   </div>
                   {postText && (
-                    <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
-                      {postText.length > 300 ? `${postText.slice(0, 300)}…` : postText}
-                    </p>
+                    <>
+                      <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
+                        {expanded[t.id] || postText.length <= 300 ? postText : `${postText.slice(0, 300)}…`}
+                      </p>
+                      {postText.length > 300 && (
+                        <button
+                          type="button"
+                          className="link-button"
+                          style={{ fontSize: 12, marginTop: 4 }}
+                          onClick={() => setExpanded((prev) => ({ ...prev, [t.id]: !prev[t.id] }))}
+                        >
+                          {expanded[t.id] ? "Voir moins" : "Voir le post complet"}
+                        </button>
+                      )}
+                    </>
                   )}
                   {structureText && (
                     <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
@@ -8600,29 +8783,12 @@ function MyLibraryView({
                       ) : null}
                     </p>
                   )}
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                    {postText && (
-                      <button
-                        className="secondary-button"
-                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
-                        title="Générer un post inspiré de celui-ci (angle, structure, fond — réécrit pour toi)"
-                        onClick={() => onReuse(`Inspire-toi de ce post de référence — reprends l'angle, la structure ou le fond, mais réécris-le entièrement pour moi :\n\n« ${postText.slice(0, 1200)} »`)}
-                      >
-                        <Sparkles size={12} /> Générer un post inspiré
-                      </button>
-                    )}
-                    {postText && !structureText && (
-                      <button
-                        className="secondary-button"
-                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
-                        title="Extraire la structure de ce post (IA) — il deviendra sélectionnable comme template dans le Générateur"
-                        onClick={() => extractStructure(t.id)}
-                        disabled={extractingId === t.id}
-                      >
-                        {extractingId === t.id ? <Loader2 size={12} className="spinning" /> : <ListChecks size={12} />} Extraire la structure
-                      </button>
-                    )}
-                    {leadSource && (
+                  {/* ALE-233 : ce post est directement sélectionnable comme template dans le
+                      Générateur (menu « Template ») — plus de bouton d'extraction ni de
+                      « Générer un post inspiré » (chemin redondant). Seule action restante :
+                      la collecte de commentateurs quand le post est un lead magnet. */}
+                  {leadSource && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                       <button
                         className="secondary-button"
                         style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
@@ -8635,8 +8801,8 @@ function MyLibraryView({
                           ? `Mettre à jour les commentateurs (${leadSource.comments_count ?? 0} récupérés)`
                           : "Récupérer les commentateurs"}
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
                 {t.image_url && (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -9067,7 +9233,7 @@ function ProspectingView({
         <div className="card" style={{ textAlign: "center", padding: 32 }}>
           <p style={{ margin: 0, color: "var(--muted)" }}>
             Aucun lead pour l&apos;instant. Ils arrivent automatiquement des posts lead-magnet détectés
-            dans la <strong>Veille</strong> et de ceux que tu importes dans <strong>Contenu › Ma bibliothèque</strong>
+            dans <strong>Contenu › Analyses</strong> et de ceux que tu importes dans <strong>Contenu › Ma bibliothèque</strong>
             {" "}(bouton « Récupérer les commentateurs »).
           </p>
         </div>
@@ -9429,8 +9595,9 @@ function MyContentHub({
       <p className="section-desc" style={{ marginTop: 0, marginBottom: 20 }}>
         Tes contenus sauvegardés, tes posts programmés et ta bibliothèque de références — repliés en tiroirs pour t&apos;y retrouver facilement.
       </p>
+      {/* ALE-231 : bloc bibliothèque de références (import rapide) en haut, avant Mes contenus. */}
+      <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} />
       <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
-      <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
     </div>
   );
 }
@@ -9446,6 +9613,18 @@ function ContentHub({
   requireAuth,
   generationJobs,
   onGenerationJobCreated,
+  // ALE-257 : props « Analyses » (Veille fusionnée dans Contenu).
+  loadedReport,
+  onCloseReport,
+  jobs,
+  jobsLoading,
+  onJobCreated,
+  onJobUpdated,
+  onOpenReport,
+  influencers,
+  influencersLoading,
+  onOpenLibraryReport,
+  onInspire,
 }: {
   tab: ContentTab;
   onTab: (t: ContentTab) => void;
@@ -9457,8 +9636,21 @@ function ContentHub({
   requireAuth: (reason?: string, mode?: AuthMode) => void;
   generationJobs: GenerationJob[];
   onGenerationJobCreated: (job: GenerationJob) => void;
+  loadedReport: Report | null;
+  onCloseReport: () => void;
+  jobs: Job[];
+  jobsLoading: boolean;
+  onJobCreated: (job: Job) => void;
+  onJobUpdated: (job: Job) => void;
+  onOpenReport: (markdown: string, name: string) => void;
+  influencers: InfluencerLibraryEntry[];
+  influencersLoading: boolean;
+  onOpenLibraryReport: (entry: InfluencerLibraryEntry) => Promise<void>;
+  onInspire: (topic: string) => void;
 }) {
   const subTabs: { key: ContentTab; label: string; icon: React.ReactNode }[] = [
+    // ALE-257 : Veille fusionnée ici — « Analyses » en tête de la page Contenu.
+    { key: "analyses", label: "Analyses", icon: <BarChart3 size={14} /> },
     { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} /> },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} /> },
     // ALE-223 : onglet unique regroupant contenus sauvegardés, posts programmés
@@ -9466,7 +9658,8 @@ function ContentHub({
     { key: "library", label: "Ma bibliothèque", icon: <ListChecks size={14} /> },
   ];
 
-  // Compte client restreint : on ne montre que le réservoir d'idées, sans sous-onglets.
+  // Compte client restreint : on ne montre que le réservoir d'idées, sans sous-onglets
+  // (et donc pas de page « Analyses » — voir ALE-257, feature agence uniquement).
   if (reservoirOnly) {
     return (
       <div>
@@ -9491,6 +9684,30 @@ function ContentHub({
         ))}
       </div>
 
+      {tab === "analyses" && (
+        loadedReport ? (
+          <>
+            <button className="secondary-button" style={{ marginBottom: 12 }} onClick={onCloseReport}>
+              ← Retour aux analyses
+            </button>
+            <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
+          </>
+        ) : (
+          <LinkedInAnalysesView
+            jobs={jobs}
+            jobsLoading={jobsLoading}
+            onJobCreated={onJobCreated}
+            onJobUpdated={onJobUpdated}
+            onOpenReport={onOpenReport}
+            influencers={influencers}
+            influencersLoading={influencersLoading}
+            onOpenLibraryReport={onOpenLibraryReport}
+            isAuthed={isAuthed}
+            requireAuth={requireAuth}
+            onInspire={onInspire}
+          />
+        )
+      )}
       {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />}
       {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} onRework={onRework} />}
       {tab === "library" && (
@@ -9850,7 +10067,6 @@ export default function Home() {
   const [error, setError] = useState("");
   const [view, setView] = useState<MainView>("content");
   const [platform, setPlatform] = useState<Platform>("linkedin");
-  const [analyzeTab, setAnalyzeTab] = useState<AnalyzeTab>("analyze");
   const [contentTab, setContentTab] = useState<ContentTab>("generator");
   // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
   const [generatorSeed, setGeneratorSeed] = useState<{ topic: string; nonce: number } | null>(null);
@@ -10292,12 +10508,12 @@ export default function Home() {
     })();
   }, [isAuthed]);
 
-  /** Ouvre un rapport (depuis le backlog) dans la vue markdown de l'onglet Analyser. */
+  /** ALE-257 : ouvre un rapport (depuis le backlog) dans Contenu › Analyses. */
   function openReport(markdown: string, name: string) {
     setLoadedReport({ name, path: name, updated_at: Date.now() / 1000, content: markdown });
     setResult(null);
-    setView("analyze");
-    setAnalyzeTab("analyze");
+    setContentTab("analyses");
+    setView("content");
   }
 
   async function openLibraryReport(entry: InfluencerLibraryEntry) {
@@ -10313,8 +10529,8 @@ export default function Home() {
       content: data.report_markdown,
     });
     setResult(null);
-    setView("analyze");
-    setAnalyzeTab("influencers");
+    setContentTab("analyses");
+    setView("content");
   }
 
   async function analyze(payload: { url: string; limit: number; useCache: boolean; runLlm: boolean }) {
@@ -10385,13 +10601,15 @@ export default function Home() {
           platform={platform}
           onNavigate={(v) => {
             setView(v);
-            if (v === "analyze" || v === "profile") {
+            // ALE-257 : cliquer « Contenu » dans la nav repart d'un état propre (referme
+            // un rapport ouvert) ; idem pour le Profil.
+            if (v === "content" || v === "profile") {
               setResult(null);
               setLoadedReport(null);
               setError("");
             }
           }}
-          onLoadReport={(r) => { setLoadedReport(r); setView("analyze"); setResult(null); }}
+          onLoadReport={(r) => { setLoadedReport(r); setContentTab("analyses"); setView("content"); setResult(null); }}
           onPlatformChange={(p) => {
             setPlatform(p);
             try { localStorage.setItem("lkd_platform", p); } catch {}
@@ -10424,68 +10642,30 @@ export default function Home() {
             <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : platform === "instagram" ? (
             view === "content" ? (
-              <InstagramContentHub tab={contentTab} onTab={setContentTab} isAuthed={isAuthed} requireAuth={requireAuth} />
-            ) : view === "analyze" ? (
-              loadedReport ? (
-                <>
-                  <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => setLoadedReport(null)}>
-                    ← Retour aux analyses
-                  </button>
-                  <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
-                </>
-              ) : (
-                <InstagramAnalyzeHub
-                  jobs={jobs}
-                  loading={jobsLoading}
-                  isAuthed={isAuthed}
-                  onCreated={onJobCreated}
-                  onOpenReport={(markdown, name) => { setLoadedReport({ content: markdown, name, path: "", updated_at: Date.now() / 1000 }); }}
-                  requireAuth={requireAuth}
-                  onJobUpdated={onJobUpdated}
-                />
-              )
+              // ALE-257 : Veille IG fusionnée dans Contenu › Analyses.
+              <InstagramContentHub
+                tab={contentTab}
+                onTab={setContentTab}
+                isAuthed={isAuthed}
+                requireAuth={requireAuth}
+                loadedReport={loadedReport}
+                onCloseReport={() => setLoadedReport(null)}
+                jobs={jobs}
+                jobsLoading={jobsLoading}
+                onJobCreated={onJobCreated}
+                onJobUpdated={onJobUpdated}
+                onOpenReport={(markdown, name) => {
+                  setLoadedReport({ content: markdown, name, path: "", updated_at: Date.now() / 1000 });
+                  setContentTab("analyses");
+                }}
+              />
             ) : (
               <InstagramPlaceholder />
             )
           ) : (
             <>
-              {view === "analyze" && (
-                loading
-                  ? <LoadingState />
-                  : result
-                    ? <Dashboard result={result} isAuthed={isAuthed} requireAuth={requireAuth} />
-                    : loadedReport
-                      ? (
-                        <>
-                          <button className="secondary-button" style={{ marginBottom: 12 }} onClick={() => setLoadedReport(null)}>
-                            ← Retour aux analyses
-                          </button>
-                          <div className="markdown card"><ReactMarkdown remarkPlugins={[remarkGfm]}>{loadedReport.content}</ReactMarkdown></div>
-                        </>
-                      )
-                      : (
-                        <AnalyzeHub
-                          tab={analyzeTab}
-                          onTab={setAnalyzeTab}
-                          jobs={jobs}
-                          jobsLoading={jobsLoading}
-                          onJobCreated={onJobCreated}
-                          onJobUpdated={onJobUpdated}
-                          onOpenReport={openReport}
-                          influencers={influencers}
-                          influencersLoading={influencersLoading}
-                          onOpenLibraryReport={openLibraryReport}
-                          isAuthed={isAuthed}
-                          requireAuth={requireAuth}
-                          onInspire={(topic) => {
-                            setGeneratorSeed({ topic, nonce: Date.now() });
-                            setContentTab("generator");
-                            setView("content");
-                          }}
-                        />
-                      )
-              )}
               {view === "content" && (
+                // ALE-257 : Veille LinkedIn fusionnée dans Contenu › Analyses (page empilée).
                 <ContentHub
                   tab={contentTab}
                   onTab={setContentTab}
@@ -10495,6 +10675,21 @@ export default function Home() {
                   requireAuth={requireAuth}
                   generationJobs={generationJobs}
                   onGenerationJobCreated={onGenerationJobCreated}
+                  loadedReport={loadedReport}
+                  onCloseReport={() => setLoadedReport(null)}
+                  jobs={jobs}
+                  jobsLoading={jobsLoading}
+                  onJobCreated={onJobCreated}
+                  onJobUpdated={onJobUpdated}
+                  onOpenReport={openReport}
+                  influencers={influencers}
+                  influencersLoading={influencersLoading}
+                  onOpenLibraryReport={openLibraryReport}
+                  onInspire={(topic) => {
+                    setGeneratorSeed({ topic, nonce: Date.now() });
+                    setContentTab("generator");
+                    setView("content");
+                  }}
                   onReuse={(topic) => {
                     setGeneratorSeed({ topic, nonce: Date.now() });
                     setContentTab("generator");

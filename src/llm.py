@@ -697,12 +697,18 @@ def generate_first_message(targeting: dict, lead: dict) -> str:
 
 
 def _format_template(template: dict | None) -> str:
-    """Render a chosen post template (ALE-216) as a strict structure directive."""
+    """Render a chosen reference post (ALE-233) as a strict structure directive.
+
+    Depuis ALE-233, le TEMPLATE = le POST COMPLET de référence : on injecte le
+    texte entier (``post_text``) et on demande d'en imiter la STRUCTURE sans
+    jamais en copier le contenu. Fallback rétro-compat (ALE-222/ALE-67) : les
+    entrées qui n'ont qu'un squelette résumé (``structure_text``, pas de
+    ``post_text``) restent utilisables comme template.
+    """
     if not template:
         return ""
+    post_text = str(template.get("post_text") or "").strip()
     structure = str(template.get("structure_text") or "").strip()
-    if not structure:
-        return ""
     label = str(template.get("structure_label") or "").strip()
     label_part = f" « {label} »" if label else ""
     note = str(template.get("image_note") or "").strip()
@@ -710,13 +716,29 @@ def _format_template(template: dict | None) -> str:
         f"\nType d'image recommandé pour illustrer ce post (à ne PAS décrire dans le texte) : {note}"
         if note else ""
     )
-    return (
-        f"\n\nTemplate de structure{label_part} choisi par l'utilisateur — respecte STRICTEMENT "
-        "ce squelette pour CHAQUE variant (il prime sur la forme par défaut du rôle éditorial, "
-        "mais jamais sur le contexte client ni sur le fond) :\n"
-        + structure
-        + image_part
-    )
+    if post_text:
+        return (
+            f"\n\nPOST DE RÉFÉRENCE{label_part} choisi par l'utilisateur comme template. "
+            "Imite sa STRUCTURE, son rythme, son format et sa longueur pour CHAQUE variant. "
+            "Ne copie JAMAIS son contenu, son sujet, ses exemples, ses noms ni ses chiffres — "
+            "seul le squelette (l'enchaînement des idées, la mise en forme, le style d'accroche "
+            "et de chute) est réutilisé ; le fond doit venir du sujet et du contexte du client. "
+            "Ce cadre prime sur la forme par défaut du rôle éditorial, mais jamais sur le "
+            "contexte client ni sur le sujet demandé :\n\n«««\n"
+            + post_text[:6000]
+            + "\n»»»"
+            + image_part
+        )
+    if structure:
+        return (
+            f"\n\nTemplate de structure{label_part} choisi par l'utilisateur — respecte STRICTEMENT "
+            "ce squelette pour CHAQUE variant (il prime sur la forme par défaut du rôle éditorial, "
+            "mais jamais sur le contexte client ni sur le fond). Réutilise le squelette, jamais le "
+            "contenu original :\n"
+            + structure
+            + image_part
+        )
+    return ""
 
 
 EDITORIAL_PROFILE_KEYS = [

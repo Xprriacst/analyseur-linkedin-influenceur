@@ -4340,6 +4340,23 @@ def outreach_counts(access_token: str) -> dict[str, int]:
     }
 
 
+def get_outreach_chat_lead_names(access_token: str) -> dict[str, str]:
+    """Map `outreach_chat_id` -> nom du lead, pour nommer les conversations
+    LinkedIn de l'Inbox : Unipile ne renvoie pas toujours le nom du participant
+    dans la liste des chats, alors que le lead scrapé, lui, a un nom."""
+    if not supabase_enabled():
+        return {}
+    db = client_for_token(access_token)
+    resp = db.table("leads").select("name, outreach_chat_id").execute()
+    out: dict[str, str] = {}
+    for row in resp.data or []:
+        cid = row.get("outreach_chat_id")
+        name = (row.get("name") or "").strip()
+        if cid and name:
+            out[cid] = name
+    return out
+
+
 def get_lead(access_token: str, lead_id: str) -> dict | None:
     """Un lead par id (RLS scope)."""
     if not supabase_enabled() or not lead_id:

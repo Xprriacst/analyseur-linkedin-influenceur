@@ -1672,18 +1672,14 @@ def _add_library_entry(
     if not text and structure_text and len(structure_text) < 10:
         raise HTTPException(status_code=422, detail="La structure est trop courte (10 caractères minimum).")
 
-    if text and not structure_text and os.environ.get("ANTHROPIC_API_KEY"):
-        try:
-            extracted = extract_post_template(text)
-            if len(extracted.get("structure_text") or "") >= 10:
-                structure_text = extracted["structure_text"][:4000]
-                structure_label = structure_label or (extracted.get("structure_label") or "")[:200] or None
-                fmt = fmt or extracted.get("format")
-        except Exception as exc:  # noqa: BLE001 — extraction bonus, jamais bloquante
-            print(f"[library] extraction de structure échouée (entrée sauvée sans) : {exc}", flush=True)
-
-    if structure_text and not structure_label:
-        structure_label = structure_text.splitlines()[0][:60]
+    # ALE-233 : le post complet EST le template. Plus d'extraction IA de squelette
+    # à l'import (fini la friction/latence/coût) — le texte entier sert directement
+    # de référence à la génération (cf. _format_template). On dérive juste un titre
+    # court pour l'affichage, découplé du texte de génération (nommage = ALE-232).
+    if not structure_label:
+        basis = (structure_text or text or "").strip()
+        if basis:
+            structure_label = basis.splitlines()[0][:60] or None
 
     entry = db.add_post_template(
         token,
@@ -2541,7 +2537,17 @@ def me_linkedin_outreach_chats(token: str = Depends(require_token)) -> dict[str,
         chats = unipile.list_chats(account["unipile_account_id"])
     except unipile.UnipileError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"chats": [unipile.normalize_chat(c) for c in chats]}
+    normalized = [unipile.normalize_chat(c) for c in chats]
+    # Nommer les conversations avec le nom du lead : Unipile ne renvoie pas
+    # toujours le participant dans la liste des chats (→ fallback « Conversation
+    # LinkedIn »). `outreach_chat_id` relie la conversation à son lead scrapé, qui
+    # a un vrai nom. On préfère ce nom quand il existe.
+    lead_names = db.get_outreach_chat_lead_names(token)
+    for chat in normalized:
+        lead_name = lead_names.get(chat.get("id"))
+        if lead_name:
+            chat["name"] = lead_name
+    return {"chats": normalized}
 
 
 @app.get("/me/linkedin/outreach/chats/{chat_id}/messages")
