@@ -8676,6 +8676,9 @@ type Lead = {
   outreach_status?: string | null;   // none | invite_sent | connected | messaged
   provider_id?: string | null;
   outreach_chat_id?: string | null;
+  // ALE-243 : curation manuelle — 'to_contact' (défaut) | 'skip' (écarté).
+  contact_status?: string | null;
+  skip_reason?: string | null;
 };
 
 /** Libellé court de l'état d'outreach d'un lead (badge de liste). */
@@ -8759,12 +8762,14 @@ function ProspectingView({
   const [outreachMsg, setOutreachMsg] = useState("");
   const [composeOpen, setComposeOpen] = useState(false);
   const [messageText, setMessageText] = useState("");
+  const [skipReason, setSkipReason] = useState(""); // ALE-243 : raison « ne pas contacter »
 
   // Réinitialise le bloc d'envoi quand on change de lead sélectionné.
   useEffect(() => {
     setComposeOpen(false);
     setMessageText("");
     setOutreachMsg("");
+    setSkipReason(selected?.skip_reason || "");
   }, [selected?.id]);
 
   // Applique le lead mis à jour renvoyé par le serveur (liste + panneau).
@@ -8775,6 +8780,19 @@ function ProspectingView({
   const applyQuota = (quota?: OutreachQuota) => {
     if (quota) outreach.setStatus((prev) => (prev ? { ...prev, quota } : prev));
   };
+
+  // ALE-243 : curation manuelle — marque « ne pas contacter » / remet en liste.
+  async function setContactStatus(lead: Lead, contact_status: "to_contact" | "skip", reason?: string) {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}`, {
+        method: "PATCH",
+        headers: { ...(await authHeaders()), "Content-Type": "application/json" },
+        body: JSON.stringify({ contact_status, skip_reason: reason ?? null }),
+      });
+      const data = await res.json();
+      if (res.ok && data.lead) patchLead(data.lead);
+    } catch { /* non bloquant */ }
+  }
 
   async function inviteLead(lead: Lead) {
     setOutreachBusy(true); setOutreachMsg("");
@@ -9046,18 +9064,29 @@ function ProspectingView({
         // le max-content (intitulés en nowrap) et déborde du <main> → l'ellipsis
         // ne se déclenche jamais. Le floor à 0 force les cartes à la largeur dispo.
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 6 }}>
-          {leads.map((l) => {
+          {leads.map((l, i) => {
             const sig = leadLastSignal(l);
             const multi = (l.signal_count ?? 1) > 1;
+            const skipped = l.contact_status === "skip";
+            // ALE-243 : séparateur avant le 1er lead écarté (les écartés sont triés en bas par le backend).
+            const showSkipDivider = skipped && i > 0 && leads[i - 1]?.contact_status !== "skip";
             return (
+              <React.Fragment key={l.id}>
+                {showSkipDivider && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 2px 2px", color: "var(--muted)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700 }}>
+                    <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+                    Écartés
+                    <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+                  </div>
+                )}
               <button
-                key={l.id}
                 type="button"
                 className="card"
                 onClick={() => setSelected(l)}
                 style={{
                   display: "flex", gap: 12, alignItems: "center", width: "100%", textAlign: "left",
                   cursor: "pointer", padding: "10px 14px", font: "inherit", color: "inherit",
+                  opacity: skipped ? 0.6 : undefined,
                   border: selected?.id === l.id ? "1px solid var(--accent, #2e6bd6)" : undefined,
                 }}
               >
@@ -9091,7 +9120,9 @@ function ProspectingView({
                     {l.score}
                   </span>
                 )}
-                {outreachLabel(l.outreach_status) ? (
+                {skipped ? (
+                  <span className="daily-seed-tag" style={{ flexShrink: 0 }}>Écarté</span>
+                ) : outreachLabel(l.outreach_status) ? (
                   <span className="daily-seed-tag" style={{ flexShrink: 0, color: l.outreach_status === "messaged" ? "var(--success)" : undefined }}>
                     {outreachLabel(l.outreach_status)}
                   </span>
@@ -9099,6 +9130,7 @@ function ProspectingView({
                   <span className="daily-seed-tag" style={{ flexShrink: 0 }}>Nouveau</span>
                 ) : null}
               </button>
+              </React.Fragment>
             );
           })}
         </div>
@@ -9157,6 +9189,35 @@ function ProspectingView({
               <p style={{ margin: 0, fontSize: 12.5, color: "var(--muted)", fontStyle: "italic" }}>
                 {selected.score_reason}
               </p>
+            )}
+            {/* ALE-243 : curation manuelle — « ne pas contacter » (le lead reste dans la liste, relégué en bas). */}
+            {selected.contact_status === "skip" ? (
+              <div className="card" style={{ padding: "10px 12px", display: "grid", gap: 8, background: "var(--surface-low)" }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>🚫 Écarté — ne pas contacter</div>
+                {selected.skip_reason && (
+                  <div style={{ fontSize: 12.5, color: "var(--muted)" }}>Raison : {selected.skip_reason}</div>
+                )}
+                <button className="secondary-button" style={{ justifySelf: "start", fontSize: 12.5 }} onClick={() => setContactStatus(selected, "to_contact")}>
+                  Remettre dans la liste
+                </button>
+              </div>
+            ) : (
+              <details className="card" style={{ padding: "10px 12px" }}>
+                <summary style={{ cursor: "pointer", fontSize: 13 }}>Ne pas contacter ce lead</summary>
+                <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                  <input
+                    type="text"
+                    placeholder="Raison (optionnel) : hors cible, concurrent, déjà client…"
+                    maxLength={280}
+                    value={skipReason}
+                    onChange={(e) => setSkipReason(e.target.value)}
+                    style={{ padding: "7px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", font: "inherit", fontSize: 13 }}
+                  />
+                  <button className="secondary-button" style={{ justifySelf: "start", fontSize: 12.5 }} onClick={() => setContactStatus(selected, "skip", skipReason.trim() || undefined)}>
+                    Marquer « ne pas contacter »
+                  </button>
+                </div>
+              </details>
             )}
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontWeight: 700, marginTop: 4 }}>
               Signaux d&apos;intention
