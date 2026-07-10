@@ -6108,6 +6108,21 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
 // toute sa logique d'agent (réutilisée via IgInbox en mode headless `hideChrome`).
 type InboxNetwork = "instagram" | "linkedin";
 
+// ALE-248 : réconcilie une liste de conversations fraîchement pollée avec l'état
+// courant plutôt que de tout remplacer. Conserve la RÉFÉRENCE des objets
+// inchangés (pas de re-render / clignotement inutile), n'ajoute/retire que les
+// nouveautés. Comparaison par sérialisation (listes courtes = OK). Renvoie
+// `prev` tel quel si rien n'a bougé → référence stable en amont.
+function reconcileById<T>(prev: T[], next: T[], keyOf: (x: T) => string): T[] {
+  const prevByKey = new Map(prev.map((x) => [keyOf(x), x] as const));
+  const merged = next.map((n) => {
+    const p = prevByKey.get(keyOf(n));
+    return p && JSON.stringify(p) === JSON.stringify(n) ? p : n;
+  });
+  if (merged.length === prev.length && merged.every((m, i) => m === prev[i])) return prev;
+  return merged;
+}
+
 function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null }) {
   const outreach = useLinkedInOutreach(isAuthed);
   const lnConnected = !!outreach.status?.connected;
@@ -6121,7 +6136,7 @@ function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; re
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations`, { headers: await authHeaders() });
       const data = await res.json();
-      if (res.ok) setIgConvs(Array.isArray(data) ? data : []);
+      if (res.ok) setIgConvs((prev) => reconcileById(prev, Array.isArray(data) ? data : [], (c) => c.id));
     } catch { /* non bloquant */ } finally { setLoaded(true); }
   }
   async function loadLn() {
@@ -6129,7 +6144,7 @@ function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; re
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats`, { headers: await authHeaders() });
       const data = await res.json();
-      if (res.ok) setLnChats(Array.isArray(data.chats) ? data.chats : []);
+      if (res.ok) setLnChats((prev) => reconcileById(prev, Array.isArray(data.chats) ? data.chats : [], (c) => c.id));
     } catch { /* non bloquant */ }
   }
 
@@ -6158,7 +6173,10 @@ function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; re
   const rows: Row[] = [
     ...igConvs.map((c) => ({ network: "instagram" as const, id: c.id, name: c.prospect_name || c.prospect_id, time: ts(c.last_message_at), mode: c.mode })),
     ...lnChats.map((c) => ({ network: "linkedin" as const, id: c.id, name: c.name || "Conversation LinkedIn", time: ts(c.last_message_at) })),
-  ].sort((a, b) => b.time - a.time);
+    // ALE-248 : tri stable — départage les temps égaux (ex. chats LinkedIn sans
+    // last_message_at, tous à 0) par clé réseau:id pour éviter que les lignes
+    // sautent à chaque poll.
+  ].sort((a, b) => b.time - a.time || `${a.network}:${a.id}`.localeCompare(`${b.network}:${b.id}`));
 
   // Pastille « non lu » unifiée (localStorage par utilisateur, clé network:id).
   const readKey = userId ? `inbox_conv_read:${userId}` : null;
