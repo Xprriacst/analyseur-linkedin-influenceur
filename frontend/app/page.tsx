@@ -2536,6 +2536,7 @@ const _genCache: { variants: Variant[]; topic: string; appliedJobId: string | nu
 function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated, onRework }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void; onRework?: (post: string) => void }) {
   const [variants, setVariants] = useState<Variant[]>(_genCache.variants);
   const [topic, setTopic] = useState(_genCache.topic);
+  const topicRef = useRef<HTMLTextAreaElement | null>(null); // ALE-235 : champ Sujet auto-resize
   const [role, setRole] = useState("auto");
   // ALE-216/ALE-222 : template de structure choisi dans la bibliothèque (optionnel).
   // Seules les entrées AVEC structure sont proposées (les entrées texte-seul
@@ -2601,6 +2602,14 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   // pour les restaurer si le composant est démonté puis remonté (changement d'onglet).
   useEffect(() => { _genCache.variants = variants; }, [variants]);
   useEffect(() => { _genCache.topic = topic; }, [topic]);
+
+  // ALE-235 : le champ Sujet grandit avec le contenu (plafonné, scroll au-delà).
+  useEffect(() => {
+    const el = topicRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [topic]);
 
   // ALE-141 : la génération tourne en file d'attente côté serveur (jobs portés par
   // Home). On surveille le job le plus récent : tant qu'il est actif, on affiche
@@ -2853,15 +2862,18 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       <div className="gen-section">
         <h2 className="section-title"><PenTool size={20} /> Générer des idées de posts</h2>
         <div className="gen-form">
-          <div className="url-input">
-            <PenTool size={16} color="var(--primary)" />
-            <input
+          <div className="url-input url-input--multi">
+            <PenTool size={16} color="var(--primary)" style={{ marginTop: 7, flexShrink: 0 }} />
+            <textarea
+              ref={topicRef}
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              placeholder="Sujet du post (optionnel) : ex. les 5 erreurs avec Claude AI…"
-              onKeyDown={(e) => { if (e.key === "Enter" && !(loadingPosts || genJobActive)) generateFromTopic(topic); }}
+              placeholder="Sujet du post (optionnel) : ex. les 5 erreurs avec Claude AI… (Cmd/Ctrl+Entrée pour générer)"
+              rows={1}
+              onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !(loadingPosts || genJobActive)) generateFromTopic(topic); }}
+              style={{ resize: "none", overflow: "auto", maxHeight: 160 }}
             />
-            <button className="primary-button" disabled={loadingPosts || genJobActive} onClick={() => generateFromTopic(topic)}>
+            <button className="primary-button" style={{ flexShrink: 0 }} disabled={loadingPosts || genJobActive} onClick={() => generateFromTopic(topic)}>
               {(loadingPosts || genJobActive) ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
               {genJobActive ? "Génération en cours…" : "Générer"}
             </button>
