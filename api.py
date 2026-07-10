@@ -2000,8 +2000,31 @@ def delete_me_lead_source(source_id: str, token: str = Depends(require_token)) -
 
 @app.get("/me/leads")
 def me_leads(token: str = Depends(require_token)) -> dict[str, Any]:
-    """Leads de prospection de l'utilisateur (mieux notés d'abord, sous-seuil masqués)."""
+    """Leads de prospection de l'utilisateur — mieux notés d'abord, jamais masqués
+    (les écartés « ne pas contacter » restent en bas de liste, cf. ALE-243)."""
     return {"leads": db.list_leads(token)}
+
+
+class LeadContactStatusRequest(BaseModel):
+    contact_status: str
+    skip_reason: str | None = Field(default=None, max_length=280)
+
+
+@app.patch("/me/leads/{lead_id}")
+def patch_me_lead(
+    lead_id: str, payload: LeadContactStatusRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Curation manuelle d'un lead (ALE-243) : « ne pas contacter » (+ raison courte)
+    ou remise dans la liste. Le lead n'est JAMAIS supprimé — il reste visible,
+    relégué en bas de la liste (cf. db.list_leads)."""
+    if payload.contact_status not in ("to_contact", "skip"):
+        raise HTTPException(status_code=422, detail="Statut invalide (to_contact | skip).")
+    if not db.get_lead(token, lead_id):
+        raise HTTPException(status_code=404, detail="Lead introuvable.")
+    updated = db.set_lead_contact_status(token, lead_id, payload.contact_status, payload.skip_reason)
+    if not updated:
+        raise HTTPException(status_code=400, detail="Mise à jour impossible.")
+    return {"lead": updated}
 
 
 @app.get("/me/lead-targeting")

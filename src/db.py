@@ -4047,8 +4047,13 @@ def list_leads(access_token: str, limit: int = 500) -> list[dict]:
         .execute()
     )
     rows = resp.data or []
-    # Tri stable : scorés (par score décroissant) avant non-scorés.
-    rows.sort(key=lambda r: (0 if r.get("score") is not None else 1, -(int(r.get("score") or 0))))
+    # Tri stable : les écartés « ne pas contacter » (ALE-243) en tout dernier
+    # (jamais masqués), puis scorés (par score décroissant) avant non-scorés.
+    rows.sort(key=lambda r: (
+        1 if r.get("contact_status") == "skip" else 0,
+        0 if r.get("score") is not None else 1,
+        -(int(r.get("score") or 0)),
+    ))
     return rows
 
 
@@ -4340,6 +4345,23 @@ def get_lead(access_token: str, lead_id: str) -> dict | None:
         return None
     db = client_for_token(access_token)
     resp = db.table("leads").select("*").eq("id", lead_id).limit(1).execute()
+    return resp.data[0] if resp.data else None
+
+
+def set_lead_contact_status(
+    access_token: str, lead_id: str, contact_status: str, skip_reason: str | None
+) -> dict | None:
+    """Curation manuelle (ALE-243) : marque un lead 'to_contact' ou 'skip' (+ raison
+    courte). Ne supprime JAMAIS le lead — il reste dans la liste, relégué en bas.
+    La raison n'est conservée que pour 'skip' (nettoyée si on le remet en liste)."""
+    if not supabase_enabled() or not lead_id:
+        return None
+    db = client_for_token(access_token)
+    payload = {
+        "contact_status": contact_status,
+        "skip_reason": (skip_reason or None) if contact_status == "skip" else None,
+    }
+    resp = db.table("leads").update(payload).eq("id", lead_id).execute()
     return resp.data[0] if resp.data else None
 
 
