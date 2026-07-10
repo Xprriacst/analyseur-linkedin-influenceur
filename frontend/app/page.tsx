@@ -10262,8 +10262,14 @@ export default function Home() {
 
   useEffect(() => {
     if (!isAuthed || !anyJobActive) return;
-    const t = setInterval(loadJobs, 3000);
-    return () => clearInterval(t);
+    // Non-chevauchant (ALE-271) : on replanifie seulement après la fin de la
+    // requête précédente (succès OU échec), sinon les appels s'empilent sur un
+    // backend lent (même pattern que le badge Inbox, PR #192).
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadJobs(); if (!stop) timer = setTimeout(loop, 3000); };
+    timer = setTimeout(loop, 3000);
+    return () => { stop = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, anyJobActive]);
 
@@ -10276,8 +10282,12 @@ export default function Home() {
 
   useEffect(() => {
     if (!isAuthed || !anyGenerationJobActive) return;
-    const t = setInterval(loadGenerationJobs, 3000);
-    return () => clearInterval(t);
+    // Non-chevauchant (ALE-271) : même pattern que le poll des séries ci-dessus.
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadGenerationJobs(); if (!stop) timer = setTimeout(loop, 3000); };
+    timer = setTimeout(loop, 3000);
+    return () => { stop = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, anyGenerationJobActive]);
 
