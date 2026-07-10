@@ -6,20 +6,20 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
-test("onglet Veille : sous-onglets Analyser / Mes influenceurs (Dashboard fusionné)", async ({ page }) => {
-  await gotoTab(page, "Veille");
-  // Deux sous-onglets depuis la fusion ALE-132 (le Dashboard n'est plus un onglet dédié).
-  await expect(page.locator(".tab", { hasText: "Analyser" })).toBeVisible();
-  await expect(page.locator(".tab", { hasText: "Mes influenceurs" })).toBeVisible();
-  await expect(page.locator(".tab", { hasText: "Dashboard" })).toHaveCount(0);
-  // Sous-onglet par défaut : la zone de soumission de série.
+test("Contenu › Analyses : page empilée (Veille fusionnée, ALE-257)", async ({ page }) => {
+  // ALE-257 : la Veille est devenue le sous-onglet « Analyses » de Contenu, en une
+  // seule page qui défile (plus d'onglet « Veille » dans la sidebar).
+  await gotoTab(page, "Contenu");
+  await expect(page.locator(".nav-item", { hasText: "Veille" })).toHaveCount(0);
+  await gotoSubTab(page, "Analyses");
+  // 1. Bloc de lancement de série (en haut).
   await expect(page.getByRole("heading", { name: /Analyser des profils/i })).toBeVisible();
-  // Bascule vers « Mes influenceurs » : bloc « Tendances de ta veille » + classement épuré
-  // (l'ancien Dashboard global à 3 tableaux a été remplacé par cette vue).
-  await page.locator(".tab", { hasText: "Mes influenceurs" }).click();
+  // 2. Tiroir « Séries en cours & historique » (replié par défaut) présent.
+  await expect(page.getByRole("button", { name: /Séries en cours & historique/i })).toBeVisible();
+  // 3. Classement « Mes influenceurs » sur la même page.
   await expect(page.getByRole("heading", { name: /^Mes influenceurs$/i })).toBeVisible();
+  // 4. Bloc « Tendances de ta veille » SOUS le classement (ordre voulu ALE-257).
   await expect(page.getByText(/Tendances de ta veille/i).first()).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("heading", { name: /Dashboard global/i })).toHaveCount(0);
   // ALE-214 : si des influenceurs sont listés, la colonne de veille (suivi) est présente.
   const influencersTable = page.locator("table.dash-table").first();
   if (await influencersTable.count()) {
@@ -51,9 +51,11 @@ test("Contenu › Ma bibliothèque : onglet fusionné à tiroirs (ALE-223)", asy
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Veille › Monitoring d'influenceurs : fil de veille rendu sans erreur (ALE-215)", async ({ page }) => {
-  await gotoTab(page, "Veille");
-  await page.locator(".tab", { hasText: "Monitoring d'influenceurs" }).click();
+test("Contenu › Analyses : monitoring d'influenceurs sur la même page (ALE-215/257)", async ({ page }) => {
+  // ALE-257 : le monitoring est désormais empilé en bas de la page Analyses (LinkedIn),
+  // plus dans un sous-onglet dédié.
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Analyses");
   await expect(page.getByRole("heading", { name: /^Monitoring d'influenceurs$/i })).toBeVisible();
   // Bouton de rafraîchissement toujours présent ; l'état vide invite à suivre des influenceurs.
   await expect(page.getByRole("button", { name: /Rafraîchir/i })).toBeVisible();
