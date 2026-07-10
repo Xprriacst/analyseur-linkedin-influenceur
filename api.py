@@ -2541,7 +2541,17 @@ def me_linkedin_outreach_chats(token: str = Depends(require_token)) -> dict[str,
         chats = unipile.list_chats(account["unipile_account_id"])
     except unipile.UnipileError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"chats": [unipile.normalize_chat(c) for c in chats]}
+    normalized = [unipile.normalize_chat(c) for c in chats]
+    # Nommer les conversations avec le nom du lead : Unipile ne renvoie pas
+    # toujours le participant dans la liste des chats (→ fallback « Conversation
+    # LinkedIn »). `outreach_chat_id` relie la conversation à son lead scrapé, qui
+    # a un vrai nom. On préfère ce nom quand il existe.
+    lead_names = db.get_outreach_chat_lead_names(token)
+    for chat in normalized:
+        lead_name = lead_names.get(chat.get("id"))
+        if lead_name:
+            chat["name"] = lead_name
+    return {"chats": normalized}
 
 
 @app.get("/me/linkedin/outreach/chats/{chat_id}/messages")
