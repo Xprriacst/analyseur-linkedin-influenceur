@@ -166,6 +166,16 @@ test("Contenu › Mes contenus : Image IA propose une image de référence depui
     }
     return route.fallback();
   });
+  // Rattachement de l'image (ALE-261) : persistée via PUT sur le post sauvegardé.
+  await page.route("**/me/generated-posts/e2e-ale-221", (route) => {
+    if (route.request().method() === "PUT") {
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ id: "e2e-ale-221", media_items: [{ url: "https://example.com/generated.png" }] }),
+      });
+    }
+    return route.fallback();
+  });
   await page.route("**/me/post-templates", (route) => {
     if (route.request().method() === "GET") {
       return route.fulfill({
@@ -185,15 +195,27 @@ test("Contenu › Mes contenus : Image IA propose une image de référence depui
   await page.route("**/generate-image/prompt", (route) =>
     route.fulfill({ contentType: "application/json", body: JSON.stringify({ prompt: "Un prompt de test." }) })
   );
+  // ALE-261 : la génération d'image passe désormais par une file d'attente
+  // (job créé puis polled) — on mocke un job déjà `done` pour ne pas avoir à
+  // simuler le polling dans ce test lecture seule.
   const onePxPng =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-  let capturedBody: { reference_template_id?: string } | null = null;
-  await page.route("**/generate-image", (route) => {
+  let capturedBody: { reference_template_id?: string; target_key?: string } | null = null;
+  await page.route("**/generate-image/jobs", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify([]) });
+    }
     if (route.request().method() === "POST") {
       capturedBody = route.request().postDataJSON();
       return route.fulfill({
         contentType: "application/json",
-        body: JSON.stringify({ image_data: onePxPng, prompt_used: "Un prompt de test.", credits: 95 }),
+        body: JSON.stringify({
+          id: "job-e2e-1",
+          status: "done",
+          target_key: capturedBody?.target_key,
+          result: { image_data: onePxPng, prompt_used: "Un prompt de test.", credits: 95 },
+          error: null,
+        }),
       });
     }
     return route.fallback();
@@ -213,6 +235,7 @@ test("Contenu › Mes contenus : Image IA propose une image de référence depui
   await page.getByRole("button", { name: /Générer l'image/ }).click();
   await expect(page.getByText(/Image jointe au post/)).toBeVisible();
   expect(capturedBody?.reference_template_id).toBe("tpl-e2e-1");
+  expect(capturedBody?.target_key).toBe("saved:e2e-ale-221");
 });
 
 test("Contenu › Idée du jour : menu Publier + ⋯ sur le post du jour", async ({ page }) => {

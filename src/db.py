@@ -1505,6 +1505,142 @@ def reconcile_stale_generation_jobs(access_token: str, jobs: list[dict]) -> list
     return jobs
 
 
+# ---------------------------------------------------------------------------
+# File d'attente de génération d'image IA (ALE-261)
+# ---------------------------------------------------------------------------
+# Même patron que generation_jobs : une ligne = une génération d'image. Le
+# `target_key` (opaque, fourni par le frontend) identifie le bloc de post
+# auquel l'image doit se rattacher, pour qu'elle rejoigne le bon post même
+# après fermeture de la pop-up. Crédits débités à la complétion réussie
+# uniquement (jamais au lancement) — un échec ne coûte donc jamais de crédit,
+# pas de remboursement à gérer (contrairement aux séries d'analyse).
+
+_IMAGE_JOB_COLS = (
+    "id,status,post_text,prompt,reference_template_id,target_key,result,error,created_at,updated_at"
+)
+
+
+def create_image_job(
+    access_token: str,
+    post_text: str,
+    prompt: str | None,
+    reference_template_id: str | None,
+    target_key: str,
+) -> dict | None:
+    """Crée un job de génération d'image `queued`. Retourne la ligne créée."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "status": "queued",
+        "post_text": post_text,
+        "prompt": prompt or None,
+        "target_key": target_key,
+    }
+    if reference_template_id:
+        row["reference_template_id"] = reference_template_id
+    resp = db.table("image_generation_jobs").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def get_image_job(access_token: str, job_id: str) -> dict | None:
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("image_generation_jobs")
+        .select(_IMAGE_JOB_COLS)
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0] if r.data else None
+
+
+def list_image_jobs(access_token: str, limit: int = 30) -> list[dict]:
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    r = (
+        db.table("image_generation_jobs")
+        .select(_IMAGE_JOB_COLS)
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return reconcile_stale_image_jobs(access_token, r.data or [])
+
+
+def get_image_job_status(access_token: str, job_id: str) -> str | None:
+    """Statut seul (lecture légère, pour la vérif d'annulation du thread)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("image_generation_jobs")
+        .select("status")
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0]["status"] if r.data else None
+
+
+def update_image_job(access_token: str, job_id: str, **fields: Any) -> None:
+    db = client_for_token(access_token)
+    fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db.table("image_generation_jobs").update(fields).eq("id", job_id).execute()
+
+
+def cancel_image_job(access_token: str, job_id: str) -> dict | None:
+    """Annule un job d'image s'il est encore `queued`/`running`.
+
+    Jamais de remboursement ici : le débit n'intervient qu'à la complétion
+    réussie (cf. `src.jobs.process_image_job`), donc un job annulé n'a jamais
+    été débité.
+    """
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    (
+        db.table("image_generation_jobs")
+        .update({"status": "cancelled", "updated_at": now})
+        .eq("id", job_id)
+        .in_("status", ["queued", "running"])
+        .execute()
+    )
+    return get_image_job(access_token, job_id)
+
+
+def reconcile_stale_image_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
+    """Solde les jobs d'image orphelins (thread mort/figé) — appelé au listing.
+
+    Même logique que `reconcile_stale_generation_jobs`. Idempotent.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(minutes=JOB_STALE_MINUTES)
+    for job in jobs:
+        if job.get("status") not in ("queued", "running"):
+            continue
+        job_ts = _parse_ts(job.get("updated_at"))
+        if job_ts is None or job_ts > cutoff:
+            continue
+        update_image_job(
+            access_token, job["id"], status="error",
+            error="Génération d'image interrompue (délai dépassé).",
+        )
+        job["status"] = "error"
+        job["error"] = "Génération d'image interrompue (délai dépassé)."
+    return jobs
+
+
 def get_analysis(access_token: str, analysis_id: str) -> dict | None:
     user = get_user(access_token)
     if not user:

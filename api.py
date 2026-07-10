@@ -20,7 +20,7 @@ from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_po
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
-from src.jobs import start_job_thread, start_generation_job_thread
+from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message
 from src.normalize import normalize_posts, normalize_profile
@@ -1081,6 +1081,10 @@ class GenerateImageRequest(BaseModel):
     prompt: Optional[str] = Field(default=None, max_length=4000)
     # Image de la banque de templates choisie comme référence visuelle (ALE-221).
     reference_template_id: Optional[str] = Field(default=None, max_length=100)
+    # Identifiant opaque (fourni par le frontend) du bloc de post auquel l'image
+    # doit se rattacher — requis pour /generate-image/jobs (ALE-261), ignoré par
+    # /generate-image/prompt.
+    target_key: Optional[str] = Field(default=None, max_length=200)
 
 
 class ChatRequest(BaseModel):
@@ -3298,71 +3302,68 @@ def generate_image_prompt(payload: GenerateImageRequest, token: Optional[str] = 
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/generate-image")
-def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
-    """Generate an image to accompany a LinkedIn post (GPT Image 2)."""
+@app.post("/generate-image/jobs")
+def create_image_job(payload: GenerateImageRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Lance une génération d'image IA en arrière-plan (file d'attente — ALE-261).
+
+    Non bloquant : on vérifie les préconditions (clé OpenAI, solde, référence),
+    on crée le job et on lance le thread, puis on rend la main immédiatement.
+    Le frontend récupère le résultat via GET /generate-image/jobs — l'image
+    rejoint le bloc de post identifié par `target_key` même si la pop-up a été
+    fermée entre-temps (fermer la page ne perd plus rien, ALE-261). Les crédits
+    ne sont débités qu'à la complétion réussie (cf. `src.jobs.process_image_job`).
+    """
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(status_code=400, detail="OPENAI_API_KEY manquant dans .env")
-    # Import paresseux : la génération d'image dépend d'`openai`. Un import
-    # au niveau module ferait planter tout le démarrage de l'API si la
-    # dépendance (ou le module) manque — on l'isole donc à cet endpoint.
-    from src.image_gen import ImageGenError, fetch_reference_image, generate_post_image
+    if not payload.target_key:
+        raise HTTPException(status_code=400, detail="target_key manquant.")
 
-    # Facturation (ALE-270) : pré-check fail-closed du solde AVANT tout appel
-    # OpenAI, débit APRÈS le succès (même pattern que la collecte de
-    # commentateurs ALE-239). Avant, les 5 crédits partaient avant la
-    # génération : une génération échouée (OOM du serveur, timeout…) était
-    # quand même facturée.
+    # Pré-check fail-closed du solde (ALE-270) : un solde illisible ou
+    # insuffisant ne doit pas lancer un job qu'on ne saurait pas facturer.
     cost = db.CREDIT_COSTS["generate_image"]
-    if token:
-        try:
-            info = db.get_user_credits(token)
-        except Exception as exc:
-            # Fail closed : solde illisible → on ne lance pas une génération
-            # (2-3 min d'appel OpenAI) qu'on ne saurait pas facturer.
-            raise HTTPException(status_code=503, detail=f"Vérification du solde impossible, réessaie dans un instant ({exc}).")
-        if info.get("enabled") and info.get("balance", 0) < cost:
-            raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {info.get('balance', 0)}). Génération d'image = {cost} crédit(s).")
-
-    # Résolution + téléchargement de l'image de référence avant l'appel OpenAI :
-    # un lien mort/expiré (fréquent, ces URLs viennent de posts scrapés) ne doit
-    # pas coûter de crédits à l'utilisateur (ALE-221) — garanti par construction
-    # depuis ALE-270 (le débit n'intervient qu'après une image réussie).
-    reference_image = None
-    if payload.reference_template_id:
-        if not token:
-            raise HTTPException(status_code=400, detail="Authentification requise pour utiliser une image de référence.")
-        template = db.get_post_template(token, payload.reference_template_id)
-        image_url = (template or {}).get("image_url")
-        if not image_url:
-            raise HTTPException(status_code=404, detail="Template introuvable ou sans image de référence.")
-        try:
-            reference_image = fetch_reference_image(image_url)
-        except ImageGenError as exc:
-            raise HTTPException(status_code=422, detail=f"Image de référence inaccessible : {exc}")
-
     try:
-        result = generate_post_image(payload.post_text, prompt=payload.prompt, reference_image=reference_image)
-    except HTTPException:
-        raise
+        info = db.get_user_credits(token)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=503, detail=f"Vérification du solde impossible, réessaie dans un instant ({exc}).")
+    if info.get("enabled") and info.get("balance", 0) < cost:
+        raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {info.get('balance', 0)}). Génération d'image = {cost} crédit(s).")
 
-    # Débit APRÈS le succès (ALE-270). Si le débit échoue malgré le pré-check
-    # (course rare : crédits consommés ailleurs pendant les 2-3 min de
-    # génération, ou Supabase indisponible), on renvoie quand même l'image —
-    # l'appel OpenAI a déjà eu lieu et a coûté — et on logge pour suivi.
-    credits: int | None = None
-    if token:
-        try:
-            ok, credits = db.debit_credits(token, "generate_image")
-            if not ok:
-                print(f"[image] débit impossible après une génération réussie (solde {credits}) — image livrée sans débit.", flush=True)
-        except Exception as exc:
-            print(f"[image] débit de crédits échoué après une génération réussie : {exc} — image livrée sans débit.", flush=True)
-    if isinstance(result, dict):
-        result["credits"] = credits
-    return result
+    # Vérif immédiate (feedback rapide) ; le thread revérifie avant de
+    # télécharger l'image (course possible entre la création et le traitement).
+    if payload.reference_template_id:
+        template = db.get_post_template(token, payload.reference_template_id)
+        if not template or not template.get("image_url"):
+            raise HTTPException(status_code=404, detail="Template introuvable ou sans image de référence.")
+
+    job = db.create_image_job(token, payload.post_text, payload.prompt, payload.reference_template_id, payload.target_key)
+    if not job:
+        raise HTTPException(status_code=500, detail="Création du job d'image impossible.")
+    start_image_job_thread(token, job["id"])
+    return job
+
+
+@app.get("/generate-image/jobs")
+def list_image_jobs(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """Liste les jobs de génération d'image de l'utilisateur (plus récents d'abord)."""
+    return db.list_image_jobs(token)
+
+
+@app.get("/generate-image/jobs/{job_id}")
+def get_image_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Récupère un job de génération d'image (pour le polling du frontend)."""
+    job = db.get_image_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job de génération d'image introuvable.")
+    return job
+
+
+@app.post("/generate-image/jobs/{job_id}/cancel")
+def cancel_image_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Annule un job de génération d'image encore en attente/en cours."""
+    job = db.cancel_image_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job de génération d'image introuvable.")
+    return job
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
