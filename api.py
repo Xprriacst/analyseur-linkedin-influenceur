@@ -1891,16 +1891,55 @@ def _score_leads_for_source(token: str, source: dict, counts: dict) -> None:
         print(f"[leads] scoring à l'ingestion échoué : {exc}", flush=True)
 
 
+# Facturation de la collecte de commentateurs (ALE-239). L'appel Apify est
+# payant (~0,002 $/commentaire) mais n'était débité d'aucun crédit → fuite de
+# coût. On débite proportionnellement au volume RÉELLEMENT récupéré. Constante
+# ajustable : au calibrage actuel (~0,006 $/crédit) 3 commentateurs ≈ 1 crédit
+# couvre à peu près le coût Apify. La monter réduit la marge, la baisser la creuse.
+LEAD_COMMENTERS_PER_CREDIT = 3
+
+
+def _lead_collect_credit_cost(n_commenters: int) -> int:
+    """Crédits à débiter pour une collecte, proportionnels au volume (min 1)."""
+    n = max(0, int(n_commenters))
+    if n == 0:
+        return 0
+    return max(1, (n + LEAD_COMMENTERS_PER_CREDIT - 1) // LEAD_COMMENTERS_PER_CREDIT)
+
+
 def _collect_lead_source(token: str, source: dict, max_comments: int | None) -> dict[str, Any]:
-    """Scrape les commentateurs d'une source et les persiste en leads dédupliqués."""
+    """Scrape les commentateurs d'une source et les persiste en leads dédupliqués.
+
+    Facturation (ALE-239) : pré-check fail-closed du solde AVANT l'appel Apify
+    payant (on ne scrape pas si le solde ne couvre pas le pire cas = le volume
+    demandé), puis débit proportionnel au volume RÉELLEMENT récupéré (toujours
+    <= demandé, donc le débit ne peut pas échouer après avoir payé le scrape).
+    Zéro commentateur récupéré = zéro débit.
+    """
     if not os.environ.get("APIFY_TOKEN"):
         raise HTTPException(status_code=503, detail="Scraping non configuré (APIFY_TOKEN manquant).")
+    requested = max_comments or LEAD_COMMENTS_DEFAULT
+    if token:
+        worst_case = _lead_collect_credit_cost(requested)
+        info = db.get_user_credits(token)
+        if info.get("enabled") and info.get("balance", 0) < worst_case:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Crédits insuffisants (solde : {info.get('balance', 0)}). "
+                    f"Cette collecte peut coûter jusqu'à {worst_case} crédit(s)."
+                ),
+            )
     try:
-        commenters = fetch_post_commenters(
-            source["post_url"], max_items=max_comments or LEAD_COMMENTS_DEFAULT
-        )
+        commenters = fetch_post_commenters(source["post_url"], max_items=requested)
     except Exception as exc:  # noqa: BLE001 — erreur actor/réseau remontée telle quelle
         raise HTTPException(status_code=502, detail=f"Collecte des commentaires échouée : {exc}")
+    credits_balance: int | None = None
+    if token and commenters:
+        # ok toujours True ici : le pré-check garantit solde >= coût du pire cas >= coût réel.
+        _ok, credits_balance = db.debit_credits(
+            token, "collect_leads", _lead_collect_credit_cost(len(commenters))
+        )
     counts = db.save_leads(token, source, commenters)
     # Scoring ICP (ALE-228) : note les leads fraîchement touchés contre le ciblage.
     _score_leads_for_source(token, source, counts)
@@ -1918,7 +1957,12 @@ def _collect_lead_source(token: str, source: dict, max_comments: int | None) -> 
         f"{len(commenters)} commentaire(s) récupéré(s), leads {counts}",
         flush=True,
     )
-    return {"source": updated or source, "comments_count": len(commenters), "leads": counts}
+    return {
+        "source": updated or source,
+        "comments_count": len(commenters),
+        "leads": counts,
+        "credits": credits_balance,
+    }
 
 
 @app.get("/me/lead-sources")

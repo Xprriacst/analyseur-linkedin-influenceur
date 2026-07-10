@@ -857,6 +857,7 @@ CREDIT_COSTS: dict[str, int] = {
     "analyze_job": 20,     # par influenceur
     "chat": 2,             # par message
     "generate_image": 5,
+    "collect_leads": 1,    # par crédit ; le nb débité = nb de commentateurs / N (ALE-239)
 }
 
 
