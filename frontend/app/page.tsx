@@ -8718,6 +8718,7 @@ function ProspectingView({
   const [selected, setSelected] = useState<Lead | null>(null);
   // Ciblage ICP (ALE-228)
   const [targeting, setTargeting] = useState<LeadTargeting | null>(null);
+  const [targetingLoading, setTargetingLoading] = useState(true); // ALE-247 : réserve l'espace, évite le pop-in
   const [targetOpen, setTargetOpen] = useState(false);
   const [savingTarget, setSavingTarget] = useState(false);
   const [targetMsg, setTargetMsg] = useState("");
@@ -8823,13 +8824,17 @@ function ProspectingView({
       } finally {
         if (!cancelled) setLoading(false);
       }
-      // Ciblage (best-effort, ne bloque pas la liste).
+      // Ciblage (best-effort, ne bloque pas la liste). ALE-247 : on trace le
+      // chargement (skeleton pour réserver l'espace) et on pose un objet vide
+      // si aucun ciblage n'est encore configuré → le bloc reste visible/à remplir.
       try {
         const res = await fetch(`${DIRECT_API_URL}/me/lead-targeting`, { headers: await authHeaders() });
         const data = await res.json();
-        if (!cancelled && res.ok && data.targeting) setTargeting(data.targeting);
+        if (!cancelled) setTargeting(res.ok && data.targeting ? data.targeting : {});
       } catch {
-        /* silencieux */
+        if (!cancelled) setTargeting({});
+      } finally {
+        if (!cancelled) setTargetingLoading(false);
       }
     })();
     return () => {
@@ -8906,8 +8911,13 @@ function ProspectingView({
         d&apos;intention le plus chaud de LinkedIn. Clique une ligne pour le détail.
       </p>
 
-      {/* ALE-228 : ciblage ICP — note chaque lead vs le client idéal, masque les hors-cible */}
-      {targeting && (
+      {/* ALE-228 : ciblage ICP — note chaque lead vs le client idéal. ALE-247 : skeleton au chargement pour éviter le pop-in. */}
+      {targetingLoading ? (
+        <div className="card" style={{ marginBottom: 16, padding: "12px 16px", display: "flex", alignItems: "center", gap: 8, color: "var(--muted)" }}>
+          <Target size={16} style={{ flexShrink: 0, opacity: 0.5 }} />
+          <span style={{ fontSize: 13 }}>Chargement de ton ciblage…</span>
+        </div>
+      ) : targeting && (
         <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
           <button
             type="button"
