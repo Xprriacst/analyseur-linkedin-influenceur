@@ -6135,7 +6135,7 @@ function reconcileById<T>(prev: T[], next: T[], keyOf: (x: T) => string): T[] {
   return merged;
 }
 
-function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null }) {
+function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; initialSelect?: { network: InboxNetwork; id: string; nonce: number } | null }) {
   const outreach = useLinkedInOutreach(isAuthed);
   const lnConnected = !!outreach.status?.connected;
   const [igConvs, setIgConvs] = useState<IgConversation[]>([]);
@@ -6179,6 +6179,14 @@ function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; re
     return () => { stop = true; clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, lnConnected]);
+
+  // ALE-245 : pré-sélection d'une conversation depuis un autre écran (bouton
+  // « Inbox » sur une ligne de lead). Le nonce garantit qu'un même chat
+  // re-sélectionne même après avoir fermé le fil.
+  useEffect(() => {
+    if (initialSelect) setSel({ network: initialSelect.network, id: initialSelect.id });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSelect?.nonce]);
 
   const ts = (v?: string | null) => (v ? new Date(v).getTime() : 0);
   type Row = { network: InboxNetwork; id: string; name: string; time: number; mode?: IgConversation["mode"] };
@@ -8741,9 +8749,11 @@ function safeHttpUrl(u?: string | null): string | undefined {
 function ProspectingView({
   isAuthed,
   requireAuth,
+  onNavigateInbox,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onNavigateInbox: (chatId?: string) => void;
 }) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(false);
@@ -8757,6 +8767,8 @@ function ProspectingView({
   const [targetMsg, setTargetMsg] = useState("");
   // Envoi via Unipile (ALE-230)
   const outreach = useLinkedInOutreach(isAuthed);
+  const lnConnected = !!outreach.status?.connected;
+  const quota = outreach.status?.quota;
   const [outreachBusy, setOutreachBusy] = useState(false);
   const [genBusy, setGenBusy] = useState(false);
   const [outreachMsg, setOutreachMsg] = useState("");
@@ -9079,10 +9091,12 @@ function ProspectingView({
                     <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
                   </div>
                 )}
-              <button
-                type="button"
+              <div
+                role="button"
+                tabIndex={0}
                 className="card"
                 onClick={() => setSelected(l)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelected(l); } }}
                 style={{
                   display: "flex", gap: 12, alignItems: "center", width: "100%", textAlign: "left",
                   cursor: "pointer", padding: "10px 14px", font: "inherit", color: "inherit",
@@ -9129,7 +9143,31 @@ function ProspectingView({
                 ) : l.status === "new" ? (
                   <span className="daily-seed-tag" style={{ flexShrink: 0 }}>Nouveau</span>
                 ) : null}
-              </button>
+                {/* ALE-245 : raccourcis d'action sur la ligne — stopPropagation pour ne pas ouvrir le volet. */}
+                {lnConnected && (!l.outreach_status || l.outreach_status === "none") && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{ flexShrink: 0, fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                    disabled={outreachBusy || !quota?.can_invite}
+                    title={!quota?.can_invite ? (quota?.invite_blocked_reason || "Invitation indisponible") : "Envoyer une demande de connexion"}
+                    onClick={(e) => { e.stopPropagation(); inviteLead(l); }}
+                  >
+                    <UserRound size={13} /> Inviter
+                  </button>
+                )}
+                {lnConnected && (l.outreach_status === "connected" || l.outreach_status === "messaged") && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{ flexShrink: 0, fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                    title="Ouvrir la conversation dans l'Inbox"
+                    onClick={(e) => { e.stopPropagation(); onNavigateInbox(l.outreach_chat_id || undefined); }}
+                  >
+                    <MessageSquare size={13} /> {l.outreach_status === "messaged" ? "Inbox" : "Message"}
+                  </button>
+                )}
+              </div>
               </React.Fragment>
             );
           })}
@@ -9818,6 +9856,8 @@ export default function Home() {
   const [generatorSeed, setGeneratorSeed] = useState<{ topic: string; nonce: number } | null>(null);
   // Post pré-rempli quand on "retravaille" un variant depuis le Générateur vers l'Agent IA.
   const [assistantSeed, setAssistantSeed] = useState<{ post: string; nonce: number } | null>(null);
+  // ALE-245 : conversation à pré-sélectionner dans l'Inbox (depuis un lead).
+  const [inboxSelect, setInboxSelect] = useState<{ network: InboxNetwork; id: string; nonce: number } | null>(null);
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
@@ -10377,7 +10417,7 @@ export default function Home() {
         <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA, Inbox IG et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "inbox" ? (
-            <UnifiedInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} />
+            <UnifiedInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} initialSelect={inboxSelect} />
           ) : view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} />
           ) : view === "profile" ? (
@@ -10466,7 +10506,14 @@ export default function Home() {
                 />
               )}
               {view === "prospecting" && (
-                <ProspectingView isAuthed={isAuthed} requireAuth={requireAuth} />
+                <ProspectingView
+                  isAuthed={isAuthed}
+                  requireAuth={requireAuth}
+                  onNavigateInbox={(chatId) => {
+                    if (chatId) setInboxSelect({ network: "linkedin", id: chatId, nonce: Date.now() });
+                    setView("inbox");
+                  }}
+                />
               )}
             </>
           )}
