@@ -303,3 +303,82 @@ def start_generation_job_thread(access_token: str, job_id: str) -> None:
         target=process_generation_job, args=(access_token, job_id), daemon=True
     )
     thread.start()
+
+
+# ---------------------------------------------------------------------------
+# File d'attente de génération d'image IA (ALE-261)
+# ---------------------------------------------------------------------------
+# Même principe que la file de génération de posts : l'utilisateur ferme la
+# pop-up ou change d'onglet, la génération continue en fond et le résultat
+# rejoint le bon bloc de post (identifié par `target_key`) via le polling
+# frontend. Pas de verrou global (les générations d'image peuvent tourner en
+# parallèle) ; un timeout borne la durée pour qu'un appel OpenAI figé ne
+# laisse pas un job `running` éternellement.
+
+IMAGE_JOB_TIMEOUT_S = 300
+
+
+def _generate_post_image_guarded(post_text, prompt, reference_image):
+    """Exécute `generate_post_image` avec un timeout dur (thread jetable abandonné si figé)."""
+    from src.image_gen import generate_post_image
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(generate_post_image, post_text, prompt=prompt, reference_image=reference_image)
+    try:
+        return fut.result(timeout=IMAGE_JOB_TIMEOUT_S)
+    finally:
+        ex.shutdown(wait=False)
+
+
+def process_image_job(access_token: str, job_id: str) -> None:
+    """Génère l'image d'un job en arrière-plan et débite les crédits au succès.
+
+    Idempotent quant à l'annulation : si le job a été annulé (statut `cancelled`)
+    avant ou pendant le calcul, on n'écrit jamais `done` par-dessus. Aucun
+    remboursement à gérer : le débit n'a lieu qu'après une image réussie.
+    """
+    from src.image_gen import ImageGenError, fetch_reference_image
+
+    job = db.get_image_job(access_token, job_id)
+    if not job:
+        return
+    if db.get_image_job_status(access_token, job_id) == "cancelled":
+        return
+
+    db.update_image_job(access_token, job_id, status="running")
+    try:
+        reference_image = None
+        template_id = job.get("reference_template_id")
+        if template_id:
+            template = db.get_post_template(access_token, template_id)
+            image_url = (template or {}).get("image_url")
+            if not image_url:
+                raise ImageGenError("Image de référence introuvable.")
+            reference_image = fetch_reference_image(image_url)
+
+        result = _generate_post_image_guarded(job.get("post_text") or "", job.get("prompt"), reference_image)
+
+        # Annulé pendant le calcul ? On respecte l'annulation (jamais de débit).
+        if db.get_image_job_status(access_token, job_id) == "cancelled":
+            return
+
+        ok, balance = db.debit_credits(access_token, "generate_image")
+        if not ok:
+            print(f"[image-job] débit impossible après une génération réussie (solde {balance}) — image livrée sans débit.", flush=True)
+        if isinstance(result, dict):
+            result["credits"] = balance if ok else None
+
+        db.update_image_job(access_token, job_id, status="done", result=result)
+    except Exception as exc:  # noqa: BLE001 — on isole l'échec d'un job
+        if db.get_image_job_status(access_token, job_id) == "cancelled":
+            return
+        db.update_image_job(
+            access_token, job_id, status="error", error=str(exc)[:500]
+        )
+
+
+def start_image_job_thread(access_token: str, job_id: str) -> None:
+    """Lance la génération d'image d'un job dans un thread de fond (non bloquant)."""
+    thread = threading.Thread(
+        target=process_image_job, args=(access_token, job_id), daemon=True
+    )
+    thread.start()
