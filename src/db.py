@@ -3145,8 +3145,15 @@ def create_scheduled_post_admin(
     user_id: str,
     post_text: str,
     scheduled_at_iso: str,
+    slack_status: str = "pending",
 ) -> dict | None:
-    """Insert a scheduled post with service-role (no user JWT). Used by crons."""
+    """Insert a scheduled post with service-role (no user JWT). Used by crons.
+
+    `slack_status` defaults to "pending" (awaiting Slack validation). Pass
+    "validated" for users without Slack connected: the publish scheduler only
+    picks up validated posts, and the Slack webhook is the only other path to
+    "validated" — a pending post without Slack would be stuck forever (ALE-272).
+    """
     if not admin_enabled():
         return None
     resp = (
@@ -3157,7 +3164,7 @@ def create_scheduled_post_admin(
             "post_text": post_text,
             "scheduled_at": scheduled_at_iso,
             "media_items": [],
-            "slack_status": "pending",
+            "slack_status": slack_status,
         })
         .execute()
     )

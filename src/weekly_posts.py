@@ -3,6 +3,9 @@
 Run every Friday morning on Render (`python -m src.weekly_posts`).
 Scheduled posts land the following week (Mon/Wed/Fri by default) and await
 Slack validation before the existing scheduler cron publishes them.
+Users without Slack connected get their posts auto-validated (ALE-272):
+the Slack webhook is the only path to 'validated', so a pending post would
+otherwise never be publishable.
 
 Per-user isolation: one user failing never blocks the others.
 Idempotent: if a non-cancelled post already exists for a given date, it is
@@ -119,7 +122,15 @@ def _generate_for_user(user_id: str, run_date: datetime.date) -> int:
             continue
 
         scheduled_at_iso = utc_dt.isoformat()
-        row = db.create_scheduled_post_admin(user_id, post_text, scheduled_at_iso)
+        # Sans Slack connecté, le webhook Slack (seul chemin vers 'validated')
+        # n'existe pas : un post 'pending' resterait bloqué pour toujours.
+        # On l'auto-valide donc → il partira au créneau choisi via le
+        # scheduler de publication (ALE-272). Avec Slack : flux inchangé
+        # (pending + message de validation).
+        slack_status = "pending" if slack_cfg else "validated"
+        row = db.create_scheduled_post_admin(
+            user_id, post_text, scheduled_at_iso, slack_status=slack_status
+        )
         if row is None:
             print(f"  · {user_id}: échec d'insertion pour {local_date}", file=sys.stderr)
             continue
@@ -140,7 +151,10 @@ def _generate_for_user(user_id: str, run_date: datetime.date) -> int:
             else:
                 print(f"  · {user_id}: Slack incomplet pour {local_date}, post créé sans notification")
         else:
-            print(f"  · {user_id}: Slack non connecté pour {local_date}, post créé sans notification")
+            print(
+                f"  · {user_id}: Slack non connecté pour {local_date}, "
+                "post auto-validé (publication au créneau choisi)"
+            )
 
         origin = "seed" if seed else "benchmark"
         print(f"  ✓ {user_id}: post semaine prochaine planifié {local_date} ({origin})")

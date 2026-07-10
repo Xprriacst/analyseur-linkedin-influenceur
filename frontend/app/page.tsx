@@ -7183,6 +7183,12 @@ function ProfileView({
             </label>
           )}
         </div>
+        {/* ALE-272 : sans Slack, les posts hebdo sont auto-validés côté serveur. */}
+        {!slack.status?.connected && (
+          <p className="section-desc" style={{ marginTop: 10, marginBottom: 0, fontSize: 12 }}>
+            Sans Slack connecté, tes posts de la semaine sont publiés automatiquement aux créneaux choisis, sans validation préalable. Connecte Slack pour les valider avant publication.
+          </p>
+        )}
         {weeklyEnabled && linkedin.status?.connected && slack.status?.connected && (
           <div style={{ marginTop: 16 }}>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 8 }}>
