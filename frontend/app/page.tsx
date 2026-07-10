@@ -8285,7 +8285,7 @@ function MyLibraryView({
   onReuse: (topic: string) => void;
 }) {
   // ALE-223 : rendu en tiroir repliable au sein de l'onglet « Ma bibliothèque ».
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true); // ALE-231 : ouvert par défaut (import rapide en haut)
   const [entries, setEntries] = useState<PostTemplate[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -9429,8 +9429,9 @@ function MyContentHub({
       <p className="section-desc" style={{ marginTop: 0, marginBottom: 20 }}>
         Tes contenus sauvegardés, tes posts programmés et ta bibliothèque de références — repliés en tiroirs pour t&apos;y retrouver facilement.
       </p>
-      <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
+      {/* ALE-231 : bloc bibliothèque de références (import rapide) en haut, avant Mes contenus. */}
       <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
+      <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
     </div>
   );
 }
