@@ -3575,11 +3575,34 @@ def get_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
 
 @app.post("/jobs/{job_id}/resume")
 def resume_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Relance le traitement des profils non terminés (après un redémarrage serveur)."""
+    """Relance le traitement des profils non terminés (après un redémarrage serveur).
+
+    Les profils en échec ont été remboursés au moment de l'échec : les retenter
+    est re-débité ici. Les profils jamais soldés (pending/running, donc jamais
+    remboursés) se relancent sans nouveau débit.
+    """
     job = db.get_job(token, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Série introuvable.")
-    pending = [it for it in job.get("items", []) if it.get("status") != "done"]
+    items = job.get("items", [])
+    retry_errors = [it for it in items if it.get("status") == "error"]
+    if retry_errors:
+        ok, balance = db.debit_credits(token, "analyze_job", len(retry_errors))
+        if not ok:
+            cost = db.CREDIT_COSTS["analyze_job"] * len(retry_errors)
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Crédits insuffisants pour relancer {len(retry_errors)} profil(s) "
+                    f"en échec ({cost} crédit(s), solde : {balance})."
+                ),
+            )
+        # Repasse les items re-débités en `pending` : s'ils échouent à nouveau
+        # (ou que la série meurt), la transition d'échec les remboursera.
+        for it in retry_errors:
+            db.update_job_item(token, it["id"], status="pending", error=None)
+            it["status"] = "pending"
+    pending = [it for it in items if it.get("status") not in ("done", "cancelled")]
     if pending:
         start_job_thread(token, job_id)
     return job

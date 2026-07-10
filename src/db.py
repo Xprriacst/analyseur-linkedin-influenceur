@@ -925,6 +925,29 @@ def debit_credits(access_token: str, action: str, count: int = 1) -> tuple[bool,
         raise
 
 
+def refund_credits_admin(
+    user_id: str | None, action: str, count: int = 1, description: str | None = None
+) -> None:
+    """Recrédite un utilisateur (remboursement d'une action non livrée).
+
+    Passe par la même fonction Postgres que le débit, avec un montant négatif :
+    le mouvement est journalisé dans credit_ledger avec un delta positif.
+    Best-effort — un remboursement raté ne doit jamais casser le flux appelant.
+    """
+    if not user_id or not supabase_enabled() or not admin_enabled():
+        return
+    cost = CREDIT_COSTS.get(action, 5) * max(1, count)
+    try:
+        admin_client().rpc("debit_credits", {
+            "p_user_id": user_id,
+            "p_amount": -cost,
+            "p_action": f"refund_{action}",
+            "p_description": description or f"remboursement {action} x{count}",
+        }).execute()
+    except Exception:
+        pass
+
+
 import re as _re
 
 
@@ -1163,31 +1186,71 @@ def cancel_job_item(access_token: str, item_id: str) -> str | None:
     """Annule un item s'il est encore `pending`/`running`. Retourne le statut résultant.
 
     L'`in_("status", …)` garantit qu'on n'écrase jamais un item déjà terminé
-    (`done`/`error`). RLS scope l'update au propriétaire via le JWT.
+    (`done`/`error`) et qu'une seule transition a lieu même en cas d'appels
+    concurrents — c'est cette transition qui déclenche le remboursement du
+    crédit de l'analyse non livrée. RLS scope l'update au propriétaire via le JWT.
     """
     db = client_for_token(access_token)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    (
+    resp = (
         db.table("analysis_job_items")
         .update({"status": "cancelled", "updated_at": now})
         .eq("id", item_id)
         .in_("status", ["pending", "running"])
         .execute()
     )
+    for row in resp.data or []:
+        refund_credits_admin(
+            row.get("user_id"), "analyze_job", description="remboursement analyse annulée"
+        )
     return get_job_item_status(access_token, item_id)
 
 
 def cancel_pending_items(access_token: str, job_id: str) -> None:
-    """Annule tous les items encore en attente/en cours d'une série (cancel global)."""
+    """Annule tous les items encore en attente/en cours d'une série (cancel global).
+
+    Chaque item réellement transitionné est remboursé (analyse non livrée).
+    """
     db = client_for_token(access_token)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    (
+    resp = (
         db.table("analysis_job_items")
         .update({"status": "cancelled", "updated_at": now})
         .eq("job_id", job_id)
         .in_("status", ["pending", "running"])
         .execute()
     )
+    rows = resp.data or []
+    if rows:
+        refund_credits_admin(
+            rows[0].get("user_id"), "analyze_job", count=len(rows),
+            description=f"remboursement série annulée ({len(rows)} profil(s))",
+        )
+
+
+def fail_job_item(access_token: str, item_id: str, error: str) -> bool:
+    """Passe un item en `error` s'il est encore actif, et rembourse son crédit.
+
+    Transition gardée (`in_` sur les statuts actifs) : un item déjà finalisé
+    (`done`/`cancelled`/`error`) n'est jamais réécrit, et deux appels
+    concurrents (thread + réconciliation, deux onglets qui pollent) ne
+    remboursent qu'une seule fois. Retourne True si la transition a eu lieu.
+    """
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    resp = (
+        db.table("analysis_job_items")
+        .update({"status": "error", "error": error, "updated_at": now})
+        .eq("id", item_id)
+        .in_("status", ["pending", "running"])
+        .execute()
+    )
+    rows = resp.data or []
+    for row in rows:
+        refund_credits_admin(
+            row.get("user_id"), "analyze_job", description="remboursement analyse échouée"
+        )
+    return bool(rows)
 
 
 def delete_job_item(access_token: str, item_id: str) -> bool:
@@ -1266,17 +1329,11 @@ def reconcile_stale_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
             continue  # récemment actif (ou date illisible) → on laisse tourner
         for it in job.get("items", []):
             if it.get("status") == "running":
-                update_job_item(
-                    access_token, it["id"], status="error",
-                    error="Analyse interrompue (délai dépassé).",
-                )
-                it["status"] = "error"
+                if fail_job_item(access_token, it["id"], "Analyse interrompue (délai dépassé)."):
+                    it["status"] = "error"
             elif it.get("status") == "pending":
-                update_job_item(
-                    access_token, it["id"], status="error",
-                    error="Non démarrée — série interrompue.",
-                )
-                it["status"] = "error"
+                if fail_job_item(access_token, it["id"], "Non démarrée — série interrompue."):
+                    it["status"] = "error"
         done = sum(1 for it in job.get("items", []) if it.get("status") == "done")
         failed = sum(1 for it in job.get("items", []) if it.get("status") == "error")
         final = "error" if failed and not done else "done"

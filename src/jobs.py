@@ -8,6 +8,9 @@ l'onglet ou se reconnecter, la progression est conservée.
 
 Un verrou global sérialise les analyses (compteurs d'usage globaux + limites de
 débit Apify) : les séries s'exécutent l'une après l'autre, profil par profil.
+Pendant l'attente du verrou, la série émet un heartbeat en base — sans lui,
+`reconcile_stale_jobs` la solderait en erreur au bout de `JOB_STALE_MINUTES`
+alors qu'elle fait simplement la queue.
 
 Annulation : elle se fait en base (statut `cancelled` posé par l'API, sur la
 série entière ou un item précis). Le thread la respecte — il ne réécrit jamais
@@ -30,6 +33,25 @@ _compute_lock = threading.Lock()
 # (statut `error`) et on libère le verrou global — sinon un appel Apify figé
 # bloquerait toutes les séries de tous les utilisateurs.
 ITEM_TIMEOUT_S = 600
+
+# Tranche d'attente du verrou global entre deux heartbeats/vérifs d'annulation.
+LOCK_WAIT_SLICE_S = 60
+
+
+def _acquire_compute_lock(access_token: str, job_id: str, item_id: str) -> bool:
+    """Attend le verrou global en gardant la série vivante côté base.
+
+    Retourne False (sans avoir pris le verrou) si la série ou l'item a été
+    annulé pendant l'attente.
+    """
+    while True:
+        if _compute_lock.acquire(timeout=LOCK_WAIT_SLICE_S):
+            return True
+        if db.get_job_status(access_token, job_id) == "cancelled":
+            return False
+        if db.get_job_item_status(access_token, item_id) == "cancelled":
+            return False
+        db.update_job(access_token, job_id, status="running")  # heartbeat (updated_at)
 
 
 def final_counts(items: list[dict]) -> tuple[int, int]:
@@ -116,14 +138,27 @@ def process_job(access_token: str, job_id: str) -> None:
 
         db.update_job_item(access_token, item["id"], status="running", error=None)
         try:
-            with _compute_lock:
+            if not _acquire_compute_lock(access_token, job_id, item["id"]):
+                # Annulé pendant l'attente du verrou. Le remboursement est porté
+                # par la transition `cancelled` elle-même (cf. db.cancel_job_item).
+                db.cancel_job_item(access_token, item["id"])
+                item["status"] = "cancelled"
+                continue
+            try:
                 result = _run_analysis_guarded(item["url"], limit, no_cache, with_llm, platform=platform)
+            finally:
+                _compute_lock.release()
             # L'item a-t-il été annulé pendant le scraping ? Si oui, on respecte
             # l'annulation au lieu d'écrire `done` par-dessus.
             if db.get_job_item_status(access_token, item["id"]) == "cancelled":
                 item["status"] = "cancelled"
             else:
-                saved = db.save_analysis(access_token, result, posts_limit=limit) or {}
+                saved = db.save_analysis(access_token, result, posts_limit=limit)
+                if not saved or not saved.get("analysis_id"):
+                    # Session expirée ou écriture refusée : l'analyse est calculée
+                    # mais aucun rapport n'existe → échec explicite (et remboursé),
+                    # jamais un `done` silencieux sans rapport.
+                    raise RuntimeError("Rapport non sauvegardé (session expirée ?).")
                 profile = result.get("profile", {}) or {}
                 db.update_job_item(
                     access_token,
@@ -138,23 +173,28 @@ def process_job(access_token: str, job_id: str) -> None:
                 )
                 item["status"] = "done"
         except Exception as exc:  # noqa: BLE001 — on isole l'échec d'un profil
-            if db.get_job_item_status(access_token, item["id"]) == "cancelled":
-                item["status"] = "cancelled"
-            else:
-                db.update_job_item(
-                    access_token, item["id"], status="error", error=str(exc)[:500]
-                )
+            # Transition gardée : rembourse le crédit si c'est bien cet appel qui
+            # solde l'item ; sinon (déjà annulé/soldé par ailleurs) on reflète
+            # le statut réel sans réécrire.
+            if db.fail_job_item(access_token, item["id"], str(exc)[:500]):
                 item["status"] = "error"
+            else:
+                item["status"] = db.get_job_item_status(access_token, item["id"]) or "error"
 
-        # Compteurs : on ne réécrit jamais par-dessus un `cancelled` global.
-        if db.get_job_status(access_token, job_id) != "cancelled":
+        # Compteurs : on ne réécrit jamais par-dessus une série annulée ou déjà
+        # finalisée par ailleurs (réconciliation).
+        if db.get_job_status(access_token, job_id) in ("queued", "running"):
             done, failed = _counts(items)
             db.update_job(access_token, job_id, status="running", completed=done, failed=failed)
 
     done, failed = _counts(items)
+    current = db.get_job_status(access_token, job_id)
     # Une annulation explicite de la série prime sur le statut calculé.
-    if db.get_job_status(access_token, job_id) == "cancelled":
+    if current == "cancelled":
         db.update_job(access_token, job_id, completed=done, failed=failed)
+        return
+    if current not in ("queued", "running"):
+        # Série déjà finalisée par ailleurs (réconciliation) — on ne réécrit pas.
         return
     db.update_job(
         access_token, job_id, status=final_status(items) or "done",
