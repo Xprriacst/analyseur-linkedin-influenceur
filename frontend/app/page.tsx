@@ -1063,6 +1063,17 @@ function Sidebar({
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedPreferenceLoaded, setCollapsedPreferenceLoaded] = useState(false);
+  // ALE-246 : ouverture par réseau, découplée du réseau actif → LinkedIn et
+  // Instagram peuvent rester déployés en même temps (fin de l'accordéon).
+  const [openNets, setOpenNets] = useState<Record<Platform, boolean>>(() => ({
+    linkedin: platform === "linkedin",
+    instagram: platform === "instagram",
+  }));
+  // Le réseau qui devient actif s'ouvre toujours (changement de platform
+  // déclenché ailleurs) → son onglet actif reste visible.
+  useEffect(() => {
+    setOpenNets((o) => (o[platform] ? o : { ...o, [platform]: true }));
+  }, [platform]);
 
   useEffect(() => {
     try {
@@ -1126,7 +1137,6 @@ function Sidebar({
 
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {!restricted && (() => {
-        const isNetworkView = view === "content" || view === "analyze" || view === "prospecting";
         const networks: { key: Platform; label: string; icon: React.ReactNode }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
           { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
@@ -1139,16 +1149,16 @@ function Sidebar({
           <section className="sidebar-section sidebar-nav-tree">
             <div className="nav-list">
               {networks.map((net) => {
-                const expanded = platform === net.key && isNetworkView;
+                // ALE-246 : ouverture indépendante par réseau (plus d'accordéon).
+                const expanded = openNets[net.key];
+                const isActiveNet = platform === net.key;
                 return (
                   <React.Fragment key={net.key}>
                     <button
-                      className={`nav-item ${expanded ? "nav-item-open" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                      className={`nav-item ${expanded ? "nav-item-open" : ""}${isActiveNet ? " nav-item-active-net" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
                       title={collapsed ? net.label : undefined}
-                      onClick={() => {
-                        onPlatformChange(net.key);
-                        if (view !== "content" && view !== "analyze") onNavigate("content");
-                      }}
+                      aria-expanded={expanded}
+                      onClick={() => setOpenNets((o) => ({ ...o, [net.key]: !o[net.key] }))}
                     >
                       {net.icon}
                       {!collapsed && <span>{net.label}</span>}
@@ -1160,13 +1170,14 @@ function Sidebar({
                       return (
                         <button
                           key={tab.key}
-                          className={`nav-item nav-item-sub ${view === tab.key ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                          className={`nav-item nav-item-sub ${isActiveNet && view === tab.key ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
                           title={collapsed ? tab.label : undefined}
                           onClick={() => {
                             if (locked) {
                               requireAuth("Crée un compte gratuit pour débloquer le générateur de contenu.");
                               return;
                             }
+                            onPlatformChange(net.key);
                             onNavigate(tab.key);
                           }}
                         >
@@ -1185,13 +1196,14 @@ function Sidebar({
                     {/* ALE-229 : Prospection — actif sous LinkedIn, jumeau grisé « Bientôt » sous Instagram */}
                     {expanded && net.key === "linkedin" && (
                       <button
-                        className={`nav-item nav-item-sub ${view === "prospecting" ? "active" : ""} ${!isAuthed ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                        className={`nav-item nav-item-sub ${isActiveNet && view === "prospecting" ? "active" : ""} ${!isAuthed ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
                         title={collapsed ? "Prospection" : undefined}
                         onClick={() => {
                           if (!isAuthed) {
                             requireAuth("Crée un compte gratuit pour débloquer la prospection.");
                             return;
                           }
+                          onPlatformChange("linkedin");
                           onNavigate("prospecting");
                         }}
                       >
@@ -1767,7 +1779,7 @@ function TopPosts({ result, limit, onUnlock }: { result: Analysis; limit?: numbe
               <span className="badge">💬 {fmt(post.comments)}</span>
               <span className="badge">🔁 {fmt(post.reposts)}</span>
             </div>
-            {post.url ? <a className="secondary-button" href={post.url} target="_blank" style={{ fontSize: 12, minHeight: 28 }}>Voir sur LinkedIn</a> : null}
+            {safeHttpUrl(post.url) ? <a className="secondary-button" href={safeHttpUrl(post.url)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, minHeight: 28 }}>Voir sur LinkedIn</a> : null}
           </div>
         </div>
       ))}
@@ -3620,8 +3632,8 @@ function DailyIdeasView({
                 <span className="idea-line-text">{idea.line}</span>
                 {idea.source_ref && (
                   <span className="idea-line-source">
-                    {idea.source_url ? (
-                      <a href={idea.source_url} target="_blank" rel="noopener noreferrer">{idea.source_ref}</a>
+                    {safeHttpUrl(idea.source_url) ? (
+                      <a href={safeHttpUrl(idea.source_url)} target="_blank" rel="noopener noreferrer">{idea.source_ref}</a>
                     ) : (
                       idea.source_ref
                     )}
@@ -3715,7 +3727,7 @@ function DailyIdeasView({
                           />
                           <p className="section-desc" style={{ margin: "6px 0 0", fontSize: 12 }}>
                             <Linkedin size={11} style={{ verticalAlign: "-1px" }} /> Photo de l'annonce — rattachée automatiquement à la publication
-                            {it.source_url && <> · <a href={it.source_url} target="_blank" rel="noreferrer">voir l'annonce</a></>}
+                            {safeHttpUrl(it.source_url) && <> · <a href={safeHttpUrl(it.source_url)} target="_blank" rel="noreferrer">voir l'annonce</a></>}
                           </p>
                         </div>
                       )}
@@ -6108,7 +6120,22 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
 // toute sa logique d'agent (réutilisée via IgInbox en mode headless `hideChrome`).
 type InboxNetwork = "instagram" | "linkedin";
 
-function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null }) {
+// ALE-248 : réconcilie une liste de conversations fraîchement pollée avec l'état
+// courant plutôt que de tout remplacer. Conserve la RÉFÉRENCE des objets
+// inchangés (pas de re-render / clignotement inutile), n'ajoute/retire que les
+// nouveautés. Comparaison par sérialisation (listes courtes = OK). Renvoie
+// `prev` tel quel si rien n'a bougé → référence stable en amont.
+function reconcileById<T>(prev: T[], next: T[], keyOf: (x: T) => string): T[] {
+  const prevByKey = new Map(prev.map((x) => [keyOf(x), x] as const));
+  const merged = next.map((n) => {
+    const p = prevByKey.get(keyOf(n));
+    return p && JSON.stringify(p) === JSON.stringify(n) ? p : n;
+  });
+  if (merged.length === prev.length && merged.every((m, i) => m === prev[i])) return prev;
+  return merged;
+}
+
+function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; initialSelect?: { network: InboxNetwork; id: string; nonce: number } | null }) {
   const outreach = useLinkedInOutreach(isAuthed);
   const lnConnected = !!outreach.status?.connected;
   const [igConvs, setIgConvs] = useState<IgConversation[]>([]);
@@ -6121,7 +6148,7 @@ function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; re
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations`, { headers: await authHeaders() });
       const data = await res.json();
-      if (res.ok) setIgConvs(Array.isArray(data) ? data : []);
+      if (res.ok) setIgConvs((prev) => reconcileById(prev, Array.isArray(data) ? data : [], (c) => c.id));
     } catch { /* non bloquant */ } finally { setLoaded(true); }
   }
   async function loadLn() {
@@ -6129,7 +6156,7 @@ function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; re
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats`, { headers: await authHeaders() });
       const data = await res.json();
-      if (res.ok) setLnChats(Array.isArray(data.chats) ? data.chats : []);
+      if (res.ok) setLnChats((prev) => reconcileById(prev, Array.isArray(data.chats) ? data.chats : [], (c) => c.id));
     } catch { /* non bloquant */ }
   }
 
@@ -6153,12 +6180,23 @@ function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; re
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, lnConnected]);
 
+  // ALE-245 : pré-sélection d'une conversation depuis un autre écran (bouton
+  // « Inbox » sur une ligne de lead). Le nonce garantit qu'un même chat
+  // re-sélectionne même après avoir fermé le fil.
+  useEffect(() => {
+    if (initialSelect) setSel({ network: initialSelect.network, id: initialSelect.id });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSelect?.nonce]);
+
   const ts = (v?: string | null) => (v ? new Date(v).getTime() : 0);
   type Row = { network: InboxNetwork; id: string; name: string; time: number; mode?: IgConversation["mode"] };
   const rows: Row[] = [
     ...igConvs.map((c) => ({ network: "instagram" as const, id: c.id, name: c.prospect_name || c.prospect_id, time: ts(c.last_message_at), mode: c.mode })),
     ...lnChats.map((c) => ({ network: "linkedin" as const, id: c.id, name: c.name || "Conversation LinkedIn", time: ts(c.last_message_at) })),
-  ].sort((a, b) => b.time - a.time);
+    // ALE-248 : tri stable — départage les temps égaux (ex. chats LinkedIn sans
+    // last_message_at, tous à 0) par clé réseau:id pour éviter que les lignes
+    // sautent à chaque poll.
+  ].sort((a, b) => b.time - a.time || `${a.network}:${a.id}`.localeCompare(`${b.network}:${b.id}`));
 
   // Pastille « non lu » unifiée (localStorage par utilisateur, clé network:id).
   const readKey = userId ? `inbox_conv_read:${userId}` : null;
@@ -6232,7 +6270,7 @@ function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; re
                   )}
                   <span title={r.network === "instagram" ? "Instagram" : "LinkedIn"} style={{ display: "inline-flex", flex: "0 0 auto" }}>
                     {r.network === "instagram"
-                      ? <MessageSquare size={13} style={{ color: "#c13584" }} />
+                      ? <span style={{ display: "inline-flex", color: "#c13584" }}><InstagramIcon size={13} /></span>
                       : <Linkedin size={13} style={{ color: "#0a66c2" }} />}
                   </span>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
@@ -7790,7 +7828,7 @@ function InfluencersView({
                             <span className="tr-avatar" aria-hidden="true">{initialsOf(entry.name)}</span>
                             <span>
                               <a
-                                href={entry.profile_url}
+                                href={safeHttpUrl(entry.profile_url)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="tr-name"
@@ -8093,8 +8131,8 @@ function MonitoringFeedView({
                         : savedIds[p.id] ? <CheckCircle2 size={12} /> : <BookmarkPlus size={12} />}
                       {savedIds[p.id] ? " Gardé ✓" : savingId === p.id ? " Extraction…" : " Garder dans ma bibliothèque"}
                     </button>
-                    {p.url && (
-                      <a href={p.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "var(--muted)" }}>
+                    {safeHttpUrl(p.url) && (
+                      <a href={safeHttpUrl(p.url)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "var(--muted)" }}>
                         voir sur LinkedIn
                       </a>
                     )}
@@ -8557,8 +8595,8 @@ function MyLibraryView({
                   )}
                   {(t.source_author || t.source_post_url) && !t.structure_label && (
                     <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
-                      {t.source_post_url ? (
-                        <a href={t.source_post_url} target="_blank" rel="noreferrer">voir le post</a>
+                      {safeHttpUrl(t.source_post_url) ? (
+                        <a href={safeHttpUrl(t.source_post_url)} target="_blank" rel="noreferrer">voir le post</a>
                       ) : null}
                     </p>
                   )}
@@ -8646,6 +8684,9 @@ type Lead = {
   outreach_status?: string | null;   // none | invite_sent | connected | messaged
   provider_id?: string | null;
   outreach_chat_id?: string | null;
+  // ALE-243 : curation manuelle — 'to_contact' (défaut) | 'skip' (écarté).
+  contact_status?: string | null;
+  skip_reason?: string | null;
 };
 
 /** Libellé court de l'état d'outreach d'un lead (badge de liste). */
@@ -8708,9 +8749,11 @@ function safeHttpUrl(u?: string | null): string | undefined {
 function ProspectingView({
   isAuthed,
   requireAuth,
+  onNavigateInbox,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
+  onNavigateInbox: (chatId?: string) => void;
 }) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(false);
@@ -8718,22 +8761,27 @@ function ProspectingView({
   const [selected, setSelected] = useState<Lead | null>(null);
   // Ciblage ICP (ALE-228)
   const [targeting, setTargeting] = useState<LeadTargeting | null>(null);
+  const [targetingLoading, setTargetingLoading] = useState(true); // ALE-247 : réserve l'espace, évite le pop-in
   const [targetOpen, setTargetOpen] = useState(false);
   const [savingTarget, setSavingTarget] = useState(false);
   const [targetMsg, setTargetMsg] = useState("");
   // Envoi via Unipile (ALE-230)
   const outreach = useLinkedInOutreach(isAuthed);
+  const lnConnected = !!outreach.status?.connected;
+  const quota = outreach.status?.quota;
   const [outreachBusy, setOutreachBusy] = useState(false);
   const [genBusy, setGenBusy] = useState(false);
   const [outreachMsg, setOutreachMsg] = useState("");
   const [composeOpen, setComposeOpen] = useState(false);
   const [messageText, setMessageText] = useState("");
+  const [skipReason, setSkipReason] = useState(""); // ALE-243 : raison « ne pas contacter »
 
   // Réinitialise le bloc d'envoi quand on change de lead sélectionné.
   useEffect(() => {
     setComposeOpen(false);
     setMessageText("");
     setOutreachMsg("");
+    setSkipReason(selected?.skip_reason || "");
   }, [selected?.id]);
 
   // Applique le lead mis à jour renvoyé par le serveur (liste + panneau).
@@ -8744,6 +8792,19 @@ function ProspectingView({
   const applyQuota = (quota?: OutreachQuota) => {
     if (quota) outreach.setStatus((prev) => (prev ? { ...prev, quota } : prev));
   };
+
+  // ALE-243 : curation manuelle — marque « ne pas contacter » / remet en liste.
+  async function setContactStatus(lead: Lead, contact_status: "to_contact" | "skip", reason?: string) {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}`, {
+        method: "PATCH",
+        headers: { ...(await authHeaders()), "Content-Type": "application/json" },
+        body: JSON.stringify({ contact_status, skip_reason: reason ?? null }),
+      });
+      const data = await res.json();
+      if (res.ok && data.lead) patchLead(data.lead);
+    } catch { /* non bloquant */ }
+  }
 
   async function inviteLead(lead: Lead) {
     setOutreachBusy(true); setOutreachMsg("");
@@ -8823,13 +8884,17 @@ function ProspectingView({
       } finally {
         if (!cancelled) setLoading(false);
       }
-      // Ciblage (best-effort, ne bloque pas la liste).
+      // Ciblage (best-effort, ne bloque pas la liste). ALE-247 : on trace le
+      // chargement (skeleton pour réserver l'espace) et on pose un objet vide
+      // si aucun ciblage n'est encore configuré → le bloc reste visible/à remplir.
       try {
         const res = await fetch(`${DIRECT_API_URL}/me/lead-targeting`, { headers: await authHeaders() });
         const data = await res.json();
-        if (!cancelled && res.ok && data.targeting) setTargeting(data.targeting);
+        if (!cancelled) setTargeting(res.ok && data.targeting ? data.targeting : {});
       } catch {
-        /* silencieux */
+        if (!cancelled) setTargeting({});
+      } finally {
+        if (!cancelled) setTargetingLoading(false);
       }
     })();
     return () => {
@@ -8906,8 +8971,13 @@ function ProspectingView({
         d&apos;intention le plus chaud de LinkedIn. Clique une ligne pour le détail.
       </p>
 
-      {/* ALE-228 : ciblage ICP — note chaque lead vs le client idéal, masque les hors-cible */}
-      {targeting && (
+      {/* ALE-228 : ciblage ICP — note chaque lead vs le client idéal. ALE-247 : skeleton au chargement pour éviter le pop-in. */}
+      {targetingLoading ? (
+        <div className="card" style={{ marginBottom: 16, padding: "12px 16px", display: "flex", alignItems: "center", gap: 8, color: "var(--muted)" }}>
+          <Target size={16} style={{ flexShrink: 0, opacity: 0.5 }} />
+          <span style={{ fontSize: 13 }}>Chargement de ton ciblage…</span>
+        </div>
+      ) : targeting && (
         <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
           <button
             type="button"
@@ -9006,18 +9076,31 @@ function ProspectingView({
         // le max-content (intitulés en nowrap) et déborde du <main> → l'ellipsis
         // ne se déclenche jamais. Le floor à 0 force les cartes à la largeur dispo.
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 6 }}>
-          {leads.map((l) => {
+          {leads.map((l, i) => {
             const sig = leadLastSignal(l);
             const multi = (l.signal_count ?? 1) > 1;
+            const skipped = l.contact_status === "skip";
+            // ALE-243 : séparateur avant le 1er lead écarté (les écartés sont triés en bas par le backend).
+            const showSkipDivider = skipped && i > 0 && leads[i - 1]?.contact_status !== "skip";
             return (
-              <button
-                key={l.id}
-                type="button"
+              <React.Fragment key={l.id}>
+                {showSkipDivider && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 2px 2px", color: "var(--muted)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", fontWeight: 700 }}>
+                    <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+                    Écartés
+                    <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+                  </div>
+                )}
+              <div
+                role="button"
+                tabIndex={0}
                 className="card"
                 onClick={() => setSelected(l)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelected(l); } }}
                 style={{
                   display: "flex", gap: 12, alignItems: "center", width: "100%", textAlign: "left",
                   cursor: "pointer", padding: "10px 14px", font: "inherit", color: "inherit",
+                  opacity: skipped ? 0.6 : undefined,
                   border: selected?.id === l.id ? "1px solid var(--accent, #2e6bd6)" : undefined,
                 }}
               >
@@ -9051,14 +9134,41 @@ function ProspectingView({
                     {l.score}
                   </span>
                 )}
-                {outreachLabel(l.outreach_status) ? (
+                {skipped ? (
+                  <span className="daily-seed-tag" style={{ flexShrink: 0 }}>Écarté</span>
+                ) : outreachLabel(l.outreach_status) ? (
                   <span className="daily-seed-tag" style={{ flexShrink: 0, color: l.outreach_status === "messaged" ? "var(--success)" : undefined }}>
                     {outreachLabel(l.outreach_status)}
                   </span>
                 ) : l.status === "new" ? (
                   <span className="daily-seed-tag" style={{ flexShrink: 0 }}>Nouveau</span>
                 ) : null}
-              </button>
+                {/* ALE-245 : raccourcis d'action sur la ligne — stopPropagation pour ne pas ouvrir le volet. */}
+                {lnConnected && (!l.outreach_status || l.outreach_status === "none") && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{ flexShrink: 0, fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                    disabled={outreachBusy || !quota?.can_invite}
+                    title={!quota?.can_invite ? (quota?.invite_blocked_reason || "Invitation indisponible") : "Envoyer une demande de connexion"}
+                    onClick={(e) => { e.stopPropagation(); inviteLead(l); }}
+                  >
+                    <UserRound size={13} /> Inviter
+                  </button>
+                )}
+                {lnConnected && (l.outreach_status === "connected" || l.outreach_status === "messaged") && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{ flexShrink: 0, fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                    title="Ouvrir la conversation dans l'Inbox"
+                    onClick={(e) => { e.stopPropagation(); onNavigateInbox(l.outreach_chat_id || undefined); }}
+                  >
+                    <MessageSquare size={13} /> {l.outreach_status === "messaged" ? "Inbox" : "Message"}
+                  </button>
+                )}
+              </div>
+              </React.Fragment>
             );
           })}
         </div>
@@ -9117,6 +9227,35 @@ function ProspectingView({
               <p style={{ margin: 0, fontSize: 12.5, color: "var(--muted)", fontStyle: "italic" }}>
                 {selected.score_reason}
               </p>
+            )}
+            {/* ALE-243 : curation manuelle — « ne pas contacter » (le lead reste dans la liste, relégué en bas). */}
+            {selected.contact_status === "skip" ? (
+              <div className="card" style={{ padding: "10px 12px", display: "grid", gap: 8, background: "var(--surface-low)" }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>🚫 Écarté — ne pas contacter</div>
+                {selected.skip_reason && (
+                  <div style={{ fontSize: 12.5, color: "var(--muted)" }}>Raison : {selected.skip_reason}</div>
+                )}
+                <button className="secondary-button" style={{ justifySelf: "start", fontSize: 12.5 }} onClick={() => setContactStatus(selected, "to_contact")}>
+                  Remettre dans la liste
+                </button>
+              </div>
+            ) : (
+              <details className="card" style={{ padding: "10px 12px" }}>
+                <summary style={{ cursor: "pointer", fontSize: 13 }}>Ne pas contacter ce lead</summary>
+                <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                  <input
+                    type="text"
+                    placeholder="Raison (optionnel) : hors cible, concurrent, déjà client…"
+                    maxLength={280}
+                    value={skipReason}
+                    onChange={(e) => setSkipReason(e.target.value)}
+                    style={{ padding: "7px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", font: "inherit", fontSize: 13 }}
+                  />
+                  <button className="secondary-button" style={{ justifySelf: "start", fontSize: 12.5 }} onClick={() => setContactStatus(selected, "skip", skipReason.trim() || undefined)}>
+                    Marquer « ne pas contacter »
+                  </button>
+                </div>
+              </details>
             )}
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--muted)", fontWeight: 700, marginTop: 4 }}>
               Signaux d&apos;intention
@@ -9717,6 +9856,8 @@ export default function Home() {
   const [generatorSeed, setGeneratorSeed] = useState<{ topic: string; nonce: number } | null>(null);
   // Post pré-rempli quand on "retravaille" un variant depuis le Générateur vers l'Agent IA.
   const [assistantSeed, setAssistantSeed] = useState<{ post: string; nonce: number } | null>(null);
+  // ALE-245 : conversation à pré-sélectionner dans l'Inbox (depuis un lead).
+  const [inboxSelect, setInboxSelect] = useState<{ network: InboxNetwork; id: string; nonce: number } | null>(null);
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsLoading, setJobsLoading] = useState(false);
@@ -10276,7 +10417,7 @@ export default function Home() {
         <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA, Inbox IG et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "inbox" ? (
-            <UnifiedInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} />
+            <UnifiedInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} initialSelect={inboxSelect} />
           ) : view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} />
           ) : view === "profile" ? (
@@ -10365,7 +10506,14 @@ export default function Home() {
                 />
               )}
               {view === "prospecting" && (
-                <ProspectingView isAuthed={isAuthed} requireAuth={requireAuth} />
+                <ProspectingView
+                  isAuthed={isAuthed}
+                  requireAuth={requireAuth}
+                  onNavigateInbox={(chatId) => {
+                    if (chatId) setInboxSelect({ network: "linkedin", id: chatId, nonce: Date.now() });
+                    setView("inbox");
+                  }}
+                />
               )}
             </>
           )}

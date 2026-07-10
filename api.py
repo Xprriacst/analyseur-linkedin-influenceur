@@ -1891,16 +1891,55 @@ def _score_leads_for_source(token: str, source: dict, counts: dict) -> None:
         print(f"[leads] scoring à l'ingestion échoué : {exc}", flush=True)
 
 
+# Facturation de la collecte de commentateurs (ALE-239). L'appel Apify est
+# payant (~0,002 $/commentaire) mais n'était débité d'aucun crédit → fuite de
+# coût. On débite proportionnellement au volume RÉELLEMENT récupéré. Constante
+# ajustable : au calibrage actuel (~0,006 $/crédit) 3 commentateurs ≈ 1 crédit
+# couvre à peu près le coût Apify. La monter réduit la marge, la baisser la creuse.
+LEAD_COMMENTERS_PER_CREDIT = 3
+
+
+def _lead_collect_credit_cost(n_commenters: int) -> int:
+    """Crédits à débiter pour une collecte, proportionnels au volume (min 1)."""
+    n = max(0, int(n_commenters))
+    if n == 0:
+        return 0
+    return max(1, (n + LEAD_COMMENTERS_PER_CREDIT - 1) // LEAD_COMMENTERS_PER_CREDIT)
+
+
 def _collect_lead_source(token: str, source: dict, max_comments: int | None) -> dict[str, Any]:
-    """Scrape les commentateurs d'une source et les persiste en leads dédupliqués."""
+    """Scrape les commentateurs d'une source et les persiste en leads dédupliqués.
+
+    Facturation (ALE-239) : pré-check fail-closed du solde AVANT l'appel Apify
+    payant (on ne scrape pas si le solde ne couvre pas le pire cas = le volume
+    demandé), puis débit proportionnel au volume RÉELLEMENT récupéré (toujours
+    <= demandé, donc le débit ne peut pas échouer après avoir payé le scrape).
+    Zéro commentateur récupéré = zéro débit.
+    """
     if not os.environ.get("APIFY_TOKEN"):
         raise HTTPException(status_code=503, detail="Scraping non configuré (APIFY_TOKEN manquant).")
+    requested = max_comments or LEAD_COMMENTS_DEFAULT
+    if token:
+        worst_case = _lead_collect_credit_cost(requested)
+        info = db.get_user_credits(token)
+        if info.get("enabled") and info.get("balance", 0) < worst_case:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Crédits insuffisants (solde : {info.get('balance', 0)}). "
+                    f"Cette collecte peut coûter jusqu'à {worst_case} crédit(s)."
+                ),
+            )
     try:
-        commenters = fetch_post_commenters(
-            source["post_url"], max_items=max_comments or LEAD_COMMENTS_DEFAULT
-        )
+        commenters = fetch_post_commenters(source["post_url"], max_items=requested)
     except Exception as exc:  # noqa: BLE001 — erreur actor/réseau remontée telle quelle
         raise HTTPException(status_code=502, detail=f"Collecte des commentaires échouée : {exc}")
+    credits_balance: int | None = None
+    if token and commenters:
+        # ok toujours True ici : le pré-check garantit solde >= coût du pire cas >= coût réel.
+        _ok, credits_balance = db.debit_credits(
+            token, "collect_leads", _lead_collect_credit_cost(len(commenters))
+        )
     counts = db.save_leads(token, source, commenters)
     # Scoring ICP (ALE-228) : note les leads fraîchement touchés contre le ciblage.
     _score_leads_for_source(token, source, counts)
@@ -1918,7 +1957,12 @@ def _collect_lead_source(token: str, source: dict, max_comments: int | None) -> 
         f"{len(commenters)} commentaire(s) récupéré(s), leads {counts}",
         flush=True,
     )
-    return {"source": updated or source, "comments_count": len(commenters), "leads": counts}
+    return {
+        "source": updated or source,
+        "comments_count": len(commenters),
+        "leads": counts,
+        "credits": credits_balance,
+    }
 
 
 @app.get("/me/lead-sources")
@@ -2000,8 +2044,31 @@ def delete_me_lead_source(source_id: str, token: str = Depends(require_token)) -
 
 @app.get("/me/leads")
 def me_leads(token: str = Depends(require_token)) -> dict[str, Any]:
-    """Leads de prospection de l'utilisateur (mieux notés d'abord, sous-seuil masqués)."""
+    """Leads de prospection de l'utilisateur — mieux notés d'abord, jamais masqués
+    (les écartés « ne pas contacter » restent en bas de liste, cf. ALE-243)."""
     return {"leads": db.list_leads(token)}
+
+
+class LeadContactStatusRequest(BaseModel):
+    contact_status: str
+    skip_reason: str | None = Field(default=None, max_length=280)
+
+
+@app.patch("/me/leads/{lead_id}")
+def patch_me_lead(
+    lead_id: str, payload: LeadContactStatusRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Curation manuelle d'un lead (ALE-243) : « ne pas contacter » (+ raison courte)
+    ou remise dans la liste. Le lead n'est JAMAIS supprimé — il reste visible,
+    relégué en bas de la liste (cf. db.list_leads)."""
+    if payload.contact_status not in ("to_contact", "skip"):
+        raise HTTPException(status_code=422, detail="Statut invalide (to_contact | skip).")
+    if not db.get_lead(token, lead_id):
+        raise HTTPException(status_code=404, detail="Lead introuvable.")
+    updated = db.set_lead_contact_status(token, lead_id, payload.contact_status, payload.skip_reason)
+    if not updated:
+        raise HTTPException(status_code=400, detail="Mise à jour impossible.")
+    return {"lead": updated}
 
 
 @app.get("/me/lead-targeting")
@@ -2488,7 +2555,11 @@ def me_linkedin_outreach_chat_messages(
         msgs = unipile.list_chat_messages(chat_id)
     except unipile.UnipileError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"messages": [unipile.normalize_message(m) for m in msgs]}
+    normalized = [unipile.normalize_message(m) for m in msgs]
+    # Unipile renvoie les messages les plus récents d'abord ; l'Inbox les affiche
+    # de haut en bas (auto-scroll vers le bas) → tri chronologique ascendant.
+    normalized.sort(key=lambda m: str(m.get("created_at") or ""))
+    return {"messages": normalized}
 
 
 @app.post("/me/linkedin/outreach/chats/{chat_id}/messages")
