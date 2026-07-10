@@ -2555,7 +2555,11 @@ def me_linkedin_outreach_chat_messages(
         msgs = unipile.list_chat_messages(chat_id)
     except unipile.UnipileError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"messages": [unipile.normalize_message(m) for m in msgs]}
+    normalized = [unipile.normalize_message(m) for m in msgs]
+    # Unipile renvoie les messages les plus récents d'abord ; l'Inbox les affiche
+    # de haut en bas (auto-scroll vers le bas) → tri chronologique ascendant.
+    normalized.sort(key=lambda m: str(m.get("created_at") or ""))
+    return {"messages": normalized}
 
 
 @app.post("/me/linkedin/outreach/chats/{chat_id}/messages")
