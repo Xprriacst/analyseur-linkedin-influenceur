@@ -5,7 +5,8 @@ test.describe("Landing publique", () => {
   test("la page se charge avec le titre et la navigation", async ({ page }) => {
     await page.goto("/");
     await expect(page).toHaveTitle(/Cibl/i);
-    for (const label of ["Contenu", "Veille", "Agent IA", "Mon profil"]) {
+    // ALE-257 : « Veille » retirée de la nav (fusionnée dans Contenu › Analyses).
+    for (const label of ["Contenu", "Agent IA", "Mon profil"]) {
       await expect(page.locator(".nav-item", { hasText: label })).toBeVisible();
     }
   });
