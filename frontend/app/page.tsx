@@ -2667,9 +2667,10 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   const [topic, setTopic] = useState(_genCache.topic);
   const topicRef = useRef<HTMLTextAreaElement | null>(null); // ALE-235 : champ Sujet auto-resize
   const [role, setRole] = useState("auto");
-  // ALE-216/ALE-222 : template de structure choisi dans la bibliothèque (optionnel).
-  // Seules les entrées AVEC structure sont proposées (les entrées texte-seul
-  // nourrissent l'inspiration aléatoire, pas le sélecteur).
+  // ALE-233 : template de post choisi dans la bibliothèque (optionnel). Le post
+  // complet EST le template → toute entrée avec un texte de post est proposée ;
+  // fallback rétro-compat : les entrées qui n'ont qu'un squelette (structure_text)
+  // le restent aussi.
   const [templates, setTemplates] = useState<PostTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
 
@@ -2681,11 +2682,11 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
         .then((r) => (r.ok ? r.json() : []))
         .then((data) => {
           if (cancelled) return;
-          const withStructure = (Array.isArray(data) ? data : []).filter(
-            (t: PostTemplate) => (t.structure_text || "").trim()
+          const usable = (Array.isArray(data) ? data : []).filter(
+            (t: PostTemplate) => (t.post_text || "").trim() || (t.structure_text || "").trim()
           );
-          setTemplates(withStructure);
-          setTemplateId((prev) => (prev && !withStructure.some((t: PostTemplate) => t.id === prev) ? "" : prev));
+          setTemplates(usable);
+          setTemplateId((prev) => (prev && !usable.some((t: PostTemplate) => t.id === prev) ? "" : prev));
         })
         .catch(() => {})
     );
@@ -3051,7 +3052,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                 </select>
                 {templates.length === 0 ? (
                   <span style={{ fontSize: 12 }}>
-                    Ajoute des posts dans Contenu › Ma bibliothèque pour avoir des templates de structure.
+                    Ajoute des posts dans Contenu › Ma bibliothèque : chaque post devient un template.
                   </span>
                 ) : templateId && templates.find((t) => t.id === templateId)?.image_note ? (
                   <span style={{ fontSize: 12 }}>
@@ -8467,11 +8468,9 @@ function libraryEntryTitle(t: PostTemplate): string {
 function MyLibraryView({
   isAuthed,
   requireAuth,
-  onReuse,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
-  onReuse: (topic: string) => void;
 }) {
   // ALE-223 : rendu en tiroir repliable au sein de l'onglet « Ma bibliothèque ».
   const [open, setOpen] = useState(true); // ALE-231 : ouvert par défaut (import rapide en haut)
@@ -8486,7 +8485,8 @@ function MyLibraryView({
   const [imageNote, setImageNote] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [adding, setAdding] = useState(false);
-  const [extractingId, setExtractingId] = useState<string | null>(null);
+  // ALE-233 : déplier un post tronqué pour voir le texte complet (chaque post = template).
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   // ALE-234 : sources de prospection croisées avec la bibliothèque par URL de post.
   const [leadSources, setLeadSources] = useState<Record<string, LibraryLeadSource>>({});
   const [collectingId, setCollectingId] = useState<string | null>(null);
@@ -8599,24 +8599,6 @@ function MyLibraryView({
       setError(err.message || "Ajout impossible");
     } finally {
       setAdding(false);
-    }
-  }
-
-  async function extractStructure(id: string) {
-    setExtractingId(id);
-    setError("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/post-templates/${id}/extract-structure`, {
-        method: "POST",
-        headers: await authHeaders(),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Extraction impossible");
-      setEntries((prev) => prev.map((t) => (t.id === id ? data : t)));
-    } catch (err: any) {
-      setError(err.message || "Extraction impossible");
-    } finally {
-      setExtractingId(null);
     }
   }
 
@@ -8764,9 +8746,21 @@ function MyLibraryView({
                     )}
                   </div>
                   {postText && (
-                    <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
-                      {postText.length > 300 ? `${postText.slice(0, 300)}…` : postText}
-                    </p>
+                    <>
+                      <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
+                        {expanded[t.id] || postText.length <= 300 ? postText : `${postText.slice(0, 300)}…`}
+                      </p>
+                      {postText.length > 300 && (
+                        <button
+                          type="button"
+                          className="link-button"
+                          style={{ fontSize: 12, marginTop: 4 }}
+                          onClick={() => setExpanded((prev) => ({ ...prev, [t.id]: !prev[t.id] }))}
+                        >
+                          {expanded[t.id] ? "Voir moins" : "Voir le post complet"}
+                        </button>
+                      )}
+                    </>
                   )}
                   {structureText && (
                     <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
@@ -8789,29 +8783,12 @@ function MyLibraryView({
                       ) : null}
                     </p>
                   )}
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                    {postText && (
-                      <button
-                        className="secondary-button"
-                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
-                        title="Générer un post inspiré de celui-ci (angle, structure, fond — réécrit pour toi)"
-                        onClick={() => onReuse(`Inspire-toi de ce post de référence — reprends l'angle, la structure ou le fond, mais réécris-le entièrement pour moi :\n\n« ${postText.slice(0, 1200)} »`)}
-                      >
-                        <Sparkles size={12} /> Générer un post inspiré
-                      </button>
-                    )}
-                    {postText && !structureText && (
-                      <button
-                        className="secondary-button"
-                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
-                        title="Extraire la structure de ce post (IA) — il deviendra sélectionnable comme template dans le Générateur"
-                        onClick={() => extractStructure(t.id)}
-                        disabled={extractingId === t.id}
-                      >
-                        {extractingId === t.id ? <Loader2 size={12} className="spinning" /> : <ListChecks size={12} />} Extraire la structure
-                      </button>
-                    )}
-                    {leadSource && (
+                  {/* ALE-233 : ce post est directement sélectionnable comme template dans le
+                      Générateur (menu « Template ») — plus de bouton d'extraction ni de
+                      « Générer un post inspiré » (chemin redondant). Seule action restante :
+                      la collecte de commentateurs quand le post est un lead magnet. */}
+                  {leadSource && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                       <button
                         className="secondary-button"
                         style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
@@ -8824,8 +8801,8 @@ function MyLibraryView({
                           ? `Mettre à jour les commentateurs (${leadSource.comments_count ?? 0} récupérés)`
                           : "Récupérer les commentateurs"}
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
                 {t.image_url && (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -9619,7 +9596,7 @@ function MyContentHub({
         Tes contenus sauvegardés, tes posts programmés et ta bibliothèque de références — repliés en tiroirs pour t&apos;y retrouver facilement.
       </p>
       {/* ALE-231 : bloc bibliothèque de références (import rapide) en haut, avant Mes contenus. */}
-      <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} />
+      <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} />
       <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
     </div>
   );
