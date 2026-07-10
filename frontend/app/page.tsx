@@ -6244,7 +6244,7 @@ function UnifiedInbox({ isAuthed, requireAuth, userId }: { isAuthed: boolean; re
                   )}
                   <span title={r.network === "instagram" ? "Instagram" : "LinkedIn"} style={{ display: "inline-flex", flex: "0 0 auto" }}>
                     {r.network === "instagram"
-                      ? <MessageSquare size={13} style={{ color: "#c13584" }} />
+                      ? <span style={{ display: "inline-flex", color: "#c13584" }}><InstagramIcon size={13} /></span>
                       : <Linkedin size={13} style={{ color: "#0a66c2" }} />}
                   </span>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
