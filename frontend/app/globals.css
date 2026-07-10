@@ -253,6 +253,10 @@ a { color: inherit; text-decoration: none; }
 }
 .nav-item-open:hover { background: var(--surface-low); }
 
+/* ALE-246 : réseau actif (utile quand LinkedIn et Instagram sont dépliés en
+   même temps) — fin liseré à gauche, discret. */
+.nav-item-active-net { box-shadow: inset 2px 0 0 var(--primary); }
+
 /* Sous-onglets (tiroir) — indentés sous le réseau déplié */
 .nav-item-sub { padding-left: 22px; font-size: 13px; }
 .sidebar-collapsed .nav-item-sub { padding-left: 8px; font-size: inherit; }

@@ -1063,6 +1063,17 @@ function Sidebar({
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedPreferenceLoaded, setCollapsedPreferenceLoaded] = useState(false);
+  // ALE-246 : ouverture par réseau, découplée du réseau actif → LinkedIn et
+  // Instagram peuvent rester déployés en même temps (fin de l'accordéon).
+  const [openNets, setOpenNets] = useState<Record<Platform, boolean>>(() => ({
+    linkedin: platform === "linkedin",
+    instagram: platform === "instagram",
+  }));
+  // Le réseau qui devient actif s'ouvre toujours (changement de platform
+  // déclenché ailleurs) → son onglet actif reste visible.
+  useEffect(() => {
+    setOpenNets((o) => (o[platform] ? o : { ...o, [platform]: true }));
+  }, [platform]);
 
   useEffect(() => {
     try {
@@ -1126,7 +1137,6 @@ function Sidebar({
 
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {!restricted && (() => {
-        const isNetworkView = view === "content" || view === "analyze" || view === "prospecting";
         const networks: { key: Platform; label: string; icon: React.ReactNode }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
           { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
@@ -1139,16 +1149,16 @@ function Sidebar({
           <section className="sidebar-section sidebar-nav-tree">
             <div className="nav-list">
               {networks.map((net) => {
-                const expanded = platform === net.key && isNetworkView;
+                // ALE-246 : ouverture indépendante par réseau (plus d'accordéon).
+                const expanded = openNets[net.key];
+                const isActiveNet = platform === net.key;
                 return (
                   <React.Fragment key={net.key}>
                     <button
-                      className={`nav-item ${expanded ? "nav-item-open" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                      className={`nav-item ${expanded ? "nav-item-open" : ""}${isActiveNet ? " nav-item-active-net" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
                       title={collapsed ? net.label : undefined}
-                      onClick={() => {
-                        onPlatformChange(net.key);
-                        if (view !== "content" && view !== "analyze") onNavigate("content");
-                      }}
+                      aria-expanded={expanded}
+                      onClick={() => setOpenNets((o) => ({ ...o, [net.key]: !o[net.key] }))}
                     >
                       {net.icon}
                       {!collapsed && <span>{net.label}</span>}
@@ -1160,13 +1170,14 @@ function Sidebar({
                       return (
                         <button
                           key={tab.key}
-                          className={`nav-item nav-item-sub ${view === tab.key ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                          className={`nav-item nav-item-sub ${isActiveNet && view === tab.key ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
                           title={collapsed ? tab.label : undefined}
                           onClick={() => {
                             if (locked) {
                               requireAuth("Crée un compte gratuit pour débloquer le générateur de contenu.");
                               return;
                             }
+                            onPlatformChange(net.key);
                             onNavigate(tab.key);
                           }}
                         >
@@ -1185,13 +1196,14 @@ function Sidebar({
                     {/* ALE-229 : Prospection — actif sous LinkedIn, jumeau grisé « Bientôt » sous Instagram */}
                     {expanded && net.key === "linkedin" && (
                       <button
-                        className={`nav-item nav-item-sub ${view === "prospecting" ? "active" : ""} ${!isAuthed ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+                        className={`nav-item nav-item-sub ${isActiveNet && view === "prospecting" ? "active" : ""} ${!isAuthed ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
                         title={collapsed ? "Prospection" : undefined}
                         onClick={() => {
                           if (!isAuthed) {
                             requireAuth("Crée un compte gratuit pour débloquer la prospection.");
                             return;
                           }
+                          onPlatformChange("linkedin");
                           onNavigate("prospecting");
                         }}
                       >
