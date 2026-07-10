@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import datetime
 import os
+import threading
+import time
 from typing import Any
 from urllib.parse import unquote
 
@@ -79,10 +81,24 @@ def admin_client() -> "Client":
     return create_client(_url(), _service_key())  # type: ignore[arg-type]
 
 
+# Successful validations are cached in-process: virtually every db helper
+# re-validates the same token, and each validation is a network round-trip to
+# Supabase Auth. Trade-off: a revoked token stays accepted at most TTL seconds.
+_USER_CACHE: dict[str, tuple[float, dict]] = {}
+_USER_CACHE_LOCK = threading.Lock()
+_USER_CACHE_TTL = 60.0
+_USER_CACHE_MAX = 1000
+
+
 def get_user(access_token: str) -> dict | None:
     """Validate a JWT and return the matching user, or None if invalid."""
     if not supabase_enabled():
         return None
+    now = time.monotonic()
+    with _USER_CACHE_LOCK:
+        hit = _USER_CACHE.get(access_token)
+        if hit and now - hit[0] < _USER_CACHE_TTL:
+            return dict(hit[1])
     try:
         client = create_client(_url(), _anon_key())  # type: ignore[arg-type]
         resp = client.auth.get_user(access_token)
@@ -91,7 +107,15 @@ def get_user(access_token: str) -> dict | None:
     user = getattr(resp, "user", None)
     if not user:
         return None
-    return {"id": user.id, "email": getattr(user, "email", None)}
+    entry = {"id": user.id, "email": getattr(user, "email", None)}
+    with _USER_CACHE_LOCK:
+        if len(_USER_CACHE) >= _USER_CACHE_MAX:
+            for key in [k for k, (ts, _) in _USER_CACHE.items() if now - ts >= _USER_CACHE_TTL]:
+                _USER_CACHE.pop(key, None)
+            if len(_USER_CACHE) >= _USER_CACHE_MAX:
+                _USER_CACHE.clear()
+        _USER_CACHE[access_token] = (now, entry)
+    return dict(entry)
 
 
 def _influencer_row(user_id: str, result: dict, platform: str = "linkedin") -> dict:
