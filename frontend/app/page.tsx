@@ -2417,6 +2417,7 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
   const [prompt, setPrompt] = useState("");
   const [loadingPrompt, setLoadingPrompt] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [retrying, setRetrying] = useState(false); // ALE-270 : 2e tentative après un échec réseau
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState("");
   const postBoxRef = useRef<HTMLDivElement | null>(null);
@@ -2484,15 +2485,33 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
     setError("");
     setGenerating(true);
     try {
-      const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({
-          post_text: postText,
-          prompt: prompt.trim() || undefined,
-          reference_template_id: selectedTemplateId || undefined,
-        }),
-      });
+      const doFetch = async () =>
+        fetch(`${DIRECT_API_URL}/generate-image`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({
+            post_text: postText,
+            prompt: prompt.trim() || undefined,
+            reference_template_id: selectedTemplateId || undefined,
+          }),
+        });
+      let res: Response;
+      try {
+        res = await doFetch();
+      } catch {
+        // Échec RÉSEAU (le fetch rejette : « Failed to fetch », serveur qui
+        // redémarre en pleine requête…) — pas une réponse HTTP d'erreur, qui
+        // elle n'est jamais réessayée. Depuis ALE-270 le backend ne débite les
+        // crédits qu'après une image réussie : une 2e tentative unique est
+        // donc sans risque de double facturation.
+        setRetrying(true);
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        try {
+          res = await doFetch();
+        } finally {
+          setRetrying(false);
+        }
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
       emitCredits(data.credits);
@@ -2553,6 +2572,11 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
                 Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour
                 générer l&apos;image (5 crédits). L&apos;image sera jointe au post. Pendant la génération
                 (2 à 3 min), il faudra rester sur cette page.
+              </p>
+            )}
+            {retrying && (
+              <p style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 12px", display: "flex", alignItems: "center", gap: 6 }}>
+                <Loader2 size={12} className="spinning" /> Petit souci réseau, nouvelle tentative…
               </p>
             )}
             {templatesWithImage.length > 0 && (

@@ -3308,9 +3308,26 @@ def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends
     # dépendance (ou le module) manque — on l'isole donc à cet endpoint.
     from src.image_gen import ImageGenError, fetch_reference_image, generate_post_image
 
-    # Résolution + téléchargement de l'image de référence AVANT le débit de
-    # crédits : un lien mort/expiré (fréquent, ces URLs viennent de posts
-    # scrapés) ne doit pas coûter de crédits à l'utilisateur (ALE-221).
+    # Facturation (ALE-270) : pré-check fail-closed du solde AVANT tout appel
+    # OpenAI, débit APRÈS le succès (même pattern que la collecte de
+    # commentateurs ALE-239). Avant, les 5 crédits partaient avant la
+    # génération : une génération échouée (OOM du serveur, timeout…) était
+    # quand même facturée.
+    cost = db.CREDIT_COSTS["generate_image"]
+    if token:
+        try:
+            info = db.get_user_credits(token)
+        except Exception as exc:
+            # Fail closed : solde illisible → on ne lance pas une génération
+            # (2-3 min d'appel OpenAI) qu'on ne saurait pas facturer.
+            raise HTTPException(status_code=503, detail=f"Vérification du solde impossible, réessaie dans un instant ({exc}).")
+        if info.get("enabled") and info.get("balance", 0) < cost:
+            raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {info.get('balance', 0)}). Génération d'image = {cost} crédit(s).")
+
+    # Résolution + téléchargement de l'image de référence avant l'appel OpenAI :
+    # un lien mort/expiré (fréquent, ces URLs viennent de posts scrapés) ne doit
+    # pas coûter de crédits à l'utilisateur (ALE-221) — garanti par construction
+    # depuis ALE-270 (le débit n'intervient qu'après une image réussie).
     reference_image = None
     if payload.reference_template_id:
         if not token:
@@ -3324,21 +3341,28 @@ def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends
         except ImageGenError as exc:
             raise HTTPException(status_code=422, detail=f"Image de référence inaccessible : {exc}")
 
-    credits: int | None = None
-    if token:
-        ok, balance = db.debit_credits(token, "generate_image")
-        if not ok:
-            raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération d'image = {db.CREDIT_COSTS['generate_image']} crédit(s).")
-        credits = balance
     try:
         result = generate_post_image(payload.post_text, prompt=payload.prompt, reference_image=reference_image)
-        if isinstance(result, dict):
-            result["credits"] = credits
-        return result
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+    # Débit APRÈS le succès (ALE-270). Si le débit échoue malgré le pré-check
+    # (course rare : crédits consommés ailleurs pendant les 2-3 min de
+    # génération, ou Supabase indisponible), on renvoie quand même l'image —
+    # l'appel OpenAI a déjà eu lieu et a coûté — et on logge pour suivi.
+    credits: int | None = None
+    if token:
+        try:
+            ok, credits = db.debit_credits(token, "generate_image")
+            if not ok:
+                print(f"[image] débit impossible après une génération réussie (solde {credits}) — image livrée sans débit.", flush=True)
+        except Exception as exc:
+            print(f"[image] débit de crédits échoué après une génération réussie : {exc} — image livrée sans débit.", flush=True)
+    if isinstance(result, dict):
+        result["credits"] = credits
+    return result
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
