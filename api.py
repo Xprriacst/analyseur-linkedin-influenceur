@@ -1672,18 +1672,14 @@ def _add_library_entry(
     if not text and structure_text and len(structure_text) < 10:
         raise HTTPException(status_code=422, detail="La structure est trop courte (10 caractères minimum).")
 
-    if text and not structure_text and os.environ.get("ANTHROPIC_API_KEY"):
-        try:
-            extracted = extract_post_template(text)
-            if len(extracted.get("structure_text") or "") >= 10:
-                structure_text = extracted["structure_text"][:4000]
-                structure_label = structure_label or (extracted.get("structure_label") or "")[:200] or None
-                fmt = fmt or extracted.get("format")
-        except Exception as exc:  # noqa: BLE001 — extraction bonus, jamais bloquante
-            print(f"[library] extraction de structure échouée (entrée sauvée sans) : {exc}", flush=True)
-
-    if structure_text and not structure_label:
-        structure_label = structure_text.splitlines()[0][:60]
+    # ALE-233 : le post complet EST le template. Plus d'extraction IA de squelette
+    # à l'import (fini la friction/latence/coût) — le texte entier sert directement
+    # de référence à la génération (cf. _format_template). On dérive juste un titre
+    # court pour l'affichage, découplé du texte de génération (nommage = ALE-232).
+    if not structure_label:
+        basis = (structure_text or text or "").strip()
+        if basis:
+            structure_label = basis.splitlines()[0][:60] or None
 
     entry = db.add_post_template(
         token,
