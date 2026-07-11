@@ -51,12 +51,12 @@ test("Contenu › Ma bibliothèque : onglet fusionné à tiroirs (ALE-223)", asy
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Contenu › Ma bibliothèque : monitoring d'influenceurs (Nouveaux posts) empilé (ALE-215/257)", async ({ page }) => {
-  // Le fil « Nouveaux posts » (veille des influenceurs suivis) a été déplacé de
-  // l'onglet Analyses vers Ma bibliothèque, où il est empilé en haut de la page.
+test("Contenu › Ma bibliothèque : veille des influenceurs (tiroir compact) (ALE-215/257)", async ({ page }) => {
+  // La veille des influenceurs suivis est un tiroir compact (replié par défaut),
+  // en bas de Ma bibliothèque — déplacé depuis l'onglet Analyses puis rationalisé.
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Ma bibliothèque");
-  await expect(page.getByRole("heading", { name: /^Monitoring d'influenceurs$/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Veille des influenceurs suivis/i })).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 

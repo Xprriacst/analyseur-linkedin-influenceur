@@ -8383,7 +8383,8 @@ function MonitoringFeedView({
   const [checkMsg, setCheckMsg] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [open, setOpen] = useState(false); // tiroir replié par défaut (compact)
+  const [showAll, setShowAll] = useState(false); // aperçu 3 posts → « Voir tout »
 
   async function load() {
     if (!isAuthed) return;
@@ -8493,31 +8494,29 @@ function MonitoringFeedView({
   }
 
   return (
-    <div>
-      <div className="section-header" style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
-        <div>
-          <h2 className="section-title"><Eye size={20} /> Monitoring d&apos;influenceurs</h2>
-          <p className="section-desc">
-            Les derniers posts de tes influenceurs suivis — inspire-t&apos;en en un clic, ou garde-les pour plus tard.
-          </p>
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button type="button" className="secondary-button" style={{ fontSize: 13 }} disabled={loading} onClick={() => void load()}>
-            {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />} Rafraîchir
+    <LibDrawer
+      icon={<Eye size={20} />}
+      title={`Veille des influenceurs suivis${posts.length ? ` (${posts.length})` : ""}`}
+      desc="Les derniers posts de tes influenceurs suivis — inspire-t'en en un clic, ou garde-les pour plus tard."
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+        <button type="button" className="secondary-button" style={{ fontSize: 13 }} disabled={loading} onClick={() => void load()}>
+          {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />} Rafraîchir
+        </button>
+        {followedCount > 0 && (
+          <button
+            type="button"
+            className="primary-button"
+            style={{ fontSize: 13 }}
+            disabled={checking}
+            title="Scrape les derniers posts de tes influenceurs suivis et enregistre les nouveaux"
+            onClick={checkNow}
+          >
+            {checking ? <Loader2 size={14} className="spinning" /> : <Zap size={14} />} Vérifier les nouveaux posts
           </button>
-          {followedCount > 0 && (
-            <button
-              type="button"
-              className="primary-button"
-              style={{ fontSize: 13 }}
-              disabled={checking}
-              title="Scrape les derniers posts de tes influenceurs suivis et enregistre les nouveaux"
-              onClick={checkNow}
-            >
-              {checking ? <Loader2 size={14} className="spinning" /> : <Zap size={14} />} Vérifier les nouveaux posts
-            </button>
-          )}
-        </div>
+        )}
       </div>
 
       {checkMsg && <div className="card" style={{ marginBottom: 12, padding: "10px 14px", fontSize: 13, color: "var(--muted)" }}>{checkMsg}</div>}
@@ -8531,15 +8530,13 @@ function MonitoringFeedView({
           </p>
         </div>
       ) : loading && posts.length === 0 ? (
-        <div className="sk-list" aria-hidden style={{ display: "grid", gap: 12 }}>
+        <div className="sk-list" aria-hidden style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
           {Array.from({ length: 3 }).map((_, i) => (
-            <div className="card" key={i} style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-              <Sk h={72} w={72} r={8} />
-              <div style={{ flex: 1, display: "grid", gap: 8 }}>
-                <Sk h={14} w={140} r={6} />
-                <Sk h={10} w="94%" />
-                <Sk h={10} w="80%" />
-              </div>
+            <div className="card" key={i} style={{ flex: "1 1 220px", display: "grid", gap: 8, padding: 12 }}>
+              <Sk h={14} w={120} r={6} />
+              <Sk h={90} w="100%" r={6} />
+              <Sk h={10} w="94%" />
+              <Sk h={10} w="70%" />
             </div>
           ))}
         </div>
@@ -8550,39 +8547,31 @@ function MonitoringFeedView({
           </p>
         </div>
       ) : (
-        <div style={{ display: "grid", gap: 12 }}>
-          {posts.map((p) => {
-            const img = firstImage(p);
-            const text = p.text || "";
-            const isLong = text.length > 320;
-            const shown = expanded[p.id] || !isLong ? text : `${text.slice(0, 320)}…`;
-            return (
-              <div key={p.id} className="card" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", marginBottom: 6 }}>
-                    <strong>{p.influencer_name || p.influencer_handle}</strong>
-                    <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtFeedDate(p.posted_at)}</span>
+        <>
+          {/* Aperçu compact : 3 posts côte à côte, « Voir tout » déroule le reste. */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+            {(showAll ? posts : posts.slice(0, 3)).map((p) => {
+              const img = firstImage(p);
+              const text = p.text || "";
+              const preview = text.length > 160 ? `${text.slice(0, 160)}…` : text;
+              return (
+                <div key={p.id} className="card" style={{ flex: "1 1 220px", minWidth: 0, display: "flex", flexDirection: "column", gap: 8, padding: 12 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" }}>
+                    <strong style={{ fontSize: 13 }}>{p.influencer_name || p.influencer_handle}</strong>
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>{fmtFeedDate(p.posted_at)}</span>
                     {isNew(p) && <span className="daily-seed-tag" style={{ background: "var(--primary)", color: "#fff" }}>Nouveau</span>}
-                    <span style={{ fontSize: 12, color: "var(--muted)" }}>
-                      👍 {fmt(p.likes)} · 💬 {fmt(p.comments)} · 🔁 {fmt(p.reposts)}
-                    </span>
                   </div>
-                  <p style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 14 }}>{shown}</p>
-                  {isLong && (
-                    <button
-                      type="button"
-                      className="icon-button"
-                      style={{ fontSize: 12, marginTop: 4 }}
-                      onClick={() => setExpanded((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
-                    >
-                      {expanded[p.id] ? "Réduire" : "Lire la suite"}
-                    </button>
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>👍 {fmt(p.likes)} · 💬 {fmt(p.comments)} · 🔁 {fmt(p.reposts)}</span>
+                  {img && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={img} alt="" style={{ width: "100%", height: 90, objectFit: "cover", borderRadius: 6 }} />
                   )}
-                  <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <p style={{ margin: 0, fontSize: 13, whiteSpace: "pre-wrap", color: "var(--muted)" }}>{preview}</p>
+                  <div style={{ display: "flex", gap: 6, marginTop: "auto", flexWrap: "wrap", alignItems: "center" }}>
                     <button
                       type="button"
                       className="primary-button"
-                      style={{ fontSize: 12, minHeight: 30, padding: "0 12px" }}
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
                       title="Génère un post pour toi sur le même angle, réécrit selon ton profil"
                       onClick={() => inspire(p)}
                     >
@@ -8591,37 +8580,34 @@ function MonitoringFeedView({
                     <button
                       type="button"
                       className="secondary-button"
-                      style={{ fontSize: 12, minHeight: 30, padding: "0 12px" }}
+                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
                       disabled={savingId === p.id || !!savedIds[p.id]}
-                      title="Garde ce post (texte, image, structure extraite par l'IA) dans Contenu › Ma bibliothèque"
+                      title="Garde ce post (texte, image, structure extraite par l'IA) dans ta bibliothèque"
                       onClick={() => void keepInLibrary(p)}
                     >
                       {savingId === p.id
                         ? <Loader2 size={12} className="spinning" />
                         : savedIds[p.id] ? <CheckCircle2 size={12} /> : <BookmarkPlus size={12} />}
-                      {savedIds[p.id] ? " Gardé ✓" : savingId === p.id ? " Extraction…" : " Garder dans ma bibliothèque"}
+                      {savedIds[p.id] ? " Gardé ✓" : savingId === p.id ? " …" : " Garder"}
                     </button>
                     {safeHttpUrl(p.url) && (
-                      <a href={safeHttpUrl(p.url)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "var(--muted)" }}>
-                        voir sur LinkedIn
+                      <a href={safeHttpUrl(p.url)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "var(--muted)" }} title="Voir sur LinkedIn">
+                        ↗
                       </a>
                     )}
                   </div>
                 </div>
-                {img && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={img}
-                    alt=""
-                    style={{ width: 120, maxHeight: 120, objectFit: "cover", borderRadius: 8, flex: "0 0 auto" }}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+          {posts.length > 3 && (
+            <button type="button" className="link-button" style={{ marginTop: 12, fontSize: 13 }} onClick={() => setShowAll((v) => !v)}>
+              {showAll ? "Voir moins" : `Voir tout (${posts.length})`}
+            </button>
+          )}
+        </>
       )}
-    </div>
+    </LibDrawer>
   );
 }
 
@@ -9929,15 +9915,13 @@ function MyContentHub({
   return (
     <div>
       <p className="section-desc" style={{ marginTop: 0, marginBottom: 20 }}>
-        La veille de tes influenceurs suivis, tes contenus sauvegardés, tes posts programmés et ta bibliothèque de références — pour t&apos;y retrouver facilement.
+        Ta bibliothèque de références, tes contenus sauvegardés, tes posts programmés et la veille de tes influenceurs suivis — pour t&apos;y retrouver facilement.
       </p>
-      {/* Veille des influenceurs suivis (« Nouveaux posts ») — déplacée ici depuis l'onglet Analyses. */}
-      <div style={{ marginBottom: 28 }}>
-        <MonitoringFeedView isAuthed={isAuthed} requireAuth={requireAuth} onInspire={onInspire} />
-      </div>
-      {/* ALE-231 : bloc bibliothèque de références (import rapide) en haut, avant Mes contenus. */}
+      {/* Bloc « Posts de référence & templates » tout en haut (demande Alex). */}
       <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} />
       <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
+      {/* Veille des influenceurs suivis — tiroir compact replié par défaut, en bas de page. */}
+      <MonitoringFeedView isAuthed={isAuthed} requireAuth={requireAuth} onInspire={onInspire} />
     </div>
   );
 }
