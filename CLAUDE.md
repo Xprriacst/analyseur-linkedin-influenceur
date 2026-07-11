@@ -35,6 +35,15 @@ Copier `frontend/.env.local.example` → `frontend/.env.local` et pointer `BACKE
 ### Règle changement de domaine (reminder)
 Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.py`, (2) Supabase Auth Site URL + Redirect URLs, (3) variables d'env Netlify. Ne pas marquer terminé sans avoir vérifié les 3.
 
+### Règle migration prod à la release (reminder)
+**Avant ou juste après le merge d'une PR de release `dev → main`** (jamais après coup, jamais en attendant qu'Alex tombe sur l'erreur en testant) :
+1. Repérer toute migration `supabase/migrations/*.sql` créée pendant le cycle dev — grep le changelog CLAUDE.md pour « reste à faire » / « à appliquer sur prod » / « À appliquer sur dev » sur les entrées récentes, et/ou lister les fichiers de migration plus récents que le dernier commit mergé sur `main`.
+2. Pour chacune, vérifier explicitement si elle est déjà appliquée sur la base **prod** (`zcxaxwqkswuefzlzpgvi`) — ex. `select to_regclass('public.<table>')`, ou `list_tables`/`list_migrations`.
+3. Si elle manque : le signaler **spontanément** à Alex et proposer de l'appliquer immédiatement (les migrations du projet sont idempotentes par convention `IF NOT EXISTS` — l'appliquer dès confirmation, sans attendre un test raté).
+4. `py_compile` / `npm run build` / zéro marqueur de conflit ne prouvent PAS que la base prod est à jour — ce sont des checks de code, pas de schéma. Ne jamais les confondre avec une release « safe ».
+
+*Incident qui a motivé cette règle* : release PR #272 (2026-07-11, ALE-261 image IA en file d'attente) mergée et déployée sans que la migration 0045 (`image_generation_jobs`) soit appliquée sur prod — elle ne l'était que sur dev, alors que le changelog le notait déjà en « reste à faire ». Alex a découvert le bug (« Failed to fetch ») en testant en prod au lieu que ce soit anticipé.
+
 ## Règles PR & agents (anti méga-PR)
 
 > Contexte : des agents ont produit des méga-PR multi-issues, basées sur `main`, avec base périmée et marqueurs de conflit (PR #40/#41/#42 fermées sans merge ; #37/#39 ont dû être re-portées). Ces règles évitent que ça se reproduise. Elles sont **vérifiées en CI** (`.github/workflows/pr-guardrails.yml`) et par la **branch protection** sur `main`.
