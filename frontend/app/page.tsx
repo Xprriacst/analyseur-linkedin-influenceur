@@ -8531,9 +8531,17 @@ function MonitoringFeedView({
           </p>
         </div>
       ) : loading && posts.length === 0 ? (
-        <div className="card" style={{ textAlign: "center", padding: 32 }}>
-          <Loader2 size={24} className="spinning" style={{ opacity: 0.5 }} />
-          <p style={{ marginTop: 12, color: "var(--muted)" }}>Chargement de la veille…</p>
+        <div className="sk-list" aria-hidden style={{ display: "grid", gap: 12 }}>
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div className="card" key={i} style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+              <Sk h={72} w={72} r={8} />
+              <div style={{ flex: 1, display: "grid", gap: 8 }}>
+                <Sk h={14} w={140} r={6} />
+                <Sk h={10} w="94%" />
+                <Sk h={10} w="80%" />
+              </div>
+            </div>
+          ))}
         </div>
       ) : posts.length === 0 ? (
         <div className="card" style={{ textAlign: "center", padding: 32 }}>
@@ -8636,7 +8644,6 @@ function LinkedInAnalysesView({
   onOpenLibraryReport,
   isAuthed,
   requireAuth,
-  onInspire,
 }: {
   jobs: Job[];
   jobsLoading: boolean;
@@ -8648,7 +8655,6 @@ function LinkedInAnalysesView({
   onOpenLibraryReport: (entry: InfluencerLibraryEntry) => Promise<void>;
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
-  onInspire: (topic: string) => void;
 }) {
   return (
     <div>
@@ -8678,7 +8684,8 @@ function LinkedInAnalysesView({
           />
         </SeriesDrawer>
       )}
-      {/* 3. Mes influenceurs (classement) + 4. Tendances (rendus dans cet ordre par InfluencersView) */}
+      {/* 3. Mes influenceurs (classement) + 4. Tendances (rendus dans cet ordre par InfluencersView).
+          Le fil « Nouveaux posts » (MonitoringFeedView) a été déplacé dans Ma bibliothèque. */}
       <div style={{ marginTop: 8 }}>
         <InfluencersView
           entries={influencers}
@@ -8687,10 +8694,6 @@ function LinkedInAnalysesView({
           requireAuth={requireAuth}
           onOpenReport={onOpenLibraryReport}
         />
-      </div>
-      {/* 5. Monitoring d'influenceurs */}
-      <div style={{ marginTop: 28 }}>
-        <MonitoringFeedView isAuthed={isAuthed} requireAuth={requireAuth} onInspire={onInspire} />
       </div>
     </div>
   );
@@ -9026,8 +9029,17 @@ function MyLibraryView({
 
       <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
         {loading && entries.length === 0 ? (
-          <div className="card" style={{ textAlign: "center", padding: 24 }}>
-            <Loader2 size={20} className="spinning" style={{ opacity: 0.5 }} />
+          <div className="sk-list" aria-hidden style={{ display: "grid", gap: 12 }}>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div className="card" key={i} style={{ display: "grid", gap: 8 }}>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Sk h={14} w={160} r={6} />
+                  <Sk h={14} w={54} r={6} />
+                </div>
+                <Sk h={10} w="92%" />
+                <Sk h={10} w="78%" />
+              </div>
+            ))}
           </div>
         ) : entries.length === 0 ? (
           <div className="card" style={{ textAlign: "center", padding: 24 }}>
@@ -9888,6 +9900,7 @@ function MyContentHub({
   requireAuth,
   onReuse,
   onRework,
+  onInspire,
   imageJobs,
   onImageJobCreated,
 }: {
@@ -9895,6 +9908,7 @@ function MyContentHub({
   requireAuth: (reason?: string, mode?: AuthMode) => void;
   onReuse: (topic: string) => void;
   onRework?: (post: string) => void;
+  onInspire: (topic: string) => void;
   imageJobs: ImageJob[];
   onImageJobCreated: (job: ImageJob) => void;
 }) {
@@ -9915,8 +9929,12 @@ function MyContentHub({
   return (
     <div>
       <p className="section-desc" style={{ marginTop: 0, marginBottom: 20 }}>
-        Tes contenus sauvegardés, tes posts programmés et ta bibliothèque de références — repliés en tiroirs pour t&apos;y retrouver facilement.
+        La veille de tes influenceurs suivis, tes contenus sauvegardés, tes posts programmés et ta bibliothèque de références — pour t&apos;y retrouver facilement.
       </p>
+      {/* Veille des influenceurs suivis (« Nouveaux posts ») — déplacée ici depuis l'onglet Analyses. */}
+      <div style={{ marginBottom: 28 }}>
+        <MonitoringFeedView isAuthed={isAuthed} requireAuth={requireAuth} onInspire={onInspire} />
+      </div>
       {/* ALE-231 : bloc bibliothèque de références (import rapide) en haut, avant Mes contenus. */}
       <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} />
       <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
@@ -9975,10 +9993,10 @@ function ContentHub({
   onInspire: (topic: string) => void;
 }) {
   const subTabs: { key: ContentTab; label: string; icon: React.ReactNode }[] = [
-    // ALE-257 : Veille fusionnée ici — « Analyses » en tête de la page Contenu.
-    { key: "analyses", label: "Analyses", icon: <BarChart3 size={14} /> },
     { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} /> },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} /> },
+    // ALE-257 : Veille fusionnée ici — « Analyses » placée à droite du Générateur.
+    { key: "analyses", label: "Analyses", icon: <BarChart3 size={14} /> },
     // ALE-223 : onglet unique regroupant contenus sauvegardés, posts programmés
     // et bibliothèque de références/templates (voir MyContentHub).
     { key: "library", label: "Ma bibliothèque", icon: <ListChecks size={14} /> },
@@ -10030,14 +10048,13 @@ function ContentHub({
             onOpenLibraryReport={onOpenLibraryReport}
             isAuthed={isAuthed}
             requireAuth={requireAuth}
-            onInspire={onInspire}
           />
         )
       )}
       {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />}
       {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} onRework={onRework} />}
       {tab === "library" && (
-        <MyContentHub isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
+        <MyContentHub isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} onInspire={onInspire} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
       )}
     </div>
   );
