@@ -51,14 +51,12 @@ test("Contenu › Ma bibliothèque : onglet fusionné à tiroirs (ALE-223)", asy
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Contenu › Analyses : monitoring d'influenceurs sur la même page (ALE-215/257)", async ({ page }) => {
-  // ALE-257 : le monitoring est désormais empilé en bas de la page Analyses (LinkedIn),
-  // plus dans un sous-onglet dédié.
+test("Contenu › Ma bibliothèque : monitoring d'influenceurs (Nouveaux posts) empilé (ALE-215/257)", async ({ page }) => {
+  // Le fil « Nouveaux posts » (veille des influenceurs suivis) a été déplacé de
+  // l'onglet Analyses vers Ma bibliothèque, où il est empilé en haut de la page.
   await gotoTab(page, "Contenu");
-  await gotoSubTab(page, "Analyses");
+  await gotoSubTab(page, "Ma bibliothèque");
   await expect(page.getByRole("heading", { name: /^Monitoring d'influenceurs$/i })).toBeVisible();
-  // Bouton de rafraîchissement toujours présent ; l'état vide invite à suivre des influenceurs.
-  await expect(page.getByRole("button", { name: /Rafraîchir/i })).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
