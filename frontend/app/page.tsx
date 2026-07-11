@@ -63,6 +63,76 @@ const IS_DEV_ENV =
   process.env.NEXT_PUBLIC_APP_ENV === "dev" ||
   (process.env.NEXT_PUBLIC_BACKEND_URL ?? "").includes("-api-dev");
 
+// ── Skeletons de chargement (ALE-266) ────────────────────────────────────
+// Remplacent les spinners pour le chargement de CONTENU : la forme s'affiche en
+// gris teinté (balayage), le vrai contenu se fond dedans. Les primitives .sk
+// vivent dans globals.css. `Sk` = un bloc gris ; les composés ci-dessous
+// reproduisent la silhouette de chaque écran.
+function Sk({
+  w, h = 10, r = 7, circle = false, className = "", style,
+}: {
+  w?: number | string; h?: number | string; r?: number; circle?: boolean;
+  className?: string; style?: React.CSSProperties;
+}) {
+  return (
+    <span
+      className={`sk${circle ? " circle" : ""}${className ? " " + className : ""}`}
+      style={{ display: "block", width: w ?? "100%", height: h, borderRadius: circle ? "50%" : r, ...style }}
+    />
+  );
+}
+
+// Liste de conversations (Inbox) : n lignes « avatar rond + nom ».
+function ConvListSkeleton({ rows = 6 }: { rows?: number }) {
+  return (
+    <div className="sk-list" aria-hidden>
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", marginBottom: 4 }}>
+          <Sk circle w={14} h={14} />
+          <Sk h={10} w={`${72 - (i % 3) * 14}%`} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Cartes de post (Mes contenus / listes de variants) : entête + bloc de texte.
+function PostCardsSkeleton({ cards = 3 }: { cards?: number }) {
+  return (
+    <div className="variants-list sk-list" aria-hidden>
+      {Array.from({ length: cards }).map((_, i) => (
+        <div className="variant-card" key={i}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <Sk h={16} w={90} r={6} />
+            <Sk h={16} w={64} r={6} />
+            <Sk h={16} w={70} r={6} style={{ marginLeft: "auto" }} />
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <Sk h={10} w="100%" />
+            <Sk h={10} w="96%" />
+            <Sk h={10} w="88%" />
+            <Sk h={10} w="70%" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Fil de messages (Inbox) : quelques bulles gauche/droite en attendant le fil.
+function MsgThreadSkeleton() {
+  const bubbles: Array<{ side: "in" | "out"; w: number }> = [
+    { side: "in", w: 62 }, { side: "out", w: 48 }, { side: "in", w: 70 }, { side: "out", w: 40 },
+  ];
+  return (
+    <div className="sk-list" aria-hidden style={{ display: "flex", flexDirection: "column", gap: 10, padding: 4 }}>
+      {bubbles.map((b, i) => (
+        <Sk key={i} h={34} w={`${b.w}%`} r={12} style={{ alignSelf: b.side === "in" ? "flex-start" : "flex-end" }} />
+      ))}
+    </div>
+  );
+}
+
 // Rappel dev-only affiché près des actions Slack : sur dev, l'app Slack renvoie
 // les clics de boutons à la prod → l'envoi part mais Valider/Modifier ne se
 // testent pas ici. Rend null en prod.
@@ -724,7 +794,10 @@ function JobsView({ jobs, loading, isAuthed, onCreated, onOpenReport, requireAut
           <div><strong>Séries multi-profils & historique</strong><span>Crée un compte gratuit pour analyser plusieurs profils d'un coup et garder tes rapports.</span></div>
         </div>
       ) : loading ? (
-        <p style={{ color: "var(--muted)" }}>Chargement des séries…</p>
+        <div className="sk-list" style={{ display: "grid", gap: 8, maxWidth: 720 }}>
+          <Sk h={44} w="100%" r={10} />
+          <Sk h={44} w="100%" r={10} />
+        </div>
       ) : lkJobs.length === 0 ? (
         <div className="report-card" style={{ maxWidth: 720 }}>
           <div className="report-icon"><Activity size={13} /></div>
@@ -931,7 +1004,10 @@ function InstagramAnalyzeHub({ jobs, loading, isAuthed, onCreated, onOpenReport,
           <div><strong>Historique & séries multi-profils</strong><span>Crée un compte gratuit pour garder tes rapports et analyser plusieurs comptes d'un coup.</span></div>
         </div>
       ) : loading ? (
-        <p style={{ color: "var(--muted)" }}>Chargement des séries…</p>
+        <div className="sk-list" style={{ display: "grid", gap: 8, maxWidth: 720 }}>
+          <Sk h={44} w="100%" r={10} />
+          <Sk h={44} w="100%" r={10} />
+        </div>
       ) : igJobs.length === 0 ? (
         <div className="report-card" style={{ maxWidth: 720 }}>
           <div className="report-icon"><Activity size={13} /></div>
@@ -3967,7 +4043,12 @@ function DailyIdeasView({
       {ideas.length === 0 ? (
         <div className="card" style={{ padding: 28, textAlign: "center", color: "var(--muted)" }}>
           {loading ? (
-            <><Loader2 size={20} className="spinning" style={{ opacity: 0.45 }} /><p>Chargement…</p></>
+            <div className="sk-list" style={{ display: "grid", gap: 8, textAlign: "left" }}>
+              <Sk h={12} w="45%" r={6} />
+              <Sk h={10} w="100%" />
+              <Sk h={10} w="92%" />
+              <Sk h={10} w="68%" />
+            </div>
           ) : (
             <p style={{ margin: 0 }}>
               Pas encore d'idée générée. Active « Recevoir une idée chaque matin » dans <strong>Mon profil</strong> et
@@ -4680,10 +4761,7 @@ function LibraryView({
       {error &&<div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
       {!savedOpen ? null : loading && posts.length === 0 ? (
-        <div className="card" style={{ padding: 32, textAlign: "center" }}>
-          <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
-          <p style={{ color: "var(--muted)" }}>Chargement de tes contenus…</p>
-        </div>
+        <PostCardsSkeleton cards={3} />
       ) : (
         posts.length === 0 ? (
           <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
@@ -6201,11 +6279,10 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
       {!hideChrome && (
       <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
         <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
-        {conversations.length === 0 && (
+        {!convLoaded && conversations.length === 0 && <ConvListSkeleton rows={6} />}
+        {convLoaded && conversations.length === 0 && (
           <p style={{ padding: 8, fontSize: 13, opacity: 0.7 }}>
-            {convLoaded
-              ? "Aucune conversation pour l'instant. Elles apparaîtront dès qu'un prospect écrit en DM."
-              : "Chargement des conversations…"}
+            Aucune conversation pour l&apos;instant. Elles apparaîtront dès qu&apos;un prospect écrit en DM.
           </p>
         )}
         {conversations.map((c) => (
@@ -6264,7 +6341,7 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
             </header>
 
             <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
-              {loading && messages.length === 0 && <p style={{ opacity: 0.6 }}>Chargement…</p>}
+              {loading && messages.length === 0 && <MsgThreadSkeleton />}
               {messages.map((m) => (
                 <div key={m.id} style={{ alignSelf: m.role === "in" ? "flex-start" : "flex-end", maxWidth: "78%" }}>
                   <div style={{
@@ -6415,7 +6492,7 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
         {loading && messages.length === 0 ? (
-          <div style={{ margin: "auto", opacity: 0.6 }}><Loader2 size={18} className="spinning" /></div>
+          <MsgThreadSkeleton />
         ) : messages.length === 0 ? (
           <div style={{ margin: "auto", opacity: 0.6, fontSize: 13 }}>Aucun message.</div>
         ) : null}
@@ -6481,8 +6558,22 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
   const lnConnected = !!outreach.status?.connected;
   const [igConvs, setIgConvs] = useState<IgConversation[]>([]);
   const [lnChats, setLnChats] = useState<OutreachChat[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [igLoaded, setIgLoaded] = useState(false);
+  const [lnLoaded, setLnLoaded] = useState(false);
+  const [forceReveal, setForceReveal] = useState(false);
   const [sel, setSel] = useState<{ network: InboxNetwork; id: string } | null>(null);
+
+  // ALE-265 : ne révéler la liste qu'une fois Instagram ET LinkedIn prêts (fini
+  // le remplissage en escalier). Gardé sur le statut outreach résolu pour ne pas
+  // flicker quand on découvre le compte connecté ; filet de sécurité à 8 s si un
+  // fetch reste muet (erreur silencieuse) pour ne jamais bloquer le skeleton.
+  const statusReady = outreach.status !== null;
+  const loaded = forceReveal || (igLoaded && statusReady && (!lnConnected || lnLoaded));
+  useEffect(() => {
+    if (!isAuthed) return;
+    const t = setTimeout(() => setForceReveal(true), 8000);
+    return () => clearTimeout(t);
+  }, [isAuthed]);
 
   async function loadIg() {
     if (!isAuthed) return;
@@ -6490,15 +6581,15 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
       const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations`, { headers: await authHeaders() });
       const data = await res.json();
       if (res.ok) setIgConvs((prev) => reconcileById(prev, Array.isArray(data) ? data : [], (c) => c.id));
-    } catch { /* non bloquant */ } finally { setLoaded(true); }
+    } catch { /* non bloquant */ } finally { setIgLoaded(true); }
   }
   async function loadLn() {
-    if (!isAuthed || !lnConnected) { setLnChats([]); return; }
+    if (!isAuthed || !lnConnected) { setLnChats([]); setLnLoaded(true); return; }
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats`, { headers: await authHeaders() });
       const data = await res.json();
       if (res.ok) setLnChats((prev) => reconcileById(prev, Array.isArray(data.chats) ? data.chats : [], (c) => c.id));
-    } catch { /* non bloquant */ }
+    } catch { /* non bloquant */ } finally { setLnLoaded(true); }
   }
 
   // Poll IG (6 s, non-chevauchant) — nouvelles conversations sans recharger.
@@ -6590,14 +6681,13 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
       <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
         <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
           <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
-          {rows.length === 0 && (
+          {!loaded && <ConvListSkeleton rows={6} />}
+          {loaded && rows.length === 0 && (
             <p style={{ padding: 8, fontSize: 13, opacity: 0.7 }}>
-              {loaded
-                ? "Aucune conversation pour l'instant. Elles apparaîtront dès qu'un prospect écrit en DM (Instagram) ou après ton premier message à un lead (LinkedIn)."
-                : "Chargement des conversations…"}
+              Aucune conversation pour l&apos;instant. Elles apparaîtront dès qu&apos;un prospect écrit en DM (Instagram) ou après ton premier message à un lead (LinkedIn).
             </p>
           )}
-          {rows.map((r) => (
+          {loaded && rows.map((r) => (
             <button
               key={rowKey(r)}
               onClick={() => selectRow(r)}
@@ -7477,9 +7567,12 @@ function ProfileView({
       {draftInfo ? <div className="auth-info" style={{ marginBottom: 12 }}>{draftInfo}</div> : null}
       {saved ? <div className="auth-info" style={{ marginBottom: 12 }}>Profil éditorial sauvegardé. Les prochaines générations utiliseront ce contexte.</div> : null}
       {loading ? (
-        <div className="card" style={{ padding: 32, textAlign: "center" }}>
-          <Loader2 size={22} className="spinning" style={{ opacity: 0.45 }} />
-          <p style={{ color: "var(--muted)" }}>Chargement du profil…</p>
+        <div className="card sk-list" style={{ padding: 24, display: "grid", gap: 12 }}>
+          <Sk h={16} w="40%" r={6} />
+          <Sk h={38} w="100%" r={8} />
+          <Sk h={38} w="100%" r={8} />
+          <Sk h={10} w="90%" />
+          <Sk h={10} w="76%" />
         </div>
       ) : (
         <div className="profile-form">
@@ -7672,9 +7765,14 @@ function InfluencerTrendsBlock({
 }) {
   if (loading && !trends) {
     return (
-      <div className="card" style={{ padding: 24, textAlign: "center", marginBottom: 20 }}>
-        <Loader2 size={20} className="spinning" style={{ opacity: 0.5 }} />
-        <p style={{ margin: "10px 0 0", color: "var(--muted)", fontSize: 13 }}>Calcul des tendances de ta veille…</p>
+      <div className="card sk-list" style={{ padding: 24, marginBottom: 20, display: "grid", gap: 12 }}>
+        <Sk h={16} w="55%" r={6} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Sk h={64} w="100%" r={10} />
+          <Sk h={64} w="100%" r={10} />
+        </div>
+        <Sk h={10} w="100%" />
+        <Sk h={10} w="86%" />
       </div>
     );
   }
@@ -8116,9 +8214,15 @@ function InfluencersView({
       {error && <div className="error" style={{ margin: "12px 0" }}>{error}</div>}
 
       {loading ? (
-        <div className="card" style={{ textAlign: "center", padding: 32, marginTop: 20 }}>
-          <Loader2 size={24} className="spinning" style={{ opacity: 0.5 }} />
-          <p style={{ marginTop: 12, color: "var(--muted)" }}>Chargement de tes influenceurs…</p>
+        <div className="card sk-list" style={{ padding: "8px 0", marginTop: 20 }}>
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: i < 4 ? "1px solid var(--border)" : "none" }}>
+              <Sk circle w={16} h={16} />
+              <Sk h={12} w={`${34 - (i % 3) * 6}%`} r={6} />
+              <Sk h={10} w={80} style={{ marginLeft: "auto" }} />
+              <Sk h={10} w={64} />
+            </div>
+          ))}
         </div>
       ) : entries.length === 0 ? (
         <div className="card" style={{ textAlign: "center", padding: 32, marginTop: 20 }}>
@@ -9352,9 +9456,10 @@ function ProspectingView({
 
       {/* ALE-228 : ciblage ICP — note chaque lead vs le client idéal. ALE-247 : skeleton au chargement pour éviter le pop-in. */}
       {targetingLoading ? (
-        <div className="card" style={{ marginBottom: 16, padding: "12px 16px", display: "flex", alignItems: "center", gap: 8, color: "var(--muted)" }}>
-          <Target size={16} style={{ flexShrink: 0, opacity: 0.5 }} />
-          <span style={{ fontSize: 13 }}>Chargement de ton ciblage…</span>
+        <div className="card sk-list" style={{ marginBottom: 16, padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+          <Sk circle w={16} h={16} />
+          <Sk h={12} w="30%" r={6} />
+          <Sk h={10} w="42%" style={{ marginLeft: 4 }} />
         </div>
       ) : targeting && (
         <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
