@@ -8,6 +8,9 @@ l'onglet ou se reconnecter, la progression est conservée.
 
 Un verrou global sérialise les analyses (compteurs d'usage globaux + limites de
 débit Apify) : les séries s'exécutent l'une après l'autre, profil par profil.
+Pendant l'attente du verrou, la série émet un heartbeat en base — sans lui,
+`reconcile_stale_jobs` la solderait en erreur au bout de `JOB_STALE_MINUTES`
+alors qu'elle fait simplement la queue.
 
 Annulation : elle se fait en base (statut `cancelled` posé par l'API, sur la
 série entière ou un item précis). Le thread la respecte — il ne réécrit jamais
@@ -30,6 +33,25 @@ _compute_lock = threading.Lock()
 # (statut `error`) et on libère le verrou global — sinon un appel Apify figé
 # bloquerait toutes les séries de tous les utilisateurs.
 ITEM_TIMEOUT_S = 600
+
+# Tranche d'attente du verrou global entre deux heartbeats/vérifs d'annulation.
+LOCK_WAIT_SLICE_S = 60
+
+
+def _acquire_compute_lock(access_token: str, job_id: str, item_id: str) -> bool:
+    """Attend le verrou global en gardant la série vivante côté base.
+
+    Retourne False (sans avoir pris le verrou) si la série ou l'item a été
+    annulé pendant l'attente.
+    """
+    while True:
+        if _compute_lock.acquire(timeout=LOCK_WAIT_SLICE_S):
+            return True
+        if db.get_job_status(access_token, job_id) == "cancelled":
+            return False
+        if db.get_job_item_status(access_token, item_id) == "cancelled":
+            return False
+        db.update_job(access_token, job_id, status="running")  # heartbeat (updated_at)
 
 
 def final_counts(items: list[dict]) -> tuple[int, int]:
@@ -116,14 +138,27 @@ def process_job(access_token: str, job_id: str) -> None:
 
         db.update_job_item(access_token, item["id"], status="running", error=None)
         try:
-            with _compute_lock:
+            if not _acquire_compute_lock(access_token, job_id, item["id"]):
+                # Annulé pendant l'attente du verrou. Le remboursement est porté
+                # par la transition `cancelled` elle-même (cf. db.cancel_job_item).
+                db.cancel_job_item(access_token, item["id"])
+                item["status"] = "cancelled"
+                continue
+            try:
                 result = _run_analysis_guarded(item["url"], limit, no_cache, with_llm, platform=platform)
+            finally:
+                _compute_lock.release()
             # L'item a-t-il été annulé pendant le scraping ? Si oui, on respecte
             # l'annulation au lieu d'écrire `done` par-dessus.
             if db.get_job_item_status(access_token, item["id"]) == "cancelled":
                 item["status"] = "cancelled"
             else:
-                saved = db.save_analysis(access_token, result, posts_limit=limit) or {}
+                saved = db.save_analysis(access_token, result, posts_limit=limit)
+                if not saved or not saved.get("analysis_id"):
+                    # Session expirée ou écriture refusée : l'analyse est calculée
+                    # mais aucun rapport n'existe → échec explicite (et remboursé),
+                    # jamais un `done` silencieux sans rapport.
+                    raise RuntimeError("Rapport non sauvegardé (session expirée ?).")
                 profile = result.get("profile", {}) or {}
                 db.update_job_item(
                     access_token,
@@ -138,23 +173,28 @@ def process_job(access_token: str, job_id: str) -> None:
                 )
                 item["status"] = "done"
         except Exception as exc:  # noqa: BLE001 — on isole l'échec d'un profil
-            if db.get_job_item_status(access_token, item["id"]) == "cancelled":
-                item["status"] = "cancelled"
-            else:
-                db.update_job_item(
-                    access_token, item["id"], status="error", error=str(exc)[:500]
-                )
+            # Transition gardée : rembourse le crédit si c'est bien cet appel qui
+            # solde l'item ; sinon (déjà annulé/soldé par ailleurs) on reflète
+            # le statut réel sans réécrire.
+            if db.fail_job_item(access_token, item["id"], str(exc)[:500]):
                 item["status"] = "error"
+            else:
+                item["status"] = db.get_job_item_status(access_token, item["id"]) or "error"
 
-        # Compteurs : on ne réécrit jamais par-dessus un `cancelled` global.
-        if db.get_job_status(access_token, job_id) != "cancelled":
+        # Compteurs : on ne réécrit jamais par-dessus une série annulée ou déjà
+        # finalisée par ailleurs (réconciliation).
+        if db.get_job_status(access_token, job_id) in ("queued", "running"):
             done, failed = _counts(items)
             db.update_job(access_token, job_id, status="running", completed=done, failed=failed)
 
     done, failed = _counts(items)
+    current = db.get_job_status(access_token, job_id)
     # Une annulation explicite de la série prime sur le statut calculé.
-    if db.get_job_status(access_token, job_id) == "cancelled":
+    if current == "cancelled":
         db.update_job(access_token, job_id, completed=done, failed=failed)
+        return
+    if current not in ("queued", "running"):
+        # Série déjà finalisée par ailleurs (réconciliation) — on ne réécrit pas.
         return
     db.update_job(
         access_token, job_id, status=final_status(items) or "done",
@@ -261,5 +301,84 @@ def start_generation_job_thread(access_token: str, job_id: str) -> None:
     """Lance la génération d'un job dans un thread de fond (non bloquant)."""
     thread = threading.Thread(
         target=process_generation_job, args=(access_token, job_id), daemon=True
+    )
+    thread.start()
+
+
+# ---------------------------------------------------------------------------
+# File d'attente de génération d'image IA (ALE-261)
+# ---------------------------------------------------------------------------
+# Même principe que la file de génération de posts : l'utilisateur ferme la
+# pop-up ou change d'onglet, la génération continue en fond et le résultat
+# rejoint le bon bloc de post (identifié par `target_key`) via le polling
+# frontend. Pas de verrou global (les générations d'image peuvent tourner en
+# parallèle) ; un timeout borne la durée pour qu'un appel OpenAI figé ne
+# laisse pas un job `running` éternellement.
+
+IMAGE_JOB_TIMEOUT_S = 300
+
+
+def _generate_post_image_guarded(post_text, prompt, reference_image):
+    """Exécute `generate_post_image` avec un timeout dur (thread jetable abandonné si figé)."""
+    from src.image_gen import generate_post_image
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(generate_post_image, post_text, prompt=prompt, reference_image=reference_image)
+    try:
+        return fut.result(timeout=IMAGE_JOB_TIMEOUT_S)
+    finally:
+        ex.shutdown(wait=False)
+
+
+def process_image_job(access_token: str, job_id: str) -> None:
+    """Génère l'image d'un job en arrière-plan et débite les crédits au succès.
+
+    Idempotent quant à l'annulation : si le job a été annulé (statut `cancelled`)
+    avant ou pendant le calcul, on n'écrit jamais `done` par-dessus. Aucun
+    remboursement à gérer : le débit n'a lieu qu'après une image réussie.
+    """
+    from src.image_gen import ImageGenError, fetch_reference_image
+
+    job = db.get_image_job(access_token, job_id)
+    if not job:
+        return
+    if db.get_image_job_status(access_token, job_id) == "cancelled":
+        return
+
+    db.update_image_job(access_token, job_id, status="running")
+    try:
+        reference_image = None
+        template_id = job.get("reference_template_id")
+        if template_id:
+            template = db.get_post_template(access_token, template_id)
+            image_url = (template or {}).get("image_url")
+            if not image_url:
+                raise ImageGenError("Image de référence introuvable.")
+            reference_image = fetch_reference_image(image_url)
+
+        result = _generate_post_image_guarded(job.get("post_text") or "", job.get("prompt"), reference_image)
+
+        # Annulé pendant le calcul ? On respecte l'annulation (jamais de débit).
+        if db.get_image_job_status(access_token, job_id) == "cancelled":
+            return
+
+        ok, balance = db.debit_credits(access_token, "generate_image")
+        if not ok:
+            print(f"[image-job] débit impossible après une génération réussie (solde {balance}) — image livrée sans débit.", flush=True)
+        if isinstance(result, dict):
+            result["credits"] = balance if ok else None
+
+        db.update_image_job(access_token, job_id, status="done", result=result)
+    except Exception as exc:  # noqa: BLE001 — on isole l'échec d'un job
+        if db.get_image_job_status(access_token, job_id) == "cancelled":
+            return
+        db.update_image_job(
+            access_token, job_id, status="error", error=str(exc)[:500]
+        )
+
+
+def start_image_job_thread(access_token: str, job_id: str) -> None:
+    """Lance la génération d'image d'un job dans un thread de fond (non bloquant)."""
+    thread = threading.Thread(
+        target=process_image_job, args=(access_token, job_id), daemon=True
     )
     thread.start()

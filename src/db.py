@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import datetime
 import os
+import threading
+import time
 from typing import Any
 from urllib.parse import unquote
 
@@ -79,10 +81,24 @@ def admin_client() -> "Client":
     return create_client(_url(), _service_key())  # type: ignore[arg-type]
 
 
+# Successful validations are cached in-process: virtually every db helper
+# re-validates the same token, and each validation is a network round-trip to
+# Supabase Auth. Trade-off: a revoked token stays accepted at most TTL seconds.
+_USER_CACHE: dict[str, tuple[float, dict]] = {}
+_USER_CACHE_LOCK = threading.Lock()
+_USER_CACHE_TTL = 60.0
+_USER_CACHE_MAX = 1000
+
+
 def get_user(access_token: str) -> dict | None:
     """Validate a JWT and return the matching user, or None if invalid."""
     if not supabase_enabled():
         return None
+    now = time.monotonic()
+    with _USER_CACHE_LOCK:
+        hit = _USER_CACHE.get(access_token)
+        if hit and now - hit[0] < _USER_CACHE_TTL:
+            return dict(hit[1])
     try:
         client = create_client(_url(), _anon_key())  # type: ignore[arg-type]
         resp = client.auth.get_user(access_token)
@@ -91,7 +107,15 @@ def get_user(access_token: str) -> dict | None:
     user = getattr(resp, "user", None)
     if not user:
         return None
-    return {"id": user.id, "email": getattr(user, "email", None)}
+    entry = {"id": user.id, "email": getattr(user, "email", None)}
+    with _USER_CACHE_LOCK:
+        if len(_USER_CACHE) >= _USER_CACHE_MAX:
+            for key in [k for k, (ts, _) in _USER_CACHE.items() if now - ts >= _USER_CACHE_TTL]:
+                _USER_CACHE.pop(key, None)
+            if len(_USER_CACHE) >= _USER_CACHE_MAX:
+                _USER_CACHE.clear()
+        _USER_CACHE[access_token] = (now, entry)
+    return dict(entry)
 
 
 def _influencer_row(user_id: str, result: dict, platform: str = "linkedin") -> dict:
@@ -925,6 +949,29 @@ def debit_credits(access_token: str, action: str, count: int = 1) -> tuple[bool,
         raise
 
 
+def refund_credits_admin(
+    user_id: str | None, action: str, count: int = 1, description: str | None = None
+) -> None:
+    """Recrédite un utilisateur (remboursement d'une action non livrée).
+
+    Passe par la même fonction Postgres que le débit, avec un montant négatif :
+    le mouvement est journalisé dans credit_ledger avec un delta positif.
+    Best-effort — un remboursement raté ne doit jamais casser le flux appelant.
+    """
+    if not user_id or not supabase_enabled() or not admin_enabled():
+        return
+    cost = CREDIT_COSTS.get(action, 5) * max(1, count)
+    try:
+        admin_client().rpc("debit_credits", {
+            "p_user_id": user_id,
+            "p_amount": -cost,
+            "p_action": f"refund_{action}",
+            "p_description": description or f"remboursement {action} x{count}",
+        }).execute()
+    except Exception:
+        pass
+
+
 import re as _re
 
 
@@ -1163,31 +1210,71 @@ def cancel_job_item(access_token: str, item_id: str) -> str | None:
     """Annule un item s'il est encore `pending`/`running`. Retourne le statut résultant.
 
     L'`in_("status", …)` garantit qu'on n'écrase jamais un item déjà terminé
-    (`done`/`error`). RLS scope l'update au propriétaire via le JWT.
+    (`done`/`error`) et qu'une seule transition a lieu même en cas d'appels
+    concurrents — c'est cette transition qui déclenche le remboursement du
+    crédit de l'analyse non livrée. RLS scope l'update au propriétaire via le JWT.
     """
     db = client_for_token(access_token)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    (
+    resp = (
         db.table("analysis_job_items")
         .update({"status": "cancelled", "updated_at": now})
         .eq("id", item_id)
         .in_("status", ["pending", "running"])
         .execute()
     )
+    for row in resp.data or []:
+        refund_credits_admin(
+            row.get("user_id"), "analyze_job", description="remboursement analyse annulée"
+        )
     return get_job_item_status(access_token, item_id)
 
 
 def cancel_pending_items(access_token: str, job_id: str) -> None:
-    """Annule tous les items encore en attente/en cours d'une série (cancel global)."""
+    """Annule tous les items encore en attente/en cours d'une série (cancel global).
+
+    Chaque item réellement transitionné est remboursé (analyse non livrée).
+    """
     db = client_for_token(access_token)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    (
+    resp = (
         db.table("analysis_job_items")
         .update({"status": "cancelled", "updated_at": now})
         .eq("job_id", job_id)
         .in_("status", ["pending", "running"])
         .execute()
     )
+    rows = resp.data or []
+    if rows:
+        refund_credits_admin(
+            rows[0].get("user_id"), "analyze_job", count=len(rows),
+            description=f"remboursement série annulée ({len(rows)} profil(s))",
+        )
+
+
+def fail_job_item(access_token: str, item_id: str, error: str) -> bool:
+    """Passe un item en `error` s'il est encore actif, et rembourse son crédit.
+
+    Transition gardée (`in_` sur les statuts actifs) : un item déjà finalisé
+    (`done`/`cancelled`/`error`) n'est jamais réécrit, et deux appels
+    concurrents (thread + réconciliation, deux onglets qui pollent) ne
+    remboursent qu'une seule fois. Retourne True si la transition a eu lieu.
+    """
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    resp = (
+        db.table("analysis_job_items")
+        .update({"status": "error", "error": error, "updated_at": now})
+        .eq("id", item_id)
+        .in_("status", ["pending", "running"])
+        .execute()
+    )
+    rows = resp.data or []
+    for row in rows:
+        refund_credits_admin(
+            row.get("user_id"), "analyze_job", description="remboursement analyse échouée"
+        )
+    return bool(rows)
 
 
 def delete_job_item(access_token: str, item_id: str) -> bool:
@@ -1266,17 +1353,11 @@ def reconcile_stale_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
             continue  # récemment actif (ou date illisible) → on laisse tourner
         for it in job.get("items", []):
             if it.get("status") == "running":
-                update_job_item(
-                    access_token, it["id"], status="error",
-                    error="Analyse interrompue (délai dépassé).",
-                )
-                it["status"] = "error"
+                if fail_job_item(access_token, it["id"], "Analyse interrompue (délai dépassé)."):
+                    it["status"] = "error"
             elif it.get("status") == "pending":
-                update_job_item(
-                    access_token, it["id"], status="error",
-                    error="Non démarrée — série interrompue.",
-                )
-                it["status"] = "error"
+                if fail_job_item(access_token, it["id"], "Non démarrée — série interrompue."):
+                    it["status"] = "error"
         done = sum(1 for it in job.get("items", []) if it.get("status") == "done")
         failed = sum(1 for it in job.get("items", []) if it.get("status") == "error")
         final = "error" if failed and not done else "done"
@@ -1421,6 +1502,142 @@ def reconcile_stale_generation_jobs(access_token: str, jobs: list[dict]) -> list
         )
         job["status"] = "error"
         job["error"] = "Génération interrompue (délai dépassé)."
+    return jobs
+
+
+# ---------------------------------------------------------------------------
+# File d'attente de génération d'image IA (ALE-261)
+# ---------------------------------------------------------------------------
+# Même patron que generation_jobs : une ligne = une génération d'image. Le
+# `target_key` (opaque, fourni par le frontend) identifie le bloc de post
+# auquel l'image doit se rattacher, pour qu'elle rejoigne le bon post même
+# après fermeture de la pop-up. Crédits débités à la complétion réussie
+# uniquement (jamais au lancement) — un échec ne coûte donc jamais de crédit,
+# pas de remboursement à gérer (contrairement aux séries d'analyse).
+
+_IMAGE_JOB_COLS = (
+    "id,status,post_text,prompt,reference_template_id,target_key,result,error,created_at,updated_at"
+)
+
+
+def create_image_job(
+    access_token: str,
+    post_text: str,
+    prompt: str | None,
+    reference_template_id: str | None,
+    target_key: str,
+) -> dict | None:
+    """Crée un job de génération d'image `queued`. Retourne la ligne créée."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "status": "queued",
+        "post_text": post_text,
+        "prompt": prompt or None,
+        "target_key": target_key,
+    }
+    if reference_template_id:
+        row["reference_template_id"] = reference_template_id
+    resp = db.table("image_generation_jobs").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def get_image_job(access_token: str, job_id: str) -> dict | None:
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("image_generation_jobs")
+        .select(_IMAGE_JOB_COLS)
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0] if r.data else None
+
+
+def list_image_jobs(access_token: str, limit: int = 30) -> list[dict]:
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    r = (
+        db.table("image_generation_jobs")
+        .select(_IMAGE_JOB_COLS)
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return reconcile_stale_image_jobs(access_token, r.data or [])
+
+
+def get_image_job_status(access_token: str, job_id: str) -> str | None:
+    """Statut seul (lecture légère, pour la vérif d'annulation du thread)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("image_generation_jobs")
+        .select("status")
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0]["status"] if r.data else None
+
+
+def update_image_job(access_token: str, job_id: str, **fields: Any) -> None:
+    db = client_for_token(access_token)
+    fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db.table("image_generation_jobs").update(fields).eq("id", job_id).execute()
+
+
+def cancel_image_job(access_token: str, job_id: str) -> dict | None:
+    """Annule un job d'image s'il est encore `queued`/`running`.
+
+    Jamais de remboursement ici : le débit n'intervient qu'à la complétion
+    réussie (cf. `src.jobs.process_image_job`), donc un job annulé n'a jamais
+    été débité.
+    """
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    (
+        db.table("image_generation_jobs")
+        .update({"status": "cancelled", "updated_at": now})
+        .eq("id", job_id)
+        .in_("status", ["queued", "running"])
+        .execute()
+    )
+    return get_image_job(access_token, job_id)
+
+
+def reconcile_stale_image_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
+    """Solde les jobs d'image orphelins (thread mort/figé) — appelé au listing.
+
+    Même logique que `reconcile_stale_generation_jobs`. Idempotent.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(minutes=JOB_STALE_MINUTES)
+    for job in jobs:
+        if job.get("status") not in ("queued", "running"):
+            continue
+        job_ts = _parse_ts(job.get("updated_at"))
+        if job_ts is None or job_ts > cutoff:
+            continue
+        update_image_job(
+            access_token, job["id"], status="error",
+            error="Génération d'image interrompue (délai dépassé).",
+        )
+        job["status"] = "error"
+        job["error"] = "Génération d'image interrompue (délai dépassé)."
     return jobs
 
 
@@ -3145,8 +3362,15 @@ def create_scheduled_post_admin(
     user_id: str,
     post_text: str,
     scheduled_at_iso: str,
+    slack_status: str = "pending",
 ) -> dict | None:
-    """Insert a scheduled post with service-role (no user JWT). Used by crons."""
+    """Insert a scheduled post with service-role (no user JWT). Used by crons.
+
+    `slack_status` defaults to "pending" (awaiting Slack validation). Pass
+    "validated" for users without Slack connected: the publish scheduler only
+    picks up validated posts, and the Slack webhook is the only other path to
+    "validated" — a pending post without Slack would be stuck forever (ALE-272).
+    """
     if not admin_enabled():
         return None
     resp = (
@@ -3157,7 +3381,7 @@ def create_scheduled_post_admin(
             "post_text": post_text,
             "scheduled_at": scheduled_at_iso,
             "media_items": [],
-            "slack_status": "pending",
+            "slack_status": slack_status,
         })
         .execute()
     )

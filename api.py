@@ -20,7 +20,7 @@ from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_po
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
-from src.jobs import start_job_thread, start_generation_job_thread
+from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message
 from src.normalize import normalize_posts, normalize_profile
@@ -1081,6 +1081,10 @@ class GenerateImageRequest(BaseModel):
     prompt: Optional[str] = Field(default=None, max_length=4000)
     # Image de la banque de templates choisie comme référence visuelle (ALE-221).
     reference_template_id: Optional[str] = Field(default=None, max_length=100)
+    # Identifiant opaque (fourni par le frontend) du bloc de post auquel l'image
+    # doit se rattacher — requis pour /generate-image/jobs (ALE-261), ignoré par
+    # /generate-image/prompt.
+    target_key: Optional[str] = Field(default=None, max_length=200)
 
 
 class ChatRequest(BaseModel):
@@ -3298,47 +3302,68 @@ def generate_image_prompt(payload: GenerateImageRequest, token: Optional[str] = 
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/generate-image")
-def generate_image(payload: GenerateImageRequest, token: Optional[str] = Depends(optional_token)) -> dict[str, Any]:
-    """Generate an image to accompany a LinkedIn post (GPT Image 2)."""
+@app.post("/generate-image/jobs")
+def create_image_job(payload: GenerateImageRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Lance une génération d'image IA en arrière-plan (file d'attente — ALE-261).
+
+    Non bloquant : on vérifie les préconditions (clé OpenAI, solde, référence),
+    on crée le job et on lance le thread, puis on rend la main immédiatement.
+    Le frontend récupère le résultat via GET /generate-image/jobs — l'image
+    rejoint le bloc de post identifié par `target_key` même si la pop-up a été
+    fermée entre-temps (fermer la page ne perd plus rien, ALE-261). Les crédits
+    ne sont débités qu'à la complétion réussie (cf. `src.jobs.process_image_job`).
+    """
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(status_code=400, detail="OPENAI_API_KEY manquant dans .env")
-    # Import paresseux : la génération d'image dépend d'`openai`. Un import
-    # au niveau module ferait planter tout le démarrage de l'API si la
-    # dépendance (ou le module) manque — on l'isole donc à cet endpoint.
-    from src.image_gen import ImageGenError, fetch_reference_image, generate_post_image
+    if not payload.target_key:
+        raise HTTPException(status_code=400, detail="target_key manquant.")
 
-    # Résolution + téléchargement de l'image de référence AVANT le débit de
-    # crédits : un lien mort/expiré (fréquent, ces URLs viennent de posts
-    # scrapés) ne doit pas coûter de crédits à l'utilisateur (ALE-221).
-    reference_image = None
-    if payload.reference_template_id:
-        if not token:
-            raise HTTPException(status_code=400, detail="Authentification requise pour utiliser une image de référence.")
-        template = db.get_post_template(token, payload.reference_template_id)
-        image_url = (template or {}).get("image_url")
-        if not image_url:
-            raise HTTPException(status_code=404, detail="Template introuvable ou sans image de référence.")
-        try:
-            reference_image = fetch_reference_image(image_url)
-        except ImageGenError as exc:
-            raise HTTPException(status_code=422, detail=f"Image de référence inaccessible : {exc}")
-
-    credits: int | None = None
-    if token:
-        ok, balance = db.debit_credits(token, "generate_image")
-        if not ok:
-            raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération d'image = {db.CREDIT_COSTS['generate_image']} crédit(s).")
-        credits = balance
+    # Pré-check fail-closed du solde (ALE-270) : un solde illisible ou
+    # insuffisant ne doit pas lancer un job qu'on ne saurait pas facturer.
+    cost = db.CREDIT_COSTS["generate_image"]
     try:
-        result = generate_post_image(payload.post_text, prompt=payload.prompt, reference_image=reference_image)
-        if isinstance(result, dict):
-            result["credits"] = credits
-        return result
-    except HTTPException:
-        raise
+        info = db.get_user_credits(token)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=503, detail=f"Vérification du solde impossible, réessaie dans un instant ({exc}).")
+    if info.get("enabled") and info.get("balance", 0) < cost:
+        raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {info.get('balance', 0)}). Génération d'image = {cost} crédit(s).")
+
+    # Vérif immédiate (feedback rapide) ; le thread revérifie avant de
+    # télécharger l'image (course possible entre la création et le traitement).
+    if payload.reference_template_id:
+        template = db.get_post_template(token, payload.reference_template_id)
+        if not template or not template.get("image_url"):
+            raise HTTPException(status_code=404, detail="Template introuvable ou sans image de référence.")
+
+    job = db.create_image_job(token, payload.post_text, payload.prompt, payload.reference_template_id, payload.target_key)
+    if not job:
+        raise HTTPException(status_code=500, detail="Création du job d'image impossible.")
+    start_image_job_thread(token, job["id"])
+    return job
+
+
+@app.get("/generate-image/jobs")
+def list_image_jobs(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """Liste les jobs de génération d'image de l'utilisateur (plus récents d'abord)."""
+    return db.list_image_jobs(token)
+
+
+@app.get("/generate-image/jobs/{job_id}")
+def get_image_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Récupère un job de génération d'image (pour le polling du frontend)."""
+    job = db.get_image_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job de génération d'image introuvable.")
+    return job
+
+
+@app.post("/generate-image/jobs/{job_id}/cancel")
+def cancel_image_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Annule un job de génération d'image encore en attente/en cours."""
+    job = db.cancel_image_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job de génération d'image introuvable.")
+    return job
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -3575,11 +3600,34 @@ def get_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
 
 @app.post("/jobs/{job_id}/resume")
 def resume_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Relance le traitement des profils non terminés (après un redémarrage serveur)."""
+    """Relance le traitement des profils non terminés (après un redémarrage serveur).
+
+    Les profils en échec ont été remboursés au moment de l'échec : les retenter
+    est re-débité ici. Les profils jamais soldés (pending/running, donc jamais
+    remboursés) se relancent sans nouveau débit.
+    """
     job = db.get_job(token, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Série introuvable.")
-    pending = [it for it in job.get("items", []) if it.get("status") != "done"]
+    items = job.get("items", [])
+    retry_errors = [it for it in items if it.get("status") == "error"]
+    if retry_errors:
+        ok, balance = db.debit_credits(token, "analyze_job", len(retry_errors))
+        if not ok:
+            cost = db.CREDIT_COSTS["analyze_job"] * len(retry_errors)
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Crédits insuffisants pour relancer {len(retry_errors)} profil(s) "
+                    f"en échec ({cost} crédit(s), solde : {balance})."
+                ),
+            )
+        # Repasse les items re-débités en `pending` : s'ils échouent à nouveau
+        # (ou que la série meurt), la transition d'échec les remboursera.
+        for it in retry_errors:
+            db.update_job_item(token, it["id"], status="pending", error=None)
+            it["status"] = "pending"
+    pending = [it for it in items if it.get("status") not in ("done", "cancelled")]
     if pending:
         start_job_thread(token, job_id)
     return job

@@ -408,6 +408,33 @@ function generationJobIsActive(j: GenerationJob): boolean {
   return j.status === "queued" || j.status === "running";
 }
 
+// ALE-261 : un job de génération d'image IA (file d'attente). `target_key` est
+// un identifiant opaque choisi par l'écran appelant (ex. "variant:2",
+// "saved:<uuid>") qui désigne le bloc de post auquel l'image doit se
+// rattacher — c'est ce qui permet de fermer la pop-up et de retrouver l'image
+// sur le bon post à son arrivée, même après changement d'onglet ou refresh.
+type ImageJob = {
+  id: string;
+  status: JobStatus;
+  post_text: string;
+  prompt: string | null;
+  reference_template_id: string | null;
+  target_key: string;
+  result: { image_data?: string; prompt_used?: string; credits?: number | null } | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function imageJobIsActive(j: ImageJob): boolean {
+  return j.status === "queued" || j.status === "running";
+}
+
+/** Job d'image le plus récent pour un `target_key` donné (la liste est triée du plus récent au plus ancien). */
+function latestImageJobFor(jobs: ImageJob[], targetKey: string): ImageJob | null {
+  return jobs.find((j) => j.target_key === targetKey) ?? null;
+}
+
 const ITEM_STATUS_LABELS: Record<ItemStatus, string> = {
   pending: "En attente",
   running: "Analyse en cours…",
@@ -2405,25 +2432,46 @@ function SchedulePostModal({
   );
 }
 
-/** Pop-up de génération d'image IA (ALE-68) : prépare d'abord un prompt à partir du
- *  post (gratuit), le montre à l'utilisateur qui peut l'ajuster, puis ne génère
- *  l'image (payante en crédits) qu'après validation explicite. L'image générée
- *  est remontée en data URL via `onGenerated`.
- *  Pendant la génération (2 à 3 min), la pop-up reste affichée — pas de réduction
- *  en pastille : changer d'onglet dans l'app démonte le composant et perd l'image
- *  (la vraie file d'attente serveur = ALE-141), donc on affiche un avertissement
- *  explicite. Quitter ou recharger la page déclenche en plus l'alerte du navigateur. */
-function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; onClose: () => void; onGenerated: (dataUrl: string) => void }) {
+// ALE-261 : génération d'image IA en file d'attente. La pop-up ne fait que
+// lancer le job (`POST /generate-image/jobs`) puis affiche sa progression via
+// les jobs polled par Home (`imageJobs`, passés en prop) — elle peut donc être
+// fermée à tout moment sans rien perdre : le job continue côté serveur et
+// l'image rejoint le bloc de post via `targetKey`, appliquée par l'écran
+// appelant (pas par cette pop-up, qui peut ne plus être montée à la fin).
+function ImageGenModal({
+  postText,
+  targetKey,
+  imageJobs,
+  onImageJobCreated,
+  onClose,
+}: {
+  postText: string;
+  targetKey: string;
+  imageJobs: ImageJob[];
+  onImageJobCreated: (job: ImageJob) => void;
+  onClose: () => void;
+}) {
   const [prompt, setPrompt] = useState("");
   const [loadingPrompt, setLoadingPrompt] = useState(true);
-  const [generating, setGenerating] = useState(false);
-  const [preview, setPreview] = useState<string | null>(null);
+  const [launching, setLaunching] = useState(false);
   const [error, setError] = useState("");
   const postBoxRef = useRef<HTMLDivElement | null>(null);
   // Banque de templates (ALE-216) proposée comme référence visuelle optionnelle (ALE-221) :
   // fetch local à la pop-up plutôt qu'un prop threadé depuis les 4 écrans appelants.
   const [templates, setTemplates] = useState<PostTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  // Le job qu'on suit dans cette pop-up : celui qu'on vient de créer, ou — si la
+  // pop-up est rouverte pendant qu'un job pour ce post tourne encore — celui déjà
+  // en cours. Un job déjà terminé pour ce post n'est PAS repris : rouvrir propose
+  // une génération fraîche.
+  const [createdJobId, setCreatedJobId] = useState<string | null>(() => {
+    const latest = latestImageJobFor(imageJobs, targetKey);
+    return latest && imageJobIsActive(latest) ? latest.id : null;
+  });
+  const job = imageJobs.find((j) => j.id === createdJobId) ?? null;
+  const active = !!job && imageJobIsActive(job);
+  const done = job?.status === "done";
+  const notifiedCreditsRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -2450,14 +2498,6 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
     setPrompt((p) => (p.trim() ? `${p.trimEnd()}\n\n${toInsert}` : toInsert));
   }
 
-  // Garde-fou : alerte native du navigateur si on ferme/recharge la page en pleine génération.
-  useEffect(() => {
-    if (!generating) return;
-    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [generating]);
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -2480,28 +2520,38 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Rafraîchit le solde affiché une seule fois par job terminé (l'attache de
+  // l'image au post, elle, est faite par l'écran appelant — pas ici — pour
+  // fonctionner même si cette pop-up a été fermée entre-temps).
+  useEffect(() => {
+    if (job?.status === "done" && notifiedCreditsRef.current !== job.id) {
+      notifiedCreditsRef.current = job.id;
+      emitCredits(job.result?.credits);
+    }
+  }, [job?.status, job?.id, job?.result?.credits]);
+
   async function generate() {
     setError("");
-    setGenerating(true);
+    setLaunching(true);
     try {
-      const res = await fetch(`${DIRECT_API_URL}/generate-image`, {
+      const res = await fetch(`${DIRECT_API_URL}/generate-image/jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
           post_text: postText,
           prompt: prompt.trim() || undefined,
           reference_template_id: selectedTemplateId || undefined,
+          target_key: targetKey,
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Génération d'image impossible.");
-      emitCredits(data.credits);
-      onGenerated(data.image_data);
-      setPreview(data.image_data);
+      if (!res.ok) throw new Error(data.detail || "Lancement de la génération impossible.");
+      onImageJobCreated(data as ImageJob);
+      setCreatedJobId(data.id);
     } catch (err: any) {
-      setError(err.message || "Génération d'image impossible.");
+      setError(err.message || "Lancement de la génération impossible.");
     } finally {
-      setGenerating(false);
+      setLaunching(false);
     }
   }
 
@@ -2512,12 +2562,12 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
     }}>
       <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
         <h3 style={{ marginTop: 0, marginBottom: 2, display: "flex", alignItems: "center", gap: 8 }}>
-          <ImageIcon size={16} /> {preview ? "Image générée" : "Générer une image IA"}
+          <ImageIcon size={16} /> {done ? "Image générée" : job?.status === "error" ? "Échec de la génération" : "Générer une image IA"}
         </h3>
         <p style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 10px" }}>
           Générée avec GPT Image 2 — le dernier modèle d&apos;image d&apos;OpenAI
         </p>
-        {preview ? (
+        {done ? (
           <>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
               Image jointe au post ✓ — tu la retrouves dans les miniatures sous le post
@@ -2525,7 +2575,7 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
             </p>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={preview}
+              src={job?.result?.image_data}
               alt="Image générée"
               style={{ width: "100%", maxHeight: 380, objectFit: "contain", borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
             />
@@ -2533,28 +2583,36 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
               <button className="primary-button" onClick={onClose}>Fermer</button>
             </div>
           </>
+        ) : active ? (
+          <>
+            <div style={{
+              display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 12,
+              border: "1px solid var(--border)", background: "var(--surface)",
+              borderRadius: 8, padding: "10px 12px", fontSize: 13,
+            }}>
+              <Loader2 size={16} className="spinning" style={{ flexShrink: 0, marginTop: 1 }} />
+              <span>
+                <strong>Génération en cours (2 à 3 min).</strong> Tu peux fermer cette fenêtre ou
+                changer d&apos;onglet : la génération continue côté serveur et l&apos;image rejoindra
+                ce post automatiquement dès qu&apos;elle sera prête.
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="secondary-button" onClick={onClose}>Fermer</button>
+            </div>
+          </>
         ) : (
           <>
-            {generating ? (
-              <div style={{
-                display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 12,
-                border: "1px solid #f0b429", background: "rgba(240, 180, 41, 0.12)",
-                borderRadius: 8, padding: "10px 12px", fontSize: 13,
-              }}>
-                <span aria-hidden style={{ fontSize: 16, lineHeight: "18px" }}>⚠️</span>
-                <span>
-                  <strong>Génération en cours (2 à 3 min).</strong> Ne quitte pas cette page et ne change
-                  pas d&apos;onglet dans l&apos;application : l&apos;image serait perdue (et les crédits
-                  débités). Laisse cette fenêtre ouverte, l&apos;image sera jointe au post automatiquement.
-                </span>
+            {job?.status === "error" && (
+              <div className="error" style={{ marginBottom: 12, fontSize: 13 }}>
+                {job.error || "Génération d'image échouée."}
               </div>
-            ) : (
-              <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-                Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour
-                générer l&apos;image (5 crédits). L&apos;image sera jointe au post. Pendant la génération
-                (2 à 3 min), il faudra rester sur cette page.
-              </p>
             )}
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+              Voici le prompt préparé à partir de ton post. Ajuste-le si besoin, puis valide pour
+              générer l&apos;image (5 crédits). L&apos;image sera jointe au post — tu peux fermer
+              cette fenêtre pendant la génération (2 à 3 min), elle continue en arrière-plan.
+            </p>
             {templatesWithImage.length > 0 && (
               <div style={{ marginBottom: 12 }}>
                 <p style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 6px", fontWeight: 600 }}>
@@ -2568,12 +2626,11 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
                         key={t.id}
                         type="button"
                         title={libraryEntryTitle(t)}
-                        disabled={generating}
                         onClick={() => setSelectedTemplateId(selected ? "" : t.id)}
                         style={{
                           width: 60, height: 60, padding: 0, borderRadius: 8, overflow: "hidden",
                           border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
-                          cursor: generating ? "default" : "pointer", flex: "0 0 auto", background: "none",
+                          cursor: "pointer", flex: "0 0 auto", background: "none",
                         }}
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -2597,7 +2654,6 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
                 className="variant-text"
                 value={prompt}
                 rows={5}
-                disabled={generating}
                 onChange={(e) => setPrompt(e.target.value)}
                 style={{ width: "100%", boxSizing: "border-box" }}
               />
@@ -2620,7 +2676,6 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
                   <button
                     type="button"
                     className="secondary-button"
-                    disabled={generating}
                     // preventDefault sur mousedown : sans ça, le clic effacerait la
                     // sélection dans le bloc de post avant qu'on puisse la lire.
                     onMouseDown={(e) => e.preventDefault()}
@@ -2637,10 +2692,10 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
             )}
             {error && <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{error}</div>}
             <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end", flexWrap: "wrap" }}>
-              {!generating && <button className="secondary-button" onClick={onClose}>Annuler</button>}
-              <button className="primary-button" disabled={loadingPrompt || generating || !prompt.trim()} onClick={generate}>
-                {generating
-                  ? <><Loader2 size={13} className="spinning" /> Génération en cours… (2-3 min)</>
+              <button className="secondary-button" onClick={onClose}>Annuler</button>
+              <button className="primary-button" disabled={loadingPrompt || launching || !prompt.trim()} onClick={generate}>
+                {launching
+                  ? <><Loader2 size={13} className="spinning" /> Lancement…</>
                   : <><Sparkles size={13} /> Générer l&apos;image</>}
               </button>
             </div>
@@ -2656,13 +2711,26 @@ function ImageGenModal({ postText, onClose, onGenerated }: { postText: string; o
 // dernier job de génération dont on a injecté le résultat, pour qu'un nouveau
 // batch terminé pendant qu'on était sur un autre onglet s'affiche bien au retour
 // (un simple ref serait réinitialisé au remontage du composant).
-const _genCache: { variants: Variant[]; topic: string; appliedJobId: string | null } = {
+const _genCache: {
+  variants: Variant[];
+  topic: string;
+  appliedJobId: string | null;
+  appliedImageJobIds: Set<string>;
+  variantImages: Record<number, LinkedInImageAttachment[]>;
+} = {
   variants: [],
   topic: "",
   appliedJobId: null,
+  // ALE-261 : jobs d'image déjà attachés à leur variant, pour ne les appliquer
+  // qu'une fois même si le job termine pendant qu'on est sur un autre onglet.
+  appliedImageJobIds: new Set(),
+  // ALE-261 : images jointes par variant, mises en cache comme `variants` — sinon
+  // une image attachée (upload ou IA) est perdue si on quitte l'onglet Générateur
+  // avant de sauvegarder, ce qui viderait le rattachement qu'on vient de garantir.
+  variantImages: {},
 };
 
-function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated, onRework }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void; onRework?: (post: string) => void }) {
+function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated, imageJobs, onImageJobCreated, onRework }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void; imageJobs: ImageJob[]; onImageJobCreated: (job: ImageJob) => void; onRework?: (post: string) => void }) {
   const [variants, setVariants] = useState<Variant[]>(_genCache.variants);
   const [topic, setTopic] = useState(_genCache.topic);
   const topicRef = useRef<HTMLTextAreaElement | null>(null); // ALE-235 : champ Sujet auto-resize
@@ -2710,7 +2778,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   const [confirmIndex, setConfirmIndex] = useState<number | null>(null);
   const [confirmXIndex, setConfirmXIndex] = useState<number | null>(null);
   const [publishError, setPublishError] = useState("");
-  const [variantImages, setVariantImages] = useState<Record<number, LinkedInImageAttachment[]>>({});
+  const [variantImages, setVariantImages] = useState<Record<number, LinkedInImageAttachment[]>>(_genCache.variantImages);
   const [imageModal, setImageModal] = useState<{ index: number; text: string } | null>(null);
   const [imageError, setImageError] = useState("");
   const [editedVariants, setEditedVariants] = useState<Record<number, string>>({});
@@ -2732,6 +2800,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   // pour les restaurer si le composant est démonté puis remonté (changement d'onglet).
   useEffect(() => { _genCache.variants = variants; }, [variants]);
   useEffect(() => { _genCache.topic = topic; }, [topic]);
+  useEffect(() => { _genCache.variantImages = variantImages; }, [variantImages]);
 
   // ALE-235 : le champ Sujet grandit avec le contenu (plafonné, scroll au-delà).
   useEffect(() => {
@@ -2891,6 +2960,28 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       ...prev,
       [i]: [...(prev[i] || []), attachment],
     }));
+  }
+
+  // ALE-261 : rattache l'image dès qu'un job `variant:{i}` termine, même si la
+  // pop-up ImageGenModal a été fermée entre-temps (le job continue en fond,
+  // porté par le polling de Home). `appliedImageJobIds` évite de rattacher deux
+  // fois le même job (re-render, ou job terminé pendant un autre onglet).
+  useEffect(() => {
+    for (const job of imageJobs) {
+      if (job.status !== "done" || !job.result?.image_data) continue;
+      if (_genCache.appliedImageJobIds.has(job.id)) continue;
+      const match = /^variant:(\d+)$/.exec(job.target_key);
+      if (!match) continue;
+      _genCache.appliedImageJobIds.add(job.id);
+      attachGeneratedImage(Number(match[1]), job.result.image_data);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageJobs]);
+
+  /** Job d'image actif (queued/running) pour un variant donné, pour l'indicateur inline. */
+  function activeImageJobForVariant(i: number): ImageJob | null {
+    const job = latestImageJobFor(imageJobs, `variant:${i}`);
+    return job && imageJobIsActive(job) ? job : null;
   }
 
   function addUploadedImages(i: number, files: FileList | null) {
@@ -3235,6 +3326,11 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                     {scheduledIndices[i] === "slack" ? "Post programmé ✓ — demande de validation envoyée sur Slack." : "Post programmé sur LinkedIn ✓"}
                   </p>
                 )}
+                {activeImageJobForVariant(i) && (
+                  <p className="role-picker-hint" style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                    <Loader2 size={12} className="spinning" /> Image IA en cours de génération… elle rejoindra ce post automatiquement.
+                  </p>
+                )}
                 {(variantImages[i] || []).length > 0 && (
                   <div style={{ marginTop: 12 }}>
                     <p className="role-picker-hint" style={{ marginBottom: 8 }}>
@@ -3277,8 +3373,10 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       {imageModal && (
         <ImageGenModal
           postText={imageModal.text}
+          targetKey={`variant:${imageModal.index}`}
+          imageJobs={imageJobs}
+          onImageJobCreated={onImageJobCreated}
           onClose={() => setImageModal(null)}
-          onGenerated={(dataUrl) => attachGeneratedImage(imageModal.index, dataUrl)}
         />
       )}
 
@@ -3388,18 +3486,30 @@ function parseDailyIdeaMarkdown(markdown: string): DailyIdeaCard {
   };
 }
 
+// ALE-261 : cache module-level pour les images IA jointes aux idées du jour —
+// même rationale que `_genCache` (ALE-145) : sans lui, une image attachée
+// pendant qu'on est sur un autre onglet serait perdue au remontage du composant.
+const _dailyIdeaCache: { ideaImages: Record<string, string[]>; appliedImageJobIds: Set<string> } = {
+  ideaImages: {},
+  appliedImageJobIds: new Set(),
+};
+
 function DailyIdeasView({
   isAuthed,
   requireAuth,
   onReuse,
   onRework,
   reservoirOnly = false,
+  imageJobs,
+  onImageJobCreated,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string) => void;
   onReuse: (topic: string) => void;
   onRework?: (post: string) => void;
   reservoirOnly?: boolean;
+  imageJobs: ImageJob[];
+  onImageJobCreated: (job: ImageJob) => void;
 }) {
   const [ideas, setIdeas] = useState<DailyIdea[]>([]);
   const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
@@ -3463,7 +3573,29 @@ function DailyIdeasView({
   const [confirmXId, setConfirmXId] = useState<string | null>(null);
   // Génération d'image IA : pop-up de validation du prompt + images jointes (data URLs) par idée.
   const [imageModalIdea, setImageModalIdea] = useState<DailyIdea | null>(null);
-  const [ideaImages, setIdeaImages] = useState<Record<string, string[]>>({});
+  const [ideaImages, setIdeaImages] = useState<Record<string, string[]>>(_dailyIdeaCache.ideaImages);
+  useEffect(() => { _dailyIdeaCache.ideaImages = ideaImages; }, [ideaImages]);
+
+  // ALE-261 : rattache l'image dès qu'un job `idea:{id}` termine, même si la
+  // pop-up a été fermée ou l'onglet quitté entre-temps (le job continue en fond).
+  useEffect(() => {
+    for (const job of imageJobs) {
+      if (job.status !== "done" || !job.result?.image_data) continue;
+      if (_dailyIdeaCache.appliedImageJobIds.has(job.id)) continue;
+      const match = /^idea:(.+)$/.exec(job.target_key);
+      if (!match) continue;
+      _dailyIdeaCache.appliedImageJobIds.add(job.id);
+      const ideaId = match[1];
+      const dataUrl = job.result.image_data;
+      setIdeaImages((prev) => ({ ...prev, [ideaId]: [...(prev[ideaId] || []), dataUrl] }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageJobs]);
+
+  function activeImageJobForIdea(id: string): ImageJob | null {
+    const job = latestImageJobFor(imageJobs, `idea:${id}`);
+    return job && imageJobIsActive(job) ? job : null;
+  }
 
   const postTextOf = (it: DailyIdea) => editedPost[it.id] ?? it.post_text ?? "";
 
@@ -3949,6 +4081,11 @@ function DailyIdeasView({
                             : []),
                         ]}
                       />
+                      {activeImageJobForIdea(it.id) && (
+                        <p className="role-picker-hint" style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                          <Loader2 size={12} className="spinning" /> Image IA en cours de génération… elle rejoindra ce post automatiquement.
+                        </p>
+                      )}
                       {(ideaImages[it.id] || []).length > 0 && (
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640, marginTop: 12 }}>
                           {(ideaImages[it.id] || []).map((u, n) => (
@@ -4029,11 +4166,10 @@ function DailyIdeasView({
       {imageModalIdea && (
         <ImageGenModal
           postText={postTextOf(imageModalIdea)}
+          targetKey={`idea:${imageModalIdea.id}`}
+          imageJobs={imageJobs}
+          onImageJobCreated={onImageJobCreated}
           onClose={() => setImageModalIdea(null)}
-          onGenerated={(dataUrl) => setIdeaImages((prev) => ({
-            ...prev,
-            [imageModalIdea.id]: [...(prev[imageModalIdea.id] || []), dataUrl],
-          }))}
         />
       )}
       </>
@@ -4202,16 +4338,25 @@ function LibDrawer({
   );
 }
 
+// ALE-261 : applied-tracking module-level pour les jobs d'image de « Mes contenus » —
+// l'image elle-même est persistée côté serveur (persistSavedPostImages), seule
+// l'idempotence (ne pas la joindre deux fois) doit survivre au remontage du composant.
+const _libraryAppliedImageJobIds = new Set<string>();
+
 function LibraryView({
   isAuthed,
   requireAuth,
   onReuse,
   onRework,
+  imageJobs,
+  onImageJobCreated,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string) => void;
   onReuse: (topic: string) => void;
   onRework?: (post: string) => void;
+  imageJobs: ImageJob[];
+  onImageJobCreated: (job: ImageJob) => void;
 }) {
   const [posts, setPosts] = useState<SavedPost[]>([]);
   const [loading, setLoading] = useState(false);
@@ -4473,6 +4618,29 @@ function LibraryView({
     void persistSavedPostImages(p, images);
   }
 
+  // ALE-261 : rattache l'image dès qu'un job `saved:{id}` termine, même si la
+  // pop-up a été fermée ou l'onglet quitté entre-temps. On relit `posts` (pas le
+  // post capturé à l'ouverture de la pop-up) pour ne pas écraser des images
+  // jointes entre-temps par ailleurs.
+  useEffect(() => {
+    for (const job of imageJobs) {
+      if (job.status !== "done" || !job.result?.image_data) continue;
+      if (_libraryAppliedImageJobIds.has(job.id)) continue;
+      const match = /^saved:(.+)$/.exec(job.target_key);
+      if (!match) continue;
+      const post = posts.find((pp) => pp.id === match[1]);
+      if (!post) continue;
+      _libraryAppliedImageJobIds.add(job.id);
+      void persistSavedPostImages(post, [...savedPostImagePayload(post), { data_url: job.result.image_data, filename: "image-ia.png" }]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageJobs, posts]);
+
+  function activeImageJobForSavedPost(id: string): ImageJob | null {
+    const job = latestImageJobFor(imageJobs, `saved:${id}`);
+    return job && imageJobIsActive(job) ? job : null;
+  }
+
   if (!isAuthed) {
     return (
       <div className="card" style={{ textAlign: "center", padding: 40 }}>
@@ -4684,6 +4852,11 @@ function LibraryView({
                     onConfirm={(t) => { setEditedPosts((prev) => ({ ...prev, [p.id]: t })); publishSavedPost(p, t); }}
                   />
                 )}
+                {activeImageJobForSavedPost(p.id) && (
+                  <p className="role-picker-hint" style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                    <Loader2 size={12} className="spinning" /> Image IA en cours de génération… elle rejoindra ce post automatiquement.
+                  </p>
+                )}
                 {scheduleForPost === p.id && (
                   <SchedulePostModal
                     text={editedPosts[p.id] ?? p.post}
@@ -4837,16 +5010,10 @@ function LibraryView({
       {imageModalSaved && (
         <ImageGenModal
           postText={editedPosts[imageModalSaved.id] ?? imageModalSaved.post}
+          targetKey={`saved:${imageModalSaved.id}`}
+          imageJobs={imageJobs}
+          onImageJobCreated={onImageJobCreated}
           onClose={() => setImageModalSaved(null)}
-          onGenerated={(dataUrl) => {
-            const target = imageModalSaved;
-            // Persistée avec le post (hébergement public côté backend, ALE-179) :
-            // l'image reste jointe après refresh et part avec les publications.
-            void persistSavedPostImages(target, [
-              ...savedPostImagePayload(target),
-              { data_url: dataUrl, filename: `image-ia-${Date.now()}.png` },
-            ]);
-          }}
         />
       )}
 
@@ -4879,11 +5046,17 @@ function LibraryView({
  *  comme dans « Mes contenus », en opérant sur le texte brut de la réponse. */
 function AssistantMessageActions({
   text,
+  targetKey,
+  imageJobs,
+  onImageJobCreated,
   linkedin,
   twitter,
   slack,
 }: {
   text: string;
+  targetKey: string;
+  imageJobs: ImageJob[];
+  onImageJobCreated: (job: ImageJob) => void;
   linkedin: ReturnType<typeof useLinkedIn>;
   twitter: ReturnType<typeof useTwitter>;
   slack: ReturnType<typeof useSlack>;
@@ -4954,6 +5127,30 @@ function AssistantMessageActions({
       reader.readAsDataURL(file);
     }
   }
+
+  // ALE-261 : rattache l'image dès qu'un job pour ce message termine, même si la
+  // pop-up a été fermée entre-temps. Suivi local (pas de cache module-level) :
+  // comme les images jointes à une réponse de l'Assistant sont déjà perdues au
+  // remontage du composant (pas de persistance tant que le post n'est pas
+  // sauvegardé), un `ref` scoppé à cette instance suffit — cohérent avec le
+  // reste du comportement de cet écran.
+  const appliedImageJobIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const job of imageJobs) {
+      if (job.status !== "done" || !job.result?.image_data) continue;
+      if (job.target_key !== targetKey) continue;
+      if (appliedImageJobIdsRef.current.has(job.id)) continue;
+      appliedImageJobIdsRef.current.add(job.id);
+      setImages((prev) => [...prev, {
+        id: `generated-${job.id}`,
+        url: job.result!.image_data!,
+        filename: "image-ia.png",
+        source: "generated",
+      }]);
+    }
+  }, [imageJobs, targetKey]);
+  const activeImageJob = latestImageJobFor(imageJobs, targetKey);
+  const generatingImage = !!activeImageJob && imageJobIsActive(activeImageJob);
 
   async function copy() {
     try {
@@ -5202,14 +5399,16 @@ function AssistantMessageActions({
       {imageModalOpen && (
         <ImageGenModal
           postText={postText}
+          targetKey={targetKey}
+          imageJobs={imageJobs}
+          onImageJobCreated={onImageJobCreated}
           onClose={() => setImageModalOpen(false)}
-          onGenerated={(dataUrl) => setImages((prev) => [...prev, {
-            id: `generated-${Date.now()}`,
-            url: dataUrl,
-            filename: "image-ia.png",
-            source: "generated",
-          }])}
         />
+      )}
+      {generatingImage && (
+        <p className="role-picker-hint" style={{ width: "100%", marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
+          <Loader2 size={12} className="spinning" /> Image IA en cours de génération… elle rejoindra cette réponse automatiquement.
+        </p>
       )}
       {images.length > 0 && (
         <div style={{ width: "100%", marginTop: 8 }}>
@@ -6443,7 +6642,7 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
   );
 }
 
-function Assistant({ isAuthed, requireAuth, seed }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { post: string; nonce: number } | null }) {
+function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { post: string; nonce: number } | null; imageJobs: ImageJob[]; onImageJobCreated: (job: ImageJob) => void }) {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -6661,7 +6860,15 @@ function Assistant({ isAuthed, requireAuth, seed }: { isAuthed: boolean; require
                   <div className="assistant-message-content">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || (streaming && idx === messages.length - 1 ? "…" : "")}</ReactMarkdown>
                     {m.content && !(streaming && idx === messages.length - 1) && (
-                      <AssistantMessageActions text={m.content} linkedin={linkedin} twitter={twitter} slack={slack} />
+                      <AssistantMessageActions
+                        text={m.content}
+                        targetKey={`chat:${activeConversationId ?? "new"}:${idx}`}
+                        imageJobs={imageJobs}
+                        onImageJobCreated={onImageJobCreated}
+                        linkedin={linkedin}
+                        twitter={twitter}
+                        slack={slack}
+                      />
                     )}
                   </div>
                 ) : (
@@ -7183,6 +7390,12 @@ function ProfileView({
             </label>
           )}
         </div>
+        {/* ALE-272 : sans Slack, les posts hebdo sont auto-validés côté serveur. */}
+        {!slack.status?.connected && (
+          <p className="section-desc" style={{ marginTop: 10, marginBottom: 0, fontSize: 12 }}>
+            Sans Slack connecté, tes posts de la semaine sont publiés automatiquement aux créneaux choisis, sans validation préalable. Connecte Slack pour les valider avant publication.
+          </p>
+        )}
         {weeklyEnabled && linkedin.status?.connected && slack.status?.connected && (
           <div style={{ marginTop: 16 }}>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 8 }}>
@@ -9570,11 +9783,15 @@ function MyContentHub({
   requireAuth,
   onReuse,
   onRework,
+  imageJobs,
+  onImageJobCreated,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
   onReuse: (topic: string) => void;
   onRework?: (post: string) => void;
+  imageJobs: ImageJob[];
+  onImageJobCreated: (job: ImageJob) => void;
 }) {
   if (!isAuthed) {
     return (
@@ -9597,7 +9814,7 @@ function MyContentHub({
       </p>
       {/* ALE-231 : bloc bibliothèque de références (import rapide) en haut, avant Mes contenus. */}
       <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} />
-      <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
+      <LibraryView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
     </div>
   );
 }
@@ -9613,6 +9830,8 @@ function ContentHub({
   requireAuth,
   generationJobs,
   onGenerationJobCreated,
+  imageJobs,
+  onImageJobCreated,
   // ALE-257 : props « Analyses » (Veille fusionnée dans Contenu).
   loadedReport,
   onCloseReport,
@@ -9636,6 +9855,8 @@ function ContentHub({
   requireAuth: (reason?: string, mode?: AuthMode) => void;
   generationJobs: GenerationJob[];
   onGenerationJobCreated: (job: GenerationJob) => void;
+  imageJobs: ImageJob[];
+  onImageJobCreated: (job: ImageJob) => void;
   loadedReport: Report | null;
   onCloseReport: () => void;
   jobs: Job[];
@@ -9663,7 +9884,7 @@ function ContentHub({
   if (reservoirOnly) {
     return (
       <div>
-        <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} reservoirOnly />
+        <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} reservoirOnly imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
       </div>
     );
   }
@@ -9708,10 +9929,10 @@ function ContentHub({
           />
         )
       )}
-      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />}
-      {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} onRework={onRework} />}
+      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />}
+      {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} onRework={onRework} />}
       {tab === "library" && (
-        <MyContentHub isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} />
+        <MyContentHub isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
       )}
     </div>
   );
@@ -10080,6 +10301,9 @@ export default function Home() {
   // ALE-141 : jobs de génération de posts (file d'attente, vit dans Home pour que
   // le polling continue quand on change d'onglet / quitte le générateur).
   const [generationJobs, setGenerationJobs] = useState<GenerationJob[]>([]);
+  // ALE-261 : jobs de génération d'image IA (même principe — vit dans Home pour
+  // que fermer la pop-up ou changer d'onglet n'interrompe jamais la génération).
+  const [imageJobs, setImageJobs] = useState<ImageJob[]>([]);
   const [session, setSession] = useState<Session | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authReason, setAuthReason] = useState("");
@@ -10207,6 +10431,21 @@ export default function Home() {
 
   const anyGenerationJobActive = generationJobs.some(generationJobIsActive);
 
+  // ALE-261 : génération d'image IA en file d'attente.
+  async function loadImageJobs() {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate-image/jobs`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data)) setImageJobs(data);
+    } catch { /* ignore */ }
+  }
+
+  function onImageJobCreated(job: ImageJob) {
+    setImageJobs((prev) => [job, ...prev]);
+  }
+
+  const anyImageJobActive = imageJobs.some(imageJobIsActive);
+
   const activeJob = jobs.find(jobIsActive) ?? null;
   const anyJobActive = !!activeJob;
   // ALE-114 : badge de progression par réseau (un job Instagram ne doit pas
@@ -10262,8 +10501,14 @@ export default function Home() {
 
   useEffect(() => {
     if (!isAuthed || !anyJobActive) return;
-    const t = setInterval(loadJobs, 3000);
-    return () => clearInterval(t);
+    // Non-chevauchant (ALE-271) : on replanifie seulement après la fin de la
+    // requête précédente (succès OU échec), sinon les appels s'empilent sur un
+    // backend lent (même pattern que le badge Inbox, PR #192).
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadJobs(); if (!stop) timer = setTimeout(loop, 3000); };
+    timer = setTimeout(loop, 3000);
+    return () => { stop = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, anyJobActive]);
 
@@ -10276,10 +10521,34 @@ export default function Home() {
 
   useEffect(() => {
     if (!isAuthed || !anyGenerationJobActive) return;
-    const t = setInterval(loadGenerationJobs, 3000);
-    return () => clearInterval(t);
+    // Non-chevauchant (ALE-271) : même pattern que le poll des séries ci-dessus.
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadGenerationJobs(); if (!stop) timer = setTimeout(loop, 3000); };
+    timer = setTimeout(loop, 3000);
+    return () => { stop = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, anyGenerationJobActive]);
+
+  // ALE-261 : premier chargement des jobs d'image + polling tant qu'un tourne.
+  // Vit dans Home (comme les jobs de génération de posts) pour que fermer la
+  // pop-up ImageGenModal ou changer d'onglet n'interrompe jamais le polling.
+  useEffect(() => {
+    if (!isAuthed) { setImageJobs([]); return; }
+    loadImageJobs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.access_token]);
+
+  useEffect(() => {
+    if (!isAuthed || !anyImageJobActive) return;
+    // Non-chevauchant (ALE-271) : même pattern que les autres polls ci-dessus.
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadImageJobs(); if (!stop) timer = setTimeout(loop, 3000); };
+    timer = setTimeout(loop, 3000);
+    return () => { stop = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, anyImageJobActive]);
 
   useEffect(() => {
     if (prevJobActiveRef.current && !anyJobActive && isAuthed) {
@@ -10380,11 +10649,17 @@ export default function Home() {
       setLoadedReport(null);
       setJobs([]);
       setGenerationJobs([]);
+      setImageJobs([]);
       setIgUnread(0);
       // ALE-145 : purge le cache générateur quand l'utilisateur change (anti fuite cross-user).
       _genCache.variants = [];
       _genCache.topic = "";
       _genCache.appliedJobId = null;
+      _genCache.appliedImageJobIds = new Set();
+      _genCache.variantImages = {};
+      _dailyIdeaCache.ideaImages = {};
+      _dailyIdeaCache.appliedImageJobIds = new Set();
+      _libraryAppliedImageJobIds.clear();
       setError("");
       setView("content");
       setShowOnboarding(false);
@@ -10637,7 +10912,7 @@ export default function Home() {
           {view === "inbox" ? (
             <UnifiedInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} initialSelect={inboxSelect} />
           ) : view === "assistant" ? (
-            <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} />
+            <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
           ) : view === "profile" ? (
             <ProfileView isAuthed={isAuthed} requireAuth={requireAuth} />
           ) : platform === "instagram" ? (
@@ -10675,6 +10950,8 @@ export default function Home() {
                   requireAuth={requireAuth}
                   generationJobs={generationJobs}
                   onGenerationJobCreated={onGenerationJobCreated}
+                  imageJobs={imageJobs}
+                  onImageJobCreated={onImageJobCreated}
                   loadedReport={loadedReport}
                   onCloseReport={() => setLoadedReport(null)}
                   jobs={jobs}
