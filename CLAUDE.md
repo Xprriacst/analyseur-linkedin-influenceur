@@ -35,6 +35,15 @@ Copier `frontend/.env.local.example` → `frontend/.env.local` et pointer `BACKE
 ### Règle changement de domaine (reminder)
 Tout changement de domaine frontend = 3 actions atomiques : (1) CORS dans `api.py`, (2) Supabase Auth Site URL + Redirect URLs, (3) variables d'env Netlify. Ne pas marquer terminé sans avoir vérifié les 3.
 
+### Règle migration prod à la release (reminder)
+**Avant ou juste après le merge d'une PR de release `dev → main`** (jamais après coup, jamais en attendant qu'Alex tombe sur l'erreur en testant) :
+1. Repérer toute migration `supabase/migrations/*.sql` créée pendant le cycle dev — grep le changelog CLAUDE.md pour « reste à faire » / « à appliquer sur prod » / « À appliquer sur dev » sur les entrées récentes, et/ou lister les fichiers de migration plus récents que le dernier commit mergé sur `main`.
+2. Pour chacune, vérifier explicitement si elle est déjà appliquée sur la base **prod** (`zcxaxwqkswuefzlzpgvi`) — ex. `select to_regclass('public.<table>')`, ou `list_tables`/`list_migrations`.
+3. Si elle manque : le signaler **spontanément** à Alex et proposer de l'appliquer immédiatement (les migrations du projet sont idempotentes par convention `IF NOT EXISTS` — l'appliquer dès confirmation, sans attendre un test raté).
+4. `py_compile` / `npm run build` / zéro marqueur de conflit ne prouvent PAS que la base prod est à jour — ce sont des checks de code, pas de schéma. Ne jamais les confondre avec une release « safe ».
+
+*Incident qui a motivé cette règle* : release PR #272 (2026-07-11, ALE-261 image IA en file d'attente) mergée et déployée sans que la migration 0045 (`image_generation_jobs`) soit appliquée sur prod — elle ne l'était que sur dev, alors que le changelog le notait déjà en « reste à faire ». Alex a découvert le bug (« Failed to fetch ») en testant en prod au lieu que ce soit anticipé.
+
 ## Règles PR & agents (anti méga-PR)
 
 > Contexte : des agents ont produit des méga-PR multi-issues, basées sur `main`, avec base périmée et marqueurs de conflit (PR #40/#41/#42 fermées sans merge ; #37/#39 ont dû être re-portées). Ces règles évitent que ça se reproduise. Elles sont **vérifiées en CI** (`.github/workflows/pr-guardrails.yml`) et par la **branch protection** sur `main`.
@@ -79,6 +88,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 - Garde-fou « ne quitte pas la page » (bandeau ALE-190/ALE-260) retiré : plus nécessaire, la génération survit à la fermeture.
 - **e2e** : `post-actions-menu.spec.ts` mis à jour pour mocker le nouveau flux (`POST /generate-image/jobs` renvoyant un job déjà `done`, plutôt que l'ancien `POST /generate-image` synchrone).
 - Build front **vert**, `py_compile` **vert**, zéro marqueur de conflit. Reste à faire : appliquer la migration 0045 sur dev, test manuel par Alex (lancer une génération, fermer la pop-up, changer d'onglet, vérifier que l'image arrive sur le bon post).
+
+### 2026-07-11 (RELEASE PROD : lot fiabilité + image IA en file d'attente — PR #272 `dev → main` — incident migration 0045 oubliée)
+- **Release `dev → main` PR #272** mergée ~08:13 UTC → Render prod live (`dep-d98vm337uimc73elgek0`), `/health` OK. Contenu : **ALE-261** (image IA en file d'attente, testée et validée par Alex sur dev juste avant) + lot fiabilité de l'audit scale du 2026-07-10 (**ALE-268** remboursement crédits sur échec/annulation d'analyse + heartbeat file d'attente, **ALE-270** débit image après succès + retry réseau front, **ALE-272** posts hebdo sans Slack auto-validés, **ALE-271** pollings `/jobs`+`/generate/jobs` non-chevauchants, **ALE-269** cache 60s validation token).
+- **Incident (~08:20 UTC, quelques minutes après le déploiement)** : Alex teste la génération d'image en prod → **« Failed to fetch »**. Cause : **la migration 0045 (`image_generation_jobs`) n'avait été appliquée que sur dev, jamais sur prod** — oubliée avant le merge (le changelog du 2026-07-10 #2 le notait déjà en « reste à faire » mais la case n'a pas été cochée avant la release). Confirmé par les logs Render (500 explicites sur `POST/GET /generate-image/jobs`, PAS un 502 OOM comme l'incident similaire du 07-10 documenté dans [[project_render_oom_2026-06-25]]) + `to_regclass('public.image_generation_jobs')` → `null` en base prod.
+- **Fix** : migration 0045 appliquée sur prod (`zcxaxwqkswuefzlzpgvi`) après confirmation d'Alex, idempotente, table vérifiée présente. Aucune donnée perdue (nouvelle feature, aucun job existant).
+- ⚠️ **Leçon process** : avant un merge `dev → main`, **vérifier explicitement l'état des migrations notées « reste à faire » dans les entrées de changelog récentes**, pas seulement `py_compile`/`npm run build`/marqueurs de conflit — ces 3 checks ne détectent pas une migration manquante en base.
 
 ### 2026-07-10 (RELEASE PROD : lot correctifs + UX prospection/inbox — PR #259 `dev → main`)
 - **Release `dev → main` PR #259** mergée ~09:15 UTC → Render prod + Netlify prod (vérifié : nouveau code live en ~80 s, `PATCH /me/leads/{id}` → 401, `/health` prod tout vert `sonnet-5`/supabase/service_role). Lot de **9 changements** post-release #249, chacun en 1 PR séparée (guardrails verts), mergés sur `dev` puis release groupée.
