@@ -268,10 +268,24 @@ def process_generation_job(access_token: str, job_id: str) -> None:
         topic = (job.get("topic") or "").strip()
         count = int(job.get("count") or 1)
 
+        # ALE-286 : le post d'inspiration passe en TÊTE des références (le
+        # formateur de prompt n'en garde que 5) — sinon un tirage aléatoire de la
+        # bibliothèque pourrait évincer le seul post que le client a explicitement
+        # choisi, et la génération l'ignorerait sans rien signaler.
+        reference_posts = db.pick_reference_posts(access_token) or []
+        inspiration_text = (job.get("inspiration_text") or "").strip()
+        if inspiration_text:
+            reference_posts = [{
+                "text": inspiration_text,
+                "author": job.get("inspiration_author"),
+                "url": job.get("inspiration_url"),
+                "note": "post choisi comme inspiration explicite pour CE post — à transposer, jamais à recopier",
+            }] + reference_posts
+
         template_id = job.get("template_id")
         variants = _generate_posts_guarded(
             topic, top_posts, benchmark, user_context, role, count,
-            reference_posts=db.pick_reference_posts(access_token) or None,
+            reference_posts=reference_posts or None,
             template=db.get_post_template(access_token, template_id) if template_id else None,
         )
 

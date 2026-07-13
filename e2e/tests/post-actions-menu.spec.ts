@@ -52,7 +52,7 @@ test("Contenu › Mes contenus : menu Publier + ⋯ sur une carte de post (GET m
     return route.fallback();
   });
   await gotoTab(page, "Contenu");
-  await gotoSubTab(page, "Mes contenus");
+  await gotoSubTab(page, "Ma bibliothèque");
   await expect(page.getByRole("heading", { name: /Mes contenus sauvegardés/i })).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
   await checkActionsBar(page, { expectDelete: true });
@@ -222,15 +222,19 @@ test("Contenu › Mes contenus : Image IA propose une image de référence depui
   });
 
   await gotoTab(page, "Contenu");
-  await gotoSubTab(page, "Mes contenus");
+  await gotoSubTab(page, "Ma bibliothèque");
   const bar = page.locator(".post-actions-bar").first();
   await bar.getByRole("button", { name: "Plus d'actions" }).click();
   await page.locator(".action-menu").getByRole("menuitem", { name: /Générer une image IA/ }).click();
 
-  // La vignette du template (dérivée de l'alt de son image) apparaît et se sélectionne.
+  // La vignette du template apparaît et se sélectionne. ALE-282 : la sélection doit
+  // être explicite (état pressé + bandeau qui nomme la référence retenue).
   const thumbnail = page.getByRole("button", { name: "Accroche choc + 3 bullets" });
   await expect(thumbnail).toBeVisible();
+  await expect(thumbnail).toHaveAttribute("aria-pressed", "false");
   await thumbnail.click();
+  await expect(thumbnail).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText(/Inspiration : « Accroche choc \+ 3 bullets »/)).toBeVisible();
 
   await page.getByRole("button", { name: /Générer l'image/ }).click();
   await expect(page.getByText(/Image jointe au post/)).toBeVisible();
@@ -238,12 +242,78 @@ test("Contenu › Mes contenus : Image IA propose une image de référence depui
   expect(capturedBody?.target_key).toBe("saved:e2e-ale-221");
 });
 
-test("Contenu › Idée du jour : menu Publier + ⋯ sur le post du jour", async ({ page }) => {
+// ALE-286 : l'onglet « Idée du jour » a disparu de la vue agence (il ne subsiste
+// que dans la vue client) — le test qui couvrait la barre d'actions sur le post
+// du jour est remplacé par celui de la file du Générateur, qui la porte désormais.
+
+test("Contenu › Générateur : une ligne terminée se déplie et porte la barre d'actions (ALE-286, jobs mockés)", async ({ page }) => {
+  // Le compte de test n'a pas forcément de post en file et on ne peut pas en
+  // générer (lecture seule : ce serait un appel LLM payant) : on mocke la file.
+  await page.route("**/generate/jobs", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: "job-e2e-286",
+            status: "done",
+            topic: "Pourquoi les PME ratent leur premier projet IA",
+            editorial_role: "story",
+            web_search: false,
+            count: 1,
+            template_id: "tpl-e2e-286",
+            result: {
+              variants: [
+                {
+                  id: "post-e2e-286",
+                  editorial_role: "story",
+                  hook_type: "story",
+                  strategy: "Raconter un échec client pour crédibiliser le cadrage.",
+                  predicted_lift: "Connexion émotionnelle",
+                  post: "Post de test ALE-286.",
+                },
+              ],
+            },
+            error: null,
+            created_at: "2026-07-13T10:00:00Z",
+            updated_at: "2026-07-13T10:02:00Z",
+          },
+        ]),
+      });
+    }
+    return route.fallback();
+  });
+  await page.route("**/me/post-templates", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify([
+          { id: "tpl-e2e-286", structure_label: "Story en 4 temps", structure_text: "Situation\nTension\nBascule\nLeçon" },
+        ]),
+      });
+    }
+    return route.fallback();
+  });
+
   await gotoTab(page, "Contenu");
-  await gotoSubTab(page, "Idée du jour");
-  await expect(page.getByRole("heading", { name: /^Idée du jour$/i })).toBeVisible();
-  // Barre présente uniquement si l'idée du jour est un post prêt à publier.
-  const hasPost = (await page.locator(".post-actions-bar").count()) > 0;
-  test.skip(!hasPost, "Pas de post du jour sur le compte de test.");
+  await gotoSubTab(page, "Générateur de posts");
+
+  // Une ligne = un post : sujet, rôle éditorial et structure utilisée, repliés.
+  const line = page.locator(".post-queue-line").first();
+  await expect(line).toBeVisible();
+  await expect(line).toContainText("Pourquoi les PME ratent leur premier projet IA");
+  await expect(line).toContainText("Story");
+  await expect(line).toContainText("Story en 4 temps");
+  await expect(page.locator(".post-actions-bar")).toHaveCount(0);
+
+  // Clic → la ligne se déplie sur le post éditable et la barre d'actions complète.
+  await line.click();
+  await expect(line).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("textarea.variant-text")).toHaveValue("Post de test ALE-286.");
   await checkActionsBar(page, { expectDelete: false });
+
+  // Re-clic → repliée.
+  await line.click();
+  await expect(line).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".post-actions-bar")).toHaveCount(0);
 });

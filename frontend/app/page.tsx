@@ -1,13 +1,16 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Activity,
+  AlertCircle,
   BarChart3,
   CalendarDays,
+  Check,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -44,6 +47,7 @@ import {
   UserRound,
   Users,
   X,
+  XCircle,
   Zap,
 } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
@@ -347,7 +351,20 @@ function InstagramIcon({ size = 14 }: { size?: number }) {
 // sous-onglet (clé "library", label « Ma bibliothèque »), présenté en tiroirs.
 // ALE-257 : la Veille (analyse de profils, classement, tendances, monitoring) est
 // fusionnée dans Contenu sous un sous-onglet « analyses » (page unique qui défile).
-type ContentTab = "analyses" | "daily" | "generator" | "library";
+// ALE-286 : plus de sous-onglet « Idée du jour » côté agence — la génération
+// d'idées est passée dans le parcours guidé du Générateur. La vue client
+// (compte `ideas_only`) continue de l'afficher, via la branche `reservoirOnly`.
+type ContentTab = "analyses" | "generator" | "library";
+
+// « Mon profil » empilait sur une seule page trois métiers sans rapport : le contexte
+// éditorial, les comptes à relier, et ce qui tourne tout seul. Un onglet par métier.
+type ProfileTab = "profile" | "connections" | "automations";
+
+const PROFILE_TABS: { key: ProfileTab; label: string; icon: React.ReactNode }[] = [
+  { key: "profile", label: "Mon profil", icon: <UserRound size={14} /> },
+  { key: "connections", label: "Connexions", icon: <Link2 size={14} /> },
+  { key: "automations", label: "Automatisations", icon: <Zap size={14} /> },
+];
 
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
 const steps = [
@@ -469,10 +486,23 @@ type GenerationJob = {
   editorial_role: string | null;
   web_search: boolean;
   count: number;
+  template_id?: string | null;
+  // ALE-286 : post dont le client a demandé de s'inspirer (chemin « J'ai une inspiration »).
+  inspiration_text?: string | null;
+  inspiration_author?: string | null;
+  inspiration_url?: string | null;
   result: { variants?: Variant[]; save_error?: string | null } | null;
   error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+// ALE-286 : un post LinkedIn lu depuis son lien, servant de référence à la génération.
+type InspirationPost = {
+  text: string;
+  author?: string | null;
+  url?: string | null;
+  image_url?: string | null;
 };
 
 function generationJobIsActive(j: GenerationJob): boolean {
@@ -1257,6 +1287,7 @@ function Sidebar({
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedPreferenceLoaded, setCollapsedPreferenceLoaded] = useState(false);
+  const billing = useBilling(isAuthed);
   // ALE-246 : ouverture par réseau, découplée du réseau actif → LinkedIn et
   // Instagram peuvent rester déployés en même temps (fin de l'accordéon).
   const [openNets, setOpenNets] = useState<Record<Platform, boolean>>(() => ({
@@ -1331,9 +1362,10 @@ function Sidebar({
 
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {!restricted && (() => {
-        const networks: { key: Platform; label: string; icon: React.ReactNode }[] = [
+        // `soon` : réseau visible mais grisé (pas encore ouvert aux clients).
+        const networks: { key: Platform; label: string; icon: React.ReactNode; soon?: boolean }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
-          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
+          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} />, soon: true },
         ];
         // ALE-257 : « Veille » retirée — l'analyse (profils, classement, tendances,
         // monitoring) vit désormais dans « Contenu » › sous-onglet « Analyses ».
@@ -1344,6 +1376,24 @@ function Sidebar({
           <section className="sidebar-section sidebar-nav-tree">
             <div className="nav-list">
               {networks.map((net) => {
+                // Réseau grisé : entête inerte + badge « Bientôt », aucun sous-onglet.
+                if (net.soon) {
+                  return (
+                    <button
+                      key={net.key}
+                      className={`nav-item locked${collapsed ? " nav-item-collapsed" : ""}`}
+                      title={`${net.label} arrive bientôt`}
+                      disabled
+                      style={{ cursor: "default", opacity: 0.55 }}
+                    >
+                      {net.icon}
+                      {!collapsed && <span>{net.label}</span>}
+                      {!collapsed && (
+                        <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 600, color: "var(--muted)", border: "1px solid var(--border)", borderRadius: 99, padding: "1px 7px" }}>Bientôt</span>
+                      )}
+                    </button>
+                  );
+                }
                 // ALE-246 : ouverture indépendante par réseau (plus d'accordéon).
                 const expanded = openNets[net.key];
                 const isActiveNet = platform === net.key;
@@ -1390,7 +1440,7 @@ function Sidebar({
                         </button>
                       );
                     })}
-                    {/* ALE-229 : Prospection — actif sous LinkedIn, jumeau grisé « Bientôt » sous Instagram */}
+                    {/* ALE-229 : Prospection — sous LinkedIn (Instagram est grisé en amont) */}
                     {expanded && net.key === "linkedin" && (
                       <button
                         className={`nav-item nav-item-sub ${isActiveNet && view === "prospecting" ? "active" : ""} ${!isAuthed ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
@@ -1407,18 +1457,6 @@ function Sidebar({
                         <Target size={14} />
                         {!collapsed && <span>Prospection</span>}
                         {!isAuthed ? <Lock size={12} className="lock-ico" /> : null}
-                      </button>
-                    )}
-                    {expanded && net.key === "instagram" && !collapsed && (
-                      <button
-                        className="nav-item nav-item-sub locked"
-                        title="La prospection Instagram arrive bientôt"
-                        disabled
-                        style={{ cursor: "default", opacity: 0.55 }}
-                      >
-                        <Target size={14} />
-                        <span>Prospection</span>
-                        <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 600, color: "var(--muted)", border: "1px solid var(--border)", borderRadius: 99, padding: "1px 7px" }}>Bientôt</span>
                       </button>
                     )}
                   </React.Fragment>
@@ -1499,11 +1537,48 @@ function Sidebar({
             );
           })()}
         </div>
-        {!collapsed && isAuthed && credits !== null && (
-          <div style={{ marginBottom: 8 }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: credits <= 5 ? "#ef4444" : "var(--muted)", border: "1px solid var(--border)", borderRadius: 20, padding: "3px 10px" }}>
-              ✦ {credits} crédit{credits !== 1 ? "s" : ""}
-            </span>
+        {/* Solde + abonnement au même endroit : le solde est la conséquence de
+            l'abonnement, et c'est ici qu'on vient le regarder. La carte qui vivait
+            dans « Mon profil » n'avait rien à y faire (ce n'est pas un réglage). */}
+        {!collapsed && isAuthed && (
+          <div style={{ marginBottom: 8, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
+            {credits !== null && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: credits <= 5 ? "#ef4444" : "var(--muted)", border: "1px solid var(--border)", borderRadius: 20, padding: "3px 10px" }}>
+                ✦ {credits} crédit{credits !== 1 ? "s" : ""}
+              </span>
+            )}
+            {billing.status?.enabled && (
+              billing.status.subscribed ? (
+                <button
+                  className="link-button"
+                  onClick={billing.manage}
+                  disabled={billing.busy}
+                  style={{ fontSize: 11.5, color: "var(--muted)", textAlign: "left" }}
+                  title={
+                    billing.status.current_period_end
+                      ? billing.status.cancel_at_period_end
+                        ? `Résiliation programmée : accès jusqu'au ${formatBillingDate(billing.status.current_period_end)}.`
+                        : `Prochain rechargement le ${formatBillingDate(billing.status.current_period_end)}.`
+                      : "Gérer mon abonnement (carte, factures, résiliation)"
+                  }
+                >
+                  {billing.busy ? <Loader2 size={11} className="spinning" /> : null}
+                  {billing.status.cancel_at_period_end ? "Abonnement : se termine bientôt" : "Abonnement actif"} · Gérer
+                </button>
+              ) : (
+                <button
+                  className="secondary-button"
+                  onClick={billing.subscribe}
+                  disabled={billing.busy}
+                  style={{ fontSize: 11.5, minHeight: 28, padding: "0 10px" }}
+                  title={`${billing.status.plan?.credits ?? 1000} crédits rechargés ${planPeriodLabel(billing.status.plan)}. Paiement et résiliation gérés par Stripe.`}
+                >
+                  {billing.busy ? <Loader2 size={12} className="spinning" /> : <CreditCard size={12} />}
+                  {billing.busy ? "Redirection…" : `S'abonner — ${planPriceLabel(billing.status.plan)}`}
+                </button>
+              )
+            )}
+            {billing.error ? <span style={{ fontSize: 11, color: "#ef4444" }}>{billing.error}</span> : null}
           </div>
         )}
         {!collapsed && (
@@ -1592,7 +1667,6 @@ function InstagramContentHub({
   const subTabs: { key: ContentTab; label: string; icon: React.ReactNode }[] = [
     // ALE-257 : « Analyses » en tête (Veille IG = lancement + tiroir séries).
     { key: "analyses", label: "Analyses", icon: <BarChart3 size={14} /> },
-    { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} /> },
     { key: "generator", label: "Générateur de hooks", icon: <PenTool size={14} /> },
     { key: "library", label: "Mes contenus", icon: <Bookmark size={14} /> },
   ];
@@ -2311,28 +2385,95 @@ type OutreachQuota = {
   message_blocked_reason?: string | null;
 };
 
+// ALE-174 — état du moteur d'envoi cadencé (file d'attente + warm-up + gel).
+type OutreachEngine = {
+  pending: number;
+  last_run_at?: string | null;
+  last_run_error?: string | null;
+  stalled: boolean;              // le moteur ne passe plus alors qu'il reste du travail
+  frozen: boolean;               // gel de sécurité (posé par le moteur, non levable ici)
+  freeze_reason?: string | null;
+  frozen_until?: string | null;
+  warmup_week: number;
+  warmup_cap: number;
+  warmup_weeks_total: number;
+  next_send_estimate: string;
+  immediate_left: number;        // soupape « envoyer maintenant » restante sur 24 h
+  immediate_cap: number;
+  window: { timezone: string; hour_start: number; hour_end: number; days: number[] };
+};
+
+type OutreachQueueItem = {
+  id: string;
+  lead_id: string;
+  action_type: "invite" | "message";
+  body?: string | null;
+  not_before: string;
+  created_at?: string | null;
+};
+
 type OutreachStatus = {
   configured: boolean;
   connected: boolean;
   account_name?: string | null;
   connected_at?: string | null;
   quota: OutreachQuota;
+  engine?: OutreachEngine | null;
 };
 
 type OutreachChat = { id: string; name?: string | null; last_message_at?: string | null; provider_url?: string | null };
 type OutreachMessage = { id: string; text: string; from_me: boolean; created_at?: string | null };
 
-/** Statut de connexion Unipile (compte LinkedIn de prospection) + quotas + flux d'auth hébergée. */
+const WEEKDAY_LABELS = ["L", "M", "M", "J", "V", "S", "D"]; // ISO 1..7
+
+/** « aujourd'hui vers 14 h », « demain vers 9 h », sinon la date — pour dire au
+ *  client QUAND son action partira, plutôt que de le laisser deviner. */
+function formatEta(iso?: string | null): string {
+  if (!iso) return "au prochain créneau";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "au prochain créneau";
+  const now = new Date();
+  const hour = `${at.getHours()} h${at.getMinutes() >= 30 ? "30" : ""}`;
+  const sameDay = at.toDateString() === now.toDateString();
+  const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+  if (sameDay) return at.getTime() - now.getTime() < 90_000 ? "dans un instant" : `aujourd'hui vers ${hour}`;
+  if (at.toDateString() === tomorrow.toDateString()) return `demain vers ${hour}`;
+  return `${at.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })} vers ${hour}`;
+}
+
+/** « il y a 8 min » — fraîcheur du dernier passage du moteur. */
+function formatAgo(iso?: string | null): string {
+  if (!iso) return "jamais";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "jamais";
+  const mins = Math.max(0, Math.round((Date.now() - at.getTime()) / 60_000));
+  if (mins < 1) return "à l'instant";
+  if (mins < 60) return `il y a ${mins} min`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `il y a ${hours} h`;
+  return `il y a ${Math.round(hours / 24)} j`;
+}
+
+/** Statut de connexion Unipile (compte LinkedIn de prospection) + quotas + file d'envoi. */
 function useLinkedInOutreach(isAuthed: boolean) {
   const [status, setStatus] = useState<OutreachStatus | null>(null);
+  const [queue, setQueue] = useState<OutreachQueueItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const reload = useCallback(async () => {
-    if (!isAuthed) { setStatus(null); return; }
+    if (!isAuthed) { setStatus(null); setQueue([]); return; }
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/status`, { headers: await authHeaders() });
       if (res.ok) setStatus(await res.json());
+    } catch { /* non bloquant */ }
+  }, [isAuthed]);
+
+  const reloadQueue = useCallback(async () => {
+    if (!isAuthed) { setQueue([]); return; }
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/queue`, { headers: await authHeaders() });
+      if (res.ok) { const data = await res.json(); setQueue(data.items || []); }
     } catch { /* non bloquant */ }
   }, [isAuthed]);
 
@@ -2365,13 +2506,14 @@ function useLinkedInOutreach(isAuthed: boolean) {
     finally { setBusy(false); }
   }
 
-  async function setDailyCap(daily_cap: number) {
+  /** Plafond quotidien + fenêtre d'envoi du moteur (fuseau, heures, jours). */
+  async function saveSettings(patch: Record<string, unknown>) {
     setError(""); setBusy(true);
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ daily_cap }),
+        body: JSON.stringify(patch),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
@@ -2380,7 +2522,22 @@ function useLinkedInOutreach(isAuthed: boolean) {
     finally { setBusy(false); }
   }
 
-  return { status, busy, error, reload, connect, disconnect, setDailyCap, setStatus };
+  /** Retire une action de la file, tant qu'elle n'est pas partie. */
+  async function cancelQueued(itemId: string) {
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/queue/${itemId}`, {
+        method: "DELETE", headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Retrait impossible");
+      setQueue(data.items || []);
+      void reload();
+      return true;
+    } catch (err: any) { setError(err.message); return false; }
+  }
+
+  return { status, queue, busy, error, reload, reloadQueue, connect, disconnect, saveSettings, cancelQueued, setStatus, setQueue };
 }
 
 type XStatus = {
@@ -2667,6 +2824,7 @@ function ImageGenModal({
     return () => { cancelled = true; };
   }, []);
   const templatesWithImage = templates.filter((t) => !!t.image_url);
+  const selectedTemplate = templatesWithImage.find((t) => t.id === selectedTemplateId) ?? null;
 
   // Reprend le texte du post (ou le passage sélectionné à la souris dans le bloc
   // ci-dessous) à la suite du prompt (ALE-192).
@@ -2797,35 +2955,103 @@ function ImageGenModal({
               cette fenêtre pendant la génération (2 à 3 min), elle continue en arrière-plan.
             </p>
             {templatesWithImage.length > 0 && (
-              <div style={{ marginBottom: 12 }}>
-                <p style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 6px", fontWeight: 600 }}>
-                  Image de référence (optionnel) — style/composition repris depuis ta bibliothèque
+              <div style={{ marginBottom: 14 }}>
+                <p style={{ fontSize: 12, margin: "0 0 2px", fontWeight: 600 }}>
+                  Image de référence (optionnel)
                 </p>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <p style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px", lineHeight: 1.45 }}>
+                  Clique sur une image de ta bibliothèque : l&apos;IA s&apos;en inspirera pour le
+                  <strong> style et la composition</strong> (couleurs, cadrage, ambiance). Elle ne
+                  copiera pas son contenu.
+                </p>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                   {templatesWithImage.map((t) => {
                     const selected = selectedTemplateId === t.id;
+                    const dimmed = !!selectedTemplateId && !selected;
+                    const title = libraryEntryTitle(t);
                     return (
                       <button
                         key={t.id}
                         type="button"
-                        title={libraryEntryTitle(t)}
+                        aria-pressed={selected}
+                        // Nom accessible stable (le libellé sous la vignette bascule sur
+                        // « ✓ Sélectionnée », et l'alt de l'image le dupliquerait sinon).
+                        aria-label={title}
+                        title={selected ? `${title} — cliquer pour retirer` : `S'inspirer de « ${title} »`}
                         onClick={() => setSelectedTemplateId(selected ? "" : t.id)}
                         style={{
-                          width: 60, height: 60, padding: 0, borderRadius: 8, overflow: "hidden",
-                          border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
-                          cursor: "pointer", flex: "0 0 auto", background: "none",
+                          // Bordure toujours 2px (couleur seule qui change) : sinon la vignette
+                          // change de taille à la sélection au lieu de s'entourer d'un liseré.
+                          width: 92, padding: 5, borderRadius: 10, flex: "0 0 auto", cursor: "pointer",
+                          border: `2px solid ${selected ? "var(--primary)" : "var(--border)"}`,
+                          background: selected
+                            ? "color-mix(in srgb, var(--primary) 7%, var(--surface))"
+                            : "var(--surface)",
+                          boxShadow: selected
+                            ? "0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent)"
+                            : "none",
+                          opacity: dimmed ? 0.5 : 1,
+                          filter: dimmed ? "grayscale(0.5)" : "none",
+                          transition: "opacity 120ms ease, box-shadow 120ms ease, filter 120ms ease",
                         }}
                       >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={t.image_url || ""}
-                          alt={libraryEntryTitle(t)}
-                          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-                        />
+                        <span style={{ position: "relative", display: "block" }}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={t.image_url || ""}
+                            alt=""
+                            style={{ width: "100%", height: 76, objectFit: "cover", borderRadius: 6, display: "block" }}
+                          />
+                          {selected && (
+                            <span style={{
+                              position: "absolute", top: -7, right: -7, width: 20, height: 20,
+                              borderRadius: "50%", background: "var(--primary)", color: "#fff",
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              boxShadow: "0 1px 4px rgba(0,0,0,0.25)",
+                            }}>
+                              <Check size={13} strokeWidth={3} />
+                            </span>
+                          )}
+                        </span>
+                        <span style={{
+                          display: "block", marginTop: 5, fontSize: 10, lineHeight: 1.3,
+                          color: selected ? "var(--primary)" : "var(--muted)",
+                          fontWeight: selected ? 700 : 400,
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        }}>
+                          {selected ? "✓ Sélectionnée" : title}
+                        </span>
                       </button>
                     );
                   })}
                 </div>
+                {selectedTemplate && (
+                  <div style={{
+                    display: "flex", gap: 10, alignItems: "center", marginTop: 10,
+                    padding: "9px 11px", borderRadius: 8, fontSize: 12, lineHeight: 1.45,
+                    border: "1px solid color-mix(in srgb, var(--primary) 28%, transparent)",
+                    background: "color-mix(in srgb, var(--primary) 7%, var(--surface))",
+                  }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={selectedTemplate.image_url || ""}
+                      alt=""
+                      style={{ width: 38, height: 38, objectFit: "cover", borderRadius: 6, flexShrink: 0, display: "block" }}
+                    />
+                    <span style={{ flex: 1 }}>
+                      <strong>Inspiration : « {libraryEntryTitle(selectedTemplate)} »</strong><br />
+                      L&apos;image sera générée dans le style et la composition de cette référence.
+                    </span>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => setSelectedTemplateId("")}
+                      style={{ fontSize: 11, flexShrink: 0 }}
+                    >
+                      Retirer
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             {loadingPrompt ? (
@@ -2889,291 +3115,1043 @@ function ImageGenModal({
   );
 }
 
-// Cache module-level : survit aux changements d'onglet dans la même session (ALE-145).
-// Réinitialisé à chaque refresh de page. `appliedJobId` (ALE-141) mémorise le
-// dernier job de génération dont on a injecté le résultat, pour qu'un nouveau
-// batch terminé pendant qu'on était sur un autre onglet s'affiche bien au retour
-// (un simple ref serait réinitialisé au remontage du composant).
-const _genCache: {
-  variants: Variant[];
-  topic: string;
-  appliedJobId: string | null;
-  appliedImageJobIds: Set<string>;
-  variantImages: Record<number, LinkedInImageAttachment[]>;
-} = {
-  variants: [],
-  topic: "",
-  appliedJobId: null,
-  // ALE-261 : jobs d'image déjà attachés à leur variant, pour ne les appliquer
-  // qu'une fois même si le job termine pendant qu'on est sur un autre onglet.
-  appliedImageJobIds: new Set(),
-  // ALE-261 : images jointes par variant, mises en cache comme `variants` — sinon
-  // une image attachée (upload ou IA) est perdue si on quitte l'onglet Générateur
-  // avant de sauvegarder, ce qui viderait le rattachement qu'on vient de garantir.
-  variantImages: {},
+// ── Rôles éditoriaux (ALE-286) ──
+// Partagés par le parcours guidé (où l'IA en recommande un) et par la file
+// d'attente (qui en affiche le badge). Les codes doivent rester alignés sur
+// ROLE_SPECS côté serveur : un code inconnu ferait échouer la génération.
+const ROLE_OPTIONS: { value: string; label: string; goal: string }[] = [
+  { value: "performance", label: "Performance", goal: "Maximiser l'engagement" },
+  { value: "methodologie", label: "Méthodologie", goal: "Être utile, étape par étape" },
+  { value: "autorite", label: "Autorité", goal: "Asseoir ton expertise" },
+  { value: "story", label: "Story", goal: "Raconter une expérience vécue" },
+  { value: "quotidien", label: "Quotidien", goal: "Ancrer dans le réel, sans vendre" },
+  { value: "opinion", label: "Opinion", goal: "Prendre position, faire réagir" },
+  { value: "relationnel", label: "Relationnel", goal: "Créer du lien, ouvrir la conversation" },
+];
+const ROLE_COLORS: Record<string, string> = {
+  performance: "#f97316",
+  methodologie: "#0ea5e9",
+  autorite: "#8b5cf6",
+  story: "#10b981",
+  quotidien: "#14b8a6",
+  opinion: "#ef4444",
+  relationnel: "#ec4899",
+};
+function roleLabelOf(role?: string | null): string {
+  return ROLE_OPTIONS.find((o) => o.value === role)?.label || role || "";
+}
+function roleColorOf(role?: string | null): string {
+  return (role && ROLE_COLORS[role]) || "var(--primary)";
+}
+
+// Coûts affichés dans le parcours — doivent rester alignés sur CREDIT_COSTS
+// (serveur). Ils ne sont qu'informatifs : c'est le serveur qui débite.
+const WIZARD_IDEAS_CREDITS = 3;
+const WIZARD_POST_CREDITS = 5;
+// Nombre de posts affichés d'emblée dans la file (« Tout voir » montre le reste).
+const QUEUE_PREVIEW_COUNT = 3;
+
+// Une structure de la bibliothèque proposée au client à l'avant-dernière étape.
+type StructureChoice = {
+  id: string;
+  label: string | null;
+  structure_text: string | null;
+  post_text: string | null;
 };
 
-function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated, imageJobs, onImageJobCreated, onRework }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void; imageJobs: ImageJob[]; onImageJobCreated: (job: ImageJob) => void; onRework?: (post: string) => void }) {
-  const [variants, setVariants] = useState<Variant[]>(_genCache.variants);
-  const [topic, setTopic] = useState(_genCache.topic);
-  const topicRef = useRef<HTMLTextAreaElement | null>(null); // ALE-235 : champ Sujet auto-resize
-  const [role, setRole] = useState("auto");
-  // ALE-233 : template de post choisi dans la bibliothèque (optionnel). Le post
-  // complet EST le template → toute entrée avec un texte de post est proposée ;
-  // fallback rétro-compat : les entrées qui n'ont qu'un squelette (structure_text)
-  // le restent aussi.
-  const [templates, setTemplates] = useState<PostTemplate[]>([]);
+function structureName(s: StructureChoice): string {
+  return s.label || (s.post_text || "").slice(0, 60) || "Structure sans nom";
+}
+
+// Cache module-level : survit aux changements d'onglet dans la même session
+// (ALE-145). Depuis ALE-286, les posts eux-mêmes viennent des jobs (persistés en
+// base, servis par le polling de Home) : il ne reste ici que ce qui n'existe pas
+// côté serveur — le texte en cours d'édition, les images jointes pas encore
+// sauvegardées, et la ligne ouverte.
+const _genCache: {
+  appliedImageJobIds: Set<string>;
+  edited: Record<string, string>;
+  images: Record<string, LinkedInImageAttachment[]>;
+  expanded: string | null;
+} = {
+  // ALE-261 : jobs d'image déjà rattachés, pour ne les appliquer qu'une fois même
+  // si le job termine pendant qu'on est sur un autre onglet.
+  appliedImageJobIds: new Set(),
+  edited: {},
+  images: {},
+  expanded: null,
+};
+
+// ALE-286 : une ligne = un post. Un job terminé rend une ligne par post produit
+// (le parcours n'en produit qu'un par job, mais d'anciens jobs peuvent en porter
+// plusieurs) ; un job encore en vol rend une ligne d'attente. La clé est stable
+// d'un rendu à l'autre : c'est elle qui porte le texte édité, les images jointes
+// et la cible des images IA.
+type PostLine = {
+  key: string;
+  job: GenerationJob;
+  variant: Variant | null;
+};
+
+function buildPostLines(jobs: GenerationJob[]): PostLine[] {
+  const lines: PostLine[] = [];
+  for (const job of jobs) {
+    const variants = job.result?.variants || [];
+    if (job.status === "done" && variants.length > 0) {
+      variants.forEach((variant, index) => lines.push({ key: `${job.id}:${index}`, job, variant }));
+    } else {
+      lines.push({ key: `${job.id}:0`, job, variant: null });
+    }
+  }
+  return lines;
+}
+
+/** Réservoir d'idées : ajout, édition, suppression, réordonnancement (ALE-287).
+ *
+ * Extrait de DailyIdeasView pour être affiché AUSSI sous la file du Générateur.
+ * Une seule implémentation, deux écrans : la vue client (compte `ideas_only`,
+ * qui n'a que ça) et la page Générateur côté agence. Dupliquer aurait garanti
+ * que les deux divergent à la première évolution.
+ *
+ * L'ordre compte : le cron (idée du jour, posts hebdo) pioche dedans du haut
+ * vers le bas — d'où le glisser-déposer.
+ */
+function IdeaReservoir({
+  isAuthed,
+  onGenerate,
+  desc = "Ajoute tes idées : l'idée du jour piochera dedans en priorité.",
+}: {
+  isAuthed: boolean;
+  /** Fourni = un bouton « Générer un post » apparaît sur chaque idée. */
+  onGenerate?: (text: string) => void;
+  desc?: string;
+}) {
+  const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
+  const [draft, setDraft] = useState("");
+  const [draftComment, setDraftComment] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+  const [dragId, setDragId] = useState<string | null>(null);
+  // Drag armé uniquement quand on saisit la poignée (le texte reste sélectionnable).
+  const [dragArmedId, setDragArmedId] = useState<string | null>(null);
+  const [editingSeedId, setEditingSeedId] = useState<string | null>(null);
+  const [editSeedText, setEditSeedText] = useState("");
+  const [editSeedComment, setEditSeedComment] = useState("");
+  const [savingSeedEdit, setSavingSeedEdit] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!isAuthed) { setSeeds([]); return; }
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setSeeds(Array.isArray(data) ? data : []);
+    } catch { /* le réservoir est un plus : un échec de lecture n'affiche pas d'alarme */ }
+  }, [isAuthed]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function addSeed() {
+    const text = draft.trim();
+    if (text.length < 3) return;
+    // Le commentaire d'orientation n'a de sens que pour un lien d'annonce.
+    const isLinkDraft = /^https?:\/\/\S+$/i.test(text);
+    const comment = isLinkDraft ? draftComment.trim() : "";
+    setAdding(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify(comment ? { text, comment } : { text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Ajout impossible");
+      setSeeds((prev) => [...prev, data]);
+      setDraft("");
+      setDraftComment("");
+    } catch (err: any) {
+      setError(err.message || "Ajout impossible");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function deleteSeed(id: string) {
+    setSeeds((prev) => prev.filter((s) => s.id !== id));
+    try {
+      await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void load(); }
+  }
+
+  function reorderTo(targetId: string) {
+    if (!dragId || dragId === targetId) return;
+    setSeeds((prev) => {
+      const from = prev.findIndex((s) => s.id === dragId);
+      const to = prev.findIndex((s) => s.id === targetId);
+      if (from < 0 || to < 0 || from === to) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  }
+
+  async function persistSeedOrder() {
+    setDragId(null);
+    try {
+      const ordered_ids = seeds.map((s) => s.id);
+      await fetch(`${DIRECT_API_URL}/me/idea-seeds/reorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ ordered_ids }),
+      });
+    } catch { void load(); }
+  }
+
+  function startSeedEdit(s: IdeaSeed) {
+    setEditingSeedId(s.id);
+    setEditSeedText(s.text || "");
+    setEditSeedComment(s.comment || "");
+    setError("");
+  }
+
+  async function saveSeedEdit(id: string) {
+    const text = editSeedText.trim();
+    if (text.length < 3) return;
+    const isLinkEdit = /^https?:\/\/\S+$/i.test(text);
+    // "" = effacer le commentaire côté backend.
+    const comment = isLinkEdit ? editSeedComment.trim() : "";
+    setSavingSeedEdit(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text, comment }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Modification impossible");
+      setSeeds((prev) => prev.map((s) => (s.id === id ? data : s)));
+      setEditingSeedId(null);
+    } catch (err: any) {
+      setError(err.message || "Modification impossible");
+    } finally {
+      setSavingSeedEdit(false);
+    }
+  }
+
+  return (
+    <div className="card daily-reservoir">
+      <div className="daily-reservoir-head">
+        <div>
+          <h3 className="daily-subtitle" style={{ margin: 0 }}><Lightbulb size={16} /> Mes idées de posts</h3>
+          <p className="section-desc" style={{ margin: "4px 0 0" }}>{desc}</p>
+        </div>
+      </div>
+
+      {error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
+
+      <div className="daily-add">
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
+          placeholder="Une idée de post…"
+          aria-label="Une idée de post"
+          maxLength={2000}
+        />
+        <button className="primary-button" onClick={addSeed} disabled={adding || draft.trim().length < 3}>
+          {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter
+        </button>
+      </div>
+      {/* Champ d'orientation : uniquement quand l'idée saisie est un lien d'annonce. */}
+      {/^https?:\/\/\S+$/i.test(draft.trim()) && (
+        <input
+          type="text"
+          value={draftComment}
+          onChange={(e) => setDraftComment(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
+          placeholder="Commentaire pour orienter le post (optionnel) — ex. « insiste sur la vue mer »"
+          maxLength={500}
+          style={{ marginTop: 8, width: "100%", boxSizing: "border-box" }}
+        />
+      )}
+
+      {seeds.length === 0 ? (
+        <p style={{ color: "var(--muted)", margin: "12px 0 0", fontSize: 13 }}>
+          Aucune idée en réserve — note-les ici quand elles te viennent.
+        </p>
+      ) : (
+        <ul className="daily-seed-list">
+          {seeds.map((s) => {
+            const isLink = /^https?:\/\/\S+$/i.test((s.text || "").trim());
+            const isEditing = editingSeedId === s.id;
+            const editIsLink = /^https?:\/\/\S+$/i.test(editSeedText.trim());
+            return (
+              <li
+                key={s.id}
+                className={`${s.used_at ? "used" : ""}${dragId === s.id ? " dragging" : ""}`}
+                // Drag armé uniquement depuis la poignée : le texte reste sélectionnable.
+                draggable={dragArmedId === s.id && !isEditing}
+                onDragStart={() => setDragId(s.id)}
+                onDragOver={(e) => { e.preventDefault(); reorderTo(s.id); }}
+                onDrop={(e) => { e.preventDefault(); setDragArmedId(null); void persistSeedOrder(); }}
+                onDragEnd={() => { setDragArmedId(null); void persistSeedOrder(); }}
+              >
+                <span
+                  className="daily-seed-grip"
+                  title="Glisser pour réordonner"
+                  aria-hidden
+                  onMouseDown={() => setDragArmedId(s.id)}
+                  onMouseUp={() => setDragArmedId(null)}
+                  onTouchStart={() => setDragArmedId(s.id)}
+                >
+                  <GripVertical size={14} />
+                </span>
+                {isEditing ? (
+                  <span className="daily-seed-text" style={{ display: "grid", gap: 6 }}>
+                    <input
+                      type="text"
+                      value={editSeedText}
+                      autoFocus
+                      onChange={(e) => setEditSeedText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveSeedEdit(s.id); } if (e.key === "Escape") setEditingSeedId(null); }}
+                      maxLength={2000}
+                      style={{ width: "100%", boxSizing: "border-box" }}
+                    />
+                    {editIsLink && (
+                      <input
+                        type="text"
+                        value={editSeedComment}
+                        onChange={(e) => setEditSeedComment(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveSeedEdit(s.id); } if (e.key === "Escape") setEditingSeedId(null); }}
+                        placeholder="Commentaire pour orienter le post (optionnel)"
+                        maxLength={500}
+                        style={{ width: "100%", boxSizing: "border-box" }}
+                      />
+                    )}
+                    <span style={{ display: "flex", gap: 6 }}>
+                      <button
+                        className="primary-button"
+                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
+                        disabled={savingSeedEdit || editSeedText.trim().length < 3}
+                        onClick={() => void saveSeedEdit(s.id)}
+                      >
+                        {savingSeedEdit ? <Loader2 size={12} className="spinning" /> : null} Sauvegarder
+                      </button>
+                      <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} onClick={() => setEditingSeedId(null)}>Annuler</button>
+                    </span>
+                  </span>
+                ) : (
+                  <span className="daily-seed-text">
+                    {isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}
+                    {s.comment ? <em style={{ display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 }}>↳ orientation : {s.comment}</em> : null}
+                  </span>
+                )}
+                {!isEditing && isLink && !s.used_at ? <span className="daily-seed-tag">annonce</span> : null}
+                {!isEditing && s.used_at ? <span className="daily-seed-tag"><CheckCircle2 size={12} /> utilisée</span> : null}
+                {/* Libellé volontairement court : « Générer un post » porterait le même
+                    nom que le gros bouton de la page — deux boutons homonymes, illisibles
+                    pour un lecteur d'écran. */}
+                {!isEditing && onGenerate && (
+                  <button
+                    className="secondary-button"
+                    style={{ fontSize: 12, minHeight: 28, padding: "0 10px", flexShrink: 0 }}
+                    title="Générer un post à partir de cette idée"
+                    onClick={() => onGenerate(s.text)}
+                  >
+                    <Sparkles size={12} /> Générer
+                  </button>
+                )}
+                {!isEditing && (
+                  <button className="icon-button" title="Modifier" onClick={() => startSeedEdit(s)}><Pencil size={14} /></button>
+                )}
+                <button className="icon-button" title="Supprimer" onClick={() => deleteSeed(s.id)}><Trash2 size={14} /></button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Pop-up du parcours guidé : départ → idée → profil éditorial → structure → 1 post (ALE-286). */
+function PostWizardModal({
+  initialIdea,
+  onClose,
+  onLaunched,
+}: {
+  initialIdea?: string;
+  onClose: () => void;
+  onLaunched: (job: GenerationJob) => void;
+}) {
+  type Step = "start" | "idea" | "ideas" | "inspiration" | "role" | "structure";
+  const [step, setStep] = useState<Step>(initialIdea ? "idea" : "start");
+  const [idea, setIdea] = useState(initialIdea || "");
+  const [inspiration, setInspiration] = useState<InspirationPost | null>(null);
+  const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
+  const [ideaLines, setIdeaLines] = useState<IdeaLine[]>([]);
+  const [pickedLine, setPickedLine] = useState<string>("");
+  const [role, setRole] = useState("");
+  const [reco, setReco] = useState<{ editorial_role: string; reason: string } | null>(null);
+  const [structures, setStructures] = useState<StructureChoice[]>([]);
+  // "" = structure libre (aucune imposée) — c'est aussi le repli quand la
+  // bibliothèque est vide, pour qu'un compte neuf ne reste pas coincé ici.
   const [templateId, setTemplateId] = useState("");
+  const [recommendedId, setRecommendedId] = useState<string | null>(null);
+  const [url, setUrl] = useState("");
+  const [pasteMode, setPasteMode] = useState(false);
+  const [pasted, setPasted] = useState("");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [seedSaved, setSeedSaved] = useState(false);
 
   useEffect(() => {
-    if (!isAuthed) { setTemplates([]); setTemplateId(""); return; }
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Réservoir d'idées : il vivait dans l'onglet « Idée du jour » (retiré côté
+  // agence). Sans lui ici, « Enregistrer pour plus tard » n'aurait plus aucune
+  // destination visible — l'idée partirait dans un trou noir.
+  useEffect(() => {
+    if (step !== "idea") return;
     let cancelled = false;
-    authHeaders().then((h) =>
-      fetch(`${DIRECT_API_URL}/me/post-templates`, { headers: h })
-        .then((r) => (r.ok ? r.json() : []))
-        .then((data) => {
-          if (cancelled) return;
-          const usable = (Array.isArray(data) ? data : []).filter(
-            (t: PostTemplate) => (t.post_text || "").trim() || (t.structure_text || "").trim()
-          );
-          setTemplates(usable);
-          setTemplateId((prev) => (prev && !usable.some((t: PostTemplate) => t.id === prev) ? "" : prev));
-        })
-        .catch(() => {})
-    );
+    authHeaders()
+      .then((h) => fetch(`${DIRECT_API_URL}/me/idea-seeds`, { headers: h }))
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => { if (!cancelled) setSeeds(Array.isArray(data) ? data.filter((s: IdeaSeed) => !s.used_at) : []); })
+      .catch(() => {});
     return () => { cancelled = true; };
-  }, [isAuthed]);
-  const [loadingPosts, setLoadingPosts] = useState(false);
+  }, [step]);
+
+  async function generateIdeas() {
+    setBusy("ideas");
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/ideas`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ count: 3 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Génération des idées impossible");
+      if (typeof data.credits === "number") emitCredits(data.credits);
+      setIdeaLines(Array.isArray(data.ideas) ? data.ideas : []);
+      setPickedLine("");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function readInspiration() {
+    setBusy("inspiration");
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate/inspiration`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ url: url.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Lecture du post impossible");
+      setInspiration({ text: data.text, author: data.author, url: data.url, image_url: data.image_url });
+      setIdea(data.angle || "");
+    } catch (err: any) {
+      setError(err.message);
+      setPasteMode(true);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  /** Le post collé à la main quand le lien est illisible : même valeur, autre porte d'entrée. */
+  function applyPastedInspiration() {
+    const text = pasted.trim();
+    if (text.length < 20) { setError("Colle le texte du post (20 caractères minimum)."); return; }
+    setError("");
+    setInspiration({ text, author: null, url: url.trim() || null, image_url: null });
+  }
+
+  /** Convergence des 3 chemins : on tient l'idée, on demande le rôle recommandé. */
+  async function goToRole(chosen: string) {
+    const text = chosen.trim();
+    if (!text) return;
+    setIdea(text);
+    setStep("role");
+    setBusy("role");
+    setError("");
+    setReco(null);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate/editorial-role`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ idea: text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Recommandation indisponible");
+      setReco({ editorial_role: data.editorial_role, reason: data.reason || "" });
+      setRole(data.editorial_role);
+    } catch (err: any) {
+      // La reco n'est qu'un confort : sans elle, le client choisit lui-même son
+      // rôle plutôt que de voir le parcours s'arrêter là.
+      setError(`Recommandation indisponible (${err.message}) — choisis toi-même le profil.`);
+      setRole((r) => r || "performance");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function saveForLater() {
+    const text = idea.trim();
+    if (text.length < 3) { setError("Écris ton idée d'abord."); return; }
+    setBusy("seed");
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error("Enregistrement impossible");
+      setSeedSaved(true);
+      setTimeout(onClose, 900);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  /** Avant-dernière étape : l'IA propose les structures de la bibliothèque qui
+   *  collent le mieux à l'idée + au rôle. Le client en choisit UNE. */
+  async function goToStructures() {
+    setStep("structure");
+    setBusy("structure");
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate/structures`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ idea: idea.trim(), editorial_role: role }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Structures indisponibles");
+      const list: StructureChoice[] = Array.isArray(data.structures) ? data.structures : [];
+      setStructures(list);
+      setRecommendedId(data.recommended_id ?? null);
+      // Pré-cochée : la plus adaptée selon l'IA. Bibliothèque vide → structure libre.
+      setTemplateId(data.recommended_id ?? "");
+    } catch (err: any) {
+      // La proposition n'est qu'un confort : sans elle, on écrit le post en
+      // structure libre plutôt que d'arrêter le client au bord de l'arrivée.
+      setError(`Structures indisponibles (${err.message}) — le post sera écrit en structure libre.`);
+      setStructures([]);
+      setRecommendedId(null);
+      setTemplateId("");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function launch() {
+    setBusy("launch");
+    setError("");
+    try {
+      // Un post = un job : on passe par la file d'attente existante, qui sait
+      // déjà débiter, créer le job, le suivre et l'annuler.
+      const res = await fetch(`${DIRECT_API_URL}/generate/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          topic: idea.trim(),
+          editorial_role: role,
+          count: 1,
+          ...(templateId ? { template_id: templateId } : {}),
+          ...(inspiration
+            ? { inspiration: { text: inspiration.text, author: inspiration.author, url: inspiration.url } }
+            : {}),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Lancement de la génération impossible");
+      if (typeof data.credits === "number") emitCredits(data.credits);
+      onLaunched(data as GenerationJob);
+      onClose();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const startCards: { key: Step; icon: React.ReactNode; title: string; desc: string }[] = [
+    { key: "idea", icon: <PenTool size={22} />, title: "J'ai une idée", desc: "Écris-la : on la garde pour plus tard, ou on en fait un post tout de suite." },
+    { key: "ideas", icon: <Sparkles size={22} />, title: "Je n'ai pas d'idée", desc: `On t'en propose 3, tirées de ta veille et de ton positionnement (${WIZARD_IDEAS_CREDITS} crédits).` },
+    { key: "inspiration", icon: <Link2 size={22} />, title: "J'ai une inspiration", desc: "Colle le lien d'un post LinkedIn qui t'a plu : on le lit et on le transpose à ton métier." },
+  ];
+
+  const stepTitle: Record<Step, string> = {
+    start: "Par où on commence ?",
+    idea: "Ton idée",
+    ideas: "Trois idées pour toi",
+    inspiration: "Le post qui t'a inspiré",
+    role: "Quel angle pour ce post ?",
+    structure: "Sur quelle structure ?",
+  };
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Générer un post"
+    >
+      <div className="card" style={{ maxWidth: 720, width: "100%", padding: 24, maxHeight: "88vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 4 }}>
+          <h3 style={{ margin: 0 }}>{stepTitle[step]}</h3>
+          <button className="secondary-button" style={{ minHeight: 30, padding: "0 10px", fontSize: 12 }} onClick={onClose}>Fermer</button>
+        </div>
+
+        {step !== "start" && (
+          <button
+            className="secondary-button"
+            style={{ minHeight: 28, padding: "0 10px", fontSize: 12, marginBottom: 12 }}
+            onClick={() => {
+              // Depuis le profil éditorial, on revient au chemin qu'on avait pris.
+              if (step === "structure") setStep("role");
+              else if (step === "role") setStep(inspiration ? "inspiration" : ideaLines.length ? "ideas" : "idea");
+              else setStep("start");
+              setError("");
+            }}
+          >
+            ← Retour
+          </button>
+        )}
+
+        {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+
+        {step === "start" && (
+          <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+            {startCards.map((c) => (
+              <button
+                key={c.key}
+                className="wizard-start-card"
+                onClick={() => {
+                  setStep(c.key);
+                  setError("");
+                  if (c.key === "ideas" && ideaLines.length === 0) void generateIdeas();
+                }}
+              >
+                <span className="wizard-start-icon">{c.icon}</span>
+                <span>
+                  <strong>{c.title}</strong>
+                  <span className="wizard-start-desc">{c.desc}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {step === "idea" && (
+          <div>
+            <label className="role-picker-label" htmlFor="wizard-idea">De quoi veux-tu parler ?</label>
+            <textarea
+              id="wizard-idea"
+              className="variant-text"
+              value={idea}
+              onChange={(e) => setIdea(e.target.value)}
+              rows={4}
+              placeholder="Ex. : pourquoi la plupart des PME ratent leur premier projet IA sur le cadrage, pas sur l'outil"
+              style={{ width: "100%", boxSizing: "border-box", marginTop: 6 }}
+            />
+            {seeds.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <p className="role-picker-hint" style={{ marginBottom: 6 }}>Ou reprends une idée que tu avais mise de côté :</p>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {seeds.slice(0, 12).map((s) => (
+                    <button
+                      key={s.id}
+                      className="secondary-button"
+                      style={{ minHeight: 30, padding: "0 10px", fontSize: 12, maxWidth: "100%" }}
+                      title={s.text}
+                      onClick={() => setIdea(s.text)}
+                    >
+                      <Bookmark size={12} /> <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.text}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <button className="secondary-button" disabled={busy === "seed" || seedSaved || idea.trim().length < 3} onClick={saveForLater}>
+                {busy === "seed" ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />}
+                {seedSaved ? "Gardée ✓" : "Enregistrer pour plus tard"}
+              </button>
+              <button className="primary-button" disabled={idea.trim().length < 3} onClick={() => goToRole(idea)}>
+                Continuer <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "ideas" && (
+          <div>
+            {busy === "ideas" ? (
+              <div className="web-search-status" role="status" aria-live="polite">
+                <Loader2 size={16} className="spinning" />
+                <span><strong>On cherche 3 idées…</strong><span>À partir de ta veille et de ton positionnement.</span></span>
+              </div>
+            ) : ideaLines.length === 0 ? (
+              <p className="role-picker-hint">Aucune idée générée. Réessaie — ou vérifie que tu as bien analysé au moins un influenceur.</p>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {ideaLines.map((line, i) => {
+                  const selected = pickedLine === line.line;
+                  return (
+                    <button
+                      key={line.id || i}
+                      className={`wizard-idea-line ${selected ? "selected" : ""}`}
+                      aria-pressed={selected}
+                      onClick={() => setPickedLine(line.line)}
+                    >
+                      <span className="wizard-idea-check">{selected ? <CheckCircle2 size={16} /> : <span className="wizard-idea-dot" />}</span>
+                      <span>
+                        <strong>{line.line}</strong>
+                        {line.source_ref && <span className="wizard-idea-source">D&apos;après {line.source_ref}</span>}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <button className="secondary-button" disabled={busy === "ideas"} onClick={generateIdeas}>
+                {busy === "ideas" ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />} Regénérer ({WIZARD_IDEAS_CREDITS} crédits)
+              </button>
+              <button className="primary-button" disabled={!pickedLine} onClick={() => goToRole(pickedLine)}>
+                Continuer <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "inspiration" && (
+          <div>
+            {!inspiration ? (
+              <>
+                <label className="role-picker-label" htmlFor="wizard-url">Lien du post LinkedIn</label>
+                <div className="url-input" style={{ marginTop: 6 }}>
+                  <Link2 size={16} color="var(--primary)" style={{ flexShrink: 0 }} />
+                  <input
+                    id="wizard-url"
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    placeholder="https://www.linkedin.com/posts/…"
+                    onKeyDown={(e) => { if (e.key === "Enter" && url.trim() && busy !== "inspiration") void readInspiration(); }}
+                  />
+                  <button className="primary-button" style={{ flexShrink: 0 }} disabled={!url.trim() || busy === "inspiration"} onClick={readInspiration}>
+                    {busy === "inspiration" ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />} Lire le post
+                  </button>
+                </div>
+                <p className="role-picker-hint" style={{ marginTop: 8 }}>
+                  Le post sert de référence : l&apos;IA en reprend l&apos;angle et la forme, mais réécrit tout pour ton métier — jamais de copier-coller.
+                </p>
+                {pasteMode && (
+                  <div style={{ marginTop: 16 }}>
+                    <label className="role-picker-label" htmlFor="wizard-paste">Ou colle le texte du post</label>
+                    <textarea
+                      id="wizard-paste"
+                      className="variant-text"
+                      value={pasted}
+                      onChange={(e) => setPasted(e.target.value)}
+                      rows={6}
+                      style={{ width: "100%", boxSizing: "border-box", marginTop: 6 }}
+                    />
+                    <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+                      <button className="primary-button" disabled={pasted.trim().length < 20} onClick={applyPastedInspiration}>
+                        Utiliser ce texte <ChevronRight size={14} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="card" style={{ padding: 12, background: "var(--surface)", marginBottom: 14 }}>
+                  <p className="role-picker-hint" style={{ margin: "0 0 6px" }}>
+                    Post lu{inspiration.author ? ` — ${inspiration.author}` : ""} :
+                  </p>
+                  <p style={{ margin: 0, fontSize: 13, whiteSpace: "pre-wrap", maxHeight: 160, overflowY: "auto" }}>{inspiration.text}</p>
+                </div>
+                <label className="role-picker-label" htmlFor="wizard-angle">L&apos;angle qu&apos;on en tire pour toi (ajuste-le si besoin)</label>
+                <textarea
+                  id="wizard-angle"
+                  className="variant-text"
+                  value={idea}
+                  onChange={(e) => setIdea(e.target.value)}
+                  rows={3}
+                  placeholder="L'angle de ton post, en une phrase"
+                  style={{ width: "100%", boxSizing: "border-box", marginTop: 6 }}
+                />
+                <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <button className="secondary-button" onClick={() => { setInspiration(null); setPasteMode(false); }}>Changer de post</button>
+                  <button className="primary-button" disabled={idea.trim().length < 3} onClick={() => goToRole(idea)}>
+                    Continuer <ChevronRight size={14} />
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {step === "role" && (
+          <div>
+            <p className="role-picker-hint" style={{ marginTop: 0 }}>
+              Ton idée : <strong style={{ color: "var(--ink)" }}>{idea}</strong>
+            </p>
+            {busy === "role" ? (
+              <div className="web-search-status" role="status" aria-live="polite">
+                <Loader2 size={16} className="spinning" />
+                <span><strong>On cherche l&apos;angle le plus adapté…</strong></span>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+                {ROLE_OPTIONS.map((o) => {
+                  const selected = role === o.value;
+                  const recommended = reco?.editorial_role === o.value;
+                  return (
+                    <button
+                      key={o.value}
+                      className={`wizard-role-card ${selected ? "selected" : ""}`}
+                      aria-pressed={selected}
+                      onClick={() => setRole(o.value)}
+                      style={selected ? { borderColor: roleColorOf(o.value), boxShadow: `0 0 0 3px ${roleColorOf(o.value)}22` } : undefined}
+                    >
+                      <span className="wizard-role-main">
+                        <span className="badge" style={{ borderColor: roleColorOf(o.value), color: roleColorOf(o.value) }}>{o.label}</span>
+                        <span className="wizard-role-goal">{o.goal}</span>
+                      </span>
+                      {recommended && (
+                        <span className="wizard-role-reco">
+                          <Sparkles size={12} /> Recommandé{reco?.reason ? ` — ${reco.reason}` : ""}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
+              <button className="primary-button" disabled={!role || busy === "role"} onClick={goToStructures}>
+                Continuer <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "structure" && (
+          <div>
+            <p className="role-picker-hint" style={{ marginTop: 0 }}>
+              Ton idée : <strong style={{ color: "var(--ink)" }}>{idea}</strong> · Angle :{" "}
+              <strong style={{ color: roleColorOf(role) }}>{roleLabelOf(role)}</strong>
+            </p>
+            {busy === "structure" ? (
+              <div className="web-search-status" role="status" aria-live="polite">
+                <Loader2 size={16} className="spinning" />
+                <span><strong>On cherche les structures les plus adaptées…</strong><span>Dans ta bibliothèque.</span></span>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+                {structures.map((s) => {
+                  const selected = templateId === s.id;
+                  const recommended = recommendedId === s.id;
+                  const preview = (s.structure_text || s.post_text || "").replace(/\s*\n\s*/g, " → ").slice(0, 110);
+                  return (
+                    <button
+                      key={s.id}
+                      className={`wizard-role-card ${selected ? "selected" : ""}`}
+                      aria-pressed={selected}
+                      onClick={() => setTemplateId(s.id)}
+                      style={selected ? { borderColor: "var(--primary)", boxShadow: "0 0 0 3px rgba(70, 72, 212, 0.15)" } : undefined}
+                    >
+                      <span className="wizard-role-main">
+                        <span className="wizard-idea-check">
+                          {selected ? <CheckCircle2 size={16} /> : <span className="wizard-idea-dot" />}
+                        </span>
+                        <strong>{structureName(s)}</strong>
+                      </span>
+                      {preview && <span className="wizard-role-goal">{preview}</span>}
+                      {recommended && (
+                        <span className="wizard-role-reco"><Sparkles size={12} /> La plus adaptée à ton idée</span>
+                      )}
+                    </button>
+                  );
+                })}
+
+                {/* Toujours proposée : le client doit pouvoir refuser toute structure.
+                    Et quand la bibliothèque est vide, c'est la seule option — le
+                    parcours ne s'arrête pas là pour autant. */}
+                <button
+                  className={`wizard-role-card ${templateId === "" ? "selected" : ""}`}
+                  aria-pressed={templateId === ""}
+                  onClick={() => setTemplateId("")}
+                  style={templateId === "" ? { borderColor: "var(--primary)", boxShadow: "0 0 0 3px rgba(70, 72, 212, 0.15)" } : undefined}
+                >
+                  <span className="wizard-role-main">
+                    <span className="wizard-idea-check">
+                      {templateId === "" ? <CheckCircle2 size={16} /> : <span className="wizard-idea-dot" />}
+                    </span>
+                    <strong>Structure libre</strong>
+                  </span>
+                  <span className="wizard-role-goal">
+                    {structures.length === 0
+                      ? "Ta bibliothèque est vide — ajoute des posts dans Ma bibliothèque pour qu'on te propose des structures."
+                      : "Aucune structure imposée : l'IA écrit la forme qu'elle juge la meilleure."}
+                  </span>
+                </button>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center" }}>
+              <span className="role-picker-hint" style={{ marginRight: "auto" }}>
+                1 post — {WIZARD_POST_CREDITS} crédits.
+              </span>
+              <button className="primary-button" disabled={busy === "launch" || busy === "structure"} onClick={launch}>
+                {busy === "launch" ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
+                {busy === "launch" ? "Lancement…" : "Générer le post"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated, imageJobs, onImageJobCreated, onRework }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void; imageJobs: ImageJob[]; onImageJobCreated: (job: ImageJob) => void; onRework?: (post: string) => void }) {
+  const [wizard, setWizard] = useState<{ idea: string } | null>(null);
+  const [templates, setTemplates] = useState<PostTemplate[]>([]);
+  const [expanded, setExpanded] = useState<string | null>(_genCache.expanded);
+  const [cancelling, setCancelling] = useState<string | null>(null);
   const [error, setError] = useState("");
+
+  // État par post, indexé par la clé de ligne (stable au remontage).
+  const [edited, setEdited] = useState<Record<string, string>>(_genCache.edited);
+  const [images, setImages] = useState<Record<string, LinkedInImageAttachment[]>>(_genCache.images);
+  const [publishing, setPublishing] = useState<string | null>(null);
+  const [published, setPublished] = useState<string | null>(null);
+  const [drafted, setDrafted] = useState<string | null>(null);
+  const [publishingX, setPublishingX] = useState<string | null>(null);
+  const [publishedX, setPublishedX] = useState<string | null>(null);
+  const [savingPost, setSavingPost] = useState<string | null>(null);
+  const [savedPost, setSavedPost] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [scheduled, setScheduled] = useState<Record<string, "direct" | "slack">>({});
+  const [slackSent, setSlackSent] = useState<Record<string, boolean>>({});
+  const [slackSending, setSlackSending] = useState<Record<string, boolean>>({});
+  const [confirmSlack, setConfirmSlack] = useState<string | null>(null);
+  const [confirmPublish, setConfirmPublish] = useState<string | null>(null);
+  const [confirmX, setConfirmX] = useState<string | null>(null);
+  const [imageModal, setImageModal] = useState<{ key: string; text: string } | null>(null);
+  const [scheduleModal, setScheduleModal] = useState<{ key: string; text: string; images: LinkedInImageAttachment[] } | null>(null);
+  const [publishError, setPublishError] = useState("");
+  const [imageError, setImageError] = useState("");
+
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
-  const [slackSent, setSlackSent] = useState<Record<number, boolean>>({});
-  const [slackSending, setSlackSending] = useState<Record<number, boolean>>({});
-  const [confirmSlackIndex, setConfirmSlackIndex] = useState<number | null>(null);
-  const [publishing, setPublishing] = useState<number | null>(null);
-  const [published, setPublished] = useState<number | null>(null);
-  const [drafted, setDrafted] = useState<number | null>(null);
-  const [savingVariant, setSavingVariant] = useState<number | null>(null);
-  const [savedVariant, setSavedVariant] = useState<number | null>(null);
-  const [publishingX, setPublishingX] = useState<number | null>(null);
-  const [publishedX, setPublishedX] = useState<number | null>(null);
-  const [confirmIndex, setConfirmIndex] = useState<number | null>(null);
-  const [confirmXIndex, setConfirmXIndex] = useState<number | null>(null);
-  const [publishError, setPublishError] = useState("");
-  const [variantImages, setVariantImages] = useState<Record<number, LinkedInImageAttachment[]>>(_genCache.variantImages);
-  const [imageModal, setImageModal] = useState<{ index: number; text: string } | null>(null);
-  const [imageError, setImageError] = useState("");
-  const [editedVariants, setEditedVariants] = useState<Record<number, string>>({});
-  const [copiedVariant, setCopiedVariant] = useState<number | null>(null);
-  const [variantCount, setVariantCount] = useState(1);
-  const [scheduleModal, setScheduleModal] = useState<{ index: number; text: string; images: LinkedInImageAttachment[] } | null>(null);
-  const [scheduledIndices, setScheduledIndices] = useState<Record<number, "direct" | "slack">>({});
-  const [scheduleError, setScheduleError] = useState("");
 
-  // "Réutiliser" depuis Mes contenus : pré-remplit le sujet et lance la génération.
+  const lines = useMemo(() => buildPostLines(generationJobs), [generationJobs]);
+  // ALE-287 : la file montre les 3 derniers posts ; « Tout voir » déplie le reste.
+  // Une ligne dépliée hors des 3 premiers doit rester visible, sinon le clic
+  // « Réduire » ferait disparaître le post qu'on est en train de lire.
+  const [showAllLines, setShowAllLines] = useState(false);
+  const shownLines = showAllLines
+    ? lines
+    : lines.filter((l, i) => i < QUEUE_PREVIEW_COUNT || l.key === expanded);
+  const hiddenCount = lines.length - shownLines.length;
+  const activeCount = generationJobs.filter(generationJobIsActive).length;
+
+  useEffect(() => { _genCache.edited = edited; }, [edited]);
+  useEffect(() => { _genCache.images = images; }, [images]);
+  useEffect(() => { _genCache.expanded = expanded; }, [expanded]);
+
+  // Noms des templates : la file affiche « d'après <structure> » sur chaque ligne,
+  // et le job ne porte que l'identifiant.
+  useEffect(() => {
+    if (!isAuthed) { setTemplates([]); return; }
+    let cancelled = false;
+    authHeaders()
+      .then((h) => fetch(`${DIRECT_API_URL}/me/post-templates`, { headers: h }))
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => { if (!cancelled) setTemplates(Array.isArray(data) ? data : []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isAuthed]);
+
+  // « Réutiliser » / « M'en inspirer » depuis un autre écran : ouvre le parcours
+  // avec le sujet déjà écrit, plutôt que de lancer une génération à l'aveugle.
   useEffect(() => {
     if (!seed?.topic) return;
-    setTopic(seed.topic);
-    void generateFromTopic(seed.topic);
+    setWizard({ idea: seed.topic });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed?.nonce]);
 
-  // ALE-145 : synchronise le cache module-level à chaque changement de variants/topic,
-  // pour les restaurer si le composant est démonté puis remonté (changement d'onglet).
-  useEffect(() => { _genCache.variants = variants; }, [variants]);
-  useEffect(() => { _genCache.topic = topic; }, [topic]);
-  useEffect(() => { _genCache.variantImages = variantImages; }, [variantImages]);
+  function templateName(templateId?: string | null): string | null {
+    if (!templateId) return null;
+    const t = templates.find((x) => x.id === templateId);
+    return t ? libraryEntryTitle(t) : null;
+  }
 
-  // ALE-235 : le champ Sujet grandit avec le contenu (plafonné, scroll au-delà).
-  useEffect(() => {
-    const el = topicRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }, [topic]);
+  function textOf(line: PostLine): string {
+    return edited[line.key] ?? line.variant?.post ?? "";
+  }
 
-  // ALE-141 : la génération tourne en file d'attente côté serveur (jobs portés par
-  // Home). On surveille le job le plus récent : tant qu'il est actif, on affiche
-  // « génération en cours » ; dès qu'il est `done`, on injecte ses variants (ils
-  // survivent ainsi au changement d'onglet ET au refresh, car persistés en base).
-  const latestGenJob = generationJobs[0] ?? null;
-  const genJobActive = !!latestGenJob && generationJobIsActive(latestGenJob);
-
-  useEffect(() => {
-    const job = latestGenJob;
-    if (!job || generationJobIsActive(job)) return;
-    // Le job le plus récent est terminé : on injecte son résultat une seule fois
-    // (suivi via `_genCache.appliedJobId`, persistant au-delà des remontages, pour
-    // qu'un batch terminé pendant qu'on était sur un autre onglet s'affiche au retour).
-    if (_genCache.appliedJobId === job.id) return;
-    _genCache.appliedJobId = job.id;
-    if (job.status === "done") {
-      setEditedVariants({});
-      setVariantImages({});
-      setVariants(job.result?.variants || []);
-      if (job.topic) setTopic(job.topic);
-      setError(job.result?.save_error ? `Posts générés, mais sauvegarde impossible : ${job.result.save_error}` : "");
-    } else if (job.status === "error") {
-      setError(job.error || "Échec de la génération de posts");
-    } else if (job.status === "cancelled") {
-      setError("");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestGenJob?.id, latestGenJob?.status]);
-
-  function imagePayloadForVariant(i: number) {
-    return (variantImages[i] || []).map((image) => ({
+  function imagePayload(key: string) {
+    return (images[key] || []).map((image) => ({
       ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
       filename: image.filename,
     }));
   }
 
-  // ALE-134 : marque explicitement un post comme « sauvegardé » (persiste aussi
-  // le texte édité et les images jointes, ALE-179). Seuls les posts sauvegardés
-  // apparaissent dans « Mes contenus ».
-  async function saveVariant(i: number, text: string, id?: string) {
-    if (!id) return;
-    setSavingVariant(i);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: text, saved: true, images: imagePayloadForVariant(i) }),
-      });
-      if (res.ok) {
-        setSavedVariant(i);
-        setTimeout(() => setSavedVariant((s) => (s === i ? null : s)), 1500);
-      }
-    } finally {
-      setSavingVariant(null);
-    }
+  function attachImage(key: string, url: string, source: "upload" | "generated", filename: string, id: string) {
+    setImages((prev) => {
+      const current = prev[key] || [];
+      if (current.some((im) => im.id === id)) return prev;   // rattachement idempotent
+      return { ...prev, [key]: [...current, { id, url, filename, source }].slice(0, 20) };
+    });
   }
 
-  function publishVariant(i: number, text: string, draft: boolean = false) {
-    if (!isAuthed) { requireAuth("Connecte-toi pour publier sur LinkedIn."); return; }
-    if (!linkedin.status?.connected) {
-      setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
-      return;
-    }
-    if (!draft) {
-      setConfirmIndex(i);
-      return;
-    }
-    void doPublish(i, text, true);
-  }
-
-  async function doPublish(i: number, text: string, draft: boolean = false) {
-    setPublishError("");
-    setPublished(null);
-    setDrafted(null);
-    setPublishing(i);
-    setConfirmIndex(null);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft, images: imagePayloadForVariant(i) }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon impossible" : "Publication impossible"));
-      if (draft) setDrafted(i); else setPublished(i);
-    } catch (err: any) {
-      setPublishError(err.message);
-    } finally {
-      setPublishing(null);
-    }
-  }
-
-  function publishVariantX(i: number, text: string) {
-    if (!isAuthed) { requireAuth("Connecte-toi pour publier sur X."); return; }
-    if (!twitter.status?.connected) {
-      setPublishError("Connecte d'abord ton compte X dans l'onglet Profil.");
-      return;
-    }
-    setConfirmXIndex(i);
-  }
-
-  async function doPublishX(i: number, text: string) {
-    setPublishError("");
-    setPublishedX(null);
-    setPublishingX(i);
-    setConfirmXIndex(null);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/x/publish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft: false }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Publication sur X impossible");
-      setPublishedX(i);
-    } catch (err: any) {
-      setPublishError(err.message);
-    } finally {
-      setPublishingX(null);
-    }
-  }
-
-  function copyVariant(i: number, text: string) {
-    void navigator.clipboard.writeText(text);
-    setCopiedVariant(i);
-    setTimeout(() => setCopiedVariant((current) => (current === i ? null : current)), 1500);
-  }
-
-  function openScheduleModal(i: number, text: string) {
-    if (!isAuthed) { requireAuth("Connecte-toi pour programmer une publication LinkedIn."); return; }
-    if (!linkedin.status?.connected) {
-      setScheduleError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
-      return;
-    }
-    setScheduleError("");
-    setScheduleModal({ index: i, text, images: variantImages[i] || [] });
-  }
-
-  // Image générée via la pop-up ImageGenModal → jointe au variant comme un upload.
-  function attachGeneratedImage(i: number, dataUrl: string) {
-    const attachment: LinkedInImageAttachment = {
-      id: `generated-${Date.now()}`,
-      url: dataUrl,
-      filename: `image-generee-${i + 1}.png`,
-      source: "generated",
-    };
-    setVariantImages((prev) => ({
-      ...prev,
-      [i]: [...(prev[i] || []), attachment],
-    }));
-  }
-
-  // ALE-261 : rattache l'image dès qu'un job `variant:{i}` termine, même si la
-  // pop-up ImageGenModal a été fermée entre-temps (le job continue en fond,
-  // porté par le polling de Home). `appliedImageJobIds` évite de rattacher deux
-  // fois le même job (re-render, ou job terminé pendant un autre onglet).
+  // ALE-261/286 : l'image IA rejoint sa ligne dès que le job termine, même si la
+  // pop-up a été fermée ou l'onglet quitté. La cible est la clé de ligne.
   useEffect(() => {
     for (const job of imageJobs) {
       if (job.status !== "done" || !job.result?.image_data) continue;
       if (_genCache.appliedImageJobIds.has(job.id)) continue;
-      const match = /^variant:(\d+)$/.exec(job.target_key);
+      const match = /^variant:(.+)$/.exec(job.target_key);
       if (!match) continue;
       _genCache.appliedImageJobIds.add(job.id);
-      attachGeneratedImage(Number(match[1]), job.result.image_data);
+      attachImage(match[1], job.result.image_data, "generated", "image-generee.png", `generated-${job.id}`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageJobs]);
 
-  /** Job d'image actif (queued/running) pour un variant donné, pour l'indicateur inline. */
-  function activeImageJobForVariant(i: number): ImageJob | null {
-    const job = latestImageJobFor(imageJobs, `variant:${i}`);
+  function activeImageJobFor(key: string): ImageJob | null {
+    const job = latestImageJobFor(imageJobs, `variant:${key}`);
     return job && imageJobIsActive(job) ? job : null;
   }
 
-  function addUploadedImages(i: number, files: FileList | null) {
+  function addUploadedImages(key: string, files: FileList | null) {
     if (!files?.length) return;
     setImageError("");
     const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length !== files.length) {
-      setImageError("Seuls les fichiers image sont acceptés.");
-    }
+    if (imageFiles.length !== files.length) setImageError("Seuls les fichiers image sont acceptés.");
     for (const file of imageFiles) {
       if (file.size > 8 * 1024 * 1024) {
         setImageError("LinkedIn limite chaque image à 8 Mo.");
@@ -3183,405 +4161,473 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       reader.onload = () => {
         const result = typeof reader.result === "string" ? reader.result : "";
         if (!result) return;
-        const attachment: LinkedInImageAttachment = {
-          id: `upload-${Date.now()}-${file.name}`,
-          url: result,
-          filename: file.name,
-          source: "upload",
-        };
-        setVariantImages((prev) => ({
-          ...prev,
-          [i]: [...(prev[i] || []), attachment].slice(0, 20),
-        }));
+        attachImage(key, result, "upload", file.name, `upload-${Date.now()}-${file.name}`);
       };
       reader.onerror = () => setImageError(`Lecture impossible pour ${file.name}.`);
       reader.readAsDataURL(file);
     }
   }
 
-  function removeVariantImage(i: number, imageId: string) {
-    setVariantImages((prev) => ({
-      ...prev,
-      [i]: (prev[i] || []).filter((image) => image.id !== imageId),
-    }));
+  function removeImage(key: string, imageId: string) {
+    setImages((prev) => ({ ...prev, [key]: (prev[key] || []).filter((im) => im.id !== imageId) }));
   }
 
-  // ALE-141 : lance une génération en file d'attente (non bloquant). On crée le
-  // job côté serveur puis on rend la main : le travail tourne en arrière-plan,
-  // l'utilisateur peut quitter la page. Le résultat est récupéré par le polling
-  // de Home (latestGenJob) et injecté par l'effet ci-dessus.
-  async function generateFromTopic(t: string) {
-    setError("");
-    setLoadingPosts(true);
+  async function cancelJob(jobId: string) {
+    setCancelling(jobId);
     try {
-      // Sujet optionnel : sans sujet, le backend choisit lui-même un angle (idée = post).
-      const body: { topic?: string; editorial_role?: string; count?: number; template_id?: string } = { count: variantCount };
-      if (t.trim()) body.topic = t.trim();
-      if (role !== "auto") body.editorial_role = role;
-      if (templateId) body.template_id = templateId;
-      const res = await fetch(`${DIRECT_API_URL}/generate/jobs`, {
+      await fetch(`${DIRECT_API_URL}/generate/jobs/${jobId}/cancel`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify(body),
+        headers: await authHeaders(),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || "Échec du lancement de la génération");
-      if (typeof data.credits === "number") emitCredits(data.credits);
-      onGenerationJobCreated(data as GenerationJob);
-    } catch (err: any) {
-      setError(err.message);
+    } catch { /* le polling de Home rattrapera l'état réel */ }
+    finally { setCancelling(null); }
+  }
+
+  async function savePost(line: PostLine) {
+    const id = line.variant?.id;
+    if (!id) return;
+    setSavingPost(line.key);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ post: textOf(line), saved: true, images: imagePayload(line.key) }),
+      });
+      if (res.ok) {
+        setSavedPost(line.key);
+        setTimeout(() => setSavedPost((s) => (s === line.key ? null : s)), 1500);
+      }
     } finally {
-      setLoadingPosts(false);
+      setSavingPost(null);
     }
   }
 
-  const funnelColors: Record<string, string> = { TOFU: "#10b981", MOFU: "#f59e0b", BOFU: "#ef4444" };
-  const hookColors: Record<string, string> = { "stat+contrarian": "#f97316", "story+result": "#10b981", question: "#3b82f6" };
-  const roleOptions: { value: string; label: string }[] = [
-    { value: "auto", label: "Mix automatique" },
-    { value: "performance", label: "Performance" },
-    { value: "methodologie", label: "Méthodologie" },
-    { value: "autorite", label: "Autorité" },
-    { value: "story", label: "Story" },
-    { value: "quotidien", label: "Quotidien" },
-    { value: "opinion", label: "Opinion" },
-    { value: "relationnel", label: "Relationnel" },
-  ];
-  const roleColors: Record<string, string> = {
-    performance: "#f97316",
-    methodologie: "#0ea5e9",
-    autorite: "#8b5cf6",
-    story: "#10b981",
-    quotidien: "#14b8a6",
-    opinion: "#ef4444",
-    relationnel: "#ec4899",
-  };
-  const roleLabel = (r?: string) => roleOptions.find((o) => o.value === r)?.label || r;
+  function publishPost(key: string, draft: boolean = false) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour publier sur LinkedIn."); return; }
+    if (!linkedin.status?.connected) {
+      setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    if (!draft) { setConfirmPublish(key); return; }
+    void doPublish(key, edited[key] ?? "", true);
+  }
+
+  async function doPublish(key: string, text: string, draft: boolean = false) {
+    setPublishError("");
+    setPublished(null);
+    setDrafted(null);
+    setPublishing(key);
+    setConfirmPublish(null);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, draft, images: imagePayload(key) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon impossible" : "Publication impossible"));
+      if (draft) setDrafted(key); else setPublished(key);
+    } catch (err: any) {
+      setPublishError(err.message);
+    } finally {
+      setPublishing(null);
+    }
+  }
+
+  async function doPublishX(key: string, text: string) {
+    setPublishError("");
+    setPublishedX(null);
+    setPublishingX(key);
+    setConfirmX(null);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/x/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text, draft: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Publication sur X impossible");
+      setPublishedX(key);
+    } catch (err: any) {
+      setPublishError(err.message);
+    } finally {
+      setPublishingX(null);
+    }
+  }
+
+  function openScheduleModal(line: PostLine) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour programmer une publication LinkedIn."); return; }
+    if (!linkedin.status?.connected) {
+      setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    setPublishError("");
+    setScheduleModal({ key: line.key, text: textOf(line), images: images[line.key] || [] });
+  }
+
+  function copyPost(line: PostLine) {
+    void navigator.clipboard.writeText(textOf(line));
+    setCopied(line.key);
+    setTimeout(() => setCopied((c) => (c === line.key ? null : c)), 1500);
+  }
+
+  function openWizard() {
+    if (!isAuthed) { requireAuth("Connecte-toi pour générer des posts."); return; }
+    setError("");
+    setWizard({ idea: "" });
+  }
 
   return (
     <div>
       {error && <div className="error">{error}</div>}
 
-      {/* Post generation */}
-      <div className="gen-section">
-        <h2 className="section-title"><PenTool size={20} /> Générer des idées de posts</h2>
-        <div className="gen-form">
-          <div className="url-input url-input--multi">
-            <PenTool size={16} color="var(--primary)" style={{ marginTop: 7, flexShrink: 0 }} />
-            <textarea
-              ref={topicRef}
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              placeholder="Sujet du post (optionnel) : ex. les 5 erreurs avec Claude AI… (Cmd/Ctrl+Entrée pour générer)"
-              rows={1}
-              onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !(loadingPosts || genJobActive)) generateFromTopic(topic); }}
-              style={{ resize: "none", overflow: "auto", maxHeight: 160 }}
-            />
-            <button className="primary-button" style={{ flexShrink: 0 }} disabled={loadingPosts || genJobActive} onClick={() => generateFromTopic(topic)}>
-              {(loadingPosts || genJobActive) ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
-              {genJobActive ? "Génération en cours…" : "Générer"}
-            </button>
-          </div>
-          <div className="role-picker">
-            <label className="role-picker-label">Rôle éditorial</label>
-            <select className="role-select" value={role} onChange={(e) => setRole(e.target.value)}>
-              {roleOptions.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-            <span className="role-picker-hint">
-              Sujet optionnel : laisse vide et Claude propose lui-même des idées de posts à fort potentiel.
-            </span>
-            <span className="role-picker-hint">
-              {role === "auto"
-                ? "Mix automatique : combinaison variée de rôles éditoriaux (performance, story, opinion…) tirés aléatoirement."
-                : "Les 3 variants utiliseront ce rôle."}
-            </span>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)" }}>
-              Variants :
-              <select
-                value={variantCount}
-                onChange={(e) => setVariantCount(Number(e.target.value))}
-                style={{ fontSize: 13, padding: "2px 6px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", cursor: "pointer" }}
-              >
-                <option value={1}>1</option>
-                <option value={2}>2</option>
-                <option value={3}>3</option>
-              </select>
-            </label>
-            {/* Toujours visible (retour Alex ALE-222) : caché derrière le chargement de la
-                bibliothèque, le menu semblait ne pas exister. Vide → texte d'aide. */}
-            {isAuthed && (
-              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", flexWrap: "wrap" }}>
-                Template :
-                <select
-                  value={templateId}
-                  onChange={(e) => setTemplateId(e.target.value)}
-                  style={{ fontSize: 13, padding: "2px 6px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", cursor: "pointer", maxWidth: 280 }}
-                >
-                  <option value="">Aucun (structure libre)</option>
-                  {templates.map((t) => (
-                    <option key={t.id} value={t.id}>{libraryEntryTitle(t)}</option>
-                  ))}
-                </select>
-                {templates.length === 0 ? (
-                  <span style={{ fontSize: 12 }}>
-                    Ajoute des posts dans Contenu › Ma bibliothèque : chaque post devient un template.
-                  </span>
-                ) : templateId && templates.find((t) => t.id === templateId)?.image_note ? (
-                  <span style={{ fontSize: 12 }}>
-                    🖼 {templates.find((t) => t.id === templateId)?.image_note}
-                  </span>
-                ) : null}
-              </label>
-            )}
-          </div>
-          {genJobActive && (
-            <div className="web-search-status" role="status" aria-live="polite">
-              <Loader2 size={16} className="spinning" />
-              <span>
-                <strong>Génération en cours…</strong>
-                <span>Tu peux quitter cette page — le résultat apparaîtra ici une fois prêt.</span>
-              </span>
-            </div>
-          )}
+      {/* ALE-286 : un seul point d'entrée. Le formulaire (sujet + rôle + template
+          + nombre de variants) est passé dans le parcours guidé de la pop-up. */}
+      <div className="gen-hero">
+        <div>
+          <h2 className="section-title" style={{ margin: 0 }}><PenTool size={20} /> Générateur de posts</h2>
+          <p className="section-desc" style={{ margin: "6px 0 0" }}>
+            Une idée, un angle, une structure de ta bibliothèque — et ton post s&apos;écrit.
+          </p>
         </div>
+        <button className="primary-button gen-hero-button" onClick={openWizard}>
+          <Sparkles size={18} /> Générer un post
+        </button>
       </div>
 
-      {variants.length > 0 && (
-        <div className="variants-list">
-          {variants.map((v, i) => {
-            const roleColor = (v.editorial_role && roleColors[v.editorial_role]) || "var(--primary)";
-            const color = hookColors[v.hook_type] || roleColor;
-            return (
-              <div className="variant-card" key={i}>
-                <div className="variant-header">
-                  <span className="variant-number" style={{ background: roleColor }}>{i + 1}</span>
-                  {v.editorial_role && (
-                    <span className="badge role-badge" style={{ borderColor: roleColor, color: roleColor }}>
-                      {roleLabel(v.editorial_role)}
-                    </span>
-                  )}
-                  <span className="badge" style={{ borderColor: color, color }}>{v.hook_type}</span>
-                </div>
-                <p className="variant-strategy">{v.strategy}</p>
-                <div className="variant-text-wrap">
-                  <textarea
-                    className="variant-text"
-                    value={editedVariants[i] ?? v.post}
-                    rows={14}
-                    onChange={(e) => setEditedVariants((prev) => ({ ...prev, [i]: e.target.value }))}
-                  />
-                  <button
-                    type="button"
-                    className="variant-copy-button"
-                    aria-label={copiedVariant === i ? "Post copié" : "Copier le post"}
-                    title={copiedVariant === i ? "Copié ✓" : "Copier le post"}
-                    onClick={() => copyVariant(i, editedVariants[i] ?? v.post)}
+      <div style={{ marginTop: 24 }}>
+        <h3 className="section-title" style={{ fontSize: 16 }}>
+          <ListChecks size={18} /> Mes posts
+          {activeCount > 0 && <span className="badge" style={{ marginLeft: 8 }}>{activeCount} en cours</span>}
+        </h3>
+        {lines.length === 0 ? (
+          <p className="role-picker-hint">
+            Aucun post pour l&apos;instant. Clique sur « Générer un post » : les posts apparaîtront ici, un par ligne, au fur et à mesure.
+          </p>
+        ) : (
+          <div className="post-queue">
+            {shownLines.map((line) => {
+              const { job, key, variant } = line;
+              const open = expanded === key;
+              const active = generationJobIsActive(job);
+              const tplName = templateName(job.template_id);
+              const roleColor = roleColorOf(variant?.editorial_role || job.editorial_role);
+              return (
+                <div key={key} className={`post-queue-row ${open ? "open" : ""}`}>
+                  <div
+                    className="post-queue-line"
+                    role={variant ? "button" : undefined}
+                    tabIndex={variant ? 0 : undefined}
+                    aria-expanded={variant ? open : undefined}
+                    onClick={() => { if (variant) setExpanded(open ? null : key); }}
+                    onKeyDown={(e) => {
+                      if (!variant) return;
+                      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpanded(open ? null : key); }
+                    }}
                   >
-                    {copiedVariant === i ? <CheckCircle2 size={16} /> : <Copy size={16} />}
-                  </button>
-                </div>
-                {editedVariants[i] !== undefined && editedVariants[i] !== v.post && (
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
-                    <span style={{ fontSize: 12, color: "var(--muted)" }}>✏️ Modifié</span>
-                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} onClick={() => setEditedVariants((prev) => { const n = { ...prev }; delete n[i]; return n; })}>
-                      Revenir à l&apos;original
-                    </button>
+                    <span className="post-queue-status">
+                      {active ? <Loader2 size={16} className="spinning" /> :
+                       job.status === "done" ? <CheckCircle2 size={16} color="#10b981" /> :
+                       job.status === "error" ? <AlertCircle size={16} color="#ef4444" /> :
+                       <XCircle size={16} color="var(--muted)" />}
+                    </span>
+                    <span className="post-queue-main">
+                      <span className="post-queue-topic">{job.topic || "Sujet libre"}</span>
+                      {/* L'angle et la structure s'affichent DÈS le lancement, pas
+                          seulement une fois le post écrit : sans eux, les trois lignes
+                          du parcours seraient trois « En attente… » identiques, et rien
+                          ne dirait au client pourquoi il y en a trois. */}
+                      <span className="post-queue-meta">
+                        <span className="badge" style={{ borderColor: roleColor, color: roleColor }}>
+                          {roleLabelOf(variant?.editorial_role || job.editorial_role) || "Mix auto"}
+                        </span>
+                        {tplName ? <span>d&apos;après <strong>{tplName}</strong></span> : <span>structure libre</span>}
+                        {active && <span>· {job.status === "queued" ? "en attente…" : "écriture en cours…"}</span>}
+                        {job.status === "cancelled" && <span>· annulé</span>}
+                        {job.status === "error" && (
+                          <span style={{ color: "var(--danger)" }}>· {job.error || "échec de la génération"}</span>
+                        )}
+                      </span>
+                    </span>
+                    {active ? (
+                      <button
+                        className="secondary-button"
+                        style={{ minHeight: 30, padding: "0 10px", fontSize: 12 }}
+                        disabled={cancelling === job.id}
+                        onClick={(e) => { e.stopPropagation(); void cancelJob(job.id); }}
+                      >
+                        {cancelling === job.id ? <Loader2 size={12} className="spinning" /> : null} Annuler
+                      </button>
+                    ) : variant ? (
+                      <span className="post-queue-chevron">{open ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</span>
+                    ) : null}
                   </div>
-                )}
-                <PostActionsBar
-                  publishBusy={publishing === i && published !== i}
-                  publishLabel={published === i ? "Publié ✓" : publishing === i ? "Publication…" : "Publier"}
-                  publishActions={[
-                    {
-                      key: "linkedin",
-                      icon: <Linkedin size={14} />,
-                      label: published === i ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
-                      disabled: publishing === i,
-                      title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
-                      onClick: () => publishVariant(i, editedVariants[i] ?? v.post),
-                    },
-                    {
-                      key: "schedule",
-                      icon: <Clock3 size={14} />,
-                      label: scheduledIndices[i] ? "Programmé ✓" : "Programmer…",
-                      disabled: publishing === i || !!scheduledIndices[i],
-                      title: linkedin.status?.connected
-                        ? "Programmer : publication directe à une date, ou validation Slack au préalable"
-                        : "Connecte ton compte LinkedIn dans l'onglet Profil",
-                      onClick: () => openScheduleModal(i, editedVariants[i] ?? v.post),
-                    },
-                    ...(slack.status?.connected && v.id
-                      ? [{
-                          key: "slack",
-                          icon: <Send size={14} />,
-                          label: slackSent[i] ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
-                          disabled: !!slackSending[i] || !!slackSent[i],
-                          onClick: () => setConfirmSlackIndex(i),
-                        } satisfies PostAction]
-                      : []),
-                    ...(twitter.status?.connected
-                      ? [{
-                          key: "x",
-                          icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>,
-                          label: publishingX === i ? "Publication…" : publishedX === i ? "Publié sur X ✓" : "Publier sur X",
-                          disabled: publishingX === i,
-                          onClick: () => publishVariantX(i, editedVariants[i] ?? v.post),
-                        } satisfies PostAction]
-                      : []),
-                  ]}
-                  moreActions={[
-                    ...(v.id
-                      ? [{
-                          key: "save",
-                          icon: <Bookmark size={14} />,
-                          label: savedVariant === i ? "Sauvegardé ✓" : "Sauvegarder",
-                          disabled: savingVariant === i,
-                          title: "Sauvegarder ce post dans « Mes contenus »",
-                          onClick: () => saveVariant(i, editedVariants[i] ?? v.post, v.id),
-                        } satisfies PostAction]
-                      : []),
-                    {
-                      key: "attach",
-                      icon: <ImagePlus size={14} />,
-                      label: "Joindre des images",
-                      filePicker: {
-                        accept: "image/png,image/jpeg,image/jpg,image/webp,image/gif",
-                        multiple: true,
-                        onFiles: (files) => addUploadedImages(i, files),
-                      },
-                    },
-                    {
-                      key: "image-ia",
-                      icon: <ImageIcon size={14} />,
-                      label: "Générer une image IA",
-                      title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
-                      onClick: () => setImageModal({ index: i, text: editedVariants[i] ?? v.post }),
-                    },
-                    ...(onRework
-                      ? [{
-                          key: "rework",
-                          icon: <MessageSquare size={14} />,
-                          label: "Retravailler avec l'Agent IA",
-                          title: "Ouvrir ce post dans l'Agent IA pour le retravailler",
-                          onClick: () => onRework(editedVariants[i] ?? v.post),
-                        } satisfies PostAction]
-                      : []),
-                  ]}
-                />
-                {confirmSlackIndex === i && (
-                  <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
-                    <DevSlackNote />
-                    <button
-                      className="primary-button"
-                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                      disabled={!!slackSending[i]}
-                      onClick={async () => {
-                        setSlackSending((p) => ({ ...p, [i]: true }));
-                        try {
-                          await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                            body: JSON.stringify({ post_id: v.id, content: editedVariants[i] ?? v.post, images: imagePayloadForVariant(i) }),
-                          });
-                          setSlackSent((p) => ({ ...p, [i]: true }));
-                        } finally {
-                          setSlackSending((p) => ({ ...p, [i]: false }));
-                          setConfirmSlackIndex(null);
-                        }
-                      }}
-                    >
-                      {slackSending[i] ? <Loader2 size={12} className="spinning" /> : null} Confirmer l&apos;envoi
-                    </button>
-                    <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmSlackIndex(null)}>Annuler</button>
-                  </div>
-                )}
-                {published === i && (
-                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>
-                )}
-                {publishedX === i && (
-                  <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur X ✓</p>
-                )}
-                {scheduledIndices[i] && (
-                  <p className="role-picker-hint" style={{ marginTop: 6 }}>
-                    {scheduledIndices[i] === "slack" ? "Post programmé ✓ — demande de validation envoyée sur Slack." : "Post programmé sur LinkedIn ✓"}
-                  </p>
-                )}
-                {activeImageJobForVariant(i) && (
-                  <p className="role-picker-hint" style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6 }}>
-                    <Loader2 size={12} className="spinning" /> Image IA en cours de génération… elle rejoindra ce post automatiquement.
-                  </p>
-                )}
-                {(variantImages[i] || []).length > 0 && (
-                  <div style={{ marginTop: 12 }}>
-                    <p className="role-picker-hint" style={{ marginBottom: 8 }}>
-                      {(variantImages[i] || []).length} image{(variantImages[i] || []).length > 1 ? "s" : ""} jointe{(variantImages[i] || []).length > 1 ? "s" : ""} au post LinkedIn.
-                    </p>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
-                      {(variantImages[i] || []).map((image, imageIndex) => (
-                        <div key={image.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
-                          <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
-                          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                            <a
-                              href={image.url}
-                              download={image.filename || `post-image-${i + 1}-${imageIndex + 1}.png`}
-                              className="secondary-button"
-                              style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}
-                            >
-                              <Download size={12} /> Télécharger
-                            </a>
-                            <button
-                              className="secondary-button"
-                              style={{ minHeight: 28, padding: "0 8px", fontSize: 12 }}
-                              onClick={() => removeVariantImage(i, image.id)}
-                            >
-                              <Trash2 size={12} /> Retirer
-                            </button>
+
+                  {open && variant && (
+                    <div className="post-queue-body">
+                      {variant.strategy && <p className="variant-strategy">{variant.strategy}</p>}
+                      <div className="variant-text-wrap">
+                        <textarea
+                          className="variant-text"
+                          value={textOf(line)}
+                          rows={14}
+                          onChange={(e) => setEdited((prev) => ({ ...prev, [key]: e.target.value }))}
+                        />
+                        <button
+                          type="button"
+                          className="variant-copy-button"
+                          aria-label={copied === key ? "Post copié" : "Copier le post"}
+                          title={copied === key ? "Copié ✓" : "Copier le post"}
+                          onClick={() => copyPost(line)}
+                        >
+                          {copied === key ? <CheckCircle2 size={16} /> : <Copy size={16} />}
+                        </button>
+                      </div>
+                      {edited[key] !== undefined && edited[key] !== variant.post && (
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                          <span style={{ fontSize: 12, color: "var(--muted)" }}>✏️ Modifié</span>
+                          <button
+                            className="secondary-button"
+                            style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
+                            onClick={() => setEdited((prev) => { const n = { ...prev }; delete n[key]; return n; })}
+                          >
+                            Revenir à l&apos;original
+                          </button>
+                        </div>
+                      )}
+                      <PostActionsBar
+                        publishBusy={publishing === key && published !== key}
+                        publishLabel={published === key ? "Publié ✓" : publishing === key ? "Publication…" : "Publier"}
+                        publishActions={[
+                          {
+                            key: "linkedin",
+                            icon: <Linkedin size={14} />,
+                            label: published === key ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
+                            disabled: publishing === key,
+                            title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                            onClick: () => publishPost(key),
+                          },
+                          {
+                            key: "schedule",
+                            icon: <Clock3 size={14} />,
+                            label: scheduled[key] ? "Programmé ✓" : "Programmer…",
+                            disabled: publishing === key || !!scheduled[key],
+                            title: linkedin.status?.connected
+                              ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+                              : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                            onClick: () => openScheduleModal(line),
+                          },
+                          ...(slack.status?.connected && variant.id
+                            ? [{
+                                key: "slack",
+                                icon: <Send size={14} />,
+                                label: slackSent[key] ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
+                                disabled: !!slackSending[key] || !!slackSent[key],
+                                onClick: () => setConfirmSlack(key),
+                              } satisfies PostAction]
+                            : []),
+                          ...(twitter.status?.connected
+                            ? [{
+                                key: "x",
+                                icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>,
+                                label: publishingX === key ? "Publication…" : publishedX === key ? "Publié sur X ✓" : "Publier sur X",
+                                disabled: publishingX === key,
+                                onClick: () => {
+                                  if (!isAuthed) { requireAuth("Connecte-toi pour publier sur X."); return; }
+                                  if (!twitter.status?.connected) { setPublishError("Connecte d'abord ton compte X dans l'onglet Profil."); return; }
+                                  setConfirmX(key);
+                                },
+                              } satisfies PostAction]
+                            : []),
+                        ]}
+                        moreActions={[
+                          ...(variant.id
+                            ? [{
+                                key: "save",
+                                icon: <Bookmark size={14} />,
+                                label: savedPost === key ? "Sauvegardé ✓" : "Sauvegarder",
+                                disabled: savingPost === key,
+                                title: "Sauvegarder ce post dans « Mes contenus »",
+                                onClick: () => savePost(line),
+                              } satisfies PostAction]
+                            : []),
+                          {
+                            key: "attach",
+                            icon: <ImagePlus size={14} />,
+                            label: "Joindre des images",
+                            filePicker: {
+                              accept: "image/png,image/jpeg,image/jpg,image/webp,image/gif",
+                              multiple: true,
+                              onFiles: (files) => addUploadedImages(key, files),
+                            },
+                          },
+                          {
+                            key: "image-ia",
+                            icon: <ImageIcon size={14} />,
+                            label: "Générer une image IA",
+                            title: "Prépare un prompt d'illustration à valider, puis génère l'image (5 crédits)",
+                            onClick: () => setImageModal({ key, text: textOf(line) }),
+                          },
+                          ...(onRework
+                            ? [{
+                                key: "rework",
+                                icon: <MessageSquare size={14} />,
+                                label: "Retravailler avec l'Agent IA",
+                                title: "Ouvrir ce post dans l'Agent IA pour le retravailler",
+                                onClick: () => onRework(textOf(line)),
+                              } satisfies PostAction]
+                            : []),
+                        ]}
+                      />
+                      {confirmSlack === key && (
+                        <div className="idea-footer" style={{ gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 13 }}>Envoyer ce post sur Slack pour validation ?</span>
+                          <DevSlackNote />
+                          <button
+                            className="primary-button"
+                            style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                            disabled={!!slackSending[key]}
+                            onClick={async () => {
+                              setSlackSending((p) => ({ ...p, [key]: true }));
+                              try {
+                                await fetch(`${DIRECT_API_URL}/me/integrations/slack/send-posts`, {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+                                  body: JSON.stringify({ post_id: variant.id, content: textOf(line), images: imagePayload(key) }),
+                                });
+                                setSlackSent((p) => ({ ...p, [key]: true }));
+                              } finally {
+                                setSlackSending((p) => ({ ...p, [key]: false }));
+                                setConfirmSlack(null);
+                              }
+                            }}
+                          >
+                            {slackSending[key] ? <Loader2 size={12} className="spinning" /> : null} Confirmer l&apos;envoi
+                          </button>
+                          <button className="secondary-button" style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }} onClick={() => setConfirmSlack(null)}>Annuler</button>
+                        </div>
+                      )}
+                      {published === key && <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur LinkedIn ✓</p>}
+                      {drafted === key && <p className="role-picker-hint" style={{ marginTop: 6 }}>Brouillon enregistré ✓</p>}
+                      {publishedX === key && <p className="role-picker-hint" style={{ marginTop: 6 }}>Post publié sur X ✓</p>}
+                      {scheduled[key] && (
+                        <p className="role-picker-hint" style={{ marginTop: 6 }}>
+                          {scheduled[key] === "slack" ? "Post programmé ✓ — demande de validation envoyée sur Slack." : "Post programmé sur LinkedIn ✓"}
+                        </p>
+                      )}
+                      {activeImageJobFor(key) && (
+                        <p className="role-picker-hint" style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                          <Loader2 size={12} className="spinning" /> Image IA en cours de génération… elle rejoindra ce post automatiquement.
+                        </p>
+                      )}
+                      {(images[key] || []).length > 0 && (
+                        <div style={{ marginTop: 12 }}>
+                          <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                            {(images[key] || []).length} image{(images[key] || []).length > 1 ? "s" : ""} jointe{(images[key] || []).length > 1 ? "s" : ""} au post LinkedIn.
+                          </p>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
+                            {(images[key] || []).map((image, imageIndex) => (
+                              <div key={image.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
+                                <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                                <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                                  <a
+                                    href={image.url}
+                                    download={image.filename || `post-image-${imageIndex + 1}.png`}
+                                    className="secondary-button"
+                                    style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}
+                                  >
+                                    <Download size={12} /> Télécharger
+                                  </a>
+                                  <button
+                                    className="secondary-button"
+                                    style={{ minHeight: 28, padding: "0 8px", fontSize: 12 }}
+                                    onClick={() => removeImage(key, image.id)}
+                                  >
+                                    <Trash2 size={12} /> Retirer
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         </div>
-                      ))}
+                      )}
                     </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {(hiddenCount > 0 || showAllLines) && (
+          <button
+            className="secondary-button"
+            style={{ marginTop: 10 }}
+            onClick={() => setShowAllLines((v) => !v)}
+          >
+            {showAllLines
+              ? <>Réduire <ChevronDown size={14} style={{ transform: "rotate(180deg)" }} /></>
+              : <>Tout voir ({lines.length}) <ChevronDown size={14} /></>}
+          </button>
+        )}
+      </div>
+
+      {/* ALE-287 : le réservoir a sa place ICI. Il ne vivait plus que dans la
+          pop-up, où l'on ne pouvait ni en ajouter plusieurs, ni en supprimer, ni
+          les réordonner — alors que l'ordre décide de ce que le cron pioche. */}
+      <div style={{ marginTop: 28 }}>
+        <IdeaReservoir
+          isAuthed={isAuthed}
+          desc="Note tes idées quand elles viennent. Génère le post quand tu veux — l'idée du jour pioche aussi dedans, de haut en bas."
+          onGenerate={(text) => {
+            if (!isAuthed) { requireAuth("Connecte-toi pour générer des posts."); return; }
+            setWizard({ idea: text });
+          }}
+        />
+      </div>
+
       {publishError && <div className="error" style={{ marginTop: 12 }}>{publishError}</div>}
       {imageError && <div className="error" style={{ marginTop: 12 }}>{imageError}</div>}
+
+      {wizard && (
+        <PostWizardModal
+          initialIdea={wizard.idea}
+          onClose={() => setWizard(null)}
+          onLaunched={(job) => {
+            // Le post apparaît aussitôt en file, sans attendre le prochain tour
+            // de polling — sinon le client croirait que son clic n'a rien fait.
+            onGenerationJobCreated(job);
+            setExpanded(null);
+          }}
+        />
+      )}
 
       {imageModal && (
         <ImageGenModal
           postText={imageModal.text}
-          targetKey={`variant:${imageModal.index}`}
+          targetKey={`variant:${imageModal.key}`}
           imageJobs={imageJobs}
           onImageJobCreated={onImageJobCreated}
           onClose={() => setImageModal(null)}
         />
       )}
 
-      {confirmIndex !== null && (
+      {confirmPublish !== null && (
         <PublishConfirmModal
-          text={editedVariants[confirmIndex] ?? variants[confirmIndex]?.post ?? ""}
-          images={(variantImages[confirmIndex] || []).map((im) => ({ url: im.url, filename: im.filename }))}
+          text={edited[confirmPublish] ?? lines.find((l) => l.key === confirmPublish)?.variant?.post ?? ""}
+          images={(images[confirmPublish] || []).map((im) => ({ url: im.url, filename: im.filename }))}
           busy={publishing !== null}
-          onClose={() => setConfirmIndex(null)}
+          onClose={() => setConfirmPublish(null)}
           onConfirm={(t) => {
-            const i = confirmIndex!;
-            setEditedVariants((prev) => ({ ...prev, [i]: t }));
-            doPublish(i, t);
+            const key = confirmPublish;
+            setEdited((prev) => ({ ...prev, [key]: t }));
+            void doPublish(key, t);
           }}
         />
       )}
 
-      {confirmXIndex !== null && (
-        <div style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
-          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
-        }}>
+      {confirmX !== null && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
           <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
             <h3 style={{ marginTop: 0, marginBottom: 8 }}>Publier ce post sur X ?</h3>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
@@ -3589,19 +4635,17 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
             </p>
             <textarea
               readOnly
-              value={editedVariants[confirmXIndex] ?? variants[confirmXIndex]?.post ?? ""}
+              value={edited[confirmX] ?? lines.find((l) => l.key === confirmX)?.variant?.post ?? ""}
               rows={8}
               className="variant-text"
               style={{ width: "100%", boxSizing: "border-box", marginBottom: 16 }}
             />
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button className="secondary-button" onClick={() => setConfirmXIndex(null)}>
-                Annuler
-              </button>
+              <button className="secondary-button" onClick={() => setConfirmX(null)}>Annuler</button>
               <button
                 className="primary-button"
                 disabled={publishingX !== null}
-                onClick={() => doPublishX(confirmXIndex, editedVariants[confirmXIndex] ?? variants[confirmXIndex]?.post ?? "")}
+                onClick={() => doPublishX(confirmX, edited[confirmX] ?? lines.find((l) => l.key === confirmX)?.variant?.post ?? "")}
               >
                 {publishingX !== null
                   ? <><Loader2 size={14} className="spinning" /> Publication…</>
@@ -3620,12 +4664,11 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
           slackConnected={!!slack.status?.connected}
           onClose={() => setScheduleModal(null)}
           onScheduled={(viaSlack) => {
-            setScheduledIndices((prev) => ({ ...prev, [scheduleModal.index]: viaSlack ? "slack" : "direct" }));
+            setScheduled((prev) => ({ ...prev, [scheduleModal.key]: viaSlack ? "slack" : "direct" }));
             setScheduleModal(null);
           }}
         />
       )}
-      {scheduleError && !scheduleModal && <div className="error" style={{ marginTop: 12 }}>{scheduleError}</div>}
     </div>
   );
 }
@@ -3695,21 +4738,9 @@ function DailyIdeasView({
   onImageJobCreated: (job: ImageJob) => void;
 }) {
   const [ideas, setIdeas] = useState<DailyIdea[]>([]);
-  const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
-  const [draft, setDraft] = useState("");
-  const [draftComment, setDraftComment] = useState("");
   const [loading, setLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
-  const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
-  const [dragId, setDragId] = useState<string | null>(null);
-  // Drag armé uniquement quand on saisit la poignée (le texte reste sélectionnable).
-  const [dragArmedId, setDragArmedId] = useState<string | null>(null);
-  // Édition d'une idée du réservoir.
-  const [editingSeedId, setEditingSeedId] = useState<string | null>(null);
-  const [editSeedText, setEditSeedText] = useState("");
-  const [editSeedComment, setEditSeedComment] = useState("");
-  const [savingSeedEdit, setSavingSeedEdit] = useState(false);
 
   // ALE-143 : lot d'idées « une ligne »
   const [ideaBatch, setIdeaBatch] = useState<IdeaLine[]>([]);
@@ -3890,11 +4921,8 @@ function DailyIdeasView({
     setError("");
     try {
       const headers = await authHeaders();
-      // Compte restreint : seul le réservoir est utile (pas de corpus → pas d'idée du jour).
-      const sRes = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, { headers });
-      const sData = await sRes.json();
-      if (!sRes.ok) throw new Error(sData.detail || "Chargement du réservoir impossible");
-      setSeeds(Array.isArray(sData) ? sData : []);
+      // Le réservoir se charge lui-même (IdeaReservoir). Compte restreint : pas de
+      // corpus, donc rien d'autre à aller chercher.
       if (!reservoirOnly) {
         const dRes = await fetch(`${DIRECT_API_URL}/me/daily-ideas`, { headers });
         const dData = await dRes.json();
@@ -3910,7 +4938,7 @@ function DailyIdeasView({
 
   useEffect(() => {
     if (isAuthed) void loadAll();
-    else { setIdeas([]); setSeeds([]); }
+    else setIdeas([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
@@ -3936,100 +4964,6 @@ function DailyIdeasView({
       setError(err.message || "Régénération impossible");
     } finally {
       setRegenerating(false);
-    }
-  }
-
-  async function addSeed() {
-    const text = draft.trim();
-    if (text.length < 3) return;
-    // Le commentaire d'orientation n'a de sens que pour un lien d'annonce.
-    const isLinkDraft = /^https?:\/\/\S+$/i.test(text);
-    const comment = isLinkDraft ? draftComment.trim() : "";
-    setAdding(true);
-    setError("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify(comment ? { text, comment } : { text }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Ajout impossible");
-      setSeeds((prev) => [...prev, data]);
-      setDraft("");
-      setDraftComment("");
-    } catch (err: any) {
-      setError(err.message || "Ajout impossible");
-    } finally {
-      setAdding(false);
-    }
-  }
-
-  async function deleteSeed(id: string) {
-    setSeeds((prev) => prev.filter((s) => s.id !== id));
-    try {
-      await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, { method: "DELETE", headers: await authHeaders() });
-    } catch { void loadAll(); }
-  }
-
-  // Glisser-déposer : réordonne le réservoir. Le cron (idée du jour / posts hebdo)
-  // pioche ensuite dans ce nouvel ordre.
-  function reorderTo(targetId: string) {
-    if (!dragId || dragId === targetId) return;
-    setSeeds((prev) => {
-      const from = prev.findIndex((s) => s.id === dragId);
-      const to = prev.findIndex((s) => s.id === targetId);
-      if (from < 0 || to < 0 || from === to) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
-  }
-
-  async function persistSeedOrder() {
-    setDragId(null);
-    try {
-      const ordered_ids = seeds.map((s) => s.id);
-      await fetch(`${DIRECT_API_URL}/me/idea-seeds/reorder`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ ordered_ids }),
-      });
-    } catch { void loadAll(); }
-  }
-
-  // Édition d'une idée du réservoir (texte + commentaire d'orientation).
-  function startSeedEdit(s: IdeaSeed) {
-    setEditingSeedId(s.id);
-    setEditSeedText(s.text || "");
-    setEditSeedComment(s.comment || "");
-    setError("");
-  }
-
-  async function saveSeedEdit(id: string) {
-    const text = editSeedText.trim();
-    if (text.length < 3) return;
-    const isLinkEdit = /^https?:\/\/\S+$/i.test(text);
-    // Le commentaire d'orientation n'a de sens que pour un lien d'annonce ;
-    // "" = effacer côté backend.
-    const comment = isLinkEdit ? editSeedComment.trim() : "";
-    setSavingSeedEdit(true);
-    setError("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ text, comment }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Modification impossible");
-      setSeeds((prev) => prev.map((s) => (s.id === id ? data : s)));
-      setEditingSeedId(null);
-    } catch (err: any) {
-      setError(err.message || "Modification impossible");
-    } finally {
-      setSavingSeedEdit(false);
     }
   }
 
@@ -4363,123 +5297,7 @@ function DailyIdeasView({
       </>
       )}
 
-      <div className="card daily-reservoir" style={{ marginTop: reservoirOnly ? 0 : 24 }}>
-        <div className="daily-reservoir-head">
-          <div>
-            <h3 className="daily-subtitle" style={{ margin: 0 }}><Lightbulb size={16} /> Mon réservoir d'idées</h3>
-            <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées : l'idée du jour piochera dedans en priorité.</p>
-          </div>
-        </div>
-
-        {reservoirOnly && error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
-
-        <div className="daily-add">
-          <input
-            type="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
-            placeholder="Une idée de post…"
-            maxLength={2000}
-          />
-          <button className="primary-button" onClick={addSeed} disabled={adding || draft.trim().length < 3}>
-            {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter
-          </button>
-        </div>
-        {/* Champ d'orientation : uniquement quand l'idée saisie est un lien d'annonce. */}
-        {/^https?:\/\/\S+$/i.test(draft.trim()) && (
-          <input
-            type="text"
-            value={draftComment}
-            onChange={(e) => setDraftComment(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
-            placeholder="Commentaire pour orienter le post (optionnel) — ex. « insiste sur la vue mer »"
-            maxLength={500}
-            style={{ marginTop: 8, width: "100%", boxSizing: "border-box" }}
-          />
-        )}
-
-        {seeds.length === 0 ? (
-          <p style={{ color: "var(--muted)", margin: "12px 0 0", fontSize: 13 }}>Réservoir vide — l'idée du jour s'appuiera sur ton seul benchmark.</p>
-        ) : (
-          <ul className="daily-seed-list">
-            {seeds.map((s) => {
-              const isLink = /^https?:\/\/\S+$/i.test((s.text || "").trim());
-              const isEditing = editingSeedId === s.id;
-              const editIsLink = /^https?:\/\/\S+$/i.test(editSeedText.trim());
-              return (
-              <li
-                key={s.id}
-                className={`${s.used_at ? "used" : ""}${dragId === s.id ? " dragging" : ""}`}
-                // Drag armé uniquement depuis la poignée : le texte reste sélectionnable.
-                draggable={dragArmedId === s.id && !isEditing}
-                onDragStart={() => setDragId(s.id)}
-                onDragOver={(e) => { e.preventDefault(); reorderTo(s.id); }}
-                onDrop={(e) => { e.preventDefault(); setDragArmedId(null); void persistSeedOrder(); }}
-                onDragEnd={() => { setDragArmedId(null); void persistSeedOrder(); }}
-              >
-                <span
-                  className="daily-seed-grip"
-                  title="Glisser pour réordonner"
-                  aria-hidden
-                  onMouseDown={() => setDragArmedId(s.id)}
-                  onMouseUp={() => setDragArmedId(null)}
-                  onTouchStart={() => setDragArmedId(s.id)}
-                >
-                  <GripVertical size={14} />
-                </span>
-                {isEditing ? (
-                  <span className="daily-seed-text" style={{ display: "grid", gap: 6 }}>
-                    <input
-                      type="text"
-                      value={editSeedText}
-                      autoFocus
-                      onChange={(e) => setEditSeedText(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveSeedEdit(s.id); } if (e.key === "Escape") setEditingSeedId(null); }}
-                      maxLength={2000}
-                      style={{ width: "100%", boxSizing: "border-box" }}
-                    />
-                    {editIsLink && (
-                      <input
-                        type="text"
-                        value={editSeedComment}
-                        onChange={(e) => setEditSeedComment(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveSeedEdit(s.id); } if (e.key === "Escape") setEditingSeedId(null); }}
-                        placeholder="Commentaire pour orienter le post (optionnel)"
-                        maxLength={500}
-                        style={{ width: "100%", boxSizing: "border-box" }}
-                      />
-                    )}
-                    <span style={{ display: "flex", gap: 6 }}>
-                      <button
-                        className="primary-button"
-                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
-                        disabled={savingSeedEdit || editSeedText.trim().length < 3}
-                        onClick={() => void saveSeedEdit(s.id)}
-                      >
-                        {savingSeedEdit ? <Loader2 size={12} className="spinning" /> : null} Sauvegarder
-                      </button>
-                      <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} onClick={() => setEditingSeedId(null)}>Annuler</button>
-                    </span>
-                  </span>
-                ) : (
-                  <span className="daily-seed-text">
-                    {isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}
-                    {s.comment ? <em style={{ display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 }}>↳ orientation : {s.comment}</em> : null}
-                  </span>
-                )}
-                {!isEditing && isLink && !s.used_at ? <span className="daily-seed-tag">annonce</span> : null}
-                {!isEditing && s.used_at ? <span className="daily-seed-tag"><CheckCircle2 size={12} /> utilisée</span> : null}
-                {!isEditing && (
-                  <button className="icon-button" title="Modifier" onClick={() => startSeedEdit(s)}><Pencil size={14} /></button>
-                )}
-                <button className="icon-button" title="Supprimer" onClick={() => deleteSeed(s.id)}><Trash2 size={14} /></button>
-              </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
+      <IdeaReservoir isAuthed={isAuthed} />
     </div>
   );
 }
@@ -5701,108 +6519,83 @@ const MANYCHAT_BODY_TEMPLATE = `{
 // chaque client relie SON compte LinkedIn. Porte aussi le plafond quotidien de
 // quota (garde-fou anti-restriction). Distinct de la connexion « Publier sur
 // LinkedIn » (Zernio) : Zernio publie des posts, Unipile fait la messagerie.
-function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
-  const outreach = useLinkedInOutreach(isAuthed);
-  const [capOpen, setCapOpen] = useState(false);
-  const [capDraft, setCapDraft] = useState<number>(25);
-
-  const st = outreach.status;
-  const connected = !!st?.connected;
-  const q = st?.quota;
-
-  useEffect(() => { if (q?.daily_cap) setCapDraft(q.daily_cap); }, [q?.daily_cap]);
-
-  if (!isAuthed) return null;
-
+/* ─── Ligne de réglage repliable (onglets Connexions / Automatisations du profil).
+   Le profil empilait une carte pleine largeur par connexion : à cinq connexions,
+   la page ne tenait plus à l'écran. Une ligne ne dit que l'essentiel (ce que ça
+   débloque, l'état, l'action) ; les réglages ne se déplient qu'au clic. ─── */
+function SettingRow({
+  icon,
+  name,
+  why,
+  right,
+  open,
+  onToggle,
+  children,
+}: {
+  icon: React.ReactNode;
+  name: string;
+  why: React.ReactNode;
+  right?: React.ReactNode;
+  open?: boolean;
+  onToggle?: () => void;
+  children?: React.ReactNode;
+}) {
+  const expandable = !!onToggle;
   return (
-    <>
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Send size={20} style={{ flexShrink: 0, color: "#0a66c2" }} />
-          <div>
-            <strong>Contacter tes leads sur LinkedIn (prospection)</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {!st?.configured
-                ? "Messagerie LinkedIn non configurée sur le serveur (Unipile)."
-                : connected
-                  ? "Compte LinkedIn relié — tu peux envoyer des demandes de connexion et des messages à tes leads depuis l'onglet Prospection."
-                  : "Connecte ton compte LinkedIn pour envoyer des invitations et des messages à tes leads, sans quitter l'app."}
-            </p>
-          </div>
+    <section className="card" style={{ marginBottom: 10, padding: 0, overflow: "hidden" }}>
+      <div
+        role={expandable ? "button" : undefined}
+        tabIndex={expandable ? 0 : undefined}
+        aria-expanded={expandable ? !!open : undefined}
+        onClick={expandable ? onToggle : undefined}
+        onKeyDown={
+          expandable
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle!(); }
+              }
+            : undefined
+        }
+        style={{
+          display: "flex", alignItems: "center", gap: 12, padding: "12px 14px",
+          cursor: expandable ? "pointer" : "default",
+        }}
+      >
+        <span style={{ flexShrink: 0, display: "grid", placeItems: "center", width: 24 }}>{icon}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <strong style={{ fontSize: 13.5 }}>{name}</strong>
+          <p className="section-desc" style={{ margin: 0, fontSize: 12 }}>{why}</p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {connected ? (
-            <>
-              <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
-              <button className="secondary-button" onClick={() => setCapOpen((v) => !v)} style={{ fontSize: 12 }}>
-                <Settings2 size={13} /> {capOpen ? "Masquer les quotas" : "Quotas"}
-              </button>
-              <button className="secondary-button" onClick={outreach.disconnect} disabled={outreach.busy} style={{ fontSize: 12 }}>
-                {outreach.busy ? <Loader2 size={12} className="spinning" /> : null} Délier
-              </button>
-            </>
-          ) : st?.configured ? (
-            <button className="primary-button" onClick={outreach.connect} disabled={outreach.busy}>
-              {outreach.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
-              {outreach.busy ? "Redirection…" : "Connecter LinkedIn"}
-            </button>
-          ) : null}
+        {/* Les contrôles ne doivent pas déplier la ligne au passage. */}
+        <div
+          style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {right}
         </div>
-      </section>
-
-      {connected && q && capOpen && (
-        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
-          <p style={{ fontSize: 13, margin: "0 0 10px" }}>
-            <strong>Garde-fous quota</strong> — ils protègent ton compte LinkedIn d&apos;une restriction.
-            Le plafond quotidien s&apos;applique séparément aux invitations et aux messages ; une sécurité
-            hebdomadaire glissante (~{q.weekly_invite_cap} invitations / 7 jours) s&apos;ajoute par-dessus.
-          </p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 12 }}>
-            <div className="card" style={{ padding: "10px 12px" }}>
-              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>Invitations aujourd&apos;hui</div>
-              <div style={{ fontSize: 20, fontWeight: 700 }}>{q.invites_today}<span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}> / {q.daily_cap}</span></div>
-              <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{q.invites_week}/{q.weekly_invite_cap} sur 7 jours</div>
-            </div>
-            <div className="card" style={{ padding: "10px 12px" }}>
-              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>Messages aujourd&apos;hui</div>
-              <div style={{ fontSize: 20, fontWeight: 700 }}>{q.messages_today}<span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}> / {q.daily_cap}</span></div>
-            </div>
-          </div>
-          <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, fontWeight: 600, flexWrap: "wrap" }}>
-            Plafond quotidien
-            <input
-              type="number" min={1} max={100} value={capDraft}
-              onChange={(e) => setCapDraft(Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
-              style={{ width: 80, padding: 8, fontSize: 13, fontWeight: 400 }}
-            />
-            <button className="primary-button" onClick={() => outreach.setDailyCap(capDraft)} disabled={outreach.busy || capDraft === q.daily_cap} style={{ fontSize: 13 }}>
-              {outreach.busy ? <Loader2 size={13} className="spinning" /> : <CheckCircle2 size={13} />} Enregistrer
-            </button>
-          </label>
-          <p style={{ fontSize: 11.5, color: "var(--muted)", margin: "8px 0 0" }}>
-            Recommandé : 25 max/jour pour un compte établi. Monte progressivement pour un compte récent.
-          </p>
-        </section>
+        {expandable && (
+          <ChevronRight
+            size={16}
+            style={{
+              flexShrink: 0, color: "var(--muted)",
+              transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s",
+            }}
+          />
+        )}
+      </div>
+      {expandable && open && (
+        <div style={{ padding: 14, borderTop: "1px solid var(--border)" }}>{children}</div>
       )}
-      {outreach.error && <div className="error" style={{ marginBottom: 12 }}>{outreach.error}</div>}
-    </>
+    </section>
   );
 }
 
-// Connexion ManyChat (par client), affichée dans le profil à côté des autres
-// connexions (LinkedIn/X/Slack). ManyChat est le pont d'envoi vers les DM
-// Instagram : clé API + webhook à coller côté ManyChat. C'est une étape de
-// paramétrage ponctuel, d'où sa place dans le profil plutôt que l'Inbox.
-function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
+/* État ManyChat remonté au profil : la ligne « Instagram » (Connexions) et la ligne
+   « Réponses aux DM » (Automatisations) parlent du même compte — sans ça, chacune
+   irait le chercher de son côté et elles pourraient se contredire à l'écran. */
+function useManychat(isAuthed: boolean) {
   const [status, setStatus] = useState<IgManychatStatus | null>(null);
-  const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
-  const [copied, setCopied] = useState("");
-  const [setupOpen, setSetupOpen] = useState(false);
-  // Vrai quand l'utilisateur veut ressaisir une clé alors qu'un compte est déjà
-  // relié : on repasse en mode saisie sans perdre le status côté serveur.
-  const [editingKey, setEditingKey] = useState(false);
 
   useEffect(() => {
     if (!isAuthed) { setStatus(null); return; }
@@ -5815,8 +6608,8 @@ function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
     })();
   }, [isAuthed]);
 
-  async function connect() {
-    if (!apiKey.trim()) return;
+  async function connect(apiKey: string) {
+    if (!apiKey.trim()) return false;
     setBusy(true); setNotice("");
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, {
@@ -5827,31 +6620,248 @@ function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Connexion impossible");
       setStatus(data);
-      setApiKey("");
-      setEditingKey(false);
-      setSetupOpen(true);
       setNotice("✓ Compte ManyChat relié. Copie l'URL et le secret ci-dessous dans ton flow ManyChat.");
+      return true;
     } catch (err: any) {
       setNotice(`Erreur : ${err.message}`);
+      return false;
     } finally {
       setBusy(false);
     }
   }
 
   async function disconnect() {
-    if (!window.confirm("Délier le compte ManyChat ?")) return;
+    if (!window.confirm("Délier le compte ManyChat ?")) return false;
     setBusy(true); setNotice("");
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, { method: "DELETE", headers: await authHeaders() });
       if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Déconnexion impossible"); }
       setStatus({ connected: false });
-      setSetupOpen(false);
       setNotice("Compte ManyChat délié.");
+      return true;
     } catch (err: any) {
       setNotice(`Erreur : ${err.message}`);
+      return false;
     } finally {
       setBusy(false);
     }
+  }
+
+  return { status, busy, notice, setNotice, connect, disconnect };
+}
+
+function UnipileOutreachConnect({
+  outreach,
+  open,
+  onToggle,
+}: {
+  outreach: ReturnType<typeof useLinkedInOutreach>;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const [capDraft, setCapDraft] = useState<number>(25);
+  // ALE-174 — fenêtre d'envoi du moteur (heures de bureau du client).
+  const [hoursDraft, setHoursDraft] = useState<[number, number]>([9, 18]);
+  const [daysDraft, setDaysDraft] = useState<number[]>([1, 2, 3, 4, 5]);
+
+  const st = outreach.status;
+  const connected = !!st?.connected;
+  const q = st?.quota;
+  const eng = st?.engine;
+
+  useEffect(() => { if (q?.daily_cap) setCapDraft(q.daily_cap); }, [q?.daily_cap]);
+  useEffect(() => {
+    if (eng?.window) {
+      setHoursDraft([eng.window.hour_start, eng.window.hour_end]);
+      setDaysDraft(eng.window.days);
+    }
+  }, [eng?.window?.hour_start, eng?.window?.hour_end, eng?.window?.days?.join(",")]);
+
+  const toggleDay = (d: number) =>
+    setDaysDraft((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort()));
+
+  return (
+    <>
+      {/* ALE-174 — un moteur qui plante en silence est pire qu'un moteur absent : le
+          client croirait que sa prospection tourne. Un cron mort ne peut pas alerter
+          sur sa propre mort, donc c'est l'app qui le dit, ici, en rouge. Ces deux
+          bandeaux restent HORS de la ligne repliable : une alerte qui exige un clic
+          pour être lue n'est plus une alerte. */}
+      {connected && eng?.stalled && (
+        <div className="error" style={{ marginBottom: 12 }}>
+          <strong>Ta prospection est à l&apos;arrêt.</strong> {eng.pending} action(s) attendent en file mais le
+          moteur d&apos;envoi n&apos;est pas passé depuis {formatAgo(eng.last_run_at)}. Rien ne part.
+          {eng.last_run_error ? <> Dernière erreur : {eng.last_run_error}</> : null}
+        </div>
+      )}
+      {connected && eng?.frozen && (
+        <div className="card" style={{ marginBottom: 12, padding: 12, borderColor: "var(--warning, #b8860b)" }}>
+          <strong>⏸ Envois en pause de sécurité.</strong>{" "}
+          {eng.freeze_reason || "LinkedIn a signalé une limite."}{" "}
+          {eng.frozen_until ? `Reprise automatique ${formatEta(eng.frozen_until)}.` : ""}
+          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
+            La pause n&apos;est pas levable à la main : c&apos;est elle qui protège ton compte d&apos;une restriction.
+            Tes actions restent en file et repartiront toutes seules.
+          </p>
+        </div>
+      )}
+
+      <SettingRow
+        icon={<Send size={18} style={{ color: "#0a66c2" }} />}
+        name="Prospection LinkedIn"
+        why={
+          !st?.configured
+            ? "Messagerie LinkedIn non configurée sur le serveur."
+            : connected
+              ? `Envoyer invitations et messages à tes leads${q ? ` · ${q.invites_today}/${q.daily_cap} invitations aujourd'hui` : ""}`
+              : "Envoyer invitations et messages à tes leads, sans quitter l'app"
+        }
+        open={open}
+        onToggle={connected && q ? onToggle : undefined}
+        right={
+          connected ? (
+            <>
+              <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+              <button className="secondary-button" onClick={outreach.disconnect} disabled={outreach.busy} style={{ fontSize: 12 }}>
+                {outreach.busy ? <Loader2 size={12} className="spinning" /> : null} Délier
+              </button>
+            </>
+          ) : st?.configured ? (
+            <button className="primary-button" onClick={outreach.connect} disabled={outreach.busy}>
+              {outreach.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+              {outreach.busy ? "Redirection…" : "Connecter"}
+            </button>
+          ) : (
+            <span className="status-pill">Non configuré</span>
+          )
+        }
+      >
+        {connected && q && (
+          <>
+          <p style={{ fontSize: 13, margin: "0 0 10px" }}>
+            <strong>Rythme d&apos;envoi</strong> — tes actions ne partent pas au clic : elles entrent dans une
+            file, et le moteur les envoie une par une, dans ta plage horaire, avec un délai variable entre
+            chacune. C&apos;est ce qui te fait ressembler à quelqu&apos;un qui prospecte, et pas à un robot.
+          </p>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 12 }}>
+            <div className="card" style={{ padding: "10px 12px" }}>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>Invitations aujourd&apos;hui</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{q.invites_today}<span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}> / {q.daily_cap}</span></div>
+              <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{q.invites_week}/{q.weekly_invite_cap} sur 7 jours</div>
+            </div>
+            <div className="card" style={{ padding: "10px 12px" }}>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>Messages aujourd&apos;hui</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>{q.messages_today}<span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}> / {q.daily_cap}</span></div>
+            </div>
+            {eng && (
+              <div className="card" style={{ padding: "10px 12px" }}>
+                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>En file</div>
+                <div style={{ fontSize: 20, fontWeight: 700 }}>{eng.pending}</div>
+                <div style={{ fontSize: 11.5, color: "var(--muted)" }}>Moteur passé {formatAgo(eng.last_run_at)}</div>
+              </div>
+            )}
+          </div>
+
+          {eng && eng.warmup_week <= eng.warmup_weeks_total && (
+            <p style={{ fontSize: 12.5, margin: "0 0 12px", padding: "8px 10px", background: "var(--surface-2, rgba(0,0,0,.03))", borderRadius: 8 }}>
+              🌱 <strong>Mise en route — semaine {eng.warmup_week}/{eng.warmup_weeks_total}</strong> : {eng.warmup_cap} actions
+              par jour maximum pour l&apos;instant. Un compte qui se met à envoyer beaucoup du jour au lendemain est
+              exactement ce que LinkedIn repère — on monte progressivement, tu n&apos;as rien à faire.
+            </p>
+          )}
+
+          <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, fontWeight: 600, flexWrap: "wrap", marginBottom: 10 }}>
+            Plafond quotidien
+            <input
+              type="number" min={1} max={100} value={capDraft}
+              onChange={(e) => setCapDraft(Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
+              style={{ width: 80, padding: 8, fontSize: 13, fontWeight: 400 }}
+            />
+            <button className="primary-button" onClick={() => outreach.saveSettings({ daily_cap: capDraft })} disabled={outreach.busy || capDraft === q.daily_cap} style={{ fontSize: 13 }}>
+              {outreach.busy ? <Loader2 size={13} className="spinning" /> : <CheckCircle2 size={13} />} Enregistrer
+            </button>
+          </label>
+
+          <div style={{ display: "grid", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Quand tes actions peuvent partir</div>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, flexWrap: "wrap" }}>
+              Entre
+              <input type="number" min={0} max={23} value={hoursDraft[0]}
+                onChange={(e) => setHoursDraft(([, end]) => [Math.max(0, Math.min(23, Number(e.target.value) || 0)), end])}
+                style={{ width: 64, padding: 8, fontSize: 13 }} />
+              h et
+              <input type="number" min={1} max={24} value={hoursDraft[1]}
+                onChange={(e) => setHoursDraft(([start]) => [start, Math.max(1, Math.min(24, Number(e.target.value) || 1))])}
+                style={{ width: 64, padding: 8, fontSize: 13 }} />
+              h ({eng?.window.timezone || "Europe/Paris"})
+            </label>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              {WEEKDAY_LABELS.map((label, i) => {
+                const day = i + 1;
+                const on = daysDraft.includes(day);
+                return (
+                  <button
+                    key={day}
+                    className={on ? "primary-button" : "secondary-button"}
+                    onClick={() => toggleDay(day)}
+                    style={{ width: 36, padding: "6px 0", fontSize: 12, justifyContent: "center" }}
+                    title={on ? "Jour d'envoi" : "Aucun envoi ce jour"}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+              <button
+                className="primary-button"
+                disabled={outreach.busy || !daysDraft.length}
+                onClick={() => outreach.saveSettings({ send_hour_start: hoursDraft[0], send_hour_end: hoursDraft[1], send_days: daysDraft })}
+                style={{ fontSize: 13, marginLeft: "auto" }}
+              >
+                {outreach.busy ? <Loader2 size={13} className="spinning" /> : <CheckCircle2 size={13} />} Enregistrer
+              </button>
+            </div>
+            <p style={{ fontSize: 11.5, color: "var(--muted)", margin: 0 }}>
+              Recommandé : heures de bureau, jours ouvrés. Des invitations qui partent à 3 h du matin, un
+              dimanche, c&apos;est le signal le plus facile à repérer pour LinkedIn.
+            </p>
+          </div>
+          </>
+        )}
+      </SettingRow>
+      {outreach.error && <div className="error" style={{ marginBottom: 12 }}>{outreach.error}</div>}
+    </>
+  );
+}
+
+// Connexion ManyChat (par client), affichée dans le profil à côté des autres
+// connexions (LinkedIn/X/Slack). ManyChat est le pont d'envoi vers les DM
+// Instagram : clé API + webhook à coller côté ManyChat. C'est une étape de
+// paramétrage ponctuel, d'où sa place dans le profil plutôt que l'Inbox.
+function ManychatConnect({
+  manychat,
+  open,
+  onToggle,
+}: {
+  manychat: ReturnType<typeof useManychat>;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const { status, busy, notice, setNotice } = manychat;
+  const [apiKey, setApiKey] = useState("");
+  const [copied, setCopied] = useState("");
+  // Vrai quand l'utilisateur veut ressaisir une clé alors qu'un compte est déjà
+  // relié : on repasse en mode saisie sans perdre le status côté serveur.
+  const [editingKey, setEditingKey] = useState(false);
+
+  async function connect() {
+    const ok = await manychat.connect(apiKey);
+    if (ok) { setApiKey(""); setEditingKey(false); }
+  }
+
+  async function disconnect() {
+    const ok = await manychat.disconnect();
+    if (ok) setEditingKey(false);
   }
 
   async function copy(value: string, label: string) {
@@ -5865,41 +6875,38 @@ function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
   const connected = !!status?.connected && !editingKey;
 
   return (
-    <>
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <MessageSquare size={20} style={{ flexShrink: 0, color: "#2563eb" }} />
-          <div>
-            <strong>Répondre aux DM Instagram (ManyChat)</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {connected
-                ? "Compte ManyChat relié — l'agent peut envoyer ses réponses à tes prospects sur Instagram."
-                : "Connecte ManyChat pour recevoir les DM Instagram dans l'Inbox et laisser l'agent y répondre."}
-            </p>
-          </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+    <SettingRow
+      icon={<MessageSquare size={18} style={{ color: "#2563eb" }} />}
+      name="Instagram (ManyChat)"
+      why={
+        connected
+          ? "Recevoir les DM dans l'Inbox et laisser l'agent y répondre"
+          : "Connecte ManyChat pour recevoir tes DM Instagram dans l'Inbox"
+      }
+      open={open}
+      onToggle={onToggle}
+      right={
+        <>
           <a href="/manychat-test" className="secondary-button" style={{ fontSize: 12, whiteSpace: "nowrap", textDecoration: "none" }} title="Tester l'agent avec un faux DM entrant">
             🧪 Simulateur
           </a>
           {connected ? (
             <>
               <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
-              <button className="secondary-button" onClick={() => setSetupOpen((v) => !v)} style={{ fontSize: 12 }}>
-                {setupOpen ? "Masquer le webhook" : "Configurer le webhook"}
-              </button>
               <button className="secondary-button" onClick={disconnect} disabled={busy} style={{ fontSize: 12 }}>
                 {busy ? <Loader2 size={12} className="spinning" /> : null}
                 Délier
               </button>
             </>
-          ) : null}
-        </div>
-      </section>
-
+          ) : (
+            <span className="status-pill">Non connecté</span>
+          )}
+        </>
+      }
+    >
       {!connected && (
-        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
-          <p style={{ fontSize: 13, marginBottom: 8 }}>
+        <>
+          <p style={{ fontSize: 13, marginTop: 0, marginBottom: 8 }}>
             <strong>Connecter ton compte ManyChat.</strong> Colle ta clé API ManyChat
             (ManyChat → Settings → API → Generate your token). Elle sert à envoyer les
             réponses de l'agent à tes prospects. Après connexion, tu recevras une URL de
@@ -5923,12 +6930,12 @@ function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
             )}
           </div>
           {notice && <div style={{ fontSize: 12, marginTop: 10, opacity: 0.85 }}>{notice}</div>}
-        </section>
+        </>
       )}
 
-      {connected && setupOpen && (
-        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
-          <p style={{ fontSize: 13, marginBottom: 6 }}>
+      {connected && (
+        <>
+          <p style={{ fontSize: 13, marginTop: 0, marginBottom: 6 }}>
             <strong>✓ Compte ManyChat relié</strong>
             {status?.api_token_masked && <span style={{ opacity: 0.7 }}> (clé {status.api_token_masked})</span>}.
           </p>
@@ -5971,30 +6978,31 @@ function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
               </p>
             </div>
             <div>
-              <button className="secondary-button" onClick={() => { setEditingKey(true); setSetupOpen(false); setNotice(""); }} disabled={busy} style={{ fontSize: 12 }}>
+              <button className="secondary-button" onClick={() => { setEditingKey(true); setNotice(""); }} disabled={busy} style={{ fontSize: 12 }}>
                 Changer la clé API
               </button>
             </div>
           </div>
           {notice && <div style={{ fontSize: 12, marginTop: 10, opacity: 0.85 }}>{notice}</div>}
-        </section>
+        </>
       )}
-    </>
+    </SettingRow>
   );
 }
 
 // Cerveau de l'agent DM (FAQ + objectif) : la seule source de vérité utilisée
 // par l'agent Instagram. Édité ponctuellement → placé dans le profil, à côté de
 // la config ManyChat, plutôt que dans le header de l'Inbox.
-function AgentFaqEditor({ isAuthed }: { isAuthed: boolean }) {
+function AgentFaqEditor({ isAuthed, active }: { isAuthed: boolean; active: boolean }) {
   const [text, setText] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
-  const [open, setOpen] = useState(false);
 
+  // Chargée seulement quand la ligne est dépliée : inutile d'aller chercher la
+  // FAQ de tous ceux qui ouvrent leur profil sans toucher à l'agent.
   useEffect(() => {
-    if (!isAuthed || loaded || !open) return;
+    if (!isAuthed || loaded || !active) return;
     (async () => {
       try {
         const res = await fetch(`${DIRECT_API_URL}/me/ig/faq`, { headers: await authHeaders() });
@@ -6002,7 +7010,7 @@ function AgentFaqEditor({ isAuthed }: { isAuthed: boolean }) {
         if (res.ok) { setText(data.content || ""); setLoaded(true); }
       } catch { /* non bloquant */ }
     })();
-  }, [isAuthed, open, loaded]);
+  }, [isAuthed, active, loaded]);
 
   async function save() {
     setSaving(true); setNotice("");
@@ -6023,43 +7031,26 @@ function AgentFaqEditor({ isAuthed }: { isAuthed: boolean }) {
   }
 
   return (
-    <section className="card" style={{ marginBottom: 16, padding: 14 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Lightbulb size={20} style={{ flexShrink: 0, color: "var(--coral)" }} />
-          <div>
-            <strong>Cerveau de l'agent (FAQ + objectif)</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              La seule source de vérité de l'agent DM : il ne répond seul que si la réponse est couverte ici, sinon il te passe la main.
-            </p>
-          </div>
-        </div>
-        <button className="secondary-button" onClick={() => setOpen((v) => !v)} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-          {open ? "Masquer" : "Éditer la FAQ"}
+    <div>
+      <p style={{ fontSize: 12, opacity: 0.8, marginTop: 0, marginBottom: 8 }}>
+        C&apos;est la seule source de vérité de l&apos;agent : il ne répond seul que si la réponse est couverte
+        ici, sinon il te passe la main. Décris ton offre, tes prix, tes questions/réponses fréquentes et
+        l&apos;objectif de la conversation (ex. proposer un appel découverte).
+      </p>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={loaded ? "Ex. : Qui es-tu ? / Quels sont tes tarifs ? / Objectif : qualifier puis proposer un appel…" : "Chargement…"}
+        rows={10}
+        style={{ width: "100%", resize: "vertical", padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13, fontFamily: "inherit" }}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
+        <button className="primary-button" onClick={save} disabled={saving || !loaded} style={{ fontSize: 13 }}>
+          {saving ? "Enregistrement…" : "Enregistrer la FAQ"}
         </button>
+        {notice && <span style={{ fontSize: 12, opacity: 0.8 }}>{notice}</span>}
       </div>
-      {open && (
-        <div style={{ marginTop: 12 }}>
-          <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
-            Décris ton offre, tes prix, tes questions/réponses fréquentes et l'objectif de la conversation
-            (ex. proposer un appel découverte).
-          </p>
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder={loaded ? "Ex. : Qui es-tu ? / Quels sont tes tarifs ? / Objectif : qualifier puis proposer un appel…" : "Chargement…"}
-            rows={10}
-            style={{ width: "100%", resize: "vertical", padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13, fontFamily: "inherit" }}
-          />
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
-            <button className="primary-button" onClick={save} disabled={saving || !loaded} style={{ fontSize: 13 }}>
-              {saving ? "Enregistrement…" : "Enregistrer la FAQ"}
-            </button>
-            {notice && <span style={{ fontSize: 12, opacity: 0.8 }}>{notice}</span>}
-          </div>
-        </div>
-      )}
-    </section>
+    </div>
   );
 }
 
@@ -7138,12 +8129,20 @@ function ProfileView({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const [aiInput, setAiInput] = useState("");
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const [draftInfo, setDraftInfo] = useState("");
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
-  const billing = useBilling(isAuthed);
+  const outreach = useLinkedInOutreach(isAuthed);
+  const manychat = useManychat(isAuthed);
+  // Trois métiers distincts vivaient sur une même page qui défilait : qui je suis,
+  // les comptes que je relie, et ce qui tourne sans moi. Un onglet par métier.
+  // (L'abonnement, lui, a rejoint le pied de la barre latérale, avec le solde.)
+  const [tab, setTab] = useState<ProfileTab>("profile");
+  // Une seule ligne dépliée à la fois : c'est ce qui empêche la page de redevenir
+  // le mur de réglages qu'on vient de démonter.
+  const [openRow, setOpenRow] = useState<string | null>(null);
+  const toggleRow = (key: string) => setOpenRow((prev) => (prev === key ? null : key));
   const [weeklyEnabled, setWeeklyEnabled] = useState(false);
   const [weeklySchedule, setWeeklySchedule] = useState<{day_of_week: number; hour: number; timezone: string}[]>([]);
   const [weeklySaving, setWeeklySaving] = useState(false);
@@ -7352,7 +8351,7 @@ function ProfileView({
       if (!res.ok) throw new Error(data.detail || "Pré-remplissage impossible");
       const merged = { ...profile, ...(data.profile || {}) };
       setProfile(merged);
-      setDetailsOpen(true); // ouvre le tiroir pour relire les champs pré-remplis
+      // (Le tiroir qu'on ouvrait ici n'existe plus : les champs sont toujours visibles.)
       const sources = data.sources || {};
       const sourceLabels = [
         sources.description ? "description" : "",
@@ -7446,200 +8445,176 @@ function ProfileView({
     );
   }
 
+  const weeklyReady = !!linkedin.status?.connected;
+  const igConnected = !!manychat.status?.connected;
+
   return (
     <div>
-      <div className="section-header">
-        <div>
-          <h2 className="section-title"><UserRound size={20} /> Contexte éditorial</h2>
-          <p className="section-desc">
-            Décris le client qui publie. Ce contexte est injecté dans les prompts `/ideas` et `/generate`.
-          </p>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span className={`status-pill ${filledCount >= 6 ? "ok" : ""}`}>{filledCount} champs remplis</span>
-          <button className="primary-button" onClick={saveProfile} disabled={saving || loading}>
-            {saving ? <Loader2 size={14} className="spinning" /> : <CheckCircle2 size={14} />}
-            {saving ? "Sauvegarde…" : "Sauvegarder"}
+      <div className="tabs">
+        {PROFILE_TABS.map((t) => (
+          <button
+            key={t.key}
+            className={`tab ${tab === t.key ? "active" : ""}`}
+            onClick={() => { setTab(t.key); setOpenRow(null); }}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+          >
+            {t.icon}
+            {t.label}
           </button>
-        </div>
+        ))}
       </div>
 
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <CreditCard size={20} color="#635bff" />
-          <div>
-            <strong>Abonnement</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {!billing.status?.enabled
-                ? "Facturation non configurée sur cet environnement."
-                : billing.status.subscribed
-                ? `Ton abonnement te recharge à ${billing.status.plan?.credits ?? 1000} crédits ${planPeriodLabel(billing.status.plan)}. Les crédits non utilisés ne sont pas reportés.`
-                : `${planPriceLabel(billing.status.plan)} — ${billing.status.plan?.credits ?? 1000} crédits rechargés ${planPeriodLabel(billing.status.plan)}. Paiement et résiliation gérés par Stripe.`}
-            </p>
-            {billing.status?.subscribed && billing.status.current_period_end && (
-              <p className="section-desc" style={{ margin: "4px 0 0", fontSize: 12 }}>
-                {billing.status.cancel_at_period_end
-                  ? `Résiliation programmée : accès jusqu'au ${formatBillingDate(billing.status.current_period_end)}.`
-                  : `Prochain rechargement le ${formatBillingDate(billing.status.current_period_end)}.`}
-              </p>
-            )}
-          </div>
-        </div>
-        {!billing.status?.enabled ? (
-          <span className="status-pill">Non configuré</span>
-        ) : billing.status.subscribed ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className={`status-pill ${billing.status.cancel_at_period_end ? "" : "ok"}`}>
-              {billing.status.cancel_at_period_end ? "Se termine bientôt" : <><CheckCircle2 size={14} /> Actif</>}
-            </span>
-            <button className="secondary-button" onClick={billing.manage} disabled={billing.busy} style={{ fontSize: 12 }}>
-              {billing.busy ? <Loader2 size={12} className="spinning" /> : null}
-              Gérer mon abonnement
-            </button>
-          </div>
-        ) : (
-          <button className="primary-button" onClick={billing.subscribe} disabled={billing.busy}>
-            {billing.busy ? <Loader2 size={14} className="spinning" /> : <CreditCard size={14} />}
-            {billing.busy ? "Redirection…" : "S'abonner"}
-          </button>
-        )}
-      </section>
-      {billing.error ? <div className="error" style={{ marginBottom: 12 }}>{billing.error}</div> : null}
-
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Linkedin size={20} color="#0a66c2" />
-          <div>
-            <strong>Publier sur LinkedIn</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {linkedin.status?.connected
-                ? "Compte LinkedIn connecté — tes posts générés peuvent être publiés directement sur LinkedIn en un clic."
-                : "Connecte ton compte LinkedIn pour publier tes posts générés directement sur LinkedIn, sans copier-coller."}
-            </p>
-          </div>
-        </div>
-        {linkedin.status?.connected ? (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
-              <button
-                className="secondary-button"
-                onClick={() => { if (window.confirm("Déconnecter le compte LinkedIn ?")) linkedin.disconnect(); }}
-                disabled={linkedin.busy}
-                style={{ fontSize: 12 }}
-              >
-                {linkedin.busy ? <Loader2 size={12} className="spinning" /> : null}
-                Déconnecter
-              </button>
-            </div>
-            {linkedinAccountDetail(linkedin.status) && (
-              <span className="section-desc" style={{ margin: 0, fontSize: 12 }}>
-                {linkedinAccountDetail(linkedin.status)}
-              </span>
-            )}
-          </div>
-        ) : (
-          <button className="primary-button" onClick={linkedin.connect} disabled={linkedin.busy}>
-            {linkedin.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
-            {linkedin.busy ? "Redirection…" : "Connecter LinkedIn"}
-          </button>
-        )}
-      </section>
-      {linkedin.error ? <div className="error" style={{ marginBottom: 12 }}>{linkedin.error}</div> : null}
-
-      <UnipileOutreachConnect isAuthed={isAuthed} />
-
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0 }}><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-          <div>
-            <strong>Publier sur X (Twitter)</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {twitter.status?.connected
-                ? "Compte X connecté — publie tes posts directement sur X en un clic."
-                : "Connecte ton compte X pour cross-poster tes posts générés sur X (Twitter)."}
-            </p>
-          </div>
-        </div>
-        {twitter.status?.connected ? (
-          <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
-        ) : (
-          <button className="primary-button" onClick={twitter.connect} disabled={twitter.busy}>
-            {twitter.busy ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
-            {twitter.busy ? "Redirection…" : "Connecter X"}
-          </button>
-        )}
-      </section>
-      {twitter.error ? <div className="error" style={{ marginBottom: 12 }}>{twitter.error}</div> : null}
-
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <svg width="20" height="20" viewBox="0 0 122.8 122.8" style={{ flexShrink: 0 }}><path d="M25.8 77.6h14.9V51.2H25.8v26.4zm7.5-36.3a8.6 8.6 0 100-17.3 8.6 8.6 0 000 17.3zm53 36.3h14.9V61.4c0-13-7-19.1-16.3-19.1-7.5 0-11 4.2-12.9 7.1V51.2H57.1c.2-4.1 0-43.6 0-43.6H72v6.3c2-3 5.5-7.4 13.4-7.4 9.8 0 17.2 6.4 17.2 20.3v26.4-.1zm0 0" fill="none"/><path d="M0 11.1C0 5 5.1 0 11.3 0h100.2c6.2 0 11.3 5 11.3 11.1v100.6c0 6.1-5.1 11.1-11.3 11.1H11.3C5.1 122.8 0 117.8 0 111.7V11.1zm32.2 12.4a8.6 8.6 0 10.1 17.2 8.6 8.6 0 00-.1-17.2zM25.8 77.6h14.9V51.2H25.8v26.4zm36.1 0h14.9V61.4c0-13-7-19.1-16.3-19.1-7.5 0-11 4.2-12.9 7.1V51.2H57.1c.2-4.1 0-43.6 0-43.6H72v6.3c2-3 5.5-7.4 13.4-7.4 9.8 0 17.2 6.4 17.2 20.3v26.4H61.9z" fill="#4A154B"/></svg>
-          <div>
-            <strong>Valider les idées sur Slack</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {slack.status?.connected
-                ? `Workspace connecté : ${slack.status.team_name || "Slack"} — envoie tes idées générées sur Slack avec boutons ✅ / ❌.`
-                : !slack.status?.configured
-                  ? "Intégration Slack non configurée sur le serveur (SLACK_CLIENT_ID manquant)."
-                  : "Connecte Slack pour valider tes idées de posts directement depuis ton téléphone."}
-            </p>
-          </div>
-        </div>
-        {slack.status?.connected ? (
-          <button className="secondary-button" onClick={slack.disconnect} disabled={slack.busy} style={{ fontSize: 12 }}>
-            {slack.busy ? <Loader2 size={14} className="spinning" /> : null}
-            Déconnecter
-          </button>
-        ) : slack.status?.configured ? (
-          <button className="primary-button" onClick={slack.connect} disabled={slack.busy}>
-            {slack.busy ? <Loader2 size={14} className="spinning" /> : null}
-            {slack.busy ? "Redirection…" : "Connecter Slack"}
-          </button>
-        ) : null}
-      </section>
-      {slack.error ? <div className="error" style={{ marginBottom: 12 }}>{slack.error}</div> : null}
-
-      <ManychatConnect isAuthed={isAuthed} />
-
-      <AgentFaqEditor isAuthed={isAuthed} />
-
-      <section className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <CalendarDays size={20} style={{ flexShrink: 0, color: "var(--coral)" }} />
-            <div>
-              <strong>Posts automatiques de la semaine</strong>
-              <p className="section-desc" style={{ margin: 0 }}>
-                Chaque <strong>vendredi matin (vers 6-7h, heure de Paris)</strong>, 3 posts sont générés pour la <strong>semaine suivante</strong> et envoyés sur Slack pour validation. Une fois validés, ils sont publiés automatiquement aux jours et heures choisis ci-dessous. Requiert LinkedIn et Slack connectés.
-              </p>
-            </div>
-          </div>
-          {(!linkedin.status?.connected || !slack.status?.connected) ? (
-            <p className="section-desc" style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
-              {!linkedin.status?.connected && !slack.status?.connected
-                ? "⚠️ Connecte LinkedIn et Slack (ci-dessus) pour activer."
-                : !linkedin.status?.connected
-                ? "⚠️ Connecte LinkedIn (ci-dessus) pour activer."
-                : "⚠️ Connecte Slack (ci-dessus) pour activer."}
-            </p>
-          ) : (
-            <label className="daily-switch">
-              <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
-              <span>Recevoir 3 posts/semaine à valider</span>
-            </label>
-          )}
-        </div>
-        {/* ALE-272 : sans Slack, les posts hebdo sont auto-validés côté serveur. */}
-        {!slack.status?.connected && (
-          <p className="section-desc" style={{ marginTop: 10, marginBottom: 0, fontSize: 12 }}>
-            Sans Slack connecté, tes posts de la semaine sont publiés automatiquement aux créneaux choisis, sans validation préalable. Connecte Slack pour les valider avant publication.
+      {tab === "connections" && (
+        <div>
+          <p className="section-desc" style={{ marginTop: 0, marginBottom: 16 }}>
+            Les comptes que tu relies à l&apos;app. Clique une ligne pour ouvrir ses réglages.
           </p>
-        )}
-        {weeklyEnabled && linkedin.status?.connected && slack.status?.connected && (
-          <div style={{ marginTop: 16 }}>
+
+          <SettingRow
+            icon={<Linkedin size={18} style={{ color: "#0a66c2" }} />}
+            name="LinkedIn"
+            why={linkedinAccountDetail(linkedin.status) || "Publier tes posts en un clic, sans copier-coller"}
+            right={
+              linkedin.status?.connected ? (
+                <>
+                  <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+                  <button
+                    className="secondary-button"
+                    onClick={() => { if (window.confirm("Déconnecter le compte LinkedIn ?")) linkedin.disconnect(); }}
+                    disabled={linkedin.busy}
+                    style={{ fontSize: 12 }}
+                  >
+                    {linkedin.busy ? <Loader2 size={12} className="spinning" /> : null}
+                    Déconnecter
+                  </button>
+                </>
+              ) : (
+                <button className="primary-button" onClick={linkedin.connect} disabled={linkedin.busy}>
+                  {linkedin.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+                  {linkedin.busy ? "Redirection…" : "Connecter"}
+                </button>
+              )
+            }
+          />
+          {linkedin.error ? <div className="error" style={{ marginBottom: 12 }}>{linkedin.error}</div> : null}
+
+          <UnipileOutreachConnect
+            outreach={outreach}
+            open={openRow === "outreach"}
+            onToggle={() => toggleRow("outreach")}
+          />
+
+          <SettingRow
+            icon={
+              <svg width="18" height="18" viewBox="0 0 122.8 122.8" style={{ flexShrink: 0 }}><path d="M0 11.1C0 5 5.1 0 11.3 0h100.2c6.2 0 11.3 5 11.3 11.1v100.6c0 6.1-5.1 11.1-11.3 11.1H11.3C5.1 122.8 0 117.8 0 111.7V11.1zm32.2 12.4a8.6 8.6 0 10.1 17.2 8.6 8.6 0 00-.1-17.2zM25.8 77.6h14.9V51.2H25.8v26.4zm36.1 0h14.9V61.4c0-13-7-19.1-16.3-19.1-7.5 0-11 4.2-12.9 7.1V51.2H57.1c.2-4.1 0-43.6 0-43.6H72v6.3c2-3 5.5-7.4 13.4-7.4 9.8 0 17.2 6.4 17.2 20.3v26.4H61.9z" fill="#4A154B"/></svg>
+            }
+            name="Slack"
+            why={
+              slack.status?.connected
+                ? `Valider tes posts depuis ton téléphone · ${slack.status.team_name || "Slack"}`
+                : !slack.status?.configured
+                  ? "Intégration Slack non configurée sur le serveur."
+                  : "Valider tes posts et tes idées depuis ton téléphone"
+            }
+            right={
+              slack.status?.connected ? (
+                <>
+                  <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+                  <button className="secondary-button" onClick={slack.disconnect} disabled={slack.busy} style={{ fontSize: 12 }}>
+                    {slack.busy ? <Loader2 size={14} className="spinning" /> : null}
+                    Déconnecter
+                  </button>
+                </>
+              ) : slack.status?.configured ? (
+                <button className="primary-button" onClick={slack.connect} disabled={slack.busy}>
+                  {slack.busy ? <Loader2 size={14} className="spinning" /> : null}
+                  {slack.busy ? "Redirection…" : "Connecter"}
+                </button>
+              ) : (
+                <span className="status-pill">Non configuré</span>
+              )
+            }
+          />
+          {slack.error ? <div className="error" style={{ marginBottom: 12 }}>{slack.error}</div> : null}
+
+          <SettingRow
+            icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0 }}><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
+            name="X (Twitter)"
+            why="Republier tes posts sur X en un clic"
+            right={
+              twitter.status?.connected ? (
+                <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+              ) : (
+                <button className="primary-button" onClick={twitter.connect} disabled={twitter.busy}>
+                  {twitter.busy ? <Loader2 size={14} className="spinning" /> : null}
+                  {twitter.busy ? "Redirection…" : "Connecter"}
+                </button>
+              )
+            }
+          />
+          {twitter.error ? <div className="error" style={{ marginBottom: 12 }}>{twitter.error}</div> : null}
+
+          <ManychatConnect
+            manychat={manychat}
+            open={openRow === "manychat"}
+            onToggle={() => toggleRow("manychat")}
+          />
+        </div>
+      )}
+
+      {tab === "automations" && (
+        <div>
+          <p className="section-desc" style={{ marginTop: 0, marginBottom: 16 }}>
+            Ce qui tourne pendant que tu n&apos;es pas là. Clique une ligne pour ouvrir ses réglages.
+          </p>
+
+          {/* ALE-224 : opt-in « idée du jour ». ALE-286 : c'est le SEUL interrupteur
+              côté agence (le sous-onglet a disparu) — les comptes clients, eux,
+              continuent de recevoir et de lire leur idée du matin. */}
+          <SettingRow
+            icon={<Sparkles size={18} style={{ color: "var(--coral)" }} />}
+            name="Une idée de post chaque matin"
+            why="Générée depuis ta veille et ton réservoir d'idées, puis servie aux comptes clients"
+            right={
+              <label className="daily-switch">
+                <input type="checkbox" checked={dailyEnabled} onChange={toggleDailyEnabled} />
+                <span>Activer</span>
+              </label>
+            }
+          />
+
+          <SettingRow
+            icon={<CalendarDays size={18} style={{ color: "var(--coral)" }} />}
+            name="Les posts de ta semaine"
+            why={
+              !weeklyReady
+                ? "Connecte LinkedIn (onglet Connexions) pour activer"
+                : weeklyEnabled && weeklySchedule.length
+                  ? `3 posts écrits le vendredi, publiés ${weeklySchedule.map((s) => `${["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."][s.day_of_week]} ${String(s.hour).padStart(2, "0")} h`).join(" · ")}`
+                  : "3 posts écrits le vendredi matin pour la semaine suivante"
+            }
+            open={openRow === "weekly"}
+            onToggle={weeklyReady && weeklyEnabled ? () => toggleRow("weekly") : undefined}
+            right={
+              weeklyReady ? (
+                <label className="daily-switch">
+                  <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
+                  <span>Activer</span>
+                </label>
+              ) : (
+                <span className="status-pill">LinkedIn requis</span>
+              )
+            }
+          >
+            <p style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 0, marginBottom: 10 }}>
+              Chaque <strong>vendredi matin (vers 6-7 h, heure de Paris)</strong>, 3 posts sont écrits pour la{" "}
+              <strong>semaine suivante</strong>
+              {slack.status?.connected
+                ? " et envoyés sur Slack pour validation, puis publiés aux créneaux ci-dessous une fois validés."
+                : " puis publiés automatiquement aux créneaux ci-dessous. Connecte Slack (onglet Connexions) pour les valider avant publication."}
+            </p>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 8 }}>
-              Jours de publication (heure locale, fuseau Europe/Paris) :
+              Jours de publication (fuseau Europe/Paris) :
             </p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
               {["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((label, day) => {
@@ -7676,7 +8651,7 @@ function ProfileView({
             )}
             <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
               <p style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
-                Pas envie d'attendre vendredi ? Génère les posts de la semaine prochaine tout de suite.
+                Pas envie d&apos;attendre vendredi ? Génère les posts de la semaine prochaine tout de suite.
               </p>
               <button
                 className="secondary-button"
@@ -7689,29 +8664,44 @@ function ProfileView({
               {weeklyRunMsg && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>{weeklyRunMsg}</p>}
               {weeklyRunErr && <p style={{ fontSize: 12, color: "var(--coral)", marginTop: 8 }}>{weeklyRunErr}</p>}
             </div>
-          </div>
-        )}
-      </section>
+          </SettingRow>
 
-      {/* ALE-224 : opt-in « idée du jour » aussi accessible depuis le profil.
-          Synchronisé avec le switch de Contenu › Idée du jour (mêmes endpoints). */}
-      <section className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <Sparkles size={20} style={{ flexShrink: 0, color: "var(--coral)" }} />
-            <div>
-              <strong>Idée du jour</strong>
-              <p className="section-desc" style={{ margin: 0 }}>
-                Chaque matin, une idée de post est générée à partir de ton benchmark d'influenceurs et de ton réservoir d'idées. Retrouve-la dans <strong>Contenu › Idée du jour</strong>.
-              </p>
-            </div>
-          </div>
-          <label className="daily-switch">
-            <input type="checkbox" checked={dailyEnabled} onChange={toggleDailyEnabled} />
-            <span>Recevoir une idée chaque matin</span>
-          </label>
+          <SettingRow
+            icon={<Lightbulb size={18} style={{ color: "var(--coral)" }} />}
+            name="Réponses aux messages Instagram"
+            why="L'agent répond seul quand la réponse est dans sa FAQ, sinon il te passe la main"
+            open={openRow === "faq"}
+            onToggle={() => toggleRow("faq")}
+            right={
+              igConnected ? (
+                <span className="status-pill ok"><CheckCircle2 size={14} /> Actif</span>
+              ) : (
+                <span className="status-pill">Instagram non connecté</span>
+              )
+            }
+          >
+            <AgentFaqEditor isAuthed={isAuthed} active={openRow === "faq"} />
+          </SettingRow>
         </div>
-      </section>
+      )}
+
+      {tab === "profile" && (
+      <div>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><UserRound size={20} /> Contexte éditorial</h2>
+          <p className="section-desc">
+            Décris le client qui publie. L&apos;IA s&apos;appuie sur ce contexte pour écrire les idées et les posts.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span className={`status-pill ${filledCount >= 6 ? "ok" : ""}`}>{filledCount} champs remplis</span>
+          <button className="primary-button" onClick={saveProfile} disabled={saving || loading}>
+            {saving ? <Loader2 size={14} className="spinning" /> : <CheckCircle2 size={14} />}
+            {saving ? "Sauvegarde…" : "Sauvegarder"}
+          </button>
+        </div>
+      </div>
 
       {error ? <div className="error" style={{ marginBottom: 12 }}>{error}</div> : null}
       {draftInfo ? <div className="auth-info" style={{ marginBottom: 12 }}>{draftInfo}</div> : null}
@@ -7749,12 +8739,9 @@ function ProfileView({
             </div>
           </section>
 
-          <details className="profile-drawer" open={detailsOpen} onToggle={(e) => setDetailsOpen((e.target as HTMLDetailsElement).open)}>
-            <summary>
-              <span><Settings2 size={15} /> Détails du profil éditorial</span>
-              <span className="profile-drawer-meta">{filledCount} champs remplis</span>
-            </summary>
-            <div className="profile-drawer-body">
+          {/* Le tiroir « Détails du profil éditorial » a disparu : il n'existait que
+              parce que la page portait aussi les connexions et les automatisations.
+              L'onglet est maintenant dédié — les champs s'affichent directement. */}
           <section className="card">
             <h3>Identité & activité</h3>
             <div className="profile-grid">
@@ -7798,9 +8785,9 @@ function ProfileView({
               <Field name="linkedin_url" label="Profil LinkedIn" placeholder="https://www.linkedin.com/in/..." />
             </div>
           </section>
-            </div>
-          </details>
         </div>
+      )}
+      </div>
       )}
     </div>
   );
@@ -9423,6 +10410,17 @@ function ProspectingView({
   const applyQuota = (quota?: OutreachQuota) => {
     if (quota) outreach.setStatus((prev) => (prev ? { ...prev, quota } : prev));
   };
+  const applyEngine = (engine?: OutreachEngine | null) => {
+    if (engine) outreach.setStatus((prev) => (prev ? { ...prev, engine } : prev));
+  };
+
+  // ALE-174 — actions déjà en file, par lead et par type (« Invitation en file »).
+  const queuedByLead = new Map<string, OutreachQueueItem>();
+  for (const item of outreach.queue) queuedByLead.set(`${item.lead_id}:${item.action_type}`, item);
+  const queuedInvite = (lead: Lead) => queuedByLead.get(`${lead.id}:invite`);
+  const queuedMessage = (lead: Lead) => queuedByLead.get(`${lead.id}:message`);
+
+  useEffect(() => { void outreach.reloadQueue(); }, [outreach.reloadQueue]);
 
   // ALE-243 : curation manuelle — marque « ne pas contacter » / remet en liste.
   async function setContactStatus(lead: Lead, contact_status: "to_contact" | "skip", reason?: string) {
@@ -9437,17 +10435,37 @@ function ProspectingView({
     } catch { /* non bloquant */ }
   }
 
-  async function inviteLead(lead: Lead) {
+  // ALE-174 — par défaut, l'invitation entre en FILE : c'est le moteur qui choisit
+  // le créneau (plage horaire, délai variable, palier de mise en route). `immediate`
+  // = la soupape, pour le cas « je sors d'une visio avec cette personne ».
+  async function inviteLead(lead: Lead, immediate = false) {
     setOutreachBusy(true); setOutreachMsg("");
     try {
-      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/invite`, { method: "POST", headers: await authHeaders() });
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ immediate }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi impossible");
       if (data.lead) patchLead(data.lead);
       applyQuota(data.quota);
-      setOutreachMsg(data.already_connected ? "Vous êtes déjà en relation — prêt pour un message." : "Demande de connexion envoyée ✓");
+      applyEngine(data.engine);
+      if (data.queued) {
+        await outreach.reloadQueue();
+        setOutreachMsg(`En file — partira ${formatEta(data.scheduled_for)}.`);
+      } else {
+        setOutreachMsg(data.already_connected ? "Vous êtes déjà en relation — prêt pour un message." : "Demande de connexion envoyée ✓");
+      }
     } catch (err: any) { setOutreachMsg(err.message); }
     finally { setOutreachBusy(false); }
+  }
+
+  async function cancelQueued(itemId: string) {
+    setOutreachBusy(true);
+    try {
+      if (await outreach.cancelQueued(itemId)) setOutreachMsg("Action retirée de la file.");
+    } finally { setOutreachBusy(false); }
   }
 
   async function checkConnection(lead: Lead) {
@@ -9475,21 +10493,27 @@ function ProspectingView({
     finally { setGenBusy(false); }
   }
 
-  async function sendFirstMessage(lead: Lead) {
+  async function sendFirstMessage(lead: Lead, immediate = false) {
     if (!messageText.trim()) return;
     setOutreachBusy(true); setOutreachMsg("");
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/message`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ text: messageText.trim() }),
+        body: JSON.stringify({ text: messageText.trim(), immediate }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi impossible");
       if (data.lead) patchLead(data.lead);
       applyQuota(data.quota);
+      applyEngine(data.engine);
       setComposeOpen(false); setMessageText("");
-      setOutreachMsg("Premier message envoyé ✓ Retrouve la conversation dans l'Inbox › LinkedIn.");
+      if (data.queued) {
+        await outreach.reloadQueue();
+        setOutreachMsg(`Message en file — partira ${formatEta(data.scheduled_for)}.`);
+      } else {
+        setOutreachMsg("Premier message envoyé ✓ Retrouve la conversation dans l'Inbox › LinkedIn.");
+      }
     } catch (err: any) { setOutreachMsg(err.message); }
     finally { setOutreachBusy(false); }
   }
@@ -9775,18 +10799,26 @@ function ProspectingView({
                 ) : l.status === "new" ? (
                   <span className="daily-seed-tag" style={{ flexShrink: 0 }}>Nouveau</span>
                 ) : null}
-                {/* ALE-245 : raccourcis d'action sur la ligne — stopPropagation pour ne pas ouvrir le volet. */}
+                {/* ALE-245 : raccourcis d'action sur la ligne — stopPropagation pour ne pas ouvrir le volet.
+                    ALE-174 : « Inviter » met en file (le moteur choisit le créneau) — donc plus de
+                    blocage sur le quota ici : c'est à l'envoi que le plafond s'applique. */}
                 {lnConnected && (!l.outreach_status || l.outreach_status === "none") && (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    style={{ flexShrink: 0, fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                    disabled={outreachBusy || !quota?.can_invite}
-                    title={!quota?.can_invite ? (quota?.invite_blocked_reason || "Invitation indisponible") : "Envoyer une demande de connexion"}
-                    onClick={(e) => { e.stopPropagation(); inviteLead(l); }}
-                  >
-                    <UserRound size={13} /> Inviter
-                  </button>
+                  queuedInvite(l) ? (
+                    <span className="daily-seed-tag" style={{ flexShrink: 0 }} title={`Partira ${formatEta(outreach.status?.engine?.next_send_estimate)}`}>
+                      📮 En file
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      style={{ flexShrink: 0, fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                      disabled={outreachBusy}
+                      title="Mettre l'invitation en file — elle partira dans ta plage horaire, à un rythme humain."
+                      onClick={(e) => { e.stopPropagation(); inviteLead(l); }}
+                    >
+                      <UserRound size={13} /> Inviter
+                    </button>
+                  )
                 )}
                 {lnConnected && (l.outreach_status === "connected" || l.outreach_status === "messaged") && (
                   <button
@@ -9925,7 +10957,11 @@ function ProspectingView({
                   </p>
                 ) : (() => {
                   const q = outreach.status?.quota;
+                  const eng = outreach.status?.engine;
                   const oStatus = selected.outreach_status || "none";
+                  const pendingInvite = queuedInvite(selected);
+                  const pendingMessage = queuedMessage(selected);
+                  const immediateLeft = eng?.immediate_left ?? 0;
                   return (
                     <>
                       {q && (
@@ -9933,16 +10969,40 @@ function ProspectingView({
                           Invitations {q.invites_today}/{q.daily_cap} · Messages {q.messages_today}/{q.daily_cap} (aujourd&apos;hui)
                         </div>
                       )}
-                      {oStatus === "none" && (
+                      {/* ALE-174 — l'action entre en file : le client choisit QUI, le moteur choisit QUAND. */}
+                      {oStatus === "none" && pendingInvite && (
+                        <>
+                          <div style={{ fontSize: 13 }}>
+                            📮 Invitation <strong>en file</strong> — partira {formatEta(eng?.next_send_estimate)}.
+                          </div>
+                          <button className="secondary-button" disabled={outreachBusy} onClick={() => cancelQueued(pendingInvite.id)} style={{ fontSize: 12 }}>
+                            {outreachBusy ? <Loader2 size={13} className="spinning" /> : <X size={13} />} Retirer de la file
+                          </button>
+                        </>
+                      )}
+                      {oStatus === "none" && !pendingInvite && (
                         <>
                           <button
                             className="primary-button"
-                            disabled={outreachBusy || !q?.can_invite}
-                            title={!q?.can_invite ? (q?.invite_blocked_reason || "") : "Demande de connexion sans note"}
+                            disabled={outreachBusy}
+                            title="L'invitation part en file : le moteur l'enverra dans ta plage horaire, à un rythme humain."
                             onClick={() => inviteLead(selected)}
                           >
                             {outreachBusy ? <Loader2 size={14} className="spinning" /> : <UserRound size={14} />}
-                            Envoyer une demande de connexion
+                            Mettre l&apos;invitation en file
+                          </button>
+                          <button
+                            className="secondary-button"
+                            disabled={outreachBusy || !q?.can_invite || immediateLeft <= 0}
+                            title={
+                              immediateLeft <= 0
+                                ? "Soupape épuisée pour aujourd'hui — mets l'invitation en file."
+                                : !q?.can_invite ? (q?.invite_blocked_reason || "") : "Envoi immédiat, hors file"
+                            }
+                            onClick={() => inviteLead(selected, true)}
+                            style={{ fontSize: 12 }}
+                          >
+                            <Zap size={13} /> Envoyer maintenant ({immediateLeft} restant{immediateLeft > 1 ? "s" : ""})
                           </button>
                           {!q?.can_invite && q?.invite_blocked_reason && (
                             <p style={{ margin: 0, fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{q.invite_blocked_reason}</p>
@@ -9958,14 +11018,22 @@ function ProspectingView({
                           </button>
                         </>
                       )}
-                      {oStatus === "connected" && (
+                      {oStatus === "connected" && pendingMessage && (
+                        <>
+                          <div style={{ fontSize: 13 }}>
+                            📮 Message <strong>en file</strong> — partira {formatEta(eng?.next_send_estimate)}.
+                          </div>
+                          <button className="secondary-button" disabled={outreachBusy} onClick={() => cancelQueued(pendingMessage.id)} style={{ fontSize: 12 }}>
+                            {outreachBusy ? <Loader2 size={13} className="spinning" /> : <X size={13} />} Retirer de la file
+                          </button>
+                        </>
+                      )}
+                      {oStatus === "connected" && !pendingMessage && (
                         <>
                           <div style={{ fontSize: 13, color: "var(--success)" }}>✓ En relation — prêt pour le premier message.</div>
                           {!composeOpen ? (
                             <button
                               className="primary-button"
-                              disabled={!q?.can_message}
-                              title={!q?.can_message ? (q?.message_blocked_reason || "") : ""}
                               onClick={() => { setComposeOpen(true); if (!messageText) generateMessage(selected); }}
                             >
                               <Send size={14} /> Rédiger le premier message
@@ -9983,13 +11051,28 @@ function ProspectingView({
                                 <button className="secondary-button" disabled={genBusy} onClick={() => generateMessage(selected)} style={{ fontSize: 12 }}>
                                   {genBusy ? <Loader2 size={13} className="spinning" /> : <Sparkles size={13} />} Régénérer
                                 </button>
+                                {/* Le texte est relu et validé AVANT d'entrer dans la file : rien n'est
+                                    généré à la volée au moment où le moteur envoie. */}
                                 <button
                                   className="primary-button"
-                                  disabled={outreachBusy || genBusy || !messageText.trim() || !q?.can_message}
+                                  disabled={outreachBusy || genBusy || !messageText.trim()}
                                   onClick={() => sendFirstMessage(selected)}
                                   style={{ fontSize: 12 }}
                                 >
-                                  {outreachBusy ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} Envoyer
+                                  {outreachBusy ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} Mettre en file
+                                </button>
+                                <button
+                                  className="secondary-button"
+                                  disabled={outreachBusy || genBusy || !messageText.trim() || !q?.can_message || immediateLeft <= 0}
+                                  title={
+                                    immediateLeft <= 0
+                                      ? "Soupape épuisée pour aujourd'hui — mets le message en file."
+                                      : !q?.can_message ? (q?.message_blocked_reason || "") : "Envoi immédiat, hors file"
+                                  }
+                                  onClick={() => sendFirstMessage(selected, true)}
+                                  style={{ fontSize: 12 }}
+                                >
+                                  <Zap size={13} /> Envoyer maintenant
                                 </button>
                               </div>
                               {!q?.can_message && q?.message_blocked_reason && (
@@ -10127,7 +11210,6 @@ function ContentHub({
   onInspire: (topic: string) => void;
 }) {
   const subTabs: { key: ContentTab; label: string; icon: React.ReactNode }[] = [
-    { key: "daily", label: "Idée du jour", icon: <Sparkles size={14} /> },
     { key: "generator", label: "Générateur de posts", icon: <PenTool size={14} /> },
     // ALE-257 : Veille fusionnée ici — « Analyses » placée à droite du Générateur.
     { key: "analyses", label: "Analyses", icon: <BarChart3 size={14} /> },
@@ -10185,7 +11267,6 @@ function ContentHub({
           />
         )
       )}
-      {tab === "daily" && <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />}
       {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} onRework={onRework} />}
       {tab === "library" && (
         <MyContentHub isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} onInspire={onInspire} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
@@ -10598,18 +11679,21 @@ export default function Home() {
     });
   }
 
-  // Vue client : navigation verrouillée sur la page idées (LinkedIn → Contenu → Idée du jour).
+  // Vue client : navigation verrouillée sur la page idées (LinkedIn → Contenu).
+  // ALE-286 : le sous-onglet n'existe plus côté agence — c'est `reservoirOnly`
+  // dans ContentHub qui rend la page idées, quel que soit l'onglet courant.
   useEffect(() => {
     if (!restricted) return;
     setView("content");
-    setContentTab("daily");
     setPlatform("linkedin");
   }, [restricted]);
 
   useEffect(() => {
     try {
       const savedPlatform = localStorage.getItem("lkd_platform");
-      if (savedPlatform === "linkedin" || savedPlatform === "instagram") {
+      // Instagram est grisé : on ne restaure pas cette préférence, sinon le compte
+      // rouvre sur une vue Instagram qui n'a plus d'entrée dans la navigation.
+      if (savedPlatform === "linkedin") {
         setPlatform(savedPlatform);
       }
     } catch {
@@ -10907,12 +11991,14 @@ export default function Home() {
       setGenerationJobs([]);
       setImageJobs([]);
       setIgUnread(0);
-      // ALE-145 : purge le cache générateur quand l'utilisateur change (anti fuite cross-user).
-      _genCache.variants = [];
-      _genCache.topic = "";
-      _genCache.appliedJobId = null;
+      // ALE-145 : purge le cache générateur quand l'utilisateur change (anti fuite
+      // cross-user). Le cache est module-level : sans ça, le brouillon et les
+      // images du compte précédent réapparaîtraient chez le suivant dans le même
+      // onglet. Toute clé ajoutée à `_genCache` doit être purgée ici.
       _genCache.appliedImageJobIds = new Set();
-      _genCache.variantImages = {};
+      _genCache.edited = {};
+      _genCache.images = {};
+      _genCache.expanded = null;
       _dailyIdeaCache.ideaImages = {};
       _dailyIdeaCache.appliedImageJobIds = new Set();
       _libraryAppliedImageJobIds.clear();

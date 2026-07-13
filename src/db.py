@@ -1527,8 +1527,14 @@ def reconcile_stale_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
 # fois terminé. L'état vit en base : l'utilisateur peut quitter la page et
 # revenir, le résultat est conservé.
 
+# Toute colonne absente de cette projection est lue `None` par le thread de
+# génération, SANS erreur : c'est ainsi que `template_id` a été ignoré pendant
+# toute la vie d'ALE-216 (le template choisi n'atteignait jamais le modèle).
+# Ajouter une colonne au job ⇒ l'ajouter ici.
 _GENERATION_JOB_COLS = (
-    "id,status,topic,editorial_role,web_search,count,template_id,result,error,created_at,updated_at"
+    "id,status,topic,editorial_role,web_search,count,template_id,"
+    "inspiration_text,inspiration_author,inspiration_url,"
+    "result,error,created_at,updated_at"
 )
 
 
@@ -1539,6 +1545,7 @@ def create_generation_job(
     web_search: bool,
     count: int,
     template_id: str | None = None,
+    inspiration: dict | None = None,
 ) -> dict | None:
     """Crée un job de génération `queued`. Retourne la ligne créée."""
     user = get_user(access_token)
@@ -1555,6 +1562,10 @@ def create_generation_job(
     }
     if template_id:
         row["template_id"] = template_id
+    if inspiration and (inspiration.get("text") or "").strip():
+        row["inspiration_text"] = inspiration["text"].strip()[:6000]
+        row["inspiration_author"] = (inspiration.get("author") or "").strip()[:200] or None
+        row["inspiration_url"] = (inspiration.get("url") or "").strip()[:2000] or None
     resp = (
         db.table("generation_jobs")
         .insert(row)
@@ -4571,11 +4582,19 @@ def upsert_linkedin_outreach_account(
     daily_cap: int | None = None,
     weekly_invite_cap: int | None = None,
     status: str | None = None,
+    timezone_name: str | None = None,
+    send_hour_start: int | None = None,
+    send_hour_end: int | None = None,
+    send_days: list[int] | None = None,
 ) -> dict | None:
-    """Crée/met à jour le compte Unipile + la config quota (RLS scope, upsert).
+    """Crée/met à jour le compte Unipile + la config de cadençage (RLS scope, upsert).
 
     Seules les colonnes fournies sont écrites : maj partielle sûre (changer le
-    plafond ne réinitialise pas l'account_id, et inversement)."""
+    plafond ne réinitialise pas l'account_id, et inversement).
+
+    ⚠️ Aucun paramètre ne permet de lever le gel (`frozen`) : c'est un garde-fou
+    anti-restriction, il n'est pas contournable depuis l'interface. Il se lève seul
+    (voir `outreach_engine.freeze_active`)."""
     if not supabase_enabled():
         return None
     user = get_user(access_token)
@@ -4596,6 +4615,15 @@ def upsert_linkedin_outreach_account(
         row["daily_cap"] = max(1, min(100, int(daily_cap)))
     if weekly_invite_cap is not None:
         row["weekly_invite_cap"] = max(1, min(500, int(weekly_invite_cap)))
+    if timezone_name is not None:
+        row["timezone"] = timezone_name
+    if send_hour_start is not None:
+        row["send_hour_start"] = max(0, min(23, int(send_hour_start)))
+    if send_hour_end is not None:
+        row["send_hour_end"] = max(1, min(24, int(send_hour_end)))
+    if send_days is not None:
+        days = sorted({int(d) for d in send_days if 1 <= int(d) <= 7})
+        row["send_days"] = days or [1, 2, 3, 4, 5]
     resp = (
         db.table("linkedin_outreach_accounts")
         .upsert(row, on_conflict="user_id")
@@ -4647,12 +4675,18 @@ def log_outreach_action(
     *,
     action_type: str,
     status: str = "sent",
+    origin: str = "immediate",
     lead_id: str | None = None,
     provider_id: str | None = None,
     chat_id: str | None = None,
     error: str | None = None,
 ) -> None:
-    """Journalise une action d'envoi (invitation/message). Best-effort."""
+    """Journalise une action d'envoi (invitation/message). Best-effort.
+
+    `origin` : depuis ALE-174, tout envoi passant par l'API est un envoi *immédiat*
+    (la soupape) — la voie normale passe par la file et est journalisée par le moteur
+    avec `origin='queue'`. C'est ce champ qui plafonne la soupape à quelques envois
+    par jour."""
     if not supabase_enabled():
         return
     user = get_user(access_token)
@@ -4663,6 +4697,7 @@ def log_outreach_action(
         "user_id": user["id"],
         "action_type": action_type,
         "status": status,
+        "origin": origin,
     }
     if lead_id:
         row["lead_id"] = lead_id
@@ -4769,3 +4804,372 @@ def update_lead_outreach(access_token: str, lead_id: str, fields: dict[str, Any]
     payload["outreach_updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     resp = db.table("leads").update(payload).eq("id", lead_id).execute()
     return resp.data[0] if resp.data else None
+
+
+# --------------------------------------------------------------------------- #
+# ALE-174 — Moteur d'envoi cadencé : la file d'envoi + les accès du cron.
+#
+# DEUX FAMILLES DE FONCTIONS, à ne surtout pas mélanger :
+#
+#  1. Celles qui prennent un `access_token` (appels depuis l'API, pour le compte
+#     d'un utilisateur connecté) : la base cloisonne SEULE via la RLS. C'est le
+#     modèle de tout le code de prospection existant.
+#
+#  2. Celles préfixées `admin_` (appels depuis le cron, qui n'a aucun jeton) :
+#     elles passent par la clé service-role, qui **contourne la RLS**. Elles
+#     exigent donc TOUTES un `user_id` explicite et filtrent dessus à la main.
+#     Aucune ne doit être appelée depuis un endpoint HTTP.
+#
+#  ⚠️ Le danger de la famille 2 : sans le `.eq("user_id", …)`, on lit/écrit les
+#  lignes de TOUS les clients — donc on peut envoyer le message du client A depuis
+#  le compte LinkedIn du client B. D'où le `user_id` en premier paramètre
+#  obligatoire (jamais de défaut) et le garde-fou `outreach_engine.assert_same_owner`
+#  juste avant l'appel réseau, côté cron.
+# --------------------------------------------------------------------------- #
+
+
+_QUEUE_COLS = "id, user_id, lead_id, action_type, body, status, not_before, sent_at, error, created_at"
+
+
+def enqueue_outreach_action(
+    access_token: str,
+    *,
+    lead_id: str,
+    action_type: str,
+    body: str | None = None,
+    not_before: str | None = None,
+) -> dict | None:
+    """Met une action de prospection en file (RLS scope).
+
+    L'index unique partiel `(lead_id, action_type) where status = 'pending'` interdit
+    d'empiler deux fois la même action sur un lead : un double-clic ne crée pas deux
+    invitations. On renvoie alors l'action déjà en file plutôt qu'une erreur."""
+    if not supabase_enabled() or not lead_id:
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "lead_id": lead_id,
+        "action_type": action_type,
+        "status": "pending",
+    }
+    if body:
+        row["body"] = body
+    if not_before:
+        row["not_before"] = not_before
+    try:
+        resp = db.table("linkedin_outreach_queue").insert(row).execute()
+        return resp.data[0] if resp.data else None
+    except Exception:  # noqa: BLE001 — collision d'unicité = action déjà en file
+        existing = (
+            db.table("linkedin_outreach_queue")
+            .select(_QUEUE_COLS)
+            .eq("lead_id", lead_id)
+            .eq("action_type", action_type)
+            .eq("status", "pending")
+            .limit(1)
+            .execute()
+        )
+        return existing.data[0] if existing.data else None
+
+
+def list_outreach_queue(access_token: str, *, status: str = "pending") -> list[dict]:
+    """Actions en file de l'utilisateur (RLS scope), les plus anciennes d'abord."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("linkedin_outreach_queue")
+        .select(_QUEUE_COLS)
+        .eq("status", status)
+        .order("not_before")
+        .limit(200)
+        .execute()
+    )
+    return resp.data or []
+
+
+def cancel_outreach_queue_item(access_token: str, item_id: str) -> dict | None:
+    """Retire une action de la file tant qu'elle n'est pas partie (RLS scope).
+    Le filtre sur `status = 'pending'` évite d'« annuler » une action déjà envoyée."""
+    if not supabase_enabled() or not item_id:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("linkedin_outreach_queue")
+        .update({"status": "canceled", "updated_at": "now()"})
+        .eq("id", item_id)
+        .eq("status", "pending")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def count_immediate_outreach_sends(access_token: str) -> int:
+    """Envois immédiats (soupape « envoyer maintenant ») sur 24 h glissantes.
+
+    Lève en cas d'échec de lecture, comme `outreach_counts` : la soupape est un
+    garde-fou, elle doit échouer FERMÉE."""
+    if not supabase_enabled():
+        return 0
+    user = get_user(access_token)
+    if not user:
+        return 0
+    since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)).isoformat()
+    db = client_for_token(access_token)
+    resp = (
+        db.table("linkedin_outreach_actions")
+        .select("id")
+        .eq("origin", "immediate")
+        .eq("status", "sent")
+        .gte("created_at", since)
+        .execute()
+    )
+    return len(resp.data or [])
+
+
+# ── Famille service-role (cron) : `user_id` obligatoire partout ───────────────
+
+
+def admin_list_outreach_accounts() -> list[dict]:
+    """Tous les comptes de prospection connectés (service-role, pour le cron).
+
+    Chaque ligne porte son `user_id` : c'est LUI qui sert de clé de cloisonnement
+    dans toute la suite du traitement, jamais un contexte ambiant."""
+    if not admin_enabled():
+        return []
+    resp = (
+        admin_client()
+        .table("linkedin_outreach_accounts")
+        .select("*")
+        .not_.is_("unipile_account_id", "null")
+        .limit(500)
+        .execute()
+    )
+    return resp.data or []
+
+
+def admin_pending_queue_count(user_id: str) -> int:
+    """Nombre d'actions en attente pour CE client (service-role)."""
+    if not admin_enabled() or not user_id:
+        return 0
+    resp = (
+        admin_client()
+        .table("linkedin_outreach_queue")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("status", "pending")
+        .execute()
+    )
+    return len(resp.data or [])
+
+
+def admin_due_queue_items(user_id: str, *, limit: int = 10) -> list[dict]:
+    """Actions dues de CE client (service-role), les plus anciennes d'abord.
+
+    `user_id` filtre explicitement : la clé service-role contourne la RLS, donc
+    l'absence de ce filtre ferait remonter les actions de tous les clients."""
+    if not admin_enabled() or not user_id:
+        return []
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    resp = (
+        admin_client()
+        .table("linkedin_outreach_queue")
+        .select(_QUEUE_COLS)
+        .eq("user_id", user_id)
+        .eq("status", "pending")
+        .lte("not_before", now)
+        .order("not_before")
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def admin_outreach_counts(user_id: str) -> dict[str, int]:
+    """Compteurs de quota de CE client (service-role), fenêtres glissantes.
+
+    Même contrat que `outreach_counts` : LÈVE en cas d'échec de lecture (fail closed,
+    l'appelant bloque l'envoi). Filtre `user_id` obligatoire."""
+    if not admin_enabled() or not user_id:
+        return {"invites_today": 0, "messages_today": 0, "invites_week": 0}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    day_ago = (now - datetime.timedelta(hours=24)).isoformat()
+    week_ago = (now - datetime.timedelta(days=7)).isoformat()
+    admin = admin_client()
+
+    def _count(action_type: str, since: str) -> int:
+        resp = (
+            admin.table("linkedin_outreach_actions")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("action_type", action_type)
+            .eq("status", "sent")
+            .gte("created_at", since)
+            .execute()
+        )
+        return len(resp.data or [])
+
+    return {
+        "invites_today": _count("invite", day_ago),
+        "messages_today": _count("message", day_ago),
+        "invites_week": _count("invite", week_ago),
+    }
+
+
+def admin_get_lead(user_id: str, lead_id: str) -> dict | None:
+    """Un lead de CE client (service-role). Le filtre `user_id` est la sécurité :
+    un lead_id venu de la file ne peut pas pointer sur le lead d'un autre client."""
+    if not admin_enabled() or not user_id or not lead_id:
+        return None
+    resp = (
+        admin_client()
+        .table("leads")
+        .select("*")
+        .eq("id", lead_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def admin_update_lead_outreach(user_id: str, lead_id: str, fields: dict[str, Any]) -> dict | None:
+    """Met à jour l'état d'outreach d'un lead de CE client (service-role)."""
+    if not admin_enabled() or not user_id or not lead_id or not fields:
+        return None
+    payload = dict(fields)
+    payload["outreach_updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    resp = (
+        admin_client()
+        .table("leads")
+        .update(payload)
+        .eq("id", lead_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def admin_log_outreach_action(
+    user_id: str,
+    *,
+    action_type: str,
+    status: str = "sent",
+    origin: str = "queue",
+    lead_id: str | None = None,
+    provider_id: str | None = None,
+    chat_id: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Journalise une action envoyée par le moteur (service-role).
+
+    Ce journal EST la source des compteurs de quota : ne jamais l'oublier après un
+    envoi réussi, sinon le plafond du jour ne voit pas l'action passer."""
+    if not admin_enabled() or not user_id:
+        return
+    row: dict[str, Any] = {
+        "user_id": user_id,
+        "action_type": action_type,
+        "status": status,
+        "origin": origin,
+    }
+    if lead_id:
+        row["lead_id"] = lead_id
+    if provider_id:
+        row["provider_id"] = provider_id
+    if chat_id:
+        row["chat_id"] = chat_id
+    if error:
+        row["error"] = error[:2000]
+    try:
+        admin_client().table("linkedin_outreach_actions").insert(row).execute()
+    except Exception as exc:  # noqa: BLE001 — la journalisation ne doit rien casser
+        print(f"[outreach-sender] log action échoué : {exc}", flush=True)
+
+
+def admin_update_queue_item(
+    user_id: str,
+    item_id: str,
+    *,
+    status: str,
+    error: str | None = None,
+) -> None:
+    """Solde une action de la file de CE client (service-role)."""
+    if not admin_enabled() or not user_id or not item_id:
+        return
+    payload: dict[str, Any] = {"status": status, "updated_at": "now()"}
+    if status == "sent":
+        payload["sent_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if error is not None:
+        payload["error"] = error[:2000]
+    admin_client().table("linkedin_outreach_queue").update(payload).eq("id", item_id).eq(
+        "user_id", user_id
+    ).execute()
+
+
+def admin_mark_outreach_sent(user_id: str, *, next_action_at: str) -> None:
+    """Pose l'horodatage de la dernière action + le délai aléatoire avant la
+    prochaine (service-role). C'est ce `next_action_at` qui espace les envois."""
+    if not admin_enabled() or not user_id:
+        return
+    admin_client().table("linkedin_outreach_accounts").update(
+        {
+            "last_action_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "next_action_at": next_action_at,
+            "updated_at": "now()",
+        }
+    ).eq("user_id", user_id).execute()
+
+
+def admin_freeze_outreach_account(user_id: str, reason: str) -> None:
+    """Gèle le compte de CE client (service-role) : LinkedIn a signalé une limite ou
+    une restriction. Non contournable depuis l'interface — c'est le dernier rempart."""
+    if not admin_enabled() or not user_id:
+        return
+    admin_client().table("linkedin_outreach_accounts").update(
+        {
+            "frozen": True,
+            "freeze_reason": (reason or "Limite LinkedIn atteinte.")[:500],
+            "frozen_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "updated_at": "now()",
+        }
+    ).eq("user_id", user_id).execute()
+
+
+def admin_record_engine_run(user_id: str, *, sent: int = 0, error: str | None = None) -> None:
+    """Trace le passage du moteur sur ce compte (service-role).
+
+    Écrit à CHAQUE passage, même quand rien n'est envoyé : c'est cette date qui
+    permet à l'app de dire « dernier passage il y a 8 min » et de lever le bandeau
+    « prospection à l'arrêt » quand le cron est mort. Un cron mort ne peut pas
+    alerter sur sa propre mort — seule la fraîcheur de cette date le trahit."""
+    if not admin_enabled() or not user_id:
+        return
+    try:
+        admin_client().table("linkedin_outreach_accounts").update(
+            {
+                "last_run_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "last_run_sent": max(0, int(sent)),
+                "last_run_error": (error or None) and str(error)[:500],
+                "updated_at": "now()",
+            }
+        ).eq("user_id", user_id).execute()
+    except Exception as exc:  # noqa: BLE001 — la trace ne doit jamais casser le run
+        print(f"[outreach-sender] trace de passage échouée ({user_id}) : {exc}", flush=True)
+
+
+def admin_unfreeze_outreach_account(user_id: str) -> None:
+    """Lève un gel EXPIRÉ (service-role, appelé par le moteur uniquement).
+
+    Le client n'a aucun moyen de lever un gel lui-même : ce serait son premier
+    réflexe, au pire moment. Seul le moteur le fait, et seulement une fois la période
+    de refroidissement écoulée (`outreach_engine.freeze_active`)."""
+    if not admin_enabled() or not user_id:
+        return
+    admin_client().table("linkedin_outreach_accounts").update(
+        {"frozen": False, "freeze_reason": None, "frozen_at": None, "updated_at": "now()"}
+    ).eq("user_id", user_id).execute()

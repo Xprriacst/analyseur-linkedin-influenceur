@@ -17,12 +17,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing
+from src import outreach_engine
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message
+from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
@@ -1283,8 +1285,23 @@ def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(opt
     )
 
 
+class InspirationPost(BaseModel):
+    """Post LinkedIn dont le client a demandé de s'inspirer (parcours guidé, ALE-286)."""
+    text: str = Field(..., min_length=20, max_length=6000)
+    author: str | None = Field(default=None, max_length=200)
+    url: str | None = Field(default=None, max_length=2000)
+
+
+class GenerationJobRequest(GenerateRequest):
+    """Requête de la file d'attente. Modèle à part et non un champ de plus sur
+    `GenerateRequest` : seul le chemin par jobs sait porter l'inspiration jusqu'au
+    modèle. L'ajouter au modèle commun l'aurait fait accepter — puis **ignorer en
+    silence** — par `/generate` et `/generate/stream`."""
+    inspiration: InspirationPost | None = Field(default=None)
+
+
 @app.post("/generate/jobs")
-def create_generation_job(payload: GenerateRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+def create_generation_job(payload: GenerationJobRequest, token: str = Depends(require_token)) -> dict[str, Any]:
     """Lance une génération de posts en arrière-plan (file d'attente — ALE-141).
 
     Non bloquant : on débite les crédits, on crée le job et on lance le thread,
@@ -1306,7 +1323,11 @@ def create_generation_job(payload: GenerateRequest, token: str = Depends(require
 
     role = (payload.editorial_role or "").strip() or None
     topic = (payload.topic or "").strip() or None
-    job = db.create_generation_job(token, topic, role, payload.web_search, payload.count, template_id=payload.template_id)
+    job = db.create_generation_job(
+        token, topic, role, payload.web_search, payload.count,
+        template_id=payload.template_id,
+        inspiration=payload.inspiration.model_dump() if payload.inspiration else None,
+    )
     if not job:
         raise HTTPException(status_code=500, detail="Création du job de génération impossible.")
     start_generation_job_thread(token, job["id"])
@@ -1336,6 +1357,118 @@ def cancel_generation_job(job_id: str, token: str = Depends(require_token)) -> d
     if not job:
         raise HTTPException(status_code=404, detail="Job de génération introuvable.")
     return job
+
+
+# --------------------------------------------------------------------------- #
+# Parcours guidé de génération (ALE-286)
+# --------------------------------------------------------------------------- #
+# Le client part d'un des trois points d'entrée (une idée à lui, aucune idée, un
+# post qui l'a inspiré), converge sur un rôle éditorial, puis sur une structure
+# de sa bibliothèque, et obtient UN post. Trois endpoints d'aide à la décision —
+# lire l'inspiration, recommander le rôle, proposer les structures — tous gratuits
+# et sans effet de bord : le post, lui, part par la file d'attente existante
+# (`POST /generate/jobs`), qui sait déjà débiter, créer le job et le suivre.
+
+
+class InspirationRequest(BaseModel):
+    url: str = Field(..., min_length=8, max_length=2000)
+
+
+@app.post("/generate/inspiration")
+def read_inspiration_post(payload: InspirationRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Lit le post LinkedIn dont le client veut s'inspirer et en déduit un angle.
+
+    Gratuit (aucun crédit) : c'est une aide à la décision, pas une génération —
+    le client peut se tromper de lien sans que ça lui coûte quoi que ce soit.
+    """
+    url = payload.url.strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="Colle un lien de post LinkedIn (https://…).")
+
+    detail = fetch_post_detail(url)
+    if not detail or not (detail.get("text") or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Impossible de lire le post depuis ce lien — colle son texte directement.",
+        )
+
+    # L'angle est un confort : s'il échoue, le client écrit le sien à la main
+    # plutôt que de voir le parcours s'arrêter sur un post pourtant bien lu.
+    angle = ""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            angle = suggest_angle_from_post(detail["text"], db.get_user_ai_context(token))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[wizard] angle non déduit pour {url}: {exc}", flush=True)
+
+    return {
+        "text": detail["text"],
+        "author": detail.get("author"),
+        "url": detail.get("url") or url,
+        "image_url": detail.get("image_url"),
+        "angle": angle,
+    }
+
+
+class EditorialRoleRequest(BaseModel):
+    idea: str = Field(..., min_length=3, max_length=2000)
+
+
+@app.post("/generate/editorial-role")
+def recommend_role(payload: EditorialRoleRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Recommande un rôle éditorial pour l'idée retenue (gratuit, non contraignant)."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
+    reco = recommend_editorial_role(payload.idea.strip(), db.get_user_ai_context(token))
+    return {
+        "editorial_role": reco["editorial_role"],
+        "reason": reco["reason"],
+        "roles": [{"value": key, "label": spec["label"]} for key, spec in ROLE_SPECS.items()],
+    }
+
+
+class StructuresRequest(BaseModel):
+    idea: str = Field(..., min_length=3, max_length=2000)
+    editorial_role: str = Field(..., max_length=50)
+
+
+@app.post("/generate/structures")
+def suggest_post_structures(payload: StructuresRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Propose les structures de la bibliothèque les plus adaptées à l'idée retenue.
+
+    Gratuit (aucun crédit) : c'est une aide au choix, pas une génération. Le
+    client voit ce qu'il choisit — on rend donc le nom et un extrait de chaque
+    structure, pas des identifiants nus.
+
+    Liste vide = bibliothèque vide ou sans contenu exploitable. Le parcours
+    enchaîne alors en structure libre : un compte neuf n'est jamais bloqué sur une
+    étape sans option.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
+    role = payload.editorial_role.strip()
+    if role not in ROLE_SPECS:
+        raise HTTPException(status_code=422, detail="Rôle éditorial inconnu.")
+
+    try:
+        library = db.list_post_templates(token)
+    except Exception:  # noqa: BLE001 — la bibliothèque est un plus, pas un prérequis
+        library = []
+    suggested = suggest_structures(payload.idea.strip(), role, library)
+
+    return {
+        "structures": [
+            {
+                "id": t["id"],
+                "label": (t.get("structure_label") or "").strip() or None,
+                "structure_text": (t.get("structure_text") or "").strip() or None,
+                "post_text": (t.get("post_text") or "").strip()[:400] or None,
+            }
+            for t in suggested
+        ],
+        # La plus adaptée d'abord : c'est celle que le parcours pré-coche.
+        "recommended_id": suggested[0]["id"] if suggested else None,
+    }
 
 
 @app.get("/me/generated-ideas")
@@ -2430,11 +2563,23 @@ class UnipileConnectRequest(BaseModel):
 class UnipileSettingsRequest(BaseModel):
     daily_cap: int | None = Field(default=None, ge=1, le=100)
     weekly_invite_cap: int | None = Field(default=None, ge=1, le=500)
+    # ALE-174 — fenêtre d'envoi du moteur cadencé (heures de bureau du client).
+    timezone: str | None = Field(default=None, max_length=64)
+    send_hour_start: int | None = Field(default=None, ge=0, le=23)
+    send_hour_end: int | None = Field(default=None, ge=1, le=24)
+    send_days: list[int] | None = Field(default=None)  # ISO : 1 = lundi … 7 = dimanche
+
+
+class OutreachInviteRequest(BaseModel):
+    # ALE-174 — par défaut l'invitation part EN FILE (le moteur choisit le créneau).
+    # `immediate` = la soupape « envoyer maintenant », plafonnée par jour.
+    immediate: bool = False
 
 
 class OutreachMessageRequest(BaseModel):
     # Texte final (édité par l'utilisateur). Vide → généré par l'IA côté serveur.
     text: str | None = Field(default=None, max_length=1500)
+    immediate: bool = False
 
 
 class OutreachChatSendRequest(BaseModel):
@@ -2508,6 +2653,47 @@ def _safe_counts(token: str) -> tuple[dict[str, int], bool]:
         return {"invites_today": 0, "messages_today": 0, "invites_week": 0}, False
 
 
+def _engine_state(token: str, account: dict[str, Any]) -> dict[str, Any]:
+    """ALE-174 — état du moteur d'envoi, tel que l'app doit le montrer.
+
+    Contient de quoi répondre à trois questions que l'utilisateur se pose : quand
+    partira ma prochaine action, pourquoi elle ne part pas encore, et — le plus
+    important — est-ce que le moteur tourne encore. Un cron mort ne peut pas alerter
+    sur sa propre mort : c'est ici, côté app, qu'on le détecte (`stalled`)."""
+    now = datetime.now(timezone.utc)
+    try:
+        pending = len(db.list_outreach_queue(token))
+    except Exception:  # noqa: BLE001 — l'affichage ne doit pas casser sur une lecture
+        pending = 0
+    try:
+        immediate_used = db.count_immediate_outreach_sends(token)
+    except Exception:  # noqa: BLE001
+        immediate_used = outreach_engine.IMMEDIATE_DAILY_CAP  # fail closed : soupape fermée
+    start, end = outreach_engine.send_hours(account)
+    frozen_until = outreach_engine.freeze_until(account)
+    return {
+        "pending": pending,
+        "last_run_at": account.get("last_run_at"),
+        "last_run_error": account.get("last_run_error"),
+        "stalled": outreach_engine.is_stalled(now, account.get("last_run_at"), pending),
+        "frozen": outreach_engine.freeze_active(now, account),
+        "freeze_reason": account.get("freeze_reason"),
+        "frozen_until": frozen_until.isoformat() if frozen_until else None,
+        "warmup_week": outreach_engine.warmup_week(now, account),
+        "warmup_cap": outreach_engine.warmup_cap(now, account),
+        "warmup_weeks_total": len(outreach_engine.WARMUP_STEPS),
+        "next_send_estimate": outreach_engine.estimate_send_at(now, account).isoformat(),
+        "immediate_left": max(0, outreach_engine.IMMEDIATE_DAILY_CAP - immediate_used),
+        "immediate_cap": outreach_engine.IMMEDIATE_DAILY_CAP,
+        "window": {
+            "timezone": account.get("timezone") or outreach_engine.DEFAULT_TIMEZONE,
+            "hour_start": start,
+            "hour_end": end,
+            "days": list(outreach_engine.send_days(account)),
+        },
+    }
+
+
 def _unipile_outreach_status(token: str) -> dict[str, Any]:
     account = db.get_linkedin_outreach_account(token)
     connected = bool(account and account.get("unipile_account_id"))
@@ -2521,6 +2707,7 @@ def _unipile_outreach_status(token: str) -> dict[str, Any]:
         "account_name": (account or {}).get("account_name"),
         "connected_at": (account or {}).get("connected_at"),
         "quota": _outreach_quota(account or {}, counts, ok),
+        "engine": _engine_state(token, account or {}) if connected else None,
     }
 
 
@@ -2656,10 +2843,21 @@ def me_linkedin_outreach_refresh(token: str = Depends(require_token)) -> dict[st
 def me_linkedin_outreach_settings(
     payload: UnipileSettingsRequest, token: str = Depends(require_token)
 ) -> dict[str, Any]:
-    """Configure les plafonds de quota (plafond quotidien, sécurité hebdo)."""
+    """Plafonds de quota + fenêtre d'envoi du moteur (fuseau, heures, jours).
+
+    Ne permet PAS de lever un gel ni de raccourcir le warm-up : ces colonnes ne sont
+    pas écrivables par le client (droits de colonne, migration 0048)."""
     _require_outreach_account(token)
+    if payload.send_days is not None and not [d for d in payload.send_days if 1 <= d <= 7]:
+        raise HTTPException(status_code=422, detail="Choisis au moins un jour d'envoi.")
     db.upsert_linkedin_outreach_account(
-        token, daily_cap=payload.daily_cap, weekly_invite_cap=payload.weekly_invite_cap
+        token,
+        daily_cap=payload.daily_cap,
+        weekly_invite_cap=payload.weekly_invite_cap,
+        timezone_name=payload.timezone,
+        send_hour_start=payload.send_hour_start,
+        send_hour_end=payload.send_hour_end,
+        send_days=payload.send_days,
     )
     return _unipile_outreach_status(token)
 
@@ -2671,19 +2869,84 @@ def me_linkedin_outreach_disconnect(token: str = Depends(require_token)) -> dict
     return _unipile_outreach_status(token)
 
 
+def _freeze_on_restriction(token: str, message: str) -> None:
+    """LinkedIn a signalé une limite/restriction sur un envoi immédiat → on gèle.
+
+    Même réflexe que le moteur : on arrête de taper. Le gel s'écrit en service-role
+    (le client n'a pas le droit d'écrire cette colonne — voir migration 0048) et se
+    lève tout seul après la période de refroidissement."""
+    if not outreach_engine.is_restriction_error(message):
+        return
+    user = db.get_user(token) or {}
+    if user.get("id"):
+        db.admin_freeze_outreach_account(str(user["id"]), f"LinkedIn a signalé une limite : {message}")
+
+
+def _queue_outreach(token: str, lead: dict[str, Any], action_type: str, body: str | None = None) -> dict[str, Any]:
+    """ALE-174 — voie NORMALE : l'action entre en file, le moteur choisit son créneau.
+
+    Le client garde la main sur *qui* il contacte ; on ne lui retire que le *moment*.
+    C'est ce qui empêche 25 invitations de partir en deux minutes à 3 h du matin."""
+    item = db.enqueue_outreach_action(token, lead_id=lead["id"], action_type=action_type, body=body)
+    if not item:
+        raise HTTPException(status_code=502, detail="Mise en file impossible — réessaie dans un instant.")
+    status = _unipile_outreach_status(token)
+    return {
+        "lead": lead,
+        "queued": item,
+        "scheduled_for": (status.get("engine") or {}).get("next_send_estimate"),
+        "quota": status["quota"],
+        "engine": status.get("engine"),
+    }
+
+
+def _require_immediate_slot(token: str, account: dict[str, Any], action_type: str) -> None:
+    """Soupape « envoyer maintenant » : autorisée quelques fois par jour seulement.
+
+    Elle saute la plage horaire et le délai entre deux actions — mais JAMAIS le gel,
+    les plafonds ni le warm-up : c'est `outreach_engine.decide` qui tranche, la même
+    fonction que le moteur. Une soupape qui contourne les garde-fous serait un trou."""
+    try:
+        used = db.count_immediate_outreach_sends(token)
+    except Exception as exc:  # noqa: BLE001 — fail closed : on ferme la soupape
+        print(f"[outreach] lecture des envois immédiats échouée : {exc}", flush=True)
+        raise HTTPException(status_code=503, detail="Vérification de la soupape indisponible — réessaie dans un instant.") from exc
+    if used >= outreach_engine.IMMEDIATE_DAILY_CAP:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Soupape épuisée ({used}/{outreach_engine.IMMEDIATE_DAILY_CAP} envois immédiats sur 24 h). "
+                "Mets cette action en file : elle partira au prochain créneau."
+            ),
+        )
+    counts, ok = _safe_counts(token)
+    decision = outreach_engine.decide(
+        datetime.now(timezone.utc), account, counts,
+        action_type=action_type, counts_ok=ok, ignore_pacing=True,
+    )
+    if not decision.can_send:
+        raise HTTPException(status_code=(429 if ok else 503), detail=decision.reason or "Envoi immédiat impossible.")
+
+
 @app.post("/me/leads/{lead_id}/invite")
-def me_lead_invite(lead_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Envoie une demande de connexion SANS note au lead (garde-fous quota)."""
+def me_lead_invite(
+    lead_id: str,
+    payload: OutreachInviteRequest | None = None,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Demande de connexion SANS note. Par défaut : MISE EN FILE (ALE-174) — le
+    moteur l'enverra dans la plage horaire du client, après un délai aléatoire, en
+    respectant le palier de warm-up. `immediate: true` = soupape (plafonnée)."""
     account = _require_outreach_account(token)
     account_id = account["unipile_account_id"]
     lead = db.get_lead(token, lead_id)
     if not lead:
         raise HTTPException(status_code=404, detail="Lead introuvable.")
 
-    counts, ok = _safe_counts(token)
-    quota = _outreach_quota(account, counts, ok)
-    if not quota["can_invite"]:
-        raise HTTPException(status_code=(429 if ok else 503), detail=quota["invite_blocked_reason"] or "Plafond d'invitations atteint.")
+    if not (payload and payload.immediate):
+        return _queue_outreach(token, lead, "invite")
+
+    _require_immediate_slot(token, account, "invite")
 
     identifier = unipile.profile_identifier(lead.get("profile_url"))
     if not identifier:
@@ -2709,13 +2972,15 @@ def me_lead_invite(lead_id: str, token: str = Depends(require_token)) -> dict[st
     except unipile.UnipileError as exc:
         db.log_outreach_action(token, action_type="invite", status="failed",
                                lead_id=lead_id, provider_id=provider_id, error=str(exc))
+        _freeze_on_restriction(token, str(exc))
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     db.log_outreach_action(token, action_type="invite", status="sent", lead_id=lead_id, provider_id=provider_id)
     updated = db.update_lead_outreach(
         token, lead_id, {"outreach_status": "invite_sent", "provider_id": provider_id}
     )
-    return {"lead": updated or lead, "quota": _outreach_quota(account, *_safe_counts(token))}
+    status = _unipile_outreach_status(token)
+    return {"lead": updated or lead, "immediate": True, "quota": status["quota"], "engine": status.get("engine")}
 
 
 @app.post("/me/leads/{lead_id}/check-connection")
@@ -2764,8 +3029,9 @@ def me_lead_message(
     payload: OutreachMessageRequest | None = None,
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
-    """Envoie le premier message au lead (texte fourni édité, ou généré par l'IA).
-    Crée une conversation visible dans l'Inbox LinkedIn. Garde-fou quota messages."""
+    """Premier message au lead (texte édité, ou généré par l'IA). Par défaut : MISE
+    EN FILE (ALE-174) — le moteur l'enverra à son créneau. `immediate: true` = soupape.
+    L'envoi crée une conversation visible dans l'Inbox LinkedIn."""
     account = _require_outreach_account(token)
     account_id = account["unipile_account_id"]
     lead = db.get_lead(token, lead_id)
@@ -2774,11 +3040,6 @@ def me_lead_message(
     provider_id = lead.get("provider_id")
     if not provider_id:
         raise HTTPException(status_code=400, detail="Envoie d'abord une demande de connexion à ce lead.")
-
-    counts, ok = _safe_counts(token)
-    quota = _outreach_quota(account, counts, ok)
-    if not quota["can_message"]:
-        raise HTTPException(status_code=(429 if ok else 503), detail=quota["message_blocked_reason"] or "Plafond de messages atteint.")
 
     text = ((payload.text if payload else None) or "").strip()
     if not text:
@@ -2790,11 +3051,22 @@ def me_lead_message(
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"Génération du message échouée : {exc}") from exc
 
+    # Voie normale : le message attend son créneau. Le texte part en file avec lui —
+    # il est donc relu et validé par l'utilisateur AVANT d'entrer dans la file, jamais
+    # généré à la volée au moment de l'envoi.
+    if not (payload and payload.immediate):
+        result = _queue_outreach(token, lead, "message", body=text)
+        result["message"] = text
+        return result
+
+    _require_immediate_slot(token, account, "message")
+
     try:
         result = unipile.start_new_chat(account_id, provider_id, text)
     except unipile.UnipileError as exc:
         db.log_outreach_action(token, action_type="message", status="failed",
                                lead_id=lead_id, provider_id=provider_id, error=str(exc))
+        _freeze_on_restriction(token, str(exc))
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     chat_id = unipile.chat_id_of(result)
@@ -2803,8 +3075,24 @@ def me_lead_message(
     updated = db.update_lead_outreach(
         token, lead_id, {"outreach_status": "messaged", "outreach_chat_id": chat_id}
     )
-    return {"lead": updated or lead, "message": text, "chat_id": chat_id,
-            "quota": _outreach_quota(account, *_safe_counts(token))}
+    status = _unipile_outreach_status(token)
+    return {"lead": updated or lead, "message": text, "chat_id": chat_id, "immediate": True,
+            "quota": status["quota"], "engine": status.get("engine")}
+
+
+@app.get("/me/linkedin/outreach/queue")
+def me_outreach_queue(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Actions en attente d'envoi (ALE-174) — ce que le moteur va sortir, et quand."""
+    return {"items": db.list_outreach_queue(token)}
+
+
+@app.delete("/me/linkedin/outreach/queue/{item_id}")
+def me_outreach_queue_cancel(item_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Retire une action de la file, tant qu'elle n'est pas partie."""
+    item = db.cancel_outreach_queue_item(token, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Action introuvable ou déjà envoyée.")
+    return {"item": item, "items": db.list_outreach_queue(token)}
 
 
 @app.get("/me/linkedin/outreach/chats")
