@@ -148,6 +148,83 @@ test("le parcours mène de l'idée à UN post en file, sur la structure choisie"
   expect(jobBody?.count).toBe(1);
 });
 
+test("la file ne montre que les 3 derniers posts, « Tout voir » déplie le reste (ALE-287)", async ({ page }) => {
+  const job = (i: number) => ({
+    id: `job-${i}`,
+    status: "done",
+    topic: `Post numéro ${i}`,
+    editorial_role: "story",
+    web_search: false,
+    count: 1,
+    template_id: null,
+    result: { variants: [{ id: `p-${i}`, editorial_role: "story", hook_type: "story", strategy: "", predicted_lift: "", post: `Texte ${i}` }] },
+    error: null,
+    created_at: "2026-07-13T10:00:00Z",
+    updated_at: "2026-07-13T10:00:00Z",
+  });
+  await page.route("**/generate/jobs", (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({ contentType: "application/json", body: JSON.stringify([1, 2, 3, 4, 5].map(job)) })
+      : route.fallback()
+  );
+
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Générateur de posts");
+
+  // 5 posts en base, 3 affichés.
+  await expect(page.locator(".post-queue-line")).toHaveCount(3);
+  await expect(page.getByText("Post numéro 1")).toBeVisible();
+  await expect(page.getByText("Post numéro 4")).toHaveCount(0);
+
+  await page.getByRole("button", { name: /Tout voir \(5\)/ }).click();
+  await expect(page.locator(".post-queue-line")).toHaveCount(5);
+  await expect(page.getByText("Post numéro 5")).toBeVisible();
+
+  // Un post déplié hors des 3 premiers ne doit PAS disparaître au « Réduire » —
+  // sinon on referme sous les yeux du client le post qu'il est en train de lire.
+  await page.locator(".post-queue-line").nth(4).click();
+  await expect(page.locator("textarea.variant-text")).toHaveValue("Texte 5");
+  // Nom exact : « Réduire » seul matcherait aussi « Réduire la sidebar ».
+  await page.getByRole("button", { name: "Réduire", exact: true }).click();
+  await expect(page.getByText("Post numéro 5")).toBeVisible();
+  await expect(page.locator("textarea.variant-text")).toHaveValue("Texte 5");
+});
+
+test("le réservoir d'idées est sur la page, et chaque idée lance le parcours (ALE-287)", async ({ page }) => {
+  await mockEmptyQueue(page);
+  const seeds = [{ id: "s1", text: "Le cadrage avant l'outil", used_at: null, comment: null }];
+  await page.route("**/me/idea-seeds", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify(seeds) });
+    }
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON();
+      const created = { id: "s2", text: body.text, used_at: null, comment: null };
+      seeds.push(created);
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify(created) });
+    }
+    return route.fallback();
+  });
+
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Générateur de posts");
+
+  // Le réservoir a retrouvé une page (il ne vivait plus que dans la pop-up).
+  await expect(page.getByRole("heading", { name: /Mes idées de posts/i })).toBeVisible();
+  await expect(page.getByText("Le cadrage avant l'outil")).toBeVisible();
+
+  // Ajout d'une idée depuis la page.
+  await page.getByLabel(/Une idée de post/i).fill("Ce que coûte un projet IA mal cadré");
+  await page.getByRole("button", { name: /^Ajouter/ }).click();
+  await expect(page.getByText("Ce que coûte un projet IA mal cadré")).toBeVisible();
+
+  // « Générer » sur une idée ouvre le parcours, déjà pré-rempli. Le bouton est
+  // cherché DANS le réservoir : le gros bouton de la page ne doit pas répondre ici.
+  await page.locator(".daily-reservoir").getByRole("button", { name: /^Générer$/ }).first().click();
+  const modal = page.getByRole("dialog", { name: /Générer un post/i });
+  await expect(modal.getByLabel(/De quoi veux-tu parler/i)).toHaveValue("Le cadrage avant l'outil");
+});
+
 test("bibliothèque vide : le parcours propose la structure libre et n'est pas bloqué", async ({ page }) => {
   await mockEmptyQueue(page);
   await page.route("**/me/idea-seeds", (route) =>
