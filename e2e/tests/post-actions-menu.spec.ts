@@ -52,7 +52,7 @@ test("Contenu › Mes contenus : menu Publier + ⋯ sur une carte de post (GET m
     return route.fallback();
   });
   await gotoTab(page, "Contenu");
-  await gotoSubTab(page, "Mes contenus");
+  await gotoSubTab(page, "Ma bibliothèque");
   await expect(page.getByRole("heading", { name: /Mes contenus sauvegardés/i })).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
   await checkActionsBar(page, { expectDelete: true });
@@ -222,15 +222,19 @@ test("Contenu › Mes contenus : Image IA propose une image de référence depui
   });
 
   await gotoTab(page, "Contenu");
-  await gotoSubTab(page, "Mes contenus");
+  await gotoSubTab(page, "Ma bibliothèque");
   const bar = page.locator(".post-actions-bar").first();
   await bar.getByRole("button", { name: "Plus d'actions" }).click();
   await page.locator(".action-menu").getByRole("menuitem", { name: /Générer une image IA/ }).click();
 
-  // La vignette du template (dérivée de l'alt de son image) apparaît et se sélectionne.
+  // La vignette du template apparaît et se sélectionne. ALE-282 : la sélection doit
+  // être explicite (état pressé + bandeau qui nomme la référence retenue).
   const thumbnail = page.getByRole("button", { name: "Accroche choc + 3 bullets" });
   await expect(thumbnail).toBeVisible();
+  await expect(thumbnail).toHaveAttribute("aria-pressed", "false");
   await thumbnail.click();
+  await expect(thumbnail).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText(/Inspiration : « Accroche choc \+ 3 bullets »/)).toBeVisible();
 
   await page.getByRole("button", { name: /Générer l'image/ }).click();
   await expect(page.getByText(/Image jointe au post/)).toBeVisible();
