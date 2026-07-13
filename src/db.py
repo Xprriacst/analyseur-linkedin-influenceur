@@ -872,8 +872,8 @@ def update_generated_post(
 # ── Crédits utilisateur (ALE-41) ── #
 
 # Offre de bienvenue à l'inscription (1re visite). Doit rester alignée avec le
-# défaut de colonne et l'auto-création dans debit_credits() (migration 0028).
-WELCOME_CREDITS = 60
+# défaut de colonne et l'auto-création dans debit_credits() (migration 0047).
+WELCOME_CREDITS = 150
 
 CREDIT_COSTS: dict[str, int] = {
     "generate_post": 5,    # par variant
@@ -886,7 +886,7 @@ CREDIT_COSTS: dict[str, int] = {
 
 
 def get_user_credits(access_token: str) -> dict:
-    """Retourne le solde de crédits de l'utilisateur (crée 20 crédits au 1er appel)."""
+    """Retourne le solde de crédits de l'utilisateur (crée l'offre de bienvenue au 1er appel)."""
     if not supabase_enabled():
         return {"balance": 999, "enabled": False}
     user = get_user(access_token)
@@ -908,7 +908,7 @@ def get_user_credits(access_token: str) -> dict:
         rows = []
     if rows:
         return {"balance": rows[0]["balance"], "enabled": True}
-    # Première visite : initialiser via service-role (offre de bienvenue = 60).
+    # Première visite : initialiser via service-role (offre de bienvenue = WELCOME_CREDITS).
     if admin_enabled():
         try:
             admin_client().table("user_credits").insert({"user_id": user["id"], "balance": WELCOME_CREDITS}).execute()
