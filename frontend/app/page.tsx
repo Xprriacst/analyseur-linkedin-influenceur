@@ -2312,28 +2312,95 @@ type OutreachQuota = {
   message_blocked_reason?: string | null;
 };
 
+// ALE-174 — état du moteur d'envoi cadencé (file d'attente + warm-up + gel).
+type OutreachEngine = {
+  pending: number;
+  last_run_at?: string | null;
+  last_run_error?: string | null;
+  stalled: boolean;              // le moteur ne passe plus alors qu'il reste du travail
+  frozen: boolean;               // gel de sécurité (posé par le moteur, non levable ici)
+  freeze_reason?: string | null;
+  frozen_until?: string | null;
+  warmup_week: number;
+  warmup_cap: number;
+  warmup_weeks_total: number;
+  next_send_estimate: string;
+  immediate_left: number;        // soupape « envoyer maintenant » restante sur 24 h
+  immediate_cap: number;
+  window: { timezone: string; hour_start: number; hour_end: number; days: number[] };
+};
+
+type OutreachQueueItem = {
+  id: string;
+  lead_id: string;
+  action_type: "invite" | "message";
+  body?: string | null;
+  not_before: string;
+  created_at?: string | null;
+};
+
 type OutreachStatus = {
   configured: boolean;
   connected: boolean;
   account_name?: string | null;
   connected_at?: string | null;
   quota: OutreachQuota;
+  engine?: OutreachEngine | null;
 };
 
 type OutreachChat = { id: string; name?: string | null; last_message_at?: string | null; provider_url?: string | null };
 type OutreachMessage = { id: string; text: string; from_me: boolean; created_at?: string | null };
 
-/** Statut de connexion Unipile (compte LinkedIn de prospection) + quotas + flux d'auth hébergée. */
+const WEEKDAY_LABELS = ["L", "M", "M", "J", "V", "S", "D"]; // ISO 1..7
+
+/** « aujourd'hui vers 14 h », « demain vers 9 h », sinon la date — pour dire au
+ *  client QUAND son action partira, plutôt que de le laisser deviner. */
+function formatEta(iso?: string | null): string {
+  if (!iso) return "au prochain créneau";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "au prochain créneau";
+  const now = new Date();
+  const hour = `${at.getHours()} h${at.getMinutes() >= 30 ? "30" : ""}`;
+  const sameDay = at.toDateString() === now.toDateString();
+  const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+  if (sameDay) return at.getTime() - now.getTime() < 90_000 ? "dans un instant" : `aujourd'hui vers ${hour}`;
+  if (at.toDateString() === tomorrow.toDateString()) return `demain vers ${hour}`;
+  return `${at.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })} vers ${hour}`;
+}
+
+/** « il y a 8 min » — fraîcheur du dernier passage du moteur. */
+function formatAgo(iso?: string | null): string {
+  if (!iso) return "jamais";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "jamais";
+  const mins = Math.max(0, Math.round((Date.now() - at.getTime()) / 60_000));
+  if (mins < 1) return "à l'instant";
+  if (mins < 60) return `il y a ${mins} min`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `il y a ${hours} h`;
+  return `il y a ${Math.round(hours / 24)} j`;
+}
+
+/** Statut de connexion Unipile (compte LinkedIn de prospection) + quotas + file d'envoi. */
 function useLinkedInOutreach(isAuthed: boolean) {
   const [status, setStatus] = useState<OutreachStatus | null>(null);
+  const [queue, setQueue] = useState<OutreachQueueItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const reload = useCallback(async () => {
-    if (!isAuthed) { setStatus(null); return; }
+    if (!isAuthed) { setStatus(null); setQueue([]); return; }
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/status`, { headers: await authHeaders() });
       if (res.ok) setStatus(await res.json());
+    } catch { /* non bloquant */ }
+  }, [isAuthed]);
+
+  const reloadQueue = useCallback(async () => {
+    if (!isAuthed) { setQueue([]); return; }
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/queue`, { headers: await authHeaders() });
+      if (res.ok) { const data = await res.json(); setQueue(data.items || []); }
     } catch { /* non bloquant */ }
   }, [isAuthed]);
 
@@ -2366,13 +2433,14 @@ function useLinkedInOutreach(isAuthed: boolean) {
     finally { setBusy(false); }
   }
 
-  async function setDailyCap(daily_cap: number) {
+  /** Plafond quotidien + fenêtre d'envoi du moteur (fuseau, heures, jours). */
+  async function saveSettings(patch: Record<string, unknown>) {
     setError(""); setBusy(true);
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ daily_cap }),
+        body: JSON.stringify(patch),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
@@ -2381,7 +2449,22 @@ function useLinkedInOutreach(isAuthed: boolean) {
     finally { setBusy(false); }
   }
 
-  return { status, busy, error, reload, connect, disconnect, setDailyCap, setStatus };
+  /** Retire une action de la file, tant qu'elle n'est pas partie. */
+  async function cancelQueued(itemId: string) {
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/queue/${itemId}`, {
+        method: "DELETE", headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Retrait impossible");
+      setQueue(data.items || []);
+      void reload();
+      return true;
+    } catch (err: any) { setError(err.message); return false; }
+  }
+
+  return { status, queue, busy, error, reload, reloadQueue, connect, disconnect, saveSettings, cancelQueued, setStatus, setQueue };
 }
 
 type XStatus = {
@@ -5775,12 +5858,25 @@ function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
   const outreach = useLinkedInOutreach(isAuthed);
   const [capOpen, setCapOpen] = useState(false);
   const [capDraft, setCapDraft] = useState<number>(25);
+  // ALE-174 — fenêtre d'envoi du moteur (heures de bureau du client).
+  const [hoursDraft, setHoursDraft] = useState<[number, number]>([9, 18]);
+  const [daysDraft, setDaysDraft] = useState<number[]>([1, 2, 3, 4, 5]);
 
   const st = outreach.status;
   const connected = !!st?.connected;
   const q = st?.quota;
+  const eng = st?.engine;
 
   useEffect(() => { if (q?.daily_cap) setCapDraft(q.daily_cap); }, [q?.daily_cap]);
+  useEffect(() => {
+    if (eng?.window) {
+      setHoursDraft([eng.window.hour_start, eng.window.hour_end]);
+      setDaysDraft(eng.window.days);
+    }
+  }, [eng?.window?.hour_start, eng?.window?.hour_end, eng?.window?.days?.join(",")]);
+
+  const toggleDay = (d: number) =>
+    setDaysDraft((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort()));
 
   if (!isAuthed) return null;
 
@@ -5795,7 +5891,7 @@ function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
               {!st?.configured
                 ? "Messagerie LinkedIn non configurée sur le serveur (Unipile)."
                 : connected
-                  ? "Compte LinkedIn relié — tu peux envoyer des demandes de connexion et des messages à tes leads depuis l'onglet Prospection."
+                  ? "Compte LinkedIn relié — tes invitations et messages partent depuis l'onglet Prospection, cadencés pour protéger ton compte."
                   : "Connecte ton compte LinkedIn pour envoyer des invitations et des messages à tes leads, sans quitter l'app."}
             </p>
           </div>
@@ -5805,7 +5901,7 @@ function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
             <>
               <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
               <button className="secondary-button" onClick={() => setCapOpen((v) => !v)} style={{ fontSize: 12 }}>
-                <Settings2 size={13} /> {capOpen ? "Masquer les quotas" : "Quotas"}
+                <Settings2 size={13} /> {capOpen ? "Masquer les réglages" : "Rythme d'envoi"}
               </button>
               <button className="secondary-button" onClick={outreach.disconnect} disabled={outreach.busy} style={{ fontSize: 12 }}>
                 {outreach.busy ? <Loader2 size={12} className="spinning" /> : null} Délier
@@ -5820,13 +5916,36 @@ function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
         </div>
       </section>
 
+      {/* ALE-174 — un moteur qui plante en silence est pire qu'un moteur absent : le
+          client croirait que sa prospection tourne. Un cron mort ne peut pas alerter
+          sur sa propre mort, donc c'est l'app qui le dit, ici, en rouge. */}
+      {connected && eng?.stalled && (
+        <div className="error" style={{ marginBottom: 12 }}>
+          <strong>Ta prospection est à l&apos;arrêt.</strong> {eng.pending} action(s) attendent en file mais le
+          moteur d&apos;envoi n&apos;est pas passé depuis {formatAgo(eng.last_run_at)}. Rien ne part.
+          {eng.last_run_error ? <> Dernière erreur : {eng.last_run_error}</> : null}
+        </div>
+      )}
+      {connected && eng?.frozen && (
+        <div className="card" style={{ marginBottom: 12, padding: 12, borderColor: "var(--warning, #b8860b)" }}>
+          <strong>⏸ Envois en pause de sécurité.</strong>{" "}
+          {eng.freeze_reason || "LinkedIn a signalé une limite."}{" "}
+          {eng.frozen_until ? `Reprise automatique ${formatEta(eng.frozen_until)}.` : ""}
+          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
+            La pause n&apos;est pas levable à la main : c&apos;est elle qui protège ton compte d&apos;une restriction.
+            Tes actions restent en file et repartiront toutes seules.
+          </p>
+        </div>
+      )}
+
       {connected && q && capOpen && (
         <section className="card" style={{ marginBottom: 16, padding: 14 }}>
           <p style={{ fontSize: 13, margin: "0 0 10px" }}>
-            <strong>Garde-fous quota</strong> — ils protègent ton compte LinkedIn d&apos;une restriction.
-            Le plafond quotidien s&apos;applique séparément aux invitations et aux messages ; une sécurité
-            hebdomadaire glissante (~{q.weekly_invite_cap} invitations / 7 jours) s&apos;ajoute par-dessus.
+            <strong>Rythme d&apos;envoi</strong> — tes actions ne partent pas au clic : elles entrent dans une
+            file, et le moteur les envoie une par une, dans ta plage horaire, avec un délai variable entre
+            chacune. C&apos;est ce qui te fait ressembler à quelqu&apos;un qui prospecte, et pas à un robot.
           </p>
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 12 }}>
             <div className="card" style={{ padding: "10px 12px" }}>
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>Invitations aujourd&apos;hui</div>
@@ -5837,21 +5956,78 @@ function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>Messages aujourd&apos;hui</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>{q.messages_today}<span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}> / {q.daily_cap}</span></div>
             </div>
+            {eng && (
+              <div className="card" style={{ padding: "10px 12px" }}>
+                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--muted)", fontWeight: 700 }}>En file</div>
+                <div style={{ fontSize: 20, fontWeight: 700 }}>{eng.pending}</div>
+                <div style={{ fontSize: 11.5, color: "var(--muted)" }}>Moteur passé {formatAgo(eng.last_run_at)}</div>
+              </div>
+            )}
           </div>
-          <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, fontWeight: 600, flexWrap: "wrap" }}>
+
+          {eng && eng.warmup_week <= eng.warmup_weeks_total && (
+            <p style={{ fontSize: 12.5, margin: "0 0 12px", padding: "8px 10px", background: "var(--surface-2, rgba(0,0,0,.03))", borderRadius: 8 }}>
+              🌱 <strong>Mise en route — semaine {eng.warmup_week}/{eng.warmup_weeks_total}</strong> : {eng.warmup_cap} actions
+              par jour maximum pour l&apos;instant. Un compte qui se met à envoyer beaucoup du jour au lendemain est
+              exactement ce que LinkedIn repère — on monte progressivement, tu n&apos;as rien à faire.
+            </p>
+          )}
+
+          <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, fontWeight: 600, flexWrap: "wrap", marginBottom: 10 }}>
             Plafond quotidien
             <input
               type="number" min={1} max={100} value={capDraft}
               onChange={(e) => setCapDraft(Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
               style={{ width: 80, padding: 8, fontSize: 13, fontWeight: 400 }}
             />
-            <button className="primary-button" onClick={() => outreach.setDailyCap(capDraft)} disabled={outreach.busy || capDraft === q.daily_cap} style={{ fontSize: 13 }}>
+            <button className="primary-button" onClick={() => outreach.saveSettings({ daily_cap: capDraft })} disabled={outreach.busy || capDraft === q.daily_cap} style={{ fontSize: 13 }}>
               {outreach.busy ? <Loader2 size={13} className="spinning" /> : <CheckCircle2 size={13} />} Enregistrer
             </button>
           </label>
-          <p style={{ fontSize: 11.5, color: "var(--muted)", margin: "8px 0 0" }}>
-            Recommandé : 25 max/jour pour un compte établi. Monte progressivement pour un compte récent.
-          </p>
+
+          <div style={{ display: "grid", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Quand tes actions peuvent partir</div>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, flexWrap: "wrap" }}>
+              Entre
+              <input type="number" min={0} max={23} value={hoursDraft[0]}
+                onChange={(e) => setHoursDraft(([, end]) => [Math.max(0, Math.min(23, Number(e.target.value) || 0)), end])}
+                style={{ width: 64, padding: 8, fontSize: 13 }} />
+              h et
+              <input type="number" min={1} max={24} value={hoursDraft[1]}
+                onChange={(e) => setHoursDraft(([start]) => [start, Math.max(1, Math.min(24, Number(e.target.value) || 1))])}
+                style={{ width: 64, padding: 8, fontSize: 13 }} />
+              h ({eng?.window.timezone || "Europe/Paris"})
+            </label>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              {WEEKDAY_LABELS.map((label, i) => {
+                const day = i + 1;
+                const on = daysDraft.includes(day);
+                return (
+                  <button
+                    key={day}
+                    className={on ? "primary-button" : "secondary-button"}
+                    onClick={() => toggleDay(day)}
+                    style={{ width: 36, padding: "6px 0", fontSize: 12, justifyContent: "center" }}
+                    title={on ? "Jour d'envoi" : "Aucun envoi ce jour"}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+              <button
+                className="primary-button"
+                disabled={outreach.busy || !daysDraft.length}
+                onClick={() => outreach.saveSettings({ send_hour_start: hoursDraft[0], send_hour_end: hoursDraft[1], send_days: daysDraft })}
+                style={{ fontSize: 13, marginLeft: "auto" }}
+              >
+                {outreach.busy ? <Loader2 size={13} className="spinning" /> : <CheckCircle2 size={13} />} Enregistrer
+              </button>
+            </div>
+            <p style={{ fontSize: 11.5, color: "var(--muted)", margin: 0 }}>
+              Recommandé : heures de bureau, jours ouvrés. Des invitations qui partent à 3 h du matin, un
+              dimanche, c&apos;est le signal le plus facile à repérer pour LinkedIn.
+            </p>
+          </div>
         </section>
       )}
       {outreach.error && <div className="error" style={{ marginBottom: 12 }}>{outreach.error}</div>}
@@ -9493,6 +9669,17 @@ function ProspectingView({
   const applyQuota = (quota?: OutreachQuota) => {
     if (quota) outreach.setStatus((prev) => (prev ? { ...prev, quota } : prev));
   };
+  const applyEngine = (engine?: OutreachEngine | null) => {
+    if (engine) outreach.setStatus((prev) => (prev ? { ...prev, engine } : prev));
+  };
+
+  // ALE-174 — actions déjà en file, par lead et par type (« Invitation en file »).
+  const queuedByLead = new Map<string, OutreachQueueItem>();
+  for (const item of outreach.queue) queuedByLead.set(`${item.lead_id}:${item.action_type}`, item);
+  const queuedInvite = (lead: Lead) => queuedByLead.get(`${lead.id}:invite`);
+  const queuedMessage = (lead: Lead) => queuedByLead.get(`${lead.id}:message`);
+
+  useEffect(() => { void outreach.reloadQueue(); }, [outreach.reloadQueue]);
 
   // ALE-243 : curation manuelle — marque « ne pas contacter » / remet en liste.
   async function setContactStatus(lead: Lead, contact_status: "to_contact" | "skip", reason?: string) {
@@ -9507,17 +9694,37 @@ function ProspectingView({
     } catch { /* non bloquant */ }
   }
 
-  async function inviteLead(lead: Lead) {
+  // ALE-174 — par défaut, l'invitation entre en FILE : c'est le moteur qui choisit
+  // le créneau (plage horaire, délai variable, palier de mise en route). `immediate`
+  // = la soupape, pour le cas « je sors d'une visio avec cette personne ».
+  async function inviteLead(lead: Lead, immediate = false) {
     setOutreachBusy(true); setOutreachMsg("");
     try {
-      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/invite`, { method: "POST", headers: await authHeaders() });
+      const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ immediate }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi impossible");
       if (data.lead) patchLead(data.lead);
       applyQuota(data.quota);
-      setOutreachMsg(data.already_connected ? "Vous êtes déjà en relation — prêt pour un message." : "Demande de connexion envoyée ✓");
+      applyEngine(data.engine);
+      if (data.queued) {
+        await outreach.reloadQueue();
+        setOutreachMsg(`En file — partira ${formatEta(data.scheduled_for)}.`);
+      } else {
+        setOutreachMsg(data.already_connected ? "Vous êtes déjà en relation — prêt pour un message." : "Demande de connexion envoyée ✓");
+      }
     } catch (err: any) { setOutreachMsg(err.message); }
     finally { setOutreachBusy(false); }
+  }
+
+  async function cancelQueued(itemId: string) {
+    setOutreachBusy(true);
+    try {
+      if (await outreach.cancelQueued(itemId)) setOutreachMsg("Action retirée de la file.");
+    } finally { setOutreachBusy(false); }
   }
 
   async function checkConnection(lead: Lead) {
@@ -9545,21 +9752,27 @@ function ProspectingView({
     finally { setGenBusy(false); }
   }
 
-  async function sendFirstMessage(lead: Lead) {
+  async function sendFirstMessage(lead: Lead, immediate = false) {
     if (!messageText.trim()) return;
     setOutreachBusy(true); setOutreachMsg("");
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/leads/${lead.id}/message`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ text: messageText.trim() }),
+        body: JSON.stringify({ text: messageText.trim(), immediate }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi impossible");
       if (data.lead) patchLead(data.lead);
       applyQuota(data.quota);
+      applyEngine(data.engine);
       setComposeOpen(false); setMessageText("");
-      setOutreachMsg("Premier message envoyé ✓ Retrouve la conversation dans l'Inbox › LinkedIn.");
+      if (data.queued) {
+        await outreach.reloadQueue();
+        setOutreachMsg(`Message en file — partira ${formatEta(data.scheduled_for)}.`);
+      } else {
+        setOutreachMsg("Premier message envoyé ✓ Retrouve la conversation dans l'Inbox › LinkedIn.");
+      }
     } catch (err: any) { setOutreachMsg(err.message); }
     finally { setOutreachBusy(false); }
   }
@@ -9845,18 +10058,26 @@ function ProspectingView({
                 ) : l.status === "new" ? (
                   <span className="daily-seed-tag" style={{ flexShrink: 0 }}>Nouveau</span>
                 ) : null}
-                {/* ALE-245 : raccourcis d'action sur la ligne — stopPropagation pour ne pas ouvrir le volet. */}
+                {/* ALE-245 : raccourcis d'action sur la ligne — stopPropagation pour ne pas ouvrir le volet.
+                    ALE-174 : « Inviter » met en file (le moteur choisit le créneau) — donc plus de
+                    blocage sur le quota ici : c'est à l'envoi que le plafond s'applique. */}
                 {lnConnected && (!l.outreach_status || l.outreach_status === "none") && (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    style={{ flexShrink: 0, fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                    disabled={outreachBusy || !quota?.can_invite}
-                    title={!quota?.can_invite ? (quota?.invite_blocked_reason || "Invitation indisponible") : "Envoyer une demande de connexion"}
-                    onClick={(e) => { e.stopPropagation(); inviteLead(l); }}
-                  >
-                    <UserRound size={13} /> Inviter
-                  </button>
+                  queuedInvite(l) ? (
+                    <span className="daily-seed-tag" style={{ flexShrink: 0 }} title={`Partira ${formatEta(outreach.status?.engine?.next_send_estimate)}`}>
+                      📮 En file
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      style={{ flexShrink: 0, fontSize: 12, minHeight: 30, padding: "0 10px" }}
+                      disabled={outreachBusy}
+                      title="Mettre l'invitation en file — elle partira dans ta plage horaire, à un rythme humain."
+                      onClick={(e) => { e.stopPropagation(); inviteLead(l); }}
+                    >
+                      <UserRound size={13} /> Inviter
+                    </button>
+                  )
                 )}
                 {lnConnected && (l.outreach_status === "connected" || l.outreach_status === "messaged") && (
                   <button
@@ -9995,7 +10216,11 @@ function ProspectingView({
                   </p>
                 ) : (() => {
                   const q = outreach.status?.quota;
+                  const eng = outreach.status?.engine;
                   const oStatus = selected.outreach_status || "none";
+                  const pendingInvite = queuedInvite(selected);
+                  const pendingMessage = queuedMessage(selected);
+                  const immediateLeft = eng?.immediate_left ?? 0;
                   return (
                     <>
                       {q && (
@@ -10003,16 +10228,40 @@ function ProspectingView({
                           Invitations {q.invites_today}/{q.daily_cap} · Messages {q.messages_today}/{q.daily_cap} (aujourd&apos;hui)
                         </div>
                       )}
-                      {oStatus === "none" && (
+                      {/* ALE-174 — l'action entre en file : le client choisit QUI, le moteur choisit QUAND. */}
+                      {oStatus === "none" && pendingInvite && (
+                        <>
+                          <div style={{ fontSize: 13 }}>
+                            📮 Invitation <strong>en file</strong> — partira {formatEta(eng?.next_send_estimate)}.
+                          </div>
+                          <button className="secondary-button" disabled={outreachBusy} onClick={() => cancelQueued(pendingInvite.id)} style={{ fontSize: 12 }}>
+                            {outreachBusy ? <Loader2 size={13} className="spinning" /> : <X size={13} />} Retirer de la file
+                          </button>
+                        </>
+                      )}
+                      {oStatus === "none" && !pendingInvite && (
                         <>
                           <button
                             className="primary-button"
-                            disabled={outreachBusy || !q?.can_invite}
-                            title={!q?.can_invite ? (q?.invite_blocked_reason || "") : "Demande de connexion sans note"}
+                            disabled={outreachBusy}
+                            title="L'invitation part en file : le moteur l'enverra dans ta plage horaire, à un rythme humain."
                             onClick={() => inviteLead(selected)}
                           >
                             {outreachBusy ? <Loader2 size={14} className="spinning" /> : <UserRound size={14} />}
-                            Envoyer une demande de connexion
+                            Mettre l&apos;invitation en file
+                          </button>
+                          <button
+                            className="secondary-button"
+                            disabled={outreachBusy || !q?.can_invite || immediateLeft <= 0}
+                            title={
+                              immediateLeft <= 0
+                                ? "Soupape épuisée pour aujourd'hui — mets l'invitation en file."
+                                : !q?.can_invite ? (q?.invite_blocked_reason || "") : "Envoi immédiat, hors file"
+                            }
+                            onClick={() => inviteLead(selected, true)}
+                            style={{ fontSize: 12 }}
+                          >
+                            <Zap size={13} /> Envoyer maintenant ({immediateLeft} restant{immediateLeft > 1 ? "s" : ""})
                           </button>
                           {!q?.can_invite && q?.invite_blocked_reason && (
                             <p style={{ margin: 0, fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{q.invite_blocked_reason}</p>
@@ -10028,14 +10277,22 @@ function ProspectingView({
                           </button>
                         </>
                       )}
-                      {oStatus === "connected" && (
+                      {oStatus === "connected" && pendingMessage && (
+                        <>
+                          <div style={{ fontSize: 13 }}>
+                            📮 Message <strong>en file</strong> — partira {formatEta(eng?.next_send_estimate)}.
+                          </div>
+                          <button className="secondary-button" disabled={outreachBusy} onClick={() => cancelQueued(pendingMessage.id)} style={{ fontSize: 12 }}>
+                            {outreachBusy ? <Loader2 size={13} className="spinning" /> : <X size={13} />} Retirer de la file
+                          </button>
+                        </>
+                      )}
+                      {oStatus === "connected" && !pendingMessage && (
                         <>
                           <div style={{ fontSize: 13, color: "var(--success)" }}>✓ En relation — prêt pour le premier message.</div>
                           {!composeOpen ? (
                             <button
                               className="primary-button"
-                              disabled={!q?.can_message}
-                              title={!q?.can_message ? (q?.message_blocked_reason || "") : ""}
                               onClick={() => { setComposeOpen(true); if (!messageText) generateMessage(selected); }}
                             >
                               <Send size={14} /> Rédiger le premier message
@@ -10053,13 +10310,28 @@ function ProspectingView({
                                 <button className="secondary-button" disabled={genBusy} onClick={() => generateMessage(selected)} style={{ fontSize: 12 }}>
                                   {genBusy ? <Loader2 size={13} className="spinning" /> : <Sparkles size={13} />} Régénérer
                                 </button>
+                                {/* Le texte est relu et validé AVANT d'entrer dans la file : rien n'est
+                                    généré à la volée au moment où le moteur envoie. */}
                                 <button
                                   className="primary-button"
-                                  disabled={outreachBusy || genBusy || !messageText.trim() || !q?.can_message}
+                                  disabled={outreachBusy || genBusy || !messageText.trim()}
                                   onClick={() => sendFirstMessage(selected)}
                                   style={{ fontSize: 12 }}
                                 >
-                                  {outreachBusy ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} Envoyer
+                                  {outreachBusy ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} Mettre en file
+                                </button>
+                                <button
+                                  className="secondary-button"
+                                  disabled={outreachBusy || genBusy || !messageText.trim() || !q?.can_message || immediateLeft <= 0}
+                                  title={
+                                    immediateLeft <= 0
+                                      ? "Soupape épuisée pour aujourd'hui — mets le message en file."
+                                      : !q?.can_message ? (q?.message_blocked_reason || "") : "Envoi immédiat, hors file"
+                                  }
+                                  onClick={() => sendFirstMessage(selected, true)}
+                                  style={{ fontSize: 12 }}
+                                >
+                                  <Zap size={13} /> Envoyer maintenant
                                 </button>
                               </div>
                               {!q?.can_message && q?.message_blocked_reason && (

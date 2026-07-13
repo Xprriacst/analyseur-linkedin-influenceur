@@ -55,6 +55,16 @@ jobs:
           python3 -m py_compile api.py src/*.py
           echo "py_compile OK."
 
+      # Tests unitaires (stdlib, aucune dépendance : ni Supabase, ni réseau).
+      # Couvrent notamment le CLOISONNEMENT MULTI-CLIENT du moteur d'envoi (ALE-174) :
+      # le cron tourne en service-role, donc sans le cloisonnement automatique de la
+      # base — c'est ce test, et pas la vigilance humaine, qui garantit qu'une action
+      # du client A ne partira jamais depuis le compte LinkedIn du client B.
+      - name: Tests unitaires
+        run: |
+          python3 -m unittest discover -s tests -t . -v
+          echo "tests OK."
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
