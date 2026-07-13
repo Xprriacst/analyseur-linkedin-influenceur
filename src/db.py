@@ -972,6 +972,159 @@ def refund_credits_admin(
         pass
 
 
+# ── Abonnement Stripe (ALE-274) ── #
+#
+# Toutes les écritures passent par le service-role : l'état d'abonnement est
+# dicté par Stripe (via le webhook), jamais par le client. Côté utilisateur, la
+# table est en lecture seule (RLS, migration 0046).
+
+_SUBSCRIPTION_COLS = (
+    "user_id, stripe_customer_id, stripe_subscription_id, status, price_id, "
+    "cancel_at_period_end, current_period_end, updated_at"
+)
+
+
+def get_subscription(access_token: str) -> dict | None:
+    """Abonnement de l'utilisateur courant (RLS), ou None s'il n'en a jamais eu."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    try:
+        resp = (
+            client_for_token(access_token)
+            .table("user_subscriptions")
+            .select(_SUBSCRIPTION_COLS)
+            .eq("user_id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data if resp and getattr(resp, "data", None) else []
+    except Exception:
+        return None
+    return rows[0] if rows else None
+
+
+def get_subscription_by_user_admin(user_id: str) -> dict | None:
+    if not admin_enabled() or not user_id:
+        return None
+    try:
+        resp = (
+            admin_client()
+            .table("user_subscriptions")
+            .select(_SUBSCRIPTION_COLS)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data if resp and getattr(resp, "data", None) else []
+    except Exception:
+        return None
+    return rows[0] if rows else None
+
+
+def get_subscription_by_customer_admin(customer_id: str) -> dict | None:
+    """Retrouve le compte app depuis l'identifiant client Stripe.
+
+    C'est le chemin de rattachement du webhook : une facture ne porte que le
+    client et l'abonnement Stripe, jamais notre user_id.
+    """
+    if not admin_enabled() or not customer_id:
+        return None
+    try:
+        resp = (
+            admin_client()
+            .table("user_subscriptions")
+            .select(_SUBSCRIPTION_COLS)
+            .eq("stripe_customer_id", customer_id)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data if resp and getattr(resp, "data", None) else []
+    except Exception:
+        return None
+    return rows[0] if rows else None
+
+
+def upsert_subscription_admin(user_id: str, **fields: Any) -> dict | None:
+    """Crée/met à jour l'état d'abonnement (service-role). Les champs absents sont laissés tels quels."""
+    if not admin_enabled() or not user_id:
+        return None
+    payload = {k: v for k, v in fields.items() if v is not None}
+    payload["user_id"] = user_id
+    payload["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    try:
+        resp = (
+            admin_client()
+            .table("user_subscriptions")
+            .upsert(payload, on_conflict="user_id")
+            .execute()
+        )
+        return resp.data[0] if resp and getattr(resp, "data", None) else None
+    except Exception:
+        return None
+
+
+def set_credits_admin(
+    user_id: str, amount: int, action: str = "subscription_renewal", description: str | None = None
+) -> int | None:
+    """FIXE le solde à `amount` (pas d'incrément) — renouvellement d'abonnement.
+
+    Décision produit : les crédits non consommés ne sont pas reportés d'un mois
+    sur l'autre. Retourne le nouveau solde, ou None si l'écriture a échoué (le
+    webhook renvoie alors une erreur → Stripe rejoue l'événement).
+    """
+    if not admin_enabled() or not user_id:
+        return None
+    try:
+        resp = admin_client().rpc("set_credits", {
+            "p_user_id": user_id,
+            "p_amount": int(amount),
+            "p_action": action,
+            "p_description": description or f"abonnement : solde remis à {amount}",
+        }).execute()
+        return resp.data if isinstance(resp.data, int) else int(amount)
+    except Exception:
+        return None
+
+
+def billing_event_already_processed(event_id: str, event_type: str, user_id: str | None) -> bool:
+    """Marque un événement Stripe comme traité. True s'il l'était déjà (rejeu).
+
+    Stripe rejoue un événement tant qu'il n'a pas reçu de 2xx : sans ce garde-fou,
+    un rejeu de `invoice.paid` re-fixerait le solde à 1000 (et effacerait la
+    consommation du mois en cours). L'insertion sur clé primaire = verrou atomique.
+    """
+    if not admin_enabled() or not event_id:
+        return False
+    try:
+        admin_client().table("billing_events").insert(
+            {"id": event_id, "type": event_type, "user_id": user_id}
+        ).execute()
+        return False
+    except Exception as exc:
+        # 23505 = violation de clé primaire → l'événement a déjà été traité.
+        if "23505" in str(exc) or "duplicate key" in str(exc).lower():
+            return True
+        raise
+
+
+def delete_billing_event_admin(event_id: str) -> None:
+    """Retire un événement du journal d'idempotence.
+
+    Appelé quand le traitement a échoué APRÈS l'avoir marqué traité (ex. le crédit
+    n'a pas pu s'appliquer) : sans ça, le rejeu de Stripe serait vu comme un
+    doublon et l'utilisateur ne serait jamais crédité.
+    """
+    if not admin_enabled() or not event_id:
+        return
+    try:
+        admin_client().table("billing_events").delete().eq("id", event_id).execute()
+    except Exception:
+        pass
+
+
 import re as _re
 
 

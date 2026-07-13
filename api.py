@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile
+from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -1451,6 +1451,263 @@ def update_me_generated_post(post_id: str, payload: UpdatePostRequest, token: st
 def me_credits(token: str = Depends(require_token)) -> dict[str, Any]:
     """Retourne le solde de crédits de l'utilisateur authentifié."""
     return db.get_user_credits(token)
+
+
+# --------------------------------------------------------------------------- #
+# Abonnement Stripe (ALE-274) — 49 €/mois = 1000 crédits
+#
+# Le paiement et la gestion de la carte/résiliation sont hébergés par Stripe
+# (Checkout + Customer Portal). L'app ne fait que : ouvrir la page de paiement,
+# écouter le webhook, et refléter l'état d'abonnement.
+#
+# Règle de confiance : SEUL le webhook (signé par Stripe) crédite et fait foi sur
+# l'état d'abonnement. Aucun endpoint porteur d'un JWT utilisateur ne crédite —
+# sinon un client pourrait s'auto-recharger en rejouant l'appel de retour.
+# --------------------------------------------------------------------------- #
+
+class BillingCheckoutRequest(BaseModel):
+    success_url: str = Field(..., max_length=2000)
+    cancel_url: str = Field(..., max_length=2000)
+
+
+class BillingPortalRequest(BaseModel):
+    return_url: str = Field(..., max_length=2000)
+
+
+def _billing_state(subscription: dict | None) -> dict[str, Any]:
+    """Vue publique de l'abonnement (jamais d'identifiants Stripe côté client)."""
+    status = (subscription or {}).get("status")
+    return {
+        "enabled": stripe_billing.enabled(),
+        "subscribed": stripe_billing.is_active(status),
+        "status": status,
+        "cancel_at_period_end": bool((subscription or {}).get("cancel_at_period_end")),
+        "current_period_end": (subscription or {}).get("current_period_end"),
+        "has_customer": bool((subscription or {}).get("stripe_customer_id")),
+        "plan": stripe_billing.plan_summary() if stripe_billing.enabled() else None,
+    }
+
+
+def _require_billing() -> None:
+    if not stripe_billing.enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Facturation non configurée (STRIPE_SECRET_KEY / STRIPE_PRICE_ID).",
+        )
+
+
+def _ensure_stripe_customer(token: str) -> tuple[str, str]:
+    """Retourne (user_id, stripe_customer_id), en créant le client Stripe au besoin.
+
+    Écriture service-role strictement scopée au user_id du token vérifié (même
+    exception documentée que `replace_daily_idea`) : la table est en lecture seule
+    côté client, donc l'app ne peut pas s'écrire un abonnement.
+    """
+    user = db.get_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Utilisateur inconnu.")
+    if not db.admin_enabled():
+        raise HTTPException(status_code=503, detail="Service-role Supabase indisponible.")
+
+    existing = db.get_subscription_by_user_admin(user["id"])
+    customer_id = (existing or {}).get("stripe_customer_id")
+    if customer_id:
+        return user["id"], customer_id
+
+    try:
+        customer = stripe_billing.create_customer(user["id"], user.get("email"))
+    except stripe_billing.StripeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    customer_id = customer.get("id")
+    if not customer_id:
+        raise HTTPException(status_code=502, detail="Stripe n'a pas renvoyé de client.")
+    db.upsert_subscription_admin(user["id"], stripe_customer_id=customer_id)
+    return user["id"], customer_id
+
+
+@app.get("/me/billing")
+def me_billing(token: str = Depends(require_token)) -> dict[str, Any]:
+    """État d'abonnement de l'utilisateur (pour la carte « Abonnement » du profil)."""
+    return _billing_state(db.get_subscription(token))
+
+
+@app.post("/me/billing/checkout")
+def me_billing_checkout(
+    payload: BillingCheckoutRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Ouvre une session Checkout Stripe (page de paiement hébergée) → URL de redirection."""
+    _require_billing()
+    user_id, customer_id = _ensure_stripe_customer(token)
+    try:
+        session = stripe_billing.create_checkout_session(
+            customer_id, user_id, payload.success_url, payload.cancel_url
+        )
+    except stripe_billing.StripeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    url = session.get("url")
+    if not url:
+        raise HTTPException(status_code=502, detail="Stripe n'a pas renvoyé d'URL de paiement.")
+    return {"url": url}
+
+
+@app.post("/me/billing/portal")
+def me_billing_portal(
+    payload: BillingPortalRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Ouvre le Customer Portal Stripe (carte, factures, résiliation)."""
+    _require_billing()
+    subscription = db.get_subscription(token)
+    customer_id = (subscription or {}).get("stripe_customer_id")
+    if not customer_id:
+        raise HTTPException(status_code=404, detail="Aucun abonnement à gérer.")
+    try:
+        session = stripe_billing.create_portal_session(customer_id, payload.return_url)
+    except stripe_billing.StripeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    url = session.get("url")
+    if not url:
+        raise HTTPException(status_code=502, detail="Stripe n'a pas renvoyé d'URL de portail.")
+    return {"url": url}
+
+
+@app.post("/me/billing/refresh")
+def me_billing_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Resynchronise l'état d'abonnement depuis Stripe (filet si un webhook s'est perdu).
+
+    Ne crédite RIEN : seul le webhook signé le fait. Ici on ne relit que le statut,
+    la période et la résiliation programmée.
+    """
+    _require_billing()
+    user = db.get_user(token)
+    if not user or not db.admin_enabled():
+        raise HTTPException(status_code=503, detail="Service-role Supabase indisponible.")
+    existing = db.get_subscription_by_user_admin(user["id"])
+    customer_id = (existing or {}).get("stripe_customer_id")
+    if not customer_id:
+        return _billing_state(existing)
+    try:
+        subs = stripe_billing.list_customer_subscriptions(customer_id)
+    except stripe_billing.StripeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    if not subs:
+        return _billing_state(existing)
+    # Le plus pertinent = un abonnement actif s'il y en a un, sinon le plus récent.
+    active = next((s for s in subs if stripe_billing.is_active(s.get("status"))), subs[0])
+    fields = stripe_billing.normalize_subscription(active)
+    db.upsert_subscription_admin(
+        user["id"],
+        stripe_subscription_id=fields["stripe_subscription_id"],
+        status=fields["status"],
+        price_id=fields["price_id"],
+        current_period_end=fields["current_period_end"],
+        cancel_at_period_end=fields["cancel_at_period_end"],
+    )
+    return _billing_state(db.get_subscription_by_user_admin(user["id"]))
+
+
+def _webhook_user_id(obj: dict[str, Any], customer_id: str | None) -> str | None:
+    """Retrouve le compte app visé par un événement Stripe.
+
+    Deux chemins : la métadonnée `user_id` (posée à la création de la session et de
+    l'abonnement), sinon le client Stripe → notre table. Les factures de
+    renouvellement ne portent que le second.
+    """
+    meta_user = (obj.get("metadata") or {}).get("user_id")
+    if meta_user:
+        return meta_user
+    row = db.get_subscription_by_customer_admin(customer_id) if customer_id else None
+    return (row or {}).get("user_id")
+
+
+@app.post("/stripe/webhooks")
+async def stripe_webhook(request: Request) -> dict[str, Any]:
+    """Webhook Stripe : source de vérité de l'abonnement et des crédits.
+
+    Fail-closed sur la signature (comme Slack/ManyChat). Idempotent : Stripe rejoue
+    un événement tant qu'il n'a pas eu de 2xx — sans dédoublonnage, un rejeu de
+    `invoice.paid` remettrait le solde à 1000 et effacerait la consommation du mois.
+    """
+    body = await request.body()
+    try:
+        event = stripe_billing.verify_webhook(body, request.headers.get("Stripe-Signature", ""))
+    except stripe_billing.StripeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+    if not db.admin_enabled():
+        # 503 → Stripe rejouera l'événement plus tard (rien n'est perdu).
+        raise HTTPException(status_code=503, detail="Service-role Supabase indisponible.")
+
+    event_type = event.get("type") or ""
+    obj = ((event.get("data") or {}).get("object") or {})
+    if event_type not in (
+        "checkout.session.completed",
+        "invoice.paid",
+        "customer.subscription.updated",
+        "customer.subscription.deleted",
+    ):
+        return {"ignored": event_type}
+
+    customer_id = obj.get("customer") if isinstance(obj.get("customer"), str) else None
+    user_id = _webhook_user_id(obj, customer_id)
+    if not user_id:
+        # Client Stripe inconnu de l'app (ex. abonnement créé à la main dans le
+        # dashboard) : on accuse réception pour ne pas faire boucler Stripe.
+        return {"ignored": event_type, "reason": "compte inconnu"}
+
+    if db.billing_event_already_processed(event.get("id") or "", event_type, user_id):
+        return {"duplicate": True}
+
+    if event_type == "checkout.session.completed":
+        # Rattache le client + l'abonnement au compte. Le crédit, lui, arrive avec
+        # `invoice.paid` (émis dans la foulée) → un seul endroit qui crédite.
+        subscription_id = obj.get("subscription") if isinstance(obj.get("subscription"), str) else None
+        db.upsert_subscription_admin(
+            user_id, stripe_customer_id=customer_id, stripe_subscription_id=subscription_id
+        )
+        return {"ok": True}
+
+    if event_type == "invoice.paid":
+        subscription_id = obj.get("subscription") if isinstance(obj.get("subscription"), str) else None
+        credits = stripe_billing.plan_credits()
+        # Solde FIXÉ (pas incrémenté) : pas de report des crédits non consommés.
+        new_balance = db.set_credits_admin(
+            user_id, credits, action="subscription_renewal",
+            description=f"abonnement payé — solde remis à {credits}",
+        )
+        if new_balance is None:
+            # L'écriture a échoué : on renvoie une erreur pour que Stripe rejoue
+            # (l'événement n'a pas été marqué traité… si, il l'a été → on le purge).
+            db.delete_billing_event_admin(event.get("id") or "")
+            raise HTTPException(status_code=500, detail="Crédits non appliqués — rejouer.")
+        fields: dict[str, Any] = {"stripe_customer_id": customer_id, "status": "active"}
+        if subscription_id:
+            fields["stripe_subscription_id"] = subscription_id
+            try:
+                fields.update({
+                    k: v for k, v in
+                    stripe_billing.normalize_subscription(
+                        stripe_billing.get_subscription(subscription_id)
+                    ).items()
+                    if k in ("status", "price_id", "current_period_end")
+                })
+            except stripe_billing.StripeError:
+                pass  # le statut/période se resynchroniseront au prochain événement
+        db.upsert_subscription_admin(user_id, **fields)
+        return {"ok": True, "credits": new_balance}
+
+    # customer.subscription.updated / .deleted → l'objet EST l'abonnement.
+    fields = stripe_billing.normalize_subscription(obj)
+    status = "canceled" if event_type == "customer.subscription.deleted" else fields["status"]
+    db.upsert_subscription_admin(
+        user_id,
+        stripe_customer_id=customer_id,
+        stripe_subscription_id=fields["stripe_subscription_id"],
+        status=status,
+        price_id=fields["price_id"],
+        current_period_end=fields["current_period_end"],
+        cancel_at_period_end=fields["cancel_at_period_end"],
+    )
+    return {"ok": True, "status": status}
 
 
 # --------------------------------------------------------------------------- #
