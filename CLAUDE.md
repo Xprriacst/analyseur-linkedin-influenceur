@@ -80,6 +80,13 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-13 #3 (dev : offre de bienvenue 60 → 150 crédits — PR #286)
+- **Demande Alex** : un nouveau compte démarre désormais avec **150 crédits** au lieu de 60 — soit **7 analyses d'influenceur gratuites** au lieu de 3 (une analyse = 20 crédits, `CREDIT_COSTS` inchangé).
+- **Trois emplacements du montant à garder alignés** (piège de la migration 0028, toujours valable) : la constante `WELCOME_CREDITS` (`src/db.py`), le **défaut de la colonne** `user_credits.balance`, et le **littéral d'auto-création dans la fonction Postgres `debit_credits()`** — ce dernier sert quand la toute première action d'un compte est une analyse (la ligne de crédits naît alors dans la fonction, pas via `get_user_credits`). En rater un = nouveau compte au mauvais solde selon son premier geste.
+- **Migration 0047** (idempotente) : défaut de colonne + `debit_credits()`. **Appliquée et vérifiée sur dev** (`aiaohrlmsqhdadgaqavx`). ⚠️ **À appliquer sur prod avant la release.**
+- **Soldes existants volontairement NON remontés** (décision Alex) : contrairement à la migration 0028 (20 → 60) qui bumpait tout compte sous le palier, un bump aveugle re-créditerait maintenant aussi les **abonnés Stripe** descendus sous 150 après consommation de leurs 1000 crédits — irréversible. Seuls les comptes créés à partir de maintenant démarrent à 150.
+- Aucune variable d'env, aucun changement d'interface (le « 60 » n'était affiché nulle part).
+
 ### 2026-07-13 #2 (RELEASE PROD : abonnement Stripe + page de vente /offre — PR #283 `dev → main`)
 - **Release PR #283** mergée ~09:20 UTC → Render prod + Netlify prod. Contenu : abonnement Stripe complet (PR #280 + fix #281), page de vente **`/offre`** (PR #282, refondue en écran unique par PR #284 puis #285 après retours d'Alex : promesse à gauche sur dégradé indigo + formulaire compte→paiement intégré à droite, format « appel de closing »).
 - **Vérifié post-deploy** : `/billing/plan` prod → `enabled: true`, 49 €/1000 crédits lus depuis Stripe **live** (donc `STRIPE_SECRET_KEY` live posée par Alex fonctionne) · `/me/billing` → 401 · `/offre` rendue sur `lkd-outreach.netlify.app` (capture Puppeteer). Migration 0046 appliquée sur la base prod AVANT le merge (séquençage respecté).
