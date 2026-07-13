@@ -229,6 +229,38 @@ def normalize_subscription(sub: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def invoice_subscription_id(invoice: dict[str, Any]) -> str | None:
+    """Identifiant d'abonnement porté par une facture (schéma tolérant).
+
+    ⚠️ Piège vérifié en test : sur les versions récentes de l'API, `invoice.subscription`
+    **n'existe plus** — l'identifiant a migré dans `parent.subscription_details`. Sans
+    ce repli, une facture de renouvellement ne permet plus de retrouver l'abonnement
+    (donc ni la date de prochaine échéance, ni le tarif).
+    """
+    direct = invoice.get("subscription")
+    if isinstance(direct, str) and direct:
+        return direct
+    parent = invoice.get("parent") or {}
+    nested = (parent.get("subscription_details") or {}).get("subscription")
+    if isinstance(nested, str) and nested:
+        return nested
+    lines = ((invoice.get("lines") or {}).get("data") or [])
+    for line in lines:
+        details = ((line or {}).get("parent") or {}).get("subscription_item_details") or {}
+        sub_id = details.get("subscription")
+        if isinstance(sub_id, str) and sub_id:
+            return sub_id
+    return None
+
+
+def invoice_user_id(invoice: dict[str, Any]) -> str | None:
+    """Notre `user_id` tel que porté par une facture (métadonnées de l'abonnement)."""
+    parent = invoice.get("parent") or {}
+    metadata = (parent.get("subscription_details") or {}).get("metadata") or {}
+    user_id = metadata.get("user_id")
+    return user_id if isinstance(user_id, str) and user_id else None
+
+
 def _iso(epoch: Any) -> str | None:
     try:
         return (
