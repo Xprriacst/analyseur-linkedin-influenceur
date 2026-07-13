@@ -24,7 +24,7 @@ from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message
-from src.llm import ROLE_SPECS, WIZARD_POST_COUNT, plan_wizard_templates, recommend_editorial_role, suggest_angle_from_post
+from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
@@ -1285,8 +1285,23 @@ def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(opt
     )
 
 
+class InspirationPost(BaseModel):
+    """Post LinkedIn dont le client a demandé de s'inspirer (parcours guidé, ALE-286)."""
+    text: str = Field(..., min_length=20, max_length=6000)
+    author: str | None = Field(default=None, max_length=200)
+    url: str | None = Field(default=None, max_length=2000)
+
+
+class GenerationJobRequest(GenerateRequest):
+    """Requête de la file d'attente. Modèle à part et non un champ de plus sur
+    `GenerateRequest` : seul le chemin par jobs sait porter l'inspiration jusqu'au
+    modèle. L'ajouter au modèle commun l'aurait fait accepter — puis **ignorer en
+    silence** — par `/generate` et `/generate/stream`."""
+    inspiration: InspirationPost | None = Field(default=None)
+
+
 @app.post("/generate/jobs")
-def create_generation_job(payload: GenerateRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+def create_generation_job(payload: GenerationJobRequest, token: str = Depends(require_token)) -> dict[str, Any]:
     """Lance une génération de posts en arrière-plan (file d'attente — ALE-141).
 
     Non bloquant : on débite les crédits, on crée le job et on lance le thread,
@@ -1308,7 +1323,11 @@ def create_generation_job(payload: GenerateRequest, token: str = Depends(require
 
     role = (payload.editorial_role or "").strip() or None
     topic = (payload.topic or "").strip() or None
-    job = db.create_generation_job(token, topic, role, payload.web_search, payload.count, template_id=payload.template_id)
+    job = db.create_generation_job(
+        token, topic, role, payload.web_search, payload.count,
+        template_id=payload.template_id,
+        inspiration=payload.inspiration.model_dump() if payload.inspiration else None,
+    )
     if not job:
         raise HTTPException(status_code=500, detail="Création du job de génération impossible.")
     start_generation_job_thread(token, job["id"])
@@ -1344,10 +1363,11 @@ def cancel_generation_job(job_id: str, token: str = Depends(require_token)) -> d
 # Parcours guidé de génération (ALE-286)
 # --------------------------------------------------------------------------- #
 # Le client part d'un des trois points d'entrée (une idée à lui, aucune idée, un
-# post qui l'a inspiré), converge sur un rôle éditorial, et obtient trois posts
-# appuyés sur trois templates différents. Trois endpoints : lire l'inspiration,
-# recommander le rôle, lancer le trio. La règle de répartition des structures vit
-# dans `src.llm` (vérifiable sans base ni serveur web).
+# post qui l'a inspiré), converge sur un rôle éditorial, puis sur une structure
+# de sa bibliothèque, et obtient UN post. Trois endpoints d'aide à la décision —
+# lire l'inspiration, recommander le rôle, proposer les structures — tous gratuits
+# et sans effet de bord : le post, lui, part par la file d'attente existante
+# (`POST /generate/jobs`), qui sait déjà débiter, créer le job et le suivre.
 
 
 class InspirationRequest(BaseModel):
@@ -1407,83 +1427,48 @@ def recommend_role(payload: EditorialRoleRequest, token: str = Depends(require_t
     }
 
 
-class WizardInspiration(BaseModel):
-    text: str = Field(..., min_length=20, max_length=6000)
-    author: str | None = Field(default=None, max_length=200)
-    url: str | None = Field(default=None, max_length=2000)
-
-
-class WizardGenerateRequest(BaseModel):
+class StructuresRequest(BaseModel):
     idea: str = Field(..., min_length=3, max_length=2000)
     editorial_role: str = Field(..., max_length=50)
-    inspiration: WizardInspiration | None = Field(default=None)
 
 
-@app.post("/generate/wizard")
-def start_wizard_generation(
-    payload: WizardGenerateRequest,
-    token: str = Depends(require_token),
-) -> dict[str, Any]:
-    """Lance les trois posts du parcours : une idée, un rôle, trois templates.
+@app.post("/generate/structures")
+def suggest_post_structures(payload: StructuresRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Propose les structures de la bibliothèque les plus adaptées à l'idée retenue.
 
-    Un job par post (plutôt qu'un job à trois variants) : c'est ce qui permet à
-    la file d'attente d'afficher une ligne par post, chacune avec son template et
-    son propre sort — l'échec d'un post n'emporte pas les deux autres.
+    Gratuit (aucun crédit) : c'est une aide au choix, pas une génération. Le
+    client voit ce qu'il choisit — on rend donc le nom et un extrait de chaque
+    structure, pas des identifiants nus.
+
+    Liste vide = bibliothèque vide ou sans contenu exploitable. Le parcours
+    enchaîne alors en structure libre : un compte neuf n'est jamais bloqué sur une
+    étape sans option.
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
-
-    influencers = _get_influencers(token)
-    if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
-
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
     role = payload.editorial_role.strip()
     if role not in ROLE_SPECS:
         raise HTTPException(status_code=422, detail="Rôle éditorial inconnu.")
-    idea = payload.idea.strip()
 
-    # Le choix des templates précède le débit : une bibliothèque illisible ne doit
-    # pas coûter de crédits au client.
     try:
         library = db.list_post_templates(token)
     except Exception:  # noqa: BLE001 — la bibliothèque est un plus, pas un prérequis
         library = []
-    template_ids = plan_wizard_templates(idea, role, library)
+    suggested = suggest_structures(payload.idea.strip(), role, library)
 
-    ok, balance = db.debit_credits(token, "generate_post", WIZARD_POST_COUNT)
-    if not ok:
-        cost = db.CREDIT_COSTS["generate_post"] * WIZARD_POST_COUNT
-        raise HTTPException(
-            status_code=402,
-            detail=f"Crédits insuffisants (solde : {balance}). Le parcours génère {WIZARD_POST_COUNT} posts = {cost} crédits.",
-        )
-
-    inspiration = payload.inspiration.model_dump() if payload.inspiration else None
-    created: list[dict[str, Any]] = []
-    for template_id in template_ids:
-        job = db.create_generation_job(
-            token, idea, role, False, 1,
-            template_id=template_id,
-            inspiration=inspiration,
-        )
-        if not job:
-            continue
-        start_generation_job_thread(token, job["id"])
-        created.append(job)
-
-    if len(created) < WIZARD_POST_COUNT:
-        # Des jobs manquent à l'appel : on rembourse ceux qui ne tourneront jamais
-        # plutôt que de facturer un travail qui n'aura pas lieu (règle ALE-268).
-        missing = WIZARD_POST_COUNT - len(created)
-        user = db.get_user(token)
-        db.refund_credits_admin(
-            user["id"] if user else None, "generate_post", missing,
-            description="parcours de génération : posts non lancés",
-        )
-    if not created:
-        raise HTTPException(status_code=500, detail="Lancement de la génération impossible.")
-
-    return {"jobs": created, "credits": balance}
+    return {
+        "structures": [
+            {
+                "id": t["id"],
+                "label": (t.get("structure_label") or "").strip() or None,
+                "structure_text": (t.get("structure_text") or "").strip() or None,
+                "post_text": (t.get("post_text") or "").strip()[:400] or None,
+            }
+            for t in suggested
+        ],
+        # La plus adaptée d'abord : c'est celle que le parcours pré-coche.
+        "recommended_id": suggested[0]["id"] if suggested else None,
+    }
 
 
 @app.get("/me/generated-ideas")

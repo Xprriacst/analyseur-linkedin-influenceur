@@ -2,13 +2,14 @@ import { test, expect } from "@playwright/test";
 import { gotoTab, gotoSubTab } from "./helpers";
 
 // ALE-286 : parcours guidé de génération. Point de départ → idée → profil
-// éditorial (recommandé par l'IA) → 3 posts sur 3 structures différentes.
+// éditorial (recommandé par l'IA) → structure choisie parmi 3 → UN post.
 //
-// Les appels PAYANTS sont mockés (/ideas = 3 crédits, /generate/wizard = 15) :
-// ce spec vérifie le CÂBLAGE — que le parcours converge, que le rôle recommandé
-// est bien pré-coché, et surtout que les 3 jobs rendus atterrissent en 3 LIGNES
-// distinctes dans la file. C'est la promesse du parcours ; une régression qui
-// n'en afficherait qu'une passerait autrement inaperçue.
+// Les appels PAYANTS sont mockés (/ideas = 3 crédits, /generate/jobs = 5) : ce
+// spec vérifie le CÂBLAGE — que le parcours converge, que la reco de l'IA est
+// pré-cochée à chaque choix, et surtout que l'idée, l'angle et LA STRUCTURE
+// retenue partent bien tous les trois au serveur. Une régression qui perdrait la
+// structure en route (c'est déjà arrivé : ALE-216) ne se verrait pas autrement —
+// le post serait généré, simplement sans la forme demandée.
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
@@ -24,8 +25,7 @@ async function mockEmptyQueue(page: import("@playwright/test").Page) {
   });
 }
 
-test("le parcours mène de l'idée aux 3 posts en file (3 lignes, 3 structures)", async ({ page }) => {
-  await mockEmptyQueue(page);
+test("le parcours mène de l'idée à UN post en file, sur la structure choisie", async ({ page }) => {
   await page.route("**/me/post-templates", (route) =>
     route.request().method() === "GET"
       ? route.fulfill({
@@ -33,7 +33,6 @@ test("le parcours mène de l'idée aux 3 posts en file (3 lignes, 3 structures)"
           body: JSON.stringify([
             { id: "tpl-a", structure_label: "Story en 4 temps", structure_text: "S\nT\nB\nL" },
             { id: "tpl-b", structure_label: "Méthode en 5 étapes", structure_text: "1\n2\n3\n4\n5" },
-            { id: "tpl-c", structure_label: "Contre-pied argumenté", structure_text: "Thèse\nAntithèse" },
           ]),
         })
       : route.fallback()
@@ -56,30 +55,45 @@ test("le parcours mène de l'idée aux 3 posts en file (3 lignes, 3 structures)"
       }),
     })
   );
-
-  let wizardBody: { idea?: string; editorial_role?: string } | null = null;
-  await page.route("**/generate/wizard", (route) => {
-    wizardBody = route.request().postDataJSON();
-    const job = (id: string, templateId: string) => ({
-      id,
-      status: "queued",
-      topic: wizardBody?.idea ?? "",
-      editorial_role: wizardBody?.editorial_role ?? "",
-      web_search: false,
-      count: 1,
-      template_id: templateId,
-      result: null,
-      error: null,
-      created_at: "2026-07-13T10:00:00Z",
-      updated_at: "2026-07-13T10:00:00Z",
-    });
-    return route.fulfill({
+  await page.route("**/generate/structures", (route) =>
+    route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        jobs: [job("job-a", "tpl-a"), job("job-b", "tpl-b"), job("job-c", "tpl-c")],
-        credits: 85,
+        structures: [
+          { id: "tpl-b", label: "Méthode en 5 étapes", structure_text: "1\n2\n3\n4\n5", post_text: null },
+          { id: "tpl-a", label: "Story en 4 temps", structure_text: "S\nT\nB\nL", post_text: null },
+          { id: "tpl-c", label: "Contre-pied argumenté", structure_text: "Thèse\nAntithèse", post_text: null },
+        ],
+        recommended_id: "tpl-b",
       }),
-    });
+    })
+  );
+
+  // File d'attente cohérente : le job créé par le POST doit être RENDU par le GET
+  // suivant. Sans ça, le polling de la file écraserait la ligne qu'on vient
+  // d'ajouter et le test deviendrait une course.
+  let jobBody: { topic?: string; editorial_role?: string; template_id?: string; count?: number } | null = null;
+  const queue: unknown[] = [];
+  await page.route("**/generate/jobs", (route) => {
+    if (route.request().method() === "POST") {
+      jobBody = route.request().postDataJSON();
+      const job = {
+        id: "job-a",
+        status: "queued",
+        topic: jobBody?.topic ?? "",
+        editorial_role: jobBody?.editorial_role ?? "",
+        web_search: false,
+        count: 1,
+        template_id: jobBody?.template_id ?? null,
+        result: null,
+        error: null,
+        created_at: "2026-07-13T10:00:00Z",
+        updated_at: "2026-07-13T10:00:00Z",
+      };
+      queue.unshift(job);
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify({ ...job, credits: 95 }) });
+    }
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify(queue) });
   });
 
   await gotoTab(page, "Contenu");
@@ -102,28 +116,71 @@ test("le parcours mène de l'idée aux 3 posts en file (3 lignes, 3 structures)"
   // 2. Profil éditorial : la reco de l'IA est PRÉ-COCHÉE et justifiée — le client
   //    garde la main (les 7 rôles restent proposés).
   await expect(modal.getByRole("heading", { name: /Quel angle pour ce post/i })).toBeVisible();
-  const recommended = modal.getByRole("button", { name: /Méthodologie/ });
-  await expect(recommended).toHaveAttribute("aria-pressed", "true");
+  await expect(modal.getByRole("button", { name: /Méthodologie/ })).toHaveAttribute("aria-pressed", "true");
   await expect(modal.getByText(/Recommandé.*plus utile qu'un constat/i)).toBeVisible();
   await expect(modal.getByRole("button", { name: /^Story/ })).toHaveAttribute("aria-pressed", "false");
+  await modal.getByRole("button", { name: /Continuer/i }).click();
 
-  // 3. Lancement : 3 posts, 3 structures.
-  await modal.getByRole("button", { name: /Générer 3 posts/i }).click();
+  // 3. Structure : 3 propositions, la plus adaptée pré-cochée + une échappatoire
+  //    « structure libre ». Le client change d'avis et prend la Story.
+  await expect(modal.getByRole("heading", { name: /Sur quelle structure/i })).toBeVisible();
+  await expect(modal.getByRole("button", { name: /Méthode en 5 étapes/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(modal.getByText(/La plus adaptée à ton idée/i)).toBeVisible();
+  await expect(modal.getByRole("button", { name: /Structure libre/ })).toBeVisible();
+  await modal.getByRole("button", { name: /Story en 4 temps/ }).click();
+  await expect(modal.getByRole("button", { name: /Story en 4 temps/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(modal.getByRole("button", { name: /Méthode en 5 étapes/ })).toHaveAttribute("aria-pressed", "false");
+
+  // 4. Un seul post part, sur la structure retenue.
+  await modal.getByRole("button", { name: /Générer le post/i }).click();
   await expect(modal).toHaveCount(0);
 
-  // LA vérification : 3 jobs rendus → 3 LIGNES distinctes en file, une par structure.
   const lines = page.locator(".post-queue-line");
-  await expect(lines).toHaveCount(3);
-  await expect(page.locator(".post-queue-row", { hasText: "Story en 4 temps" })).toHaveCount(1);
-  await expect(page.locator(".post-queue-row", { hasText: "Méthode en 5 étapes" })).toHaveCount(1);
-  await expect(page.locator(".post-queue-row", { hasText: "Contre-pied argumenté" })).toHaveCount(1);
-  // Encore en vol : chaque ligne s'annonce en attente et propose de s'annuler.
-  await expect(page.getByText(/3 en cours/)).toBeVisible();
-  await expect(page.getByRole("button", { name: /Annuler/i })).toHaveCount(3);
+  await expect(lines).toHaveCount(1);
+  await expect(lines.first()).toContainText("Story en 4 temps");
+  await expect(page.getByText(/1 en cours/)).toBeVisible();
 
-  // L'idée et le rôle retenus sont bien ceux partis au serveur.
-  expect(wizardBody?.idea).toBe("Pourquoi les PME ratent leur projet IA sur le cadrage");
-  expect(wizardBody?.editorial_role).toBe("methodologie");
+  // LA vérification : idée, angle ET structure arrivent bien au serveur. Perdre la
+  // structure en route est un bug déjà vécu (ALE-216) et parfaitement silencieux.
+  expect(jobBody?.topic).toBe("Pourquoi les PME ratent leur projet IA sur le cadrage");
+  expect(jobBody?.editorial_role).toBe("methodologie");
+  expect(jobBody?.template_id).toBe("tpl-a");
+  expect(jobBody?.count).toBe(1);
+});
+
+test("bibliothèque vide : le parcours propose la structure libre et n'est pas bloqué", async ({ page }) => {
+  await mockEmptyQueue(page);
+  await page.route("**/me/idea-seeds", (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({ contentType: "application/json", body: "[]" })
+      : route.fallback()
+  );
+  await page.route("**/generate/editorial-role", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ editorial_role: "story", reason: "C'est du vécu.", roles: [] }),
+    })
+  );
+  // Compte neuf : aucune structure à proposer.
+  await page.route("**/generate/structures", (route) =>
+    route.fulfill({ contentType: "application/json", body: JSON.stringify({ structures: [], recommended_id: null }) })
+  );
+
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Générateur de posts");
+  await page.getByRole("button", { name: /Générer un post/i }).click();
+  const modal = page.getByRole("dialog", { name: /Générer un post/i });
+  await modal.getByRole("button", { name: /J'ai une idée/i }).click();
+  await modal.getByLabel(/De quoi veux-tu parler/i).fill("Mon idée à moi");
+  await modal.getByRole("button", { name: /Continuer/i }).click();
+  await modal.getByRole("button", { name: /Continuer/i }).click();
+
+  // Seule option, pré-cochée, et le bouton reste actif : on ne coince personne
+  // sur une étape sans choix.
+  await expect(modal.getByRole("heading", { name: /Sur quelle structure/i })).toBeVisible();
+  await expect(modal.getByRole("button", { name: /Structure libre/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(modal.getByText(/Ta bibliothèque est vide/i)).toBeVisible();
+  await expect(modal.getByRole("button", { name: /Générer le post/i })).toBeEnabled();
 });
 
 test("« J'ai une inspiration » : le post lu devient l'angle proposé, ajustable", async ({ page }) => {

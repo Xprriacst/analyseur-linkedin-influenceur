@@ -3099,7 +3099,19 @@ function roleColorOf(role?: string | null): string {
 // Coûts affichés dans le parcours — doivent rester alignés sur CREDIT_COSTS
 // (serveur). Ils ne sont qu'informatifs : c'est le serveur qui débite.
 const WIZARD_IDEAS_CREDITS = 3;
-const WIZARD_POSTS_CREDITS = 15;
+const WIZARD_POST_CREDITS = 5;
+
+// Une structure de la bibliothèque proposée au client à l'avant-dernière étape.
+type StructureChoice = {
+  id: string;
+  label: string | null;
+  structure_text: string | null;
+  post_text: string | null;
+};
+
+function structureName(s: StructureChoice): string {
+  return s.label || (s.post_text || "").slice(0, 60) || "Structure sans nom";
+}
 
 // Cache module-level : survit aux changements d'onglet dans la même session
 // (ALE-145). Depuis ALE-286, les posts eux-mêmes viennent des jobs (persistés en
@@ -3144,7 +3156,7 @@ function buildPostLines(jobs: GenerationJob[]): PostLine[] {
   return lines;
 }
 
-/** Pop-up du parcours guidé : point de départ → idée → profil éditorial → 3 posts (ALE-286). */
+/** Pop-up du parcours guidé : départ → idée → profil éditorial → structure → 1 post (ALE-286). */
 function PostWizardModal({
   initialIdea,
   onClose,
@@ -3152,9 +3164,9 @@ function PostWizardModal({
 }: {
   initialIdea?: string;
   onClose: () => void;
-  onLaunched: (jobs: GenerationJob[]) => void;
+  onLaunched: (job: GenerationJob) => void;
 }) {
-  type Step = "start" | "idea" | "ideas" | "inspiration" | "role";
+  type Step = "start" | "idea" | "ideas" | "inspiration" | "role" | "structure";
   const [step, setStep] = useState<Step>(initialIdea ? "idea" : "start");
   const [idea, setIdea] = useState(initialIdea || "");
   const [inspiration, setInspiration] = useState<InspirationPost | null>(null);
@@ -3163,6 +3175,11 @@ function PostWizardModal({
   const [pickedLine, setPickedLine] = useState<string>("");
   const [role, setRole] = useState("");
   const [reco, setReco] = useState<{ editorial_role: string; reason: string } | null>(null);
+  const [structures, setStructures] = useState<StructureChoice[]>([]);
+  // "" = structure libre (aucune imposée) — c'est aussi le repli quand la
+  // bibliothèque est vide, pour qu'un compte neuf ne reste pas coincé ici.
+  const [templateId, setTemplateId] = useState("");
+  const [recommendedId, setRecommendedId] = useState<string | null>(null);
   const [url, setUrl] = useState("");
   const [pasteMode, setPasteMode] = useState(false);
   const [pasted, setPasted] = useState("");
@@ -3290,25 +3307,60 @@ function PostWizardModal({
     }
   }
 
+  /** Avant-dernière étape : l'IA propose les structures de la bibliothèque qui
+   *  collent le mieux à l'idée + au rôle. Le client en choisit UNE. */
+  async function goToStructures() {
+    setStep("structure");
+    setBusy("structure");
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate/structures`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ idea: idea.trim(), editorial_role: role }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Structures indisponibles");
+      const list: StructureChoice[] = Array.isArray(data.structures) ? data.structures : [];
+      setStructures(list);
+      setRecommendedId(data.recommended_id ?? null);
+      // Pré-cochée : la plus adaptée selon l'IA. Bibliothèque vide → structure libre.
+      setTemplateId(data.recommended_id ?? "");
+    } catch (err: any) {
+      // La proposition n'est qu'un confort : sans elle, on écrit le post en
+      // structure libre plutôt que d'arrêter le client au bord de l'arrivée.
+      setError(`Structures indisponibles (${err.message}) — le post sera écrit en structure libre.`);
+      setStructures([]);
+      setRecommendedId(null);
+      setTemplateId("");
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function launch() {
     setBusy("launch");
     setError("");
     try {
-      const res = await fetch(`${DIRECT_API_URL}/generate/wizard`, {
+      // Un post = un job : on passe par la file d'attente existante, qui sait
+      // déjà débiter, créer le job, le suivre et l'annuler.
+      const res = await fetch(`${DIRECT_API_URL}/generate/jobs`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
-          idea: idea.trim(),
+          topic: idea.trim(),
           editorial_role: role,
-          inspiration: inspiration
-            ? { text: inspiration.text, author: inspiration.author, url: inspiration.url }
-            : undefined,
+          count: 1,
+          ...(templateId ? { template_id: templateId } : {}),
+          ...(inspiration
+            ? { inspiration: { text: inspiration.text, author: inspiration.author, url: inspiration.url } }
+            : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Lancement de la génération impossible");
       if (typeof data.credits === "number") emitCredits(data.credits);
-      onLaunched(Array.isArray(data.jobs) ? data.jobs : []);
+      onLaunched(data as GenerationJob);
       onClose();
     } catch (err: any) {
       setError(err.message);
@@ -3318,7 +3370,7 @@ function PostWizardModal({
   }
 
   const startCards: { key: Step; icon: React.ReactNode; title: string; desc: string }[] = [
-    { key: "idea", icon: <PenTool size={22} />, title: "J'ai une idée", desc: "Écris-la : on la garde pour plus tard, ou on en fait 3 posts tout de suite." },
+    { key: "idea", icon: <PenTool size={22} />, title: "J'ai une idée", desc: "Écris-la : on la garde pour plus tard, ou on en fait un post tout de suite." },
     { key: "ideas", icon: <Sparkles size={22} />, title: "Je n'ai pas d'idée", desc: `On t'en propose 3, tirées de ta veille et de ton positionnement (${WIZARD_IDEAS_CREDITS} crédits).` },
     { key: "inspiration", icon: <Link2 size={22} />, title: "J'ai une inspiration", desc: "Colle le lien d'un post LinkedIn qui t'a plu : on le lit et on le transpose à ton métier." },
   ];
@@ -3329,6 +3381,7 @@ function PostWizardModal({
     ideas: "Trois idées pour toi",
     inspiration: "Le post qui t'a inspiré",
     role: "Quel angle pour ce post ?",
+    structure: "Sur quelle structure ?",
   };
 
   return (
@@ -3351,7 +3404,8 @@ function PostWizardModal({
             style={{ minHeight: 28, padding: "0 10px", fontSize: 12, marginBottom: 12 }}
             onClick={() => {
               // Depuis le profil éditorial, on revient au chemin qu'on avait pris.
-              if (step === "role") setStep(inspiration ? "inspiration" : ideaLines.length ? "ideas" : "idea");
+              if (step === "structure") setStep("role");
+              else if (step === "role") setStep(inspiration ? "inspiration" : ideaLines.length ? "ideas" : "idea");
               else setStep("start");
               setError("");
             }}
@@ -3573,13 +3627,83 @@ function PostWizardModal({
                 })}
               </div>
             )}
+            <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
+              <button className="primary-button" disabled={!role || busy === "role"} onClick={goToStructures}>
+                Continuer <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "structure" && (
+          <div>
+            <p className="role-picker-hint" style={{ marginTop: 0 }}>
+              Ton idée : <strong style={{ color: "var(--ink)" }}>{idea}</strong> · Angle :{" "}
+              <strong style={{ color: roleColorOf(role) }}>{roleLabelOf(role)}</strong>
+            </p>
+            {busy === "structure" ? (
+              <div className="web-search-status" role="status" aria-live="polite">
+                <Loader2 size={16} className="spinning" />
+                <span><strong>On cherche les structures les plus adaptées…</strong><span>Dans ta bibliothèque.</span></span>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+                {structures.map((s) => {
+                  const selected = templateId === s.id;
+                  const recommended = recommendedId === s.id;
+                  const preview = (s.structure_text || s.post_text || "").replace(/\s*\n\s*/g, " → ").slice(0, 110);
+                  return (
+                    <button
+                      key={s.id}
+                      className={`wizard-role-card ${selected ? "selected" : ""}`}
+                      aria-pressed={selected}
+                      onClick={() => setTemplateId(s.id)}
+                      style={selected ? { borderColor: "var(--primary)", boxShadow: "0 0 0 3px rgba(70, 72, 212, 0.15)" } : undefined}
+                    >
+                      <span className="wizard-role-main">
+                        <span className="wizard-idea-check">
+                          {selected ? <CheckCircle2 size={16} /> : <span className="wizard-idea-dot" />}
+                        </span>
+                        <strong>{structureName(s)}</strong>
+                      </span>
+                      {preview && <span className="wizard-role-goal">{preview}</span>}
+                      {recommended && (
+                        <span className="wizard-role-reco"><Sparkles size={12} /> La plus adaptée à ton idée</span>
+                      )}
+                    </button>
+                  );
+                })}
+
+                {/* Toujours proposée : le client doit pouvoir refuser toute structure.
+                    Et quand la bibliothèque est vide, c'est la seule option — le
+                    parcours ne s'arrête pas là pour autant. */}
+                <button
+                  className={`wizard-role-card ${templateId === "" ? "selected" : ""}`}
+                  aria-pressed={templateId === ""}
+                  onClick={() => setTemplateId("")}
+                  style={templateId === "" ? { borderColor: "var(--primary)", boxShadow: "0 0 0 3px rgba(70, 72, 212, 0.15)" } : undefined}
+                >
+                  <span className="wizard-role-main">
+                    <span className="wizard-idea-check">
+                      {templateId === "" ? <CheckCircle2 size={16} /> : <span className="wizard-idea-dot" />}
+                    </span>
+                    <strong>Structure libre</strong>
+                  </span>
+                  <span className="wizard-role-goal">
+                    {structures.length === 0
+                      ? "Ta bibliothèque est vide — ajoute des posts dans Ma bibliothèque pour qu'on te propose des structures."
+                      : "Aucune structure imposée : l'IA écrit la forme qu'elle juge la meilleure."}
+                  </span>
+                </button>
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center" }}>
               <span className="role-picker-hint" style={{ marginRight: "auto" }}>
-                3 posts, 3 structures différentes de ta bibliothèque — {WIZARD_POSTS_CREDITS} crédits.
+                1 post — {WIZARD_POST_CREDITS} crédits.
               </span>
-              <button className="primary-button" disabled={!role || busy === "launch"} onClick={launch}>
+              <button className="primary-button" disabled={busy === "launch" || busy === "structure"} onClick={launch}>
                 {busy === "launch" ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
-                {busy === "launch" ? "Lancement…" : "Générer 3 posts"}
+                {busy === "launch" ? "Lancement…" : "Générer le post"}
               </button>
             </div>
           </div>
@@ -3834,7 +3958,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
         <div>
           <h2 className="section-title" style={{ margin: 0 }}><PenTool size={20} /> Générateur de posts</h2>
           <p className="section-desc" style={{ margin: "6px 0 0" }}>
-            Une idée, un angle, et trois posts écrits sur trois structures différentes de ta bibliothèque.
+            Une idée, un angle, une structure de ta bibliothèque — et ton post s&apos;écrit.
           </p>
         </div>
         <button className="primary-button gen-hero-button" onClick={openWizard}>
@@ -4114,10 +4238,11 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
         <PostWizardModal
           initialIdea={wizard.idea}
           onClose={() => setWizard(null)}
-          onLaunched={(jobs) => {
-            // Les 3 jobs arrivent d'un coup : ils apparaissent aussitôt en file,
-            // chacun sur sa ligne, sans attendre le prochain tour de polling.
-            for (const job of [...jobs].reverse()) onGenerationJobCreated(job);
+          onLaunched={(job) => {
+            // Le post apparaît aussitôt en file, sans attendre le prochain tour
+            // de polling — sinon le client croirait que son clic n'a rien fait.
+            onGenerationJobCreated(job);
+            setExpanded(null);
           }}
         />
       )}

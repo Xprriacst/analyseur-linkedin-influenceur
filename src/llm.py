@@ -1312,22 +1312,21 @@ Schéma JSON attendu :
     return picked
 
 
-WIZARD_POST_COUNT = 3
+WIZARD_STRUCTURE_CHOICES = 3
 
 
-def plan_wizard_templates(
+def suggest_structures(
     idea: str,
     editorial_role: str,
     library: list[dict],
-    count: int = WIZARD_POST_COUNT,
-) -> list[str | None]:
-    """Répartit les `count` posts du parcours sur autant de structures différentes.
+    count: int = WIZARD_STRUCTURE_CHOICES,
+) -> list[dict]:
+    """Propose au client les structures les plus adaptées à son idée, la meilleure en tête.
 
-    Rend `count` cases : un identifiant de template, ou `None` pour « structure
-    libre ». La promesse faite au client est « 3 posts », pas « 3 templates » :
-    une bibliothèque vide (tout compte neuf) ou trop courte complète les cases
-    manquantes en structure libre plutôt que de rendre moins de posts que prévu —
-    et que ce qui a été facturé.
+    Rend les entrées de bibliothèque elles-mêmes (le client doit pouvoir LIRE ce
+    qu'il choisit), pas des identifiants nus. Liste vide = bibliothèque vide ou
+    sans contenu exploitable : l'appelant enchaîne alors en structure libre plutôt
+    que de bloquer un compte neuf sur une étape sans option.
 
     Vit ici, et pas dans le corps de l'endpoint, pour rester vérifiable sans base
     ni serveur web (même partage que `outreach_engine` / `outreach_sender`).
@@ -1336,12 +1335,11 @@ def plan_wizard_templates(
         t for t in library
         if (t.get("structure_text") or "").strip() or (t.get("post_text") or "").strip()
     ]
-    picked: list[str | None] = (
-        list(pick_templates_for_idea(idea, editorial_role, usable, count=count)) if usable else []
-    )
-    while len(picked) < count:
-        picked.append(None)
-    return picked[:count]
+    if not usable:
+        return []
+    by_id = {str(t["id"]): t for t in usable if t.get("id")}
+    ordered = pick_templates_for_idea(idea, editorial_role, usable, count=count)
+    return [by_id[tid] for tid in ordered if tid in by_id]
 
 
 def generate_posts(

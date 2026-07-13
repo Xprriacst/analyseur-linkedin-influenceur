@@ -69,46 +69,53 @@ class PickTemplatesTest(unittest.TestCase):
         self.assertEqual(len(picked), 3)
 
 
-class PlanWizardTemplatesTest(unittest.TestCase):
-    """La promesse faite au client est « 3 posts », pas « 3 templates ».
+class SuggestStructuresTest(unittest.TestCase):
+    """Les 3 structures proposées au client, la plus adaptée en tête.
 
-    Trois cases à remplir : un template dans chacune quand la bibliothèque suit,
-    « structure libre » (None) sinon. Rendre moins de trois posts alors que trois
-    ont été facturés serait le pire des échecs — silencieux.
+    Le client doit pouvoir LIRE ce qu'il choisit : on rend les entrées de
+    bibliothèque, pas des identifiants nus. Et une liste vide doit rester
+    possible — c'est le signal qui fait enchaîner le parcours en structure libre
+    plutôt que de bloquer un compte neuf sur une étape sans option.
     """
 
-    def test_bibliotheque_vide_rend_trois_cases_en_structure_libre(self):
-        """Compte neuf : il obtient quand même ses 3 posts, sans appel LLM à payer."""
+    def test_bibliotheque_vide_ne_propose_rien_et_ne_coute_rien(self):
+        """Compte neuf : aucune option, aucun appel LLM à payer → structure libre en aval."""
         with patch.object(llm, "_call") as call:
-            plan = llm.plan_wizard_templates("mon idée", "story", [])
+            self.assertEqual(llm.suggest_structures("mon idée", "story", []), [])
         call.assert_not_called()
-        self.assertEqual(plan, [None, None, None])
 
-    def test_une_seule_entree_utilisable_complete_les_deux_autres(self):
-        with patch.object(llm, "_call") as call:
-            plan = llm.plan_wizard_templates("mon idée", "story", _library(1))
-        call.assert_not_called()  # rien à choisir : 1 entrée pour 3 cases
-        self.assertEqual(plan, ["tpl-1", None, None])
-
-    def test_entree_sans_structure_ni_texte_ignoree(self):
+    def test_entree_sans_structure_ni_texte_ecartee(self):
         """Une entrée vide n'apprend rien au modèle et ne peut rien structurer."""
         library = [{"id": "vide"}, {"id": "tpl-1", "post_text": "Un vrai post."}]
-        with patch.object(llm, "_call"):
-            plan = llm.plan_wizard_templates("mon idée", "story", library)
-        self.assertEqual(plan, ["tpl-1", None, None])
+        with patch.object(llm, "_call") as call:
+            suggested = llm.suggest_structures("mon idée", "story", library)
+        call.assert_not_called()  # une seule entrée utilisable : rien à choisir
+        self.assertEqual([t["id"] for t in suggested], ["tpl-1"])
 
-    def test_bibliotheque_fournie_rend_trois_templates_distincts(self):
-        """Le modèle rend un doublon : la répartition doit quand même sortir 3 structures."""
-        with patch.object(llm, "_call", return_value={"template_ids": ["tpl-2", "tpl-2", "tpl-5"]}):
-            plan = llm.plan_wizard_templates("mon idée", "story", _library(6))
-        self.assertEqual(len(plan), 3)
-        self.assertNotIn(None, plan)
-        self.assertEqual(len(set(plan)), 3, "trois structures DIFFÉRENTES, c'est la promesse")
+    def test_rend_les_entrees_completes_pas_des_identifiants(self):
+        """Le client lit le nom et la structure : un id nu ne lui dirait rien."""
+        with patch.object(llm, "_call", return_value={"template_ids": ["tpl-2"]}):
+            suggested = llm.suggest_structures("mon idée", "story", _library(6))
+        self.assertEqual(suggested[0]["structure_label"], "Structure 2")
+        self.assertIn("structure_text", suggested[0])
 
-    def test_toujours_exactement_trois_cases(self):
-        """Le modèle sur-génère : on facture 3 posts, on en produit 3, pas 4."""
-        with patch.object(llm, "_call", return_value={"template_ids": ["tpl-1", "tpl-2", "tpl-3", "tpl-4"]}):
-            self.assertEqual(len(llm.plan_wizard_templates("mon idée", "story", _library(8))), 3)
+    def test_trois_structures_distinctes_la_plus_adaptee_en_tete(self):
+        with patch.object(llm, "_call", return_value={"template_ids": ["tpl-4", "tpl-1", "tpl-5"]}):
+            suggested = llm.suggest_structures("mon idée", "story", _library(6))
+        self.assertEqual([t["id"] for t in suggested], ["tpl-4", "tpl-1", "tpl-5"])
+        self.assertEqual(len({t["id"] for t in suggested}), 3)
+
+    def test_doublon_du_modele_ne_propose_pas_deux_fois_la_meme(self):
+        """Deux fois la même option dans une liste de choix : le client ne comprendrait pas."""
+        with patch.object(llm, "_call", return_value={"template_ids": ["tpl-2", "tpl-2", "tpl-2"]}):
+            suggested = llm.suggest_structures("mon idée", "story", _library(6))
+        self.assertEqual(len({t["id"] for t in suggested}), len(suggested))
+
+    def test_modele_en_panne_propose_quand_meme_des_structures(self):
+        """Anthropic indisponible : le client garde des options, il n'est pas coincé."""
+        with patch.object(llm, "_call", side_effect=RuntimeError("Anthropic indisponible")):
+            suggested = llm.suggest_structures("mon idée", "story", _library(6))
+        self.assertEqual([t["id"] for t in suggested], ["tpl-1", "tpl-2", "tpl-3"])
 
 
 class RecommendRoleTest(unittest.TestCase):
