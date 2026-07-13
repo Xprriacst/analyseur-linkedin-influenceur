@@ -55,7 +55,20 @@ jobs:
           python3 -m py_compile api.py src/*.py
           echo "py_compile OK."
 
-      # Tests unitaires (stdlib, aucune dépendance : ni Supabase, ni réseau).
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # Les tests n'appellent aucun réseau, mais ils importent les modules du projet,
+      # qui importent eux-mêmes anthropic/supabase/… au chargement. Sans ces paquets,
+      # les tests ne peuvent même pas être IMPORTÉS.
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+
+      # Tests unitaires (stdlib, aucun réseau, aucun secret).
       # Couvrent notamment le CLOISONNEMENT MULTI-CLIENT du moteur d'envoi (ALE-174) :
       # le cron tourne en service-role, donc sans le cloisonnement automatique de la
       # base — c'est ce test, et pas la vigilance humaine, qui garantit qu'une action
