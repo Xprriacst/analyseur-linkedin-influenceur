@@ -1608,13 +1608,17 @@ def me_billing_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
 def _webhook_user_id(obj: dict[str, Any], customer_id: str | None) -> str | None:
     """Retrouve le compte app visé par un événement Stripe.
 
-    Deux chemins : la métadonnée `user_id` (posée à la création de la session et de
-    l'abonnement), sinon le client Stripe → notre table. Les factures de
-    renouvellement ne portent que le second.
+    Trois chemins, du plus direct au plus tolérant : la métadonnée `user_id` (posée
+    sur la session et l'abonnement), celle relayée par la facture (rangée dans
+    `parent.subscription_details` sur les versions récentes de l'API), sinon le
+    client Stripe → notre table.
     """
     meta_user = (obj.get("metadata") or {}).get("user_id")
     if meta_user:
         return meta_user
+    invoice_user = stripe_billing.invoice_user_id(obj)
+    if invoice_user:
+        return invoice_user
     row = db.get_subscription_by_customer_admin(customer_id) if customer_id else None
     return (row or {}).get("user_id")
 
@@ -1667,7 +1671,7 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
         return {"ok": True}
 
     if event_type == "invoice.paid":
-        subscription_id = obj.get("subscription") if isinstance(obj.get("subscription"), str) else None
+        subscription_id = stripe_billing.invoice_subscription_id(obj)
         credits = stripe_billing.plan_credits()
         # Solde FIXÉ (pas incrémenté) : pas de report des crédits non consommés.
         new_balance = db.set_credits_admin(
