@@ -1332,9 +1332,10 @@ function Sidebar({
 
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {!restricted && (() => {
-        const networks: { key: Platform; label: string; icon: React.ReactNode }[] = [
+        // `soon` : réseau visible mais grisé (pas encore ouvert aux clients).
+        const networks: { key: Platform; label: string; icon: React.ReactNode; soon?: boolean }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
-          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
+          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} />, soon: true },
         ];
         // ALE-257 : « Veille » retirée — l'analyse (profils, classement, tendances,
         // monitoring) vit désormais dans « Contenu » › sous-onglet « Analyses ».
@@ -1345,6 +1346,24 @@ function Sidebar({
           <section className="sidebar-section sidebar-nav-tree">
             <div className="nav-list">
               {networks.map((net) => {
+                // Réseau grisé : entête inerte + badge « Bientôt », aucun sous-onglet.
+                if (net.soon) {
+                  return (
+                    <button
+                      key={net.key}
+                      className={`nav-item locked${collapsed ? " nav-item-collapsed" : ""}`}
+                      title={`${net.label} arrive bientôt`}
+                      disabled
+                      style={{ cursor: "default", opacity: 0.55 }}
+                    >
+                      {net.icon}
+                      {!collapsed && <span>{net.label}</span>}
+                      {!collapsed && (
+                        <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 600, color: "var(--muted)", border: "1px solid var(--border)", borderRadius: 99, padding: "1px 7px" }}>Bientôt</span>
+                      )}
+                    </button>
+                  );
+                }
                 // ALE-246 : ouverture indépendante par réseau (plus d'accordéon).
                 const expanded = openNets[net.key];
                 const isActiveNet = platform === net.key;
@@ -1391,7 +1410,7 @@ function Sidebar({
                         </button>
                       );
                     })}
-                    {/* ALE-229 : Prospection — actif sous LinkedIn, jumeau grisé « Bientôt » sous Instagram */}
+                    {/* ALE-229 : Prospection — sous LinkedIn (Instagram est grisé en amont) */}
                     {expanded && net.key === "linkedin" && (
                       <button
                         className={`nav-item nav-item-sub ${isActiveNet && view === "prospecting" ? "active" : ""} ${!isAuthed ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
@@ -1408,18 +1427,6 @@ function Sidebar({
                         <Target size={14} />
                         {!collapsed && <span>Prospection</span>}
                         {!isAuthed ? <Lock size={12} className="lock-ico" /> : null}
-                      </button>
-                    )}
-                    {expanded && net.key === "instagram" && !collapsed && (
-                      <button
-                        className="nav-item nav-item-sub locked"
-                        title="La prospection Instagram arrive bientôt"
-                        disabled
-                        style={{ cursor: "default", opacity: 0.55 }}
-                      >
-                        <Target size={14} />
-                        <span>Prospection</span>
-                        <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 600, color: "var(--muted)", border: "1px solid var(--border)", borderRadius: 99, padding: "1px 7px" }}>Bientôt</span>
                       </button>
                     )}
                   </React.Fragment>
@@ -10951,7 +10958,9 @@ export default function Home() {
   useEffect(() => {
     try {
       const savedPlatform = localStorage.getItem("lkd_platform");
-      if (savedPlatform === "linkedin" || savedPlatform === "instagram") {
+      // Instagram est grisé : on ne restaure pas cette préférence, sinon le compte
+      // rouvre sur une vue Instagram qui n'a plus d'entrée dans la navigation.
+      if (savedPlatform === "linkedin") {
         setPlatform(savedPlatform);
       }
     } catch {
