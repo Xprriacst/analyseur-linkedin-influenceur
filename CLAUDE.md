@@ -80,6 +80,13 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-13 #2 (RELEASE PROD : abonnement Stripe + page de vente /offre — PR #283 `dev → main`)
+- **Release PR #283** mergée ~09:20 UTC → Render prod + Netlify prod. Contenu : abonnement Stripe complet (PR #280 + fix #281), page de vente **`/offre`** (PR #282, refondue en écran unique par PR #284 puis #285 après retours d'Alex : promesse à gauche sur dégradé indigo + formulaire compte→paiement intégré à droite, format « appel de closing »).
+- **Vérifié post-deploy** : `/billing/plan` prod → `enabled: true`, 49 €/1000 crédits lus depuis Stripe **live** (donc `STRIPE_SECRET_KEY` live posée par Alex fonctionne) · `/me/billing` → 401 · `/offre` rendue sur `lkd-outreach.netlify.app` (capture Puppeteer). Migration 0046 appliquée sur la base prod AVANT le merge (séquençage respecté).
+- **Stripe live provisionné via le connecteur MCP** (permissions minimales Write : Products/Prices/Coupons/Promotion Codes + Subscriptions Read) : produit **« Cibl — Abonnement mensuel »** (`price_1TsfmJGg1yDyFf5PuwTodI9r`), coupon 100 % + code promo **`CIBLDEMO`** (comptes internes/démo + test prod sans débit). Webhook live créé par Alex au dashboard, secret posé sur Render prod.
+- ⚠️ **Piège rendu UI documenté (PR #285)** : les classes `auth-label`/`auth-input` n'empilent les champs que DANS `.auth-card`/`.auth-modal` (le conteneur porte le flex column) — réutilisées hors conteneur, les champs coulent en ligne. Toujours vérifier visuellement (build local + capture Puppeteer) une page nouvelle, pas seulement `npm run build`.
+- **Reste à valider par Alex en prod** : tour complet avec `CIBLDEMO` (abonnement à 0 €, webhook → 1000 crédits, statut Actif) avant de passer ALE-274 en Done.
+
 ### 2026-07-13 (dev : abonnement Stripe 49 €/mois = 1000 crédits — ALE-274)
 - **Facturation par abonnement**, avant l'arrivée des 10 premiers clients. Paiement et gestion de la carte/résiliation **hébergés par Stripe** (Checkout + Customer Portal) : l'app ne voit jamais de numéro de carte et n'a qu'une carte « Abonnement » à afficher dans Mon profil (prix + état + prochain rechargement). Codes promo activés sur la page de paiement (comptes internes/démo = code promo 100 %, pas besoin de payer pour tester en prod).
 - **Décisions produit appliquées** (tranchées le 2026-07-10) : (1) **pas de report des crédits non consommés** — à chaque facture payée le solde est **fixé** à 1000 (nouvelle fonction Postgres `set_credits`, qui *pose* la valeur au lieu d'incrémenter comme `add_credits`) ; (2) **blocage à 0 crédit** — déjà en place (402 « Crédits insuffisants » sur tous les chemins de génération), rien à ajouter ; le pack de recharge ponctuel reste pour une itération suivante.
