@@ -7,6 +7,7 @@ import {
   Activity,
   BarChart3,
   CalendarDays,
+  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -2667,6 +2668,7 @@ function ImageGenModal({
     return () => { cancelled = true; };
   }, []);
   const templatesWithImage = templates.filter((t) => !!t.image_url);
+  const selectedTemplate = templatesWithImage.find((t) => t.id === selectedTemplateId) ?? null;
 
   // Reprend le texte du post (ou le passage sélectionné à la souris dans le bloc
   // ci-dessous) à la suite du prompt (ALE-192).
@@ -2797,35 +2799,103 @@ function ImageGenModal({
               cette fenêtre pendant la génération (2 à 3 min), elle continue en arrière-plan.
             </p>
             {templatesWithImage.length > 0 && (
-              <div style={{ marginBottom: 12 }}>
-                <p style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 6px", fontWeight: 600 }}>
-                  Image de référence (optionnel) — style/composition repris depuis ta bibliothèque
+              <div style={{ marginBottom: 14 }}>
+                <p style={{ fontSize: 12, margin: "0 0 2px", fontWeight: 600 }}>
+                  Image de référence (optionnel)
                 </p>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <p style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px", lineHeight: 1.45 }}>
+                  Clique sur une image de ta bibliothèque : l&apos;IA s&apos;en inspirera pour le
+                  <strong> style et la composition</strong> (couleurs, cadrage, ambiance). Elle ne
+                  copiera pas son contenu.
+                </p>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                   {templatesWithImage.map((t) => {
                     const selected = selectedTemplateId === t.id;
+                    const dimmed = !!selectedTemplateId && !selected;
+                    const title = libraryEntryTitle(t);
                     return (
                       <button
                         key={t.id}
                         type="button"
-                        title={libraryEntryTitle(t)}
+                        aria-pressed={selected}
+                        // Nom accessible stable (le libellé sous la vignette bascule sur
+                        // « ✓ Sélectionnée », et l'alt de l'image le dupliquerait sinon).
+                        aria-label={title}
+                        title={selected ? `${title} — cliquer pour retirer` : `S'inspirer de « ${title} »`}
                         onClick={() => setSelectedTemplateId(selected ? "" : t.id)}
                         style={{
-                          width: 60, height: 60, padding: 0, borderRadius: 8, overflow: "hidden",
-                          border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
-                          cursor: "pointer", flex: "0 0 auto", background: "none",
+                          // Bordure toujours 2px (couleur seule qui change) : sinon la vignette
+                          // change de taille à la sélection au lieu de s'entourer d'un liseré.
+                          width: 92, padding: 5, borderRadius: 10, flex: "0 0 auto", cursor: "pointer",
+                          border: `2px solid ${selected ? "var(--primary)" : "var(--border)"}`,
+                          background: selected
+                            ? "color-mix(in srgb, var(--primary) 7%, var(--surface))"
+                            : "var(--surface)",
+                          boxShadow: selected
+                            ? "0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent)"
+                            : "none",
+                          opacity: dimmed ? 0.5 : 1,
+                          filter: dimmed ? "grayscale(0.5)" : "none",
+                          transition: "opacity 120ms ease, box-shadow 120ms ease, filter 120ms ease",
                         }}
                       >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={t.image_url || ""}
-                          alt={libraryEntryTitle(t)}
-                          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-                        />
+                        <span style={{ position: "relative", display: "block" }}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={t.image_url || ""}
+                            alt=""
+                            style={{ width: "100%", height: 76, objectFit: "cover", borderRadius: 6, display: "block" }}
+                          />
+                          {selected && (
+                            <span style={{
+                              position: "absolute", top: -7, right: -7, width: 20, height: 20,
+                              borderRadius: "50%", background: "var(--primary)", color: "#fff",
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              boxShadow: "0 1px 4px rgba(0,0,0,0.25)",
+                            }}>
+                              <Check size={13} strokeWidth={3} />
+                            </span>
+                          )}
+                        </span>
+                        <span style={{
+                          display: "block", marginTop: 5, fontSize: 10, lineHeight: 1.3,
+                          color: selected ? "var(--primary)" : "var(--muted)",
+                          fontWeight: selected ? 700 : 400,
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        }}>
+                          {selected ? "✓ Sélectionnée" : title}
+                        </span>
                       </button>
                     );
                   })}
                 </div>
+                {selectedTemplate && (
+                  <div style={{
+                    display: "flex", gap: 10, alignItems: "center", marginTop: 10,
+                    padding: "9px 11px", borderRadius: 8, fontSize: 12, lineHeight: 1.45,
+                    border: "1px solid color-mix(in srgb, var(--primary) 28%, transparent)",
+                    background: "color-mix(in srgb, var(--primary) 7%, var(--surface))",
+                  }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={selectedTemplate.image_url || ""}
+                      alt=""
+                      style={{ width: 38, height: 38, objectFit: "cover", borderRadius: 6, flexShrink: 0, display: "block" }}
+                    />
+                    <span style={{ flex: 1 }}>
+                      <strong>Inspiration : « {libraryEntryTitle(selectedTemplate)} »</strong><br />
+                      L&apos;image sera générée dans le style et la composition de cette référence.
+                    </span>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => setSelectedTemplateId("")}
+                      style={{ fontSize: 11, flexShrink: 0 }}
+                    >
+                      Retirer
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             {loadingPrompt ? (
