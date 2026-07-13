@@ -356,6 +356,16 @@ function InstagramIcon({ size = 14 }: { size?: number }) {
 // (compte `ideas_only`) continue de l'afficher, via la branche `reservoirOnly`.
 type ContentTab = "analyses" | "generator" | "library";
 
+// « Mon profil » empilait sur une seule page trois métiers sans rapport : le contexte
+// éditorial, les comptes à relier, et ce qui tourne tout seul. Un onglet par métier.
+type ProfileTab = "profile" | "connections" | "automations";
+
+const PROFILE_TABS: { key: ProfileTab; label: string; icon: React.ReactNode }[] = [
+  { key: "profile", label: "Mon profil", icon: <UserRound size={14} /> },
+  { key: "connections", label: "Connexions", icon: <Link2 size={14} /> },
+  { key: "automations", label: "Automatisations", icon: <Zap size={14} /> },
+];
+
 const tabs = ["Rapport", "Top posts", "Patterns", "Tous les posts", "JSON brut"];
 const steps = [
   "Scraping du profil",
@@ -1277,6 +1287,7 @@ function Sidebar({
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedPreferenceLoaded, setCollapsedPreferenceLoaded] = useState(false);
+  const billing = useBilling(isAuthed);
   // ALE-246 : ouverture par réseau, découplée du réseau actif → LinkedIn et
   // Instagram peuvent rester déployés en même temps (fin de l'accordéon).
   const [openNets, setOpenNets] = useState<Record<Platform, boolean>>(() => ({
@@ -1526,11 +1537,48 @@ function Sidebar({
             );
           })()}
         </div>
-        {!collapsed && isAuthed && credits !== null && (
-          <div style={{ marginBottom: 8 }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: credits <= 5 ? "#ef4444" : "var(--muted)", border: "1px solid var(--border)", borderRadius: 20, padding: "3px 10px" }}>
-              ✦ {credits} crédit{credits !== 1 ? "s" : ""}
-            </span>
+        {/* Solde + abonnement au même endroit : le solde est la conséquence de
+            l'abonnement, et c'est ici qu'on vient le regarder. La carte qui vivait
+            dans « Mon profil » n'avait rien à y faire (ce n'est pas un réglage). */}
+        {!collapsed && isAuthed && (
+          <div style={{ marginBottom: 8, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
+            {credits !== null && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: credits <= 5 ? "#ef4444" : "var(--muted)", border: "1px solid var(--border)", borderRadius: 20, padding: "3px 10px" }}>
+                ✦ {credits} crédit{credits !== 1 ? "s" : ""}
+              </span>
+            )}
+            {billing.status?.enabled && (
+              billing.status.subscribed ? (
+                <button
+                  className="link-button"
+                  onClick={billing.manage}
+                  disabled={billing.busy}
+                  style={{ fontSize: 11.5, color: "var(--muted)", textAlign: "left" }}
+                  title={
+                    billing.status.current_period_end
+                      ? billing.status.cancel_at_period_end
+                        ? `Résiliation programmée : accès jusqu'au ${formatBillingDate(billing.status.current_period_end)}.`
+                        : `Prochain rechargement le ${formatBillingDate(billing.status.current_period_end)}.`
+                      : "Gérer mon abonnement (carte, factures, résiliation)"
+                  }
+                >
+                  {billing.busy ? <Loader2 size={11} className="spinning" /> : null}
+                  {billing.status.cancel_at_period_end ? "Abonnement : se termine bientôt" : "Abonnement actif"} · Gérer
+                </button>
+              ) : (
+                <button
+                  className="secondary-button"
+                  onClick={billing.subscribe}
+                  disabled={billing.busy}
+                  style={{ fontSize: 11.5, minHeight: 28, padding: "0 10px" }}
+                  title={`${billing.status.plan?.credits ?? 1000} crédits rechargés ${planPeriodLabel(billing.status.plan)}. Paiement et résiliation gérés par Stripe.`}
+                >
+                  {billing.busy ? <Loader2 size={12} className="spinning" /> : <CreditCard size={12} />}
+                  {billing.busy ? "Redirection…" : `S'abonner — ${planPriceLabel(billing.status.plan)}`}
+                </button>
+              )
+            )}
+            {billing.error ? <span style={{ fontSize: 11, color: "#ef4444" }}>{billing.error}</span> : null}
           </div>
         )}
         {!collapsed && (
@@ -6471,9 +6519,146 @@ const MANYCHAT_BODY_TEMPLATE = `{
 // chaque client relie SON compte LinkedIn. Porte aussi le plafond quotidien de
 // quota (garde-fou anti-restriction). Distinct de la connexion « Publier sur
 // LinkedIn » (Zernio) : Zernio publie des posts, Unipile fait la messagerie.
-function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
-  const outreach = useLinkedInOutreach(isAuthed);
-  const [capOpen, setCapOpen] = useState(false);
+/* ─── Ligne de réglage repliable (onglets Connexions / Automatisations du profil).
+   Le profil empilait une carte pleine largeur par connexion : à cinq connexions,
+   la page ne tenait plus à l'écran. Une ligne ne dit que l'essentiel (ce que ça
+   débloque, l'état, l'action) ; les réglages ne se déplient qu'au clic. ─── */
+function SettingRow({
+  icon,
+  name,
+  why,
+  right,
+  open,
+  onToggle,
+  children,
+}: {
+  icon: React.ReactNode;
+  name: string;
+  why: React.ReactNode;
+  right?: React.ReactNode;
+  open?: boolean;
+  onToggle?: () => void;
+  children?: React.ReactNode;
+}) {
+  const expandable = !!onToggle;
+  return (
+    <section className="card" style={{ marginBottom: 10, padding: 0, overflow: "hidden" }}>
+      <div
+        role={expandable ? "button" : undefined}
+        tabIndex={expandable ? 0 : undefined}
+        aria-expanded={expandable ? !!open : undefined}
+        onClick={expandable ? onToggle : undefined}
+        onKeyDown={
+          expandable
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle!(); }
+              }
+            : undefined
+        }
+        style={{
+          display: "flex", alignItems: "center", gap: 12, padding: "12px 14px",
+          cursor: expandable ? "pointer" : "default",
+        }}
+      >
+        <span style={{ flexShrink: 0, display: "grid", placeItems: "center", width: 24 }}>{icon}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <strong style={{ fontSize: 13.5 }}>{name}</strong>
+          <p className="section-desc" style={{ margin: 0, fontSize: 12 }}>{why}</p>
+        </div>
+        {/* Les contrôles ne doivent pas déplier la ligne au passage. */}
+        <div
+          style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {right}
+        </div>
+        {expandable && (
+          <ChevronRight
+            size={16}
+            style={{
+              flexShrink: 0, color: "var(--muted)",
+              transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s",
+            }}
+          />
+        )}
+      </div>
+      {expandable && open && (
+        <div style={{ padding: 14, borderTop: "1px solid var(--border)" }}>{children}</div>
+      )}
+    </section>
+  );
+}
+
+/* État ManyChat remonté au profil : la ligne « Instagram » (Connexions) et la ligne
+   « Réponses aux DM » (Automatisations) parlent du même compte — sans ça, chacune
+   irait le chercher de son côté et elles pourraient se contredire à l'écran. */
+function useManychat(isAuthed: boolean) {
+  const [status, setStatus] = useState<IgManychatStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) { setStatus(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (res.ok) setStatus(data);
+      } catch { /* non bloquant */ }
+    })();
+  }, [isAuthed]);
+
+  async function connect(apiKey: string) {
+    if (!apiKey.trim()) return false;
+    setBusy(true); setNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ api_token: apiKey.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion impossible");
+      setStatus(data);
+      setNotice("✓ Compte ManyChat relié. Copie l'URL et le secret ci-dessous dans ton flow ManyChat.");
+      return true;
+    } catch (err: any) {
+      setNotice(`Erreur : ${err.message}`);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!window.confirm("Délier le compte ManyChat ?")) return false;
+    setBusy(true); setNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, { method: "DELETE", headers: await authHeaders() });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Déconnexion impossible"); }
+      setStatus({ connected: false });
+      setNotice("Compte ManyChat délié.");
+      return true;
+    } catch (err: any) {
+      setNotice(`Erreur : ${err.message}`);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return { status, busy, notice, setNotice, connect, disconnect };
+}
+
+function UnipileOutreachConnect({
+  outreach,
+  open,
+  onToggle,
+}: {
+  outreach: ReturnType<typeof useLinkedInOutreach>;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const [capDraft, setCapDraft] = useState<number>(25);
   // ALE-174 — fenêtre d'envoi du moteur (heures de bureau du client).
   const [hoursDraft, setHoursDraft] = useState<[number, number]>([9, 18]);
@@ -6495,47 +6680,13 @@ function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
   const toggleDay = (d: number) =>
     setDaysDraft((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort()));
 
-  if (!isAuthed) return null;
-
   return (
     <>
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Send size={20} style={{ flexShrink: 0, color: "#0a66c2" }} />
-          <div>
-            <strong>Contacter tes leads sur LinkedIn (prospection)</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {!st?.configured
-                ? "Messagerie LinkedIn non configurée sur le serveur (Unipile)."
-                : connected
-                  ? "Compte LinkedIn relié — tes invitations et messages partent depuis l'onglet Prospection, cadencés pour protéger ton compte."
-                  : "Connecte ton compte LinkedIn pour envoyer des invitations et des messages à tes leads, sans quitter l'app."}
-            </p>
-          </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {connected ? (
-            <>
-              <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
-              <button className="secondary-button" onClick={() => setCapOpen((v) => !v)} style={{ fontSize: 12 }}>
-                <Settings2 size={13} /> {capOpen ? "Masquer les réglages" : "Rythme d'envoi"}
-              </button>
-              <button className="secondary-button" onClick={outreach.disconnect} disabled={outreach.busy} style={{ fontSize: 12 }}>
-                {outreach.busy ? <Loader2 size={12} className="spinning" /> : null} Délier
-              </button>
-            </>
-          ) : st?.configured ? (
-            <button className="primary-button" onClick={outreach.connect} disabled={outreach.busy}>
-              {outreach.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
-              {outreach.busy ? "Redirection…" : "Connecter LinkedIn"}
-            </button>
-          ) : null}
-        </div>
-      </section>
-
       {/* ALE-174 — un moteur qui plante en silence est pire qu'un moteur absent : le
           client croirait que sa prospection tourne. Un cron mort ne peut pas alerter
-          sur sa propre mort, donc c'est l'app qui le dit, ici, en rouge. */}
+          sur sa propre mort, donc c'est l'app qui le dit, ici, en rouge. Ces deux
+          bandeaux restent HORS de la ligne repliable : une alerte qui exige un clic
+          pour être lue n'est plus une alerte. */}
       {connected && eng?.stalled && (
         <div className="error" style={{ marginBottom: 12 }}>
           <strong>Ta prospection est à l&apos;arrêt.</strong> {eng.pending} action(s) attendent en file mais le
@@ -6555,8 +6706,38 @@ function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
         </div>
       )}
 
-      {connected && q && capOpen && (
-        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
+      <SettingRow
+        icon={<Send size={18} style={{ color: "#0a66c2" }} />}
+        name="Prospection LinkedIn"
+        why={
+          !st?.configured
+            ? "Messagerie LinkedIn non configurée sur le serveur."
+            : connected
+              ? `Envoyer invitations et messages à tes leads${q ? ` · ${q.invites_today}/${q.daily_cap} invitations aujourd'hui` : ""}`
+              : "Envoyer invitations et messages à tes leads, sans quitter l'app"
+        }
+        open={open}
+        onToggle={connected && q ? onToggle : undefined}
+        right={
+          connected ? (
+            <>
+              <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+              <button className="secondary-button" onClick={outreach.disconnect} disabled={outreach.busy} style={{ fontSize: 12 }}>
+                {outreach.busy ? <Loader2 size={12} className="spinning" /> : null} Délier
+              </button>
+            </>
+          ) : st?.configured ? (
+            <button className="primary-button" onClick={outreach.connect} disabled={outreach.busy}>
+              {outreach.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+              {outreach.busy ? "Redirection…" : "Connecter"}
+            </button>
+          ) : (
+            <span className="status-pill">Non configuré</span>
+          )
+        }
+      >
+        {connected && q && (
+          <>
           <p style={{ fontSize: 13, margin: "0 0 10px" }}>
             <strong>Rythme d&apos;envoi</strong> — tes actions ne partent pas au clic : elles entrent dans une
             file, et le moteur les envoie une par une, dans ta plage horaire, avec un délai variable entre
@@ -6645,8 +6826,9 @@ function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
               dimanche, c&apos;est le signal le plus facile à repérer pour LinkedIn.
             </p>
           </div>
-        </section>
-      )}
+          </>
+        )}
+      </SettingRow>
       {outreach.error && <div className="error" style={{ marginBottom: 12 }}>{outreach.error}</div>}
     </>
   );
@@ -6656,65 +6838,30 @@ function UnipileOutreachConnect({ isAuthed }: { isAuthed: boolean }) {
 // connexions (LinkedIn/X/Slack). ManyChat est le pont d'envoi vers les DM
 // Instagram : clé API + webhook à coller côté ManyChat. C'est une étape de
 // paramétrage ponctuel, d'où sa place dans le profil plutôt que l'Inbox.
-function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
-  const [status, setStatus] = useState<IgManychatStatus | null>(null);
+function ManychatConnect({
+  manychat,
+  open,
+  onToggle,
+}: {
+  manychat: ReturnType<typeof useManychat>;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const { status, busy, notice, setNotice } = manychat;
   const [apiKey, setApiKey] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("");
   const [copied, setCopied] = useState("");
-  const [setupOpen, setSetupOpen] = useState(false);
   // Vrai quand l'utilisateur veut ressaisir une clé alors qu'un compte est déjà
   // relié : on repasse en mode saisie sans perdre le status côté serveur.
   const [editingKey, setEditingKey] = useState(false);
 
-  useEffect(() => {
-    if (!isAuthed) { setStatus(null); return; }
-    (async () => {
-      try {
-        const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, { headers: await authHeaders() });
-        const data = await res.json();
-        if (res.ok) setStatus(data);
-      } catch { /* non bloquant */ }
-    })();
-  }, [isAuthed]);
-
   async function connect() {
-    if (!apiKey.trim()) return;
-    setBusy(true); setNotice("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ api_token: apiKey.trim() }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Connexion impossible");
-      setStatus(data);
-      setApiKey("");
-      setEditingKey(false);
-      setSetupOpen(true);
-      setNotice("✓ Compte ManyChat relié. Copie l'URL et le secret ci-dessous dans ton flow ManyChat.");
-    } catch (err: any) {
-      setNotice(`Erreur : ${err.message}`);
-    } finally {
-      setBusy(false);
-    }
+    const ok = await manychat.connect(apiKey);
+    if (ok) { setApiKey(""); setEditingKey(false); }
   }
 
   async function disconnect() {
-    if (!window.confirm("Délier le compte ManyChat ?")) return;
-    setBusy(true); setNotice("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/ig/manychat`, { method: "DELETE", headers: await authHeaders() });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Déconnexion impossible"); }
-      setStatus({ connected: false });
-      setSetupOpen(false);
-      setNotice("Compte ManyChat délié.");
-    } catch (err: any) {
-      setNotice(`Erreur : ${err.message}`);
-    } finally {
-      setBusy(false);
-    }
+    const ok = await manychat.disconnect();
+    if (ok) setEditingKey(false);
   }
 
   async function copy(value: string, label: string) {
@@ -6728,41 +6875,38 @@ function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
   const connected = !!status?.connected && !editingKey;
 
   return (
-    <>
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <MessageSquare size={20} style={{ flexShrink: 0, color: "#2563eb" }} />
-          <div>
-            <strong>Répondre aux DM Instagram (ManyChat)</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {connected
-                ? "Compte ManyChat relié — l'agent peut envoyer ses réponses à tes prospects sur Instagram."
-                : "Connecte ManyChat pour recevoir les DM Instagram dans l'Inbox et laisser l'agent y répondre."}
-            </p>
-          </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+    <SettingRow
+      icon={<MessageSquare size={18} style={{ color: "#2563eb" }} />}
+      name="Instagram (ManyChat)"
+      why={
+        connected
+          ? "Recevoir les DM dans l'Inbox et laisser l'agent y répondre"
+          : "Connecte ManyChat pour recevoir tes DM Instagram dans l'Inbox"
+      }
+      open={open}
+      onToggle={onToggle}
+      right={
+        <>
           <a href="/manychat-test" className="secondary-button" style={{ fontSize: 12, whiteSpace: "nowrap", textDecoration: "none" }} title="Tester l'agent avec un faux DM entrant">
             🧪 Simulateur
           </a>
           {connected ? (
             <>
               <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
-              <button className="secondary-button" onClick={() => setSetupOpen((v) => !v)} style={{ fontSize: 12 }}>
-                {setupOpen ? "Masquer le webhook" : "Configurer le webhook"}
-              </button>
               <button className="secondary-button" onClick={disconnect} disabled={busy} style={{ fontSize: 12 }}>
                 {busy ? <Loader2 size={12} className="spinning" /> : null}
                 Délier
               </button>
             </>
-          ) : null}
-        </div>
-      </section>
-
+          ) : (
+            <span className="status-pill">Non connecté</span>
+          )}
+        </>
+      }
+    >
       {!connected && (
-        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
-          <p style={{ fontSize: 13, marginBottom: 8 }}>
+        <>
+          <p style={{ fontSize: 13, marginTop: 0, marginBottom: 8 }}>
             <strong>Connecter ton compte ManyChat.</strong> Colle ta clé API ManyChat
             (ManyChat → Settings → API → Generate your token). Elle sert à envoyer les
             réponses de l'agent à tes prospects. Après connexion, tu recevras une URL de
@@ -6786,12 +6930,12 @@ function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
             )}
           </div>
           {notice && <div style={{ fontSize: 12, marginTop: 10, opacity: 0.85 }}>{notice}</div>}
-        </section>
+        </>
       )}
 
-      {connected && setupOpen && (
-        <section className="card" style={{ marginBottom: 16, padding: 14 }}>
-          <p style={{ fontSize: 13, marginBottom: 6 }}>
+      {connected && (
+        <>
+          <p style={{ fontSize: 13, marginTop: 0, marginBottom: 6 }}>
             <strong>✓ Compte ManyChat relié</strong>
             {status?.api_token_masked && <span style={{ opacity: 0.7 }}> (clé {status.api_token_masked})</span>}.
           </p>
@@ -6834,30 +6978,31 @@ function ManychatConnect({ isAuthed }: { isAuthed: boolean }) {
               </p>
             </div>
             <div>
-              <button className="secondary-button" onClick={() => { setEditingKey(true); setSetupOpen(false); setNotice(""); }} disabled={busy} style={{ fontSize: 12 }}>
+              <button className="secondary-button" onClick={() => { setEditingKey(true); setNotice(""); }} disabled={busy} style={{ fontSize: 12 }}>
                 Changer la clé API
               </button>
             </div>
           </div>
           {notice && <div style={{ fontSize: 12, marginTop: 10, opacity: 0.85 }}>{notice}</div>}
-        </section>
+        </>
       )}
-    </>
+    </SettingRow>
   );
 }
 
 // Cerveau de l'agent DM (FAQ + objectif) : la seule source de vérité utilisée
 // par l'agent Instagram. Édité ponctuellement → placé dans le profil, à côté de
 // la config ManyChat, plutôt que dans le header de l'Inbox.
-function AgentFaqEditor({ isAuthed }: { isAuthed: boolean }) {
+function AgentFaqEditor({ isAuthed, active }: { isAuthed: boolean; active: boolean }) {
   const [text, setText] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
-  const [open, setOpen] = useState(false);
 
+  // Chargée seulement quand la ligne est dépliée : inutile d'aller chercher la
+  // FAQ de tous ceux qui ouvrent leur profil sans toucher à l'agent.
   useEffect(() => {
-    if (!isAuthed || loaded || !open) return;
+    if (!isAuthed || loaded || !active) return;
     (async () => {
       try {
         const res = await fetch(`${DIRECT_API_URL}/me/ig/faq`, { headers: await authHeaders() });
@@ -6865,7 +7010,7 @@ function AgentFaqEditor({ isAuthed }: { isAuthed: boolean }) {
         if (res.ok) { setText(data.content || ""); setLoaded(true); }
       } catch { /* non bloquant */ }
     })();
-  }, [isAuthed, open, loaded]);
+  }, [isAuthed, active, loaded]);
 
   async function save() {
     setSaving(true); setNotice("");
@@ -6886,43 +7031,26 @@ function AgentFaqEditor({ isAuthed }: { isAuthed: boolean }) {
   }
 
   return (
-    <section className="card" style={{ marginBottom: 16, padding: 14 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Lightbulb size={20} style={{ flexShrink: 0, color: "var(--coral)" }} />
-          <div>
-            <strong>Cerveau de l'agent (FAQ + objectif)</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              La seule source de vérité de l'agent DM : il ne répond seul que si la réponse est couverte ici, sinon il te passe la main.
-            </p>
-          </div>
-        </div>
-        <button className="secondary-button" onClick={() => setOpen((v) => !v)} style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-          {open ? "Masquer" : "Éditer la FAQ"}
+    <div>
+      <p style={{ fontSize: 12, opacity: 0.8, marginTop: 0, marginBottom: 8 }}>
+        C&apos;est la seule source de vérité de l&apos;agent : il ne répond seul que si la réponse est couverte
+        ici, sinon il te passe la main. Décris ton offre, tes prix, tes questions/réponses fréquentes et
+        l&apos;objectif de la conversation (ex. proposer un appel découverte).
+      </p>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={loaded ? "Ex. : Qui es-tu ? / Quels sont tes tarifs ? / Objectif : qualifier puis proposer un appel…" : "Chargement…"}
+        rows={10}
+        style={{ width: "100%", resize: "vertical", padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13, fontFamily: "inherit" }}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
+        <button className="primary-button" onClick={save} disabled={saving || !loaded} style={{ fontSize: 13 }}>
+          {saving ? "Enregistrement…" : "Enregistrer la FAQ"}
         </button>
+        {notice && <span style={{ fontSize: 12, opacity: 0.8 }}>{notice}</span>}
       </div>
-      {open && (
-        <div style={{ marginTop: 12 }}>
-          <p style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
-            Décris ton offre, tes prix, tes questions/réponses fréquentes et l'objectif de la conversation
-            (ex. proposer un appel découverte).
-          </p>
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder={loaded ? "Ex. : Qui es-tu ? / Quels sont tes tarifs ? / Objectif : qualifier puis proposer un appel…" : "Chargement…"}
-            rows={10}
-            style={{ width: "100%", resize: "vertical", padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13, fontFamily: "inherit" }}
-          />
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
-            <button className="primary-button" onClick={save} disabled={saving || !loaded} style={{ fontSize: 13 }}>
-              {saving ? "Enregistrement…" : "Enregistrer la FAQ"}
-            </button>
-            {notice && <span style={{ fontSize: 12, opacity: 0.8 }}>{notice}</span>}
-          </div>
-        </div>
-      )}
-    </section>
+    </div>
   );
 }
 
@@ -8001,12 +8129,20 @@ function ProfileView({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const [aiInput, setAiInput] = useState("");
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const [draftInfo, setDraftInfo] = useState("");
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
-  const billing = useBilling(isAuthed);
+  const outreach = useLinkedInOutreach(isAuthed);
+  const manychat = useManychat(isAuthed);
+  // Trois métiers distincts vivaient sur une même page qui défilait : qui je suis,
+  // les comptes que je relie, et ce qui tourne sans moi. Un onglet par métier.
+  // (L'abonnement, lui, a rejoint le pied de la barre latérale, avec le solde.)
+  const [tab, setTab] = useState<ProfileTab>("profile");
+  // Une seule ligne dépliée à la fois : c'est ce qui empêche la page de redevenir
+  // le mur de réglages qu'on vient de démonter.
+  const [openRow, setOpenRow] = useState<string | null>(null);
+  const toggleRow = (key: string) => setOpenRow((prev) => (prev === key ? null : key));
   const [weeklyEnabled, setWeeklyEnabled] = useState(false);
   const [weeklySchedule, setWeeklySchedule] = useState<{day_of_week: number; hour: number; timezone: string}[]>([]);
   const [weeklySaving, setWeeklySaving] = useState(false);
@@ -8215,7 +8351,7 @@ function ProfileView({
       if (!res.ok) throw new Error(data.detail || "Pré-remplissage impossible");
       const merged = { ...profile, ...(data.profile || {}) };
       setProfile(merged);
-      setDetailsOpen(true); // ouvre le tiroir pour relire les champs pré-remplis
+      // (Le tiroir qu'on ouvrait ici n'existe plus : les champs sont toujours visibles.)
       const sources = data.sources || {};
       const sourceLabels = [
         sources.description ? "description" : "",
@@ -8309,200 +8445,176 @@ function ProfileView({
     );
   }
 
+  const weeklyReady = !!linkedin.status?.connected;
+  const igConnected = !!manychat.status?.connected;
+
   return (
     <div>
-      <div className="section-header">
-        <div>
-          <h2 className="section-title"><UserRound size={20} /> Contexte éditorial</h2>
-          <p className="section-desc">
-            Décris le client qui publie. Ce contexte est injecté dans les prompts `/ideas` et `/generate`.
-          </p>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span className={`status-pill ${filledCount >= 6 ? "ok" : ""}`}>{filledCount} champs remplis</span>
-          <button className="primary-button" onClick={saveProfile} disabled={saving || loading}>
-            {saving ? <Loader2 size={14} className="spinning" /> : <CheckCircle2 size={14} />}
-            {saving ? "Sauvegarde…" : "Sauvegarder"}
+      <div className="tabs">
+        {PROFILE_TABS.map((t) => (
+          <button
+            key={t.key}
+            className={`tab ${tab === t.key ? "active" : ""}`}
+            onClick={() => { setTab(t.key); setOpenRow(null); }}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+          >
+            {t.icon}
+            {t.label}
           </button>
-        </div>
+        ))}
       </div>
 
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <CreditCard size={20} color="#635bff" />
-          <div>
-            <strong>Abonnement</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {!billing.status?.enabled
-                ? "Facturation non configurée sur cet environnement."
-                : billing.status.subscribed
-                ? `Ton abonnement te recharge à ${billing.status.plan?.credits ?? 1000} crédits ${planPeriodLabel(billing.status.plan)}. Les crédits non utilisés ne sont pas reportés.`
-                : `${planPriceLabel(billing.status.plan)} — ${billing.status.plan?.credits ?? 1000} crédits rechargés ${planPeriodLabel(billing.status.plan)}. Paiement et résiliation gérés par Stripe.`}
-            </p>
-            {billing.status?.subscribed && billing.status.current_period_end && (
-              <p className="section-desc" style={{ margin: "4px 0 0", fontSize: 12 }}>
-                {billing.status.cancel_at_period_end
-                  ? `Résiliation programmée : accès jusqu'au ${formatBillingDate(billing.status.current_period_end)}.`
-                  : `Prochain rechargement le ${formatBillingDate(billing.status.current_period_end)}.`}
-              </p>
-            )}
-          </div>
-        </div>
-        {!billing.status?.enabled ? (
-          <span className="status-pill">Non configuré</span>
-        ) : billing.status.subscribed ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className={`status-pill ${billing.status.cancel_at_period_end ? "" : "ok"}`}>
-              {billing.status.cancel_at_period_end ? "Se termine bientôt" : <><CheckCircle2 size={14} /> Actif</>}
-            </span>
-            <button className="secondary-button" onClick={billing.manage} disabled={billing.busy} style={{ fontSize: 12 }}>
-              {billing.busy ? <Loader2 size={12} className="spinning" /> : null}
-              Gérer mon abonnement
-            </button>
-          </div>
-        ) : (
-          <button className="primary-button" onClick={billing.subscribe} disabled={billing.busy}>
-            {billing.busy ? <Loader2 size={14} className="spinning" /> : <CreditCard size={14} />}
-            {billing.busy ? "Redirection…" : "S'abonner"}
-          </button>
-        )}
-      </section>
-      {billing.error ? <div className="error" style={{ marginBottom: 12 }}>{billing.error}</div> : null}
-
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Linkedin size={20} color="#0a66c2" />
-          <div>
-            <strong>Publier sur LinkedIn</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {linkedin.status?.connected
-                ? "Compte LinkedIn connecté — tes posts générés peuvent être publiés directement sur LinkedIn en un clic."
-                : "Connecte ton compte LinkedIn pour publier tes posts générés directement sur LinkedIn, sans copier-coller."}
-            </p>
-          </div>
-        </div>
-        {linkedin.status?.connected ? (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
-              <button
-                className="secondary-button"
-                onClick={() => { if (window.confirm("Déconnecter le compte LinkedIn ?")) linkedin.disconnect(); }}
-                disabled={linkedin.busy}
-                style={{ fontSize: 12 }}
-              >
-                {linkedin.busy ? <Loader2 size={12} className="spinning" /> : null}
-                Déconnecter
-              </button>
-            </div>
-            {linkedinAccountDetail(linkedin.status) && (
-              <span className="section-desc" style={{ margin: 0, fontSize: 12 }}>
-                {linkedinAccountDetail(linkedin.status)}
-              </span>
-            )}
-          </div>
-        ) : (
-          <button className="primary-button" onClick={linkedin.connect} disabled={linkedin.busy}>
-            {linkedin.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
-            {linkedin.busy ? "Redirection…" : "Connecter LinkedIn"}
-          </button>
-        )}
-      </section>
-      {linkedin.error ? <div className="error" style={{ marginBottom: 12 }}>{linkedin.error}</div> : null}
-
-      <UnipileOutreachConnect isAuthed={isAuthed} />
-
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0 }}><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-          <div>
-            <strong>Publier sur X (Twitter)</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {twitter.status?.connected
-                ? "Compte X connecté — publie tes posts directement sur X en un clic."
-                : "Connecte ton compte X pour cross-poster tes posts générés sur X (Twitter)."}
-            </p>
-          </div>
-        </div>
-        {twitter.status?.connected ? (
-          <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
-        ) : (
-          <button className="primary-button" onClick={twitter.connect} disabled={twitter.busy}>
-            {twitter.busy ? <Loader2 size={14} className="spinning" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
-            {twitter.busy ? "Redirection…" : "Connecter X"}
-          </button>
-        )}
-      </section>
-      {twitter.error ? <div className="error" style={{ marginBottom: 12 }}>{twitter.error}</div> : null}
-
-      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <svg width="20" height="20" viewBox="0 0 122.8 122.8" style={{ flexShrink: 0 }}><path d="M25.8 77.6h14.9V51.2H25.8v26.4zm7.5-36.3a8.6 8.6 0 100-17.3 8.6 8.6 0 000 17.3zm53 36.3h14.9V61.4c0-13-7-19.1-16.3-19.1-7.5 0-11 4.2-12.9 7.1V51.2H57.1c.2-4.1 0-43.6 0-43.6H72v6.3c2-3 5.5-7.4 13.4-7.4 9.8 0 17.2 6.4 17.2 20.3v26.4-.1zm0 0" fill="none"/><path d="M0 11.1C0 5 5.1 0 11.3 0h100.2c6.2 0 11.3 5 11.3 11.1v100.6c0 6.1-5.1 11.1-11.3 11.1H11.3C5.1 122.8 0 117.8 0 111.7V11.1zm32.2 12.4a8.6 8.6 0 10.1 17.2 8.6 8.6 0 00-.1-17.2zM25.8 77.6h14.9V51.2H25.8v26.4zm36.1 0h14.9V61.4c0-13-7-19.1-16.3-19.1-7.5 0-11 4.2-12.9 7.1V51.2H57.1c.2-4.1 0-43.6 0-43.6H72v6.3c2-3 5.5-7.4 13.4-7.4 9.8 0 17.2 6.4 17.2 20.3v26.4H61.9z" fill="#4A154B"/></svg>
-          <div>
-            <strong>Valider les idées sur Slack</strong>
-            <p className="section-desc" style={{ margin: 0 }}>
-              {slack.status?.connected
-                ? `Workspace connecté : ${slack.status.team_name || "Slack"} — envoie tes idées générées sur Slack avec boutons ✅ / ❌.`
-                : !slack.status?.configured
-                  ? "Intégration Slack non configurée sur le serveur (SLACK_CLIENT_ID manquant)."
-                  : "Connecte Slack pour valider tes idées de posts directement depuis ton téléphone."}
-            </p>
-          </div>
-        </div>
-        {slack.status?.connected ? (
-          <button className="secondary-button" onClick={slack.disconnect} disabled={slack.busy} style={{ fontSize: 12 }}>
-            {slack.busy ? <Loader2 size={14} className="spinning" /> : null}
-            Déconnecter
-          </button>
-        ) : slack.status?.configured ? (
-          <button className="primary-button" onClick={slack.connect} disabled={slack.busy}>
-            {slack.busy ? <Loader2 size={14} className="spinning" /> : null}
-            {slack.busy ? "Redirection…" : "Connecter Slack"}
-          </button>
-        ) : null}
-      </section>
-      {slack.error ? <div className="error" style={{ marginBottom: 12 }}>{slack.error}</div> : null}
-
-      <ManychatConnect isAuthed={isAuthed} />
-
-      <AgentFaqEditor isAuthed={isAuthed} />
-
-      <section className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <CalendarDays size={20} style={{ flexShrink: 0, color: "var(--coral)" }} />
-            <div>
-              <strong>Posts automatiques de la semaine</strong>
-              <p className="section-desc" style={{ margin: 0 }}>
-                Chaque <strong>vendredi matin (vers 6-7h, heure de Paris)</strong>, 3 posts sont générés pour la <strong>semaine suivante</strong> et envoyés sur Slack pour validation. Une fois validés, ils sont publiés automatiquement aux jours et heures choisis ci-dessous. Requiert LinkedIn et Slack connectés.
-              </p>
-            </div>
-          </div>
-          {(!linkedin.status?.connected || !slack.status?.connected) ? (
-            <p className="section-desc" style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
-              {!linkedin.status?.connected && !slack.status?.connected
-                ? "⚠️ Connecte LinkedIn et Slack (ci-dessus) pour activer."
-                : !linkedin.status?.connected
-                ? "⚠️ Connecte LinkedIn (ci-dessus) pour activer."
-                : "⚠️ Connecte Slack (ci-dessus) pour activer."}
-            </p>
-          ) : (
-            <label className="daily-switch">
-              <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
-              <span>Recevoir 3 posts/semaine à valider</span>
-            </label>
-          )}
-        </div>
-        {/* ALE-272 : sans Slack, les posts hebdo sont auto-validés côté serveur. */}
-        {!slack.status?.connected && (
-          <p className="section-desc" style={{ marginTop: 10, marginBottom: 0, fontSize: 12 }}>
-            Sans Slack connecté, tes posts de la semaine sont publiés automatiquement aux créneaux choisis, sans validation préalable. Connecte Slack pour les valider avant publication.
+      {tab === "connections" && (
+        <div>
+          <p className="section-desc" style={{ marginTop: 0, marginBottom: 16 }}>
+            Les comptes que tu relies à l&apos;app. Clique une ligne pour ouvrir ses réglages.
           </p>
-        )}
-        {weeklyEnabled && linkedin.status?.connected && slack.status?.connected && (
-          <div style={{ marginTop: 16 }}>
+
+          <SettingRow
+            icon={<Linkedin size={18} style={{ color: "#0a66c2" }} />}
+            name="LinkedIn"
+            why={linkedinAccountDetail(linkedin.status) || "Publier tes posts en un clic, sans copier-coller"}
+            right={
+              linkedin.status?.connected ? (
+                <>
+                  <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+                  <button
+                    className="secondary-button"
+                    onClick={() => { if (window.confirm("Déconnecter le compte LinkedIn ?")) linkedin.disconnect(); }}
+                    disabled={linkedin.busy}
+                    style={{ fontSize: 12 }}
+                  >
+                    {linkedin.busy ? <Loader2 size={12} className="spinning" /> : null}
+                    Déconnecter
+                  </button>
+                </>
+              ) : (
+                <button className="primary-button" onClick={linkedin.connect} disabled={linkedin.busy}>
+                  {linkedin.busy ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+                  {linkedin.busy ? "Redirection…" : "Connecter"}
+                </button>
+              )
+            }
+          />
+          {linkedin.error ? <div className="error" style={{ marginBottom: 12 }}>{linkedin.error}</div> : null}
+
+          <UnipileOutreachConnect
+            outreach={outreach}
+            open={openRow === "outreach"}
+            onToggle={() => toggleRow("outreach")}
+          />
+
+          <SettingRow
+            icon={
+              <svg width="18" height="18" viewBox="0 0 122.8 122.8" style={{ flexShrink: 0 }}><path d="M0 11.1C0 5 5.1 0 11.3 0h100.2c6.2 0 11.3 5 11.3 11.1v100.6c0 6.1-5.1 11.1-11.3 11.1H11.3C5.1 122.8 0 117.8 0 111.7V11.1zm32.2 12.4a8.6 8.6 0 10.1 17.2 8.6 8.6 0 00-.1-17.2zM25.8 77.6h14.9V51.2H25.8v26.4zm36.1 0h14.9V61.4c0-13-7-19.1-16.3-19.1-7.5 0-11 4.2-12.9 7.1V51.2H57.1c.2-4.1 0-43.6 0-43.6H72v6.3c2-3 5.5-7.4 13.4-7.4 9.8 0 17.2 6.4 17.2 20.3v26.4H61.9z" fill="#4A154B"/></svg>
+            }
+            name="Slack"
+            why={
+              slack.status?.connected
+                ? `Valider tes posts depuis ton téléphone · ${slack.status.team_name || "Slack"}`
+                : !slack.status?.configured
+                  ? "Intégration Slack non configurée sur le serveur."
+                  : "Valider tes posts et tes idées depuis ton téléphone"
+            }
+            right={
+              slack.status?.connected ? (
+                <>
+                  <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+                  <button className="secondary-button" onClick={slack.disconnect} disabled={slack.busy} style={{ fontSize: 12 }}>
+                    {slack.busy ? <Loader2 size={14} className="spinning" /> : null}
+                    Déconnecter
+                  </button>
+                </>
+              ) : slack.status?.configured ? (
+                <button className="primary-button" onClick={slack.connect} disabled={slack.busy}>
+                  {slack.busy ? <Loader2 size={14} className="spinning" /> : null}
+                  {slack.busy ? "Redirection…" : "Connecter"}
+                </button>
+              ) : (
+                <span className="status-pill">Non configuré</span>
+              )
+            }
+          />
+          {slack.error ? <div className="error" style={{ marginBottom: 12 }}>{slack.error}</div> : null}
+
+          <SettingRow
+            icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0 }}><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.742l7.734-8.842L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
+            name="X (Twitter)"
+            why="Republier tes posts sur X en un clic"
+            right={
+              twitter.status?.connected ? (
+                <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+              ) : (
+                <button className="primary-button" onClick={twitter.connect} disabled={twitter.busy}>
+                  {twitter.busy ? <Loader2 size={14} className="spinning" /> : null}
+                  {twitter.busy ? "Redirection…" : "Connecter"}
+                </button>
+              )
+            }
+          />
+          {twitter.error ? <div className="error" style={{ marginBottom: 12 }}>{twitter.error}</div> : null}
+
+          <ManychatConnect
+            manychat={manychat}
+            open={openRow === "manychat"}
+            onToggle={() => toggleRow("manychat")}
+          />
+        </div>
+      )}
+
+      {tab === "automations" && (
+        <div>
+          <p className="section-desc" style={{ marginTop: 0, marginBottom: 16 }}>
+            Ce qui tourne pendant que tu n&apos;es pas là. Clique une ligne pour ouvrir ses réglages.
+          </p>
+
+          {/* ALE-224 : opt-in « idée du jour ». ALE-286 : c'est le SEUL interrupteur
+              côté agence (le sous-onglet a disparu) — les comptes clients, eux,
+              continuent de recevoir et de lire leur idée du matin. */}
+          <SettingRow
+            icon={<Sparkles size={18} style={{ color: "var(--coral)" }} />}
+            name="Une idée de post chaque matin"
+            why="Générée depuis ta veille et ton réservoir d'idées, puis servie aux comptes clients"
+            right={
+              <label className="daily-switch">
+                <input type="checkbox" checked={dailyEnabled} onChange={toggleDailyEnabled} />
+                <span>Activer</span>
+              </label>
+            }
+          />
+
+          <SettingRow
+            icon={<CalendarDays size={18} style={{ color: "var(--coral)" }} />}
+            name="Les posts de ta semaine"
+            why={
+              !weeklyReady
+                ? "Connecte LinkedIn (onglet Connexions) pour activer"
+                : weeklyEnabled && weeklySchedule.length
+                  ? `3 posts écrits le vendredi, publiés ${weeklySchedule.map((s) => `${["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."][s.day_of_week]} ${String(s.hour).padStart(2, "0")} h`).join(" · ")}`
+                  : "3 posts écrits le vendredi matin pour la semaine suivante"
+            }
+            open={openRow === "weekly"}
+            onToggle={weeklyReady && weeklyEnabled ? () => toggleRow("weekly") : undefined}
+            right={
+              weeklyReady ? (
+                <label className="daily-switch">
+                  <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
+                  <span>Activer</span>
+                </label>
+              ) : (
+                <span className="status-pill">LinkedIn requis</span>
+              )
+            }
+          >
+            <p style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 0, marginBottom: 10 }}>
+              Chaque <strong>vendredi matin (vers 6-7 h, heure de Paris)</strong>, 3 posts sont écrits pour la{" "}
+              <strong>semaine suivante</strong>
+              {slack.status?.connected
+                ? " et envoyés sur Slack pour validation, puis publiés aux créneaux ci-dessous une fois validés."
+                : " puis publiés automatiquement aux créneaux ci-dessous. Connecte Slack (onglet Connexions) pour les valider avant publication."}
+            </p>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 8 }}>
-              Jours de publication (heure locale, fuseau Europe/Paris) :
+              Jours de publication (fuseau Europe/Paris) :
             </p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
               {["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((label, day) => {
@@ -8539,7 +8651,7 @@ function ProfileView({
             )}
             <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
               <p style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
-                Pas envie d'attendre vendredi ? Génère les posts de la semaine prochaine tout de suite.
+                Pas envie d&apos;attendre vendredi ? Génère les posts de la semaine prochaine tout de suite.
               </p>
               <button
                 className="secondary-button"
@@ -8552,30 +8664,44 @@ function ProfileView({
               {weeklyRunMsg && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>{weeklyRunMsg}</p>}
               {weeklyRunErr && <p style={{ fontSize: 12, color: "var(--coral)", marginTop: 8 }}>{weeklyRunErr}</p>}
             </div>
-          </div>
-        )}
-      </section>
+          </SettingRow>
 
-      {/* ALE-224 : opt-in « idée du jour ». ALE-286 : c'est désormais le SEUL
-          interrupteur côté agence (le sous-onglet a disparu) — les comptes
-          clients, eux, continuent de recevoir et de lire leur idée du matin. */}
-      <section className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <Sparkles size={20} style={{ flexShrink: 0, color: "var(--coral)" }} />
-            <div>
-              <strong>Idée du jour</strong>
-              <p className="section-desc" style={{ margin: 0 }}>
-                Chaque matin, une idée de post est générée à partir de ton benchmark d'influenceurs et de ton réservoir d'idées, et servie aux comptes clients. De ton côté, l'équivalent à la demande est dans <strong>Contenu › Générateur de posts</strong> (« Je n'ai pas d'idée »).
-              </p>
-            </div>
-          </div>
-          <label className="daily-switch">
-            <input type="checkbox" checked={dailyEnabled} onChange={toggleDailyEnabled} />
-            <span>Recevoir une idée chaque matin</span>
-          </label>
+          <SettingRow
+            icon={<Lightbulb size={18} style={{ color: "var(--coral)" }} />}
+            name="Réponses aux messages Instagram"
+            why="L'agent répond seul quand la réponse est dans sa FAQ, sinon il te passe la main"
+            open={openRow === "faq"}
+            onToggle={() => toggleRow("faq")}
+            right={
+              igConnected ? (
+                <span className="status-pill ok"><CheckCircle2 size={14} /> Actif</span>
+              ) : (
+                <span className="status-pill">Instagram non connecté</span>
+              )
+            }
+          >
+            <AgentFaqEditor isAuthed={isAuthed} active={openRow === "faq"} />
+          </SettingRow>
         </div>
-      </section>
+      )}
+
+      {tab === "profile" && (
+      <div>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><UserRound size={20} /> Contexte éditorial</h2>
+          <p className="section-desc">
+            Décris le client qui publie. L&apos;IA s&apos;appuie sur ce contexte pour écrire les idées et les posts.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span className={`status-pill ${filledCount >= 6 ? "ok" : ""}`}>{filledCount} champs remplis</span>
+          <button className="primary-button" onClick={saveProfile} disabled={saving || loading}>
+            {saving ? <Loader2 size={14} className="spinning" /> : <CheckCircle2 size={14} />}
+            {saving ? "Sauvegarde…" : "Sauvegarder"}
+          </button>
+        </div>
+      </div>
 
       {error ? <div className="error" style={{ marginBottom: 12 }}>{error}</div> : null}
       {draftInfo ? <div className="auth-info" style={{ marginBottom: 12 }}>{draftInfo}</div> : null}
@@ -8613,12 +8739,9 @@ function ProfileView({
             </div>
           </section>
 
-          <details className="profile-drawer" open={detailsOpen} onToggle={(e) => setDetailsOpen((e.target as HTMLDetailsElement).open)}>
-            <summary>
-              <span><Settings2 size={15} /> Détails du profil éditorial</span>
-              <span className="profile-drawer-meta">{filledCount} champs remplis</span>
-            </summary>
-            <div className="profile-drawer-body">
+          {/* Le tiroir « Détails du profil éditorial » a disparu : il n'existait que
+              parce que la page portait aussi les connexions et les automatisations.
+              L'onglet est maintenant dédié — les champs s'affichent directement. */}
           <section className="card">
             <h3>Identité & activité</h3>
             <div className="profile-grid">
@@ -8662,9 +8785,9 @@ function ProfileView({
               <Field name="linkedin_url" label="Profil LinkedIn" placeholder="https://www.linkedin.com/in/..." />
             </div>
           </section>
-            </div>
-          </details>
         </div>
+      )}
+      </div>
       )}
     </div>
   );
