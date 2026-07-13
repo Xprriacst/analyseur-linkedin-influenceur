@@ -3100,6 +3100,8 @@ function roleColorOf(role?: string | null): string {
 // (serveur). Ils ne sont qu'informatifs : c'est le serveur qui débite.
 const WIZARD_IDEAS_CREDITS = 3;
 const WIZARD_POST_CREDITS = 5;
+// Nombre de posts affichés d'emblée dans la file (« Tout voir » montre le reste).
+const QUEUE_PREVIEW_COUNT = 3;
 
 // Une structure de la bibliothèque proposée au client à l'avant-dernière étape.
 type StructureChoice = {
@@ -3154,6 +3156,277 @@ function buildPostLines(jobs: GenerationJob[]): PostLine[] {
     }
   }
   return lines;
+}
+
+/** Réservoir d'idées : ajout, édition, suppression, réordonnancement (ALE-287).
+ *
+ * Extrait de DailyIdeasView pour être affiché AUSSI sous la file du Générateur.
+ * Une seule implémentation, deux écrans : la vue client (compte `ideas_only`,
+ * qui n'a que ça) et la page Générateur côté agence. Dupliquer aurait garanti
+ * que les deux divergent à la première évolution.
+ *
+ * L'ordre compte : le cron (idée du jour, posts hebdo) pioche dedans du haut
+ * vers le bas — d'où le glisser-déposer.
+ */
+function IdeaReservoir({
+  isAuthed,
+  onGenerate,
+  desc = "Ajoute tes idées : l'idée du jour piochera dedans en priorité.",
+}: {
+  isAuthed: boolean;
+  /** Fourni = un bouton « Générer un post » apparaît sur chaque idée. */
+  onGenerate?: (text: string) => void;
+  desc?: string;
+}) {
+  const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
+  const [draft, setDraft] = useState("");
+  const [draftComment, setDraftComment] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+  const [dragId, setDragId] = useState<string | null>(null);
+  // Drag armé uniquement quand on saisit la poignée (le texte reste sélectionnable).
+  const [dragArmedId, setDragArmedId] = useState<string | null>(null);
+  const [editingSeedId, setEditingSeedId] = useState<string | null>(null);
+  const [editSeedText, setEditSeedText] = useState("");
+  const [editSeedComment, setEditSeedComment] = useState("");
+  const [savingSeedEdit, setSavingSeedEdit] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!isAuthed) { setSeeds([]); return; }
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setSeeds(Array.isArray(data) ? data : []);
+    } catch { /* le réservoir est un plus : un échec de lecture n'affiche pas d'alarme */ }
+  }, [isAuthed]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function addSeed() {
+    const text = draft.trim();
+    if (text.length < 3) return;
+    // Le commentaire d'orientation n'a de sens que pour un lien d'annonce.
+    const isLinkDraft = /^https?:\/\/\S+$/i.test(text);
+    const comment = isLinkDraft ? draftComment.trim() : "";
+    setAdding(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify(comment ? { text, comment } : { text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Ajout impossible");
+      setSeeds((prev) => [...prev, data]);
+      setDraft("");
+      setDraftComment("");
+    } catch (err: any) {
+      setError(err.message || "Ajout impossible");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function deleteSeed(id: string) {
+    setSeeds((prev) => prev.filter((s) => s.id !== id));
+    try {
+      await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void load(); }
+  }
+
+  function reorderTo(targetId: string) {
+    if (!dragId || dragId === targetId) return;
+    setSeeds((prev) => {
+      const from = prev.findIndex((s) => s.id === dragId);
+      const to = prev.findIndex((s) => s.id === targetId);
+      if (from < 0 || to < 0 || from === to) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  }
+
+  async function persistSeedOrder() {
+    setDragId(null);
+    try {
+      const ordered_ids = seeds.map((s) => s.id);
+      await fetch(`${DIRECT_API_URL}/me/idea-seeds/reorder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ ordered_ids }),
+      });
+    } catch { void load(); }
+  }
+
+  function startSeedEdit(s: IdeaSeed) {
+    setEditingSeedId(s.id);
+    setEditSeedText(s.text || "");
+    setEditSeedComment(s.comment || "");
+    setError("");
+  }
+
+  async function saveSeedEdit(id: string) {
+    const text = editSeedText.trim();
+    if (text.length < 3) return;
+    const isLinkEdit = /^https?:\/\/\S+$/i.test(text);
+    // "" = effacer le commentaire côté backend.
+    const comment = isLinkEdit ? editSeedComment.trim() : "";
+    setSavingSeedEdit(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text, comment }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Modification impossible");
+      setSeeds((prev) => prev.map((s) => (s.id === id ? data : s)));
+      setEditingSeedId(null);
+    } catch (err: any) {
+      setError(err.message || "Modification impossible");
+    } finally {
+      setSavingSeedEdit(false);
+    }
+  }
+
+  return (
+    <div className="card daily-reservoir">
+      <div className="daily-reservoir-head">
+        <div>
+          <h3 className="daily-subtitle" style={{ margin: 0 }}><Lightbulb size={16} /> Mes idées de posts</h3>
+          <p className="section-desc" style={{ margin: "4px 0 0" }}>{desc}</p>
+        </div>
+      </div>
+
+      {error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
+
+      <div className="daily-add">
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
+          placeholder="Une idée de post…"
+          aria-label="Une idée de post"
+          maxLength={2000}
+        />
+        <button className="primary-button" onClick={addSeed} disabled={adding || draft.trim().length < 3}>
+          {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter
+        </button>
+      </div>
+      {/* Champ d'orientation : uniquement quand l'idée saisie est un lien d'annonce. */}
+      {/^https?:\/\/\S+$/i.test(draft.trim()) && (
+        <input
+          type="text"
+          value={draftComment}
+          onChange={(e) => setDraftComment(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
+          placeholder="Commentaire pour orienter le post (optionnel) — ex. « insiste sur la vue mer »"
+          maxLength={500}
+          style={{ marginTop: 8, width: "100%", boxSizing: "border-box" }}
+        />
+      )}
+
+      {seeds.length === 0 ? (
+        <p style={{ color: "var(--muted)", margin: "12px 0 0", fontSize: 13 }}>
+          Aucune idée en réserve — note-les ici quand elles te viennent.
+        </p>
+      ) : (
+        <ul className="daily-seed-list">
+          {seeds.map((s) => {
+            const isLink = /^https?:\/\/\S+$/i.test((s.text || "").trim());
+            const isEditing = editingSeedId === s.id;
+            const editIsLink = /^https?:\/\/\S+$/i.test(editSeedText.trim());
+            return (
+              <li
+                key={s.id}
+                className={`${s.used_at ? "used" : ""}${dragId === s.id ? " dragging" : ""}`}
+                // Drag armé uniquement depuis la poignée : le texte reste sélectionnable.
+                draggable={dragArmedId === s.id && !isEditing}
+                onDragStart={() => setDragId(s.id)}
+                onDragOver={(e) => { e.preventDefault(); reorderTo(s.id); }}
+                onDrop={(e) => { e.preventDefault(); setDragArmedId(null); void persistSeedOrder(); }}
+                onDragEnd={() => { setDragArmedId(null); void persistSeedOrder(); }}
+              >
+                <span
+                  className="daily-seed-grip"
+                  title="Glisser pour réordonner"
+                  aria-hidden
+                  onMouseDown={() => setDragArmedId(s.id)}
+                  onMouseUp={() => setDragArmedId(null)}
+                  onTouchStart={() => setDragArmedId(s.id)}
+                >
+                  <GripVertical size={14} />
+                </span>
+                {isEditing ? (
+                  <span className="daily-seed-text" style={{ display: "grid", gap: 6 }}>
+                    <input
+                      type="text"
+                      value={editSeedText}
+                      autoFocus
+                      onChange={(e) => setEditSeedText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveSeedEdit(s.id); } if (e.key === "Escape") setEditingSeedId(null); }}
+                      maxLength={2000}
+                      style={{ width: "100%", boxSizing: "border-box" }}
+                    />
+                    {editIsLink && (
+                      <input
+                        type="text"
+                        value={editSeedComment}
+                        onChange={(e) => setEditSeedComment(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveSeedEdit(s.id); } if (e.key === "Escape") setEditingSeedId(null); }}
+                        placeholder="Commentaire pour orienter le post (optionnel)"
+                        maxLength={500}
+                        style={{ width: "100%", boxSizing: "border-box" }}
+                      />
+                    )}
+                    <span style={{ display: "flex", gap: 6 }}>
+                      <button
+                        className="primary-button"
+                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
+                        disabled={savingSeedEdit || editSeedText.trim().length < 3}
+                        onClick={() => void saveSeedEdit(s.id)}
+                      >
+                        {savingSeedEdit ? <Loader2 size={12} className="spinning" /> : null} Sauvegarder
+                      </button>
+                      <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} onClick={() => setEditingSeedId(null)}>Annuler</button>
+                    </span>
+                  </span>
+                ) : (
+                  <span className="daily-seed-text">
+                    {isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}
+                    {s.comment ? <em style={{ display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 }}>↳ orientation : {s.comment}</em> : null}
+                  </span>
+                )}
+                {!isEditing && isLink && !s.used_at ? <span className="daily-seed-tag">annonce</span> : null}
+                {!isEditing && s.used_at ? <span className="daily-seed-tag"><CheckCircle2 size={12} /> utilisée</span> : null}
+                {/* Libellé volontairement court : « Générer un post » porterait le même
+                    nom que le gros bouton de la page — deux boutons homonymes, illisibles
+                    pour un lecteur d'écran. */}
+                {!isEditing && onGenerate && (
+                  <button
+                    className="secondary-button"
+                    style={{ fontSize: 12, minHeight: 28, padding: "0 10px", flexShrink: 0 }}
+                    title="Générer un post à partir de cette idée"
+                    onClick={() => onGenerate(s.text)}
+                  >
+                    <Sparkles size={12} /> Générer
+                  </button>
+                )}
+                {!isEditing && (
+                  <button className="icon-button" title="Modifier" onClick={() => startSeedEdit(s)}><Pencil size={14} /></button>
+                )}
+                <button className="icon-button" title="Supprimer" onClick={() => deleteSeed(s.id)}><Trash2 size={14} /></button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 /** Pop-up du parcours guidé : départ → idée → profil éditorial → structure → 1 post (ALE-286). */
@@ -3747,6 +4020,14 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   const slack = useSlack(isAuthed);
 
   const lines = useMemo(() => buildPostLines(generationJobs), [generationJobs]);
+  // ALE-287 : la file montre les 3 derniers posts ; « Tout voir » déplie le reste.
+  // Une ligne dépliée hors des 3 premiers doit rester visible, sinon le clic
+  // « Réduire » ferait disparaître le post qu'on est en train de lire.
+  const [showAllLines, setShowAllLines] = useState(false);
+  const shownLines = showAllLines
+    ? lines
+    : lines.filter((l, i) => i < QUEUE_PREVIEW_COUNT || l.key === expanded);
+  const hiddenCount = lines.length - shownLines.length;
   const activeCount = generationJobs.filter(generationJobIsActive).length;
 
   useEffect(() => { _genCache.edited = edited; }, [edited]);
@@ -3977,7 +4258,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
           </p>
         ) : (
           <div className="post-queue">
-            {lines.map((line) => {
+            {shownLines.map((line) => {
               const { job, key, variant } = line;
               const open = expanded === key;
               const active = generationJobIsActive(job);
@@ -4229,6 +4510,32 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
             })}
           </div>
         )}
+
+        {(hiddenCount > 0 || showAllLines) && (
+          <button
+            className="secondary-button"
+            style={{ marginTop: 10 }}
+            onClick={() => setShowAllLines((v) => !v)}
+          >
+            {showAllLines
+              ? <>Réduire <ChevronDown size={14} style={{ transform: "rotate(180deg)" }} /></>
+              : <>Tout voir ({lines.length}) <ChevronDown size={14} /></>}
+          </button>
+        )}
+      </div>
+
+      {/* ALE-287 : le réservoir a sa place ICI. Il ne vivait plus que dans la
+          pop-up, où l'on ne pouvait ni en ajouter plusieurs, ni en supprimer, ni
+          les réordonner — alors que l'ordre décide de ce que le cron pioche. */}
+      <div style={{ marginTop: 28 }}>
+        <IdeaReservoir
+          isAuthed={isAuthed}
+          desc="Note tes idées quand elles viennent. Génère le post quand tu veux — l'idée du jour pioche aussi dedans, de haut en bas."
+          onGenerate={(text) => {
+            if (!isAuthed) { requireAuth("Connecte-toi pour générer des posts."); return; }
+            setWizard({ idea: text });
+          }}
+        />
       </div>
 
       {publishError && <div className="error" style={{ marginTop: 12 }}>{publishError}</div>}
@@ -4383,21 +4690,9 @@ function DailyIdeasView({
   onImageJobCreated: (job: ImageJob) => void;
 }) {
   const [ideas, setIdeas] = useState<DailyIdea[]>([]);
-  const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
-  const [draft, setDraft] = useState("");
-  const [draftComment, setDraftComment] = useState("");
   const [loading, setLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
-  const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
-  const [dragId, setDragId] = useState<string | null>(null);
-  // Drag armé uniquement quand on saisit la poignée (le texte reste sélectionnable).
-  const [dragArmedId, setDragArmedId] = useState<string | null>(null);
-  // Édition d'une idée du réservoir.
-  const [editingSeedId, setEditingSeedId] = useState<string | null>(null);
-  const [editSeedText, setEditSeedText] = useState("");
-  const [editSeedComment, setEditSeedComment] = useState("");
-  const [savingSeedEdit, setSavingSeedEdit] = useState(false);
 
   // ALE-143 : lot d'idées « une ligne »
   const [ideaBatch, setIdeaBatch] = useState<IdeaLine[]>([]);
@@ -4578,11 +4873,8 @@ function DailyIdeasView({
     setError("");
     try {
       const headers = await authHeaders();
-      // Compte restreint : seul le réservoir est utile (pas de corpus → pas d'idée du jour).
-      const sRes = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, { headers });
-      const sData = await sRes.json();
-      if (!sRes.ok) throw new Error(sData.detail || "Chargement du réservoir impossible");
-      setSeeds(Array.isArray(sData) ? sData : []);
+      // Le réservoir se charge lui-même (IdeaReservoir). Compte restreint : pas de
+      // corpus, donc rien d'autre à aller chercher.
       if (!reservoirOnly) {
         const dRes = await fetch(`${DIRECT_API_URL}/me/daily-ideas`, { headers });
         const dData = await dRes.json();
@@ -4598,7 +4890,7 @@ function DailyIdeasView({
 
   useEffect(() => {
     if (isAuthed) void loadAll();
-    else { setIdeas([]); setSeeds([]); }
+    else setIdeas([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
@@ -4624,100 +4916,6 @@ function DailyIdeasView({
       setError(err.message || "Régénération impossible");
     } finally {
       setRegenerating(false);
-    }
-  }
-
-  async function addSeed() {
-    const text = draft.trim();
-    if (text.length < 3) return;
-    // Le commentaire d'orientation n'a de sens que pour un lien d'annonce.
-    const isLinkDraft = /^https?:\/\/\S+$/i.test(text);
-    const comment = isLinkDraft ? draftComment.trim() : "";
-    setAdding(true);
-    setError("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify(comment ? { text, comment } : { text }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Ajout impossible");
-      setSeeds((prev) => [...prev, data]);
-      setDraft("");
-      setDraftComment("");
-    } catch (err: any) {
-      setError(err.message || "Ajout impossible");
-    } finally {
-      setAdding(false);
-    }
-  }
-
-  async function deleteSeed(id: string) {
-    setSeeds((prev) => prev.filter((s) => s.id !== id));
-    try {
-      await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, { method: "DELETE", headers: await authHeaders() });
-    } catch { void loadAll(); }
-  }
-
-  // Glisser-déposer : réordonne le réservoir. Le cron (idée du jour / posts hebdo)
-  // pioche ensuite dans ce nouvel ordre.
-  function reorderTo(targetId: string) {
-    if (!dragId || dragId === targetId) return;
-    setSeeds((prev) => {
-      const from = prev.findIndex((s) => s.id === dragId);
-      const to = prev.findIndex((s) => s.id === targetId);
-      if (from < 0 || to < 0 || from === to) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
-  }
-
-  async function persistSeedOrder() {
-    setDragId(null);
-    try {
-      const ordered_ids = seeds.map((s) => s.id);
-      await fetch(`${DIRECT_API_URL}/me/idea-seeds/reorder`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ ordered_ids }),
-      });
-    } catch { void loadAll(); }
-  }
-
-  // Édition d'une idée du réservoir (texte + commentaire d'orientation).
-  function startSeedEdit(s: IdeaSeed) {
-    setEditingSeedId(s.id);
-    setEditSeedText(s.text || "");
-    setEditSeedComment(s.comment || "");
-    setError("");
-  }
-
-  async function saveSeedEdit(id: string) {
-    const text = editSeedText.trim();
-    if (text.length < 3) return;
-    const isLinkEdit = /^https?:\/\/\S+$/i.test(text);
-    // Le commentaire d'orientation n'a de sens que pour un lien d'annonce ;
-    // "" = effacer côté backend.
-    const comment = isLinkEdit ? editSeedComment.trim() : "";
-    setSavingSeedEdit(true);
-    setError("");
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ text, comment }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Modification impossible");
-      setSeeds((prev) => prev.map((s) => (s.id === id ? data : s)));
-      setEditingSeedId(null);
-    } catch (err: any) {
-      setError(err.message || "Modification impossible");
-    } finally {
-      setSavingSeedEdit(false);
     }
   }
 
@@ -5051,123 +5249,7 @@ function DailyIdeasView({
       </>
       )}
 
-      <div className="card daily-reservoir" style={{ marginTop: reservoirOnly ? 0 : 24 }}>
-        <div className="daily-reservoir-head">
-          <div>
-            <h3 className="daily-subtitle" style={{ margin: 0 }}><Lightbulb size={16} /> Mon réservoir d'idées</h3>
-            <p className="section-desc" style={{ margin: "4px 0 0" }}>Ajoute tes idées : l'idée du jour piochera dedans en priorité.</p>
-          </div>
-        </div>
-
-        {reservoirOnly && error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
-
-        <div className="daily-add">
-          <input
-            type="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
-            placeholder="Une idée de post…"
-            maxLength={2000}
-          />
-          <button className="primary-button" onClick={addSeed} disabled={adding || draft.trim().length < 3}>
-            {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter
-          </button>
-        </div>
-        {/* Champ d'orientation : uniquement quand l'idée saisie est un lien d'annonce. */}
-        {/^https?:\/\/\S+$/i.test(draft.trim()) && (
-          <input
-            type="text"
-            value={draftComment}
-            onChange={(e) => setDraftComment(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addSeed(); } }}
-            placeholder="Commentaire pour orienter le post (optionnel) — ex. « insiste sur la vue mer »"
-            maxLength={500}
-            style={{ marginTop: 8, width: "100%", boxSizing: "border-box" }}
-          />
-        )}
-
-        {seeds.length === 0 ? (
-          <p style={{ color: "var(--muted)", margin: "12px 0 0", fontSize: 13 }}>Réservoir vide — l'idée du jour s'appuiera sur ton seul benchmark.</p>
-        ) : (
-          <ul className="daily-seed-list">
-            {seeds.map((s) => {
-              const isLink = /^https?:\/\/\S+$/i.test((s.text || "").trim());
-              const isEditing = editingSeedId === s.id;
-              const editIsLink = /^https?:\/\/\S+$/i.test(editSeedText.trim());
-              return (
-              <li
-                key={s.id}
-                className={`${s.used_at ? "used" : ""}${dragId === s.id ? " dragging" : ""}`}
-                // Drag armé uniquement depuis la poignée : le texte reste sélectionnable.
-                draggable={dragArmedId === s.id && !isEditing}
-                onDragStart={() => setDragId(s.id)}
-                onDragOver={(e) => { e.preventDefault(); reorderTo(s.id); }}
-                onDrop={(e) => { e.preventDefault(); setDragArmedId(null); void persistSeedOrder(); }}
-                onDragEnd={() => { setDragArmedId(null); void persistSeedOrder(); }}
-              >
-                <span
-                  className="daily-seed-grip"
-                  title="Glisser pour réordonner"
-                  aria-hidden
-                  onMouseDown={() => setDragArmedId(s.id)}
-                  onMouseUp={() => setDragArmedId(null)}
-                  onTouchStart={() => setDragArmedId(s.id)}
-                >
-                  <GripVertical size={14} />
-                </span>
-                {isEditing ? (
-                  <span className="daily-seed-text" style={{ display: "grid", gap: 6 }}>
-                    <input
-                      type="text"
-                      value={editSeedText}
-                      autoFocus
-                      onChange={(e) => setEditSeedText(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveSeedEdit(s.id); } if (e.key === "Escape") setEditingSeedId(null); }}
-                      maxLength={2000}
-                      style={{ width: "100%", boxSizing: "border-box" }}
-                    />
-                    {editIsLink && (
-                      <input
-                        type="text"
-                        value={editSeedComment}
-                        onChange={(e) => setEditSeedComment(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveSeedEdit(s.id); } if (e.key === "Escape") setEditingSeedId(null); }}
-                        placeholder="Commentaire pour orienter le post (optionnel)"
-                        maxLength={500}
-                        style={{ width: "100%", boxSizing: "border-box" }}
-                      />
-                    )}
-                    <span style={{ display: "flex", gap: 6 }}>
-                      <button
-                        className="primary-button"
-                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
-                        disabled={savingSeedEdit || editSeedText.trim().length < 3}
-                        onClick={() => void saveSeedEdit(s.id)}
-                      >
-                        {savingSeedEdit ? <Loader2 size={12} className="spinning" /> : null} Sauvegarder
-                      </button>
-                      <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} onClick={() => setEditingSeedId(null)}>Annuler</button>
-                    </span>
-                  </span>
-                ) : (
-                  <span className="daily-seed-text">
-                    {isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}
-                    {s.comment ? <em style={{ display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 }}>↳ orientation : {s.comment}</em> : null}
-                  </span>
-                )}
-                {!isEditing && isLink && !s.used_at ? <span className="daily-seed-tag">annonce</span> : null}
-                {!isEditing && s.used_at ? <span className="daily-seed-tag"><CheckCircle2 size={12} /> utilisée</span> : null}
-                {!isEditing && (
-                  <button className="icon-button" title="Modifier" onClick={() => startSeedEdit(s)}><Pencil size={14} /></button>
-                )}
-                <button className="icon-button" title="Supprimer" onClick={() => deleteSeed(s.id)}><Trash2 size={14} /></button>
-              </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
+      <IdeaReservoir isAuthed={isAuthed} />
     </div>
   );
 }
