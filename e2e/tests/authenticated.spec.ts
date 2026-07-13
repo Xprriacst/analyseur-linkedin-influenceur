@@ -60,52 +60,76 @@ test("Contenu › Ma bibliothèque : veille des influenceurs (tiroir compact) (A
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("onglet Mon profil : contexte éditorial direct (plus de sous-onglet Tableau de bord, ALE-224)", async ({ page }) => {
+test("Mon profil : contexte éditorial sur son propre onglet, champs visibles d'emblée", async ({ page }) => {
   await gotoTab(page, "Mon profil");
-  // ALE-224 : le sous-onglet « Tableau de bord » a été retiré → le contexte éditorial
-  // s'affiche directement, sans onglet intermédiaire.
+  // La page est désormais découpée en 3 onglets (contexte / comptes reliés /
+  // ce qui tourne tout seul) au lieu d'empiler les trois sur une même colonne.
+  await expect(page.locator(".tab", { hasText: "Mon profil" })).toBeVisible();
+  await expect(page.locator(".tab", { hasText: "Connexions" })).toBeVisible();
+  await expect(page.locator(".tab", { hasText: "Automatisations" })).toBeVisible();
   await expect(page.getByRole("heading", { name: /Contexte éditorial/i })).toBeVisible();
-  await expect(page.locator(".tab", { hasText: "Tableau de bord" })).toHaveCount(0);
-  // Le bouton de sauvegarde manuelle reste présent…
   await expect(page.getByRole("button", { name: /Sauvegarder/i })).toBeVisible();
-  // …et la barre de pré-remplissage IA (qui auto-sauve désormais) aussi.
   // Timeout généreux : ce bloc n'apparaît qu'une fois `/me/profile` chargé, et
   // le backend dev free-tier peut mettre 30-50 s au 1er appel (cold-start).
   await expect(page.getByPlaceholder(/Description, URL LinkedIn ou site web/i)).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole("button", { name: /Pré-remplir/i })).toBeVisible();
+  // Le tiroir « Détails du profil éditorial » a disparu : les champs ne se méritent
+  // plus d'un clic, l'onglet leur est dédié.
+  await expect(page.getByLabel("Nom public")).toBeVisible();
+  await expect(page.getByText(/Détails du profil éditorial/i)).toHaveCount(0);
 });
 
-test("onglet Mon profil : 2ᵉ switch « idée du jour » présent et synchronisé (ALE-224)", async ({ page }) => {
+test("Mon profil › Connexions : les 5 comptes en lignes, réglages repliés", async ({ page }) => {
   await gotoTab(page, "Mon profil");
-  // ALE-286 : c'est désormais le SEUL interrupteur côté agence (le sous-onglet
-  // « Idée du jour » n'existe plus que dans la vue client), sans bandeau d'erreur.
-  await expect(page.getByText(/Recevoir une idée chaque matin/i)).toBeVisible();
+  await page.locator(".tab", { hasText: "Connexions" }).click();
+
+  // Scopé à la zone principale : « LinkedIn » est aussi le nom du réseau dans la
+  // barre latérale, et « Slack » celui d'un bouton ailleurs.
+  const main = page.getByRole("main");
+  for (const name of ["LinkedIn", "Prospection LinkedIn", "Slack", "X (Twitter)", "Instagram (ManyChat)"]) {
+    await expect(main.getByText(name, { exact: true })).toBeVisible({ timeout: 60_000 });
+  }
+  // Ce qui faisait la densité (clé ManyChat, plafonds d'envoi…) ne doit PAS être
+  // rendu tant qu'on n'a pas ouvert la ligne concernée.
+  await expect(page.getByPlaceholder(/Clé API ManyChat/i)).toHaveCount(0);
+
+  // …et doit apparaître au clic sur la ligne.
+  await page.locator("[role=button][aria-expanded]").filter({ hasText: "Instagram (ManyChat)" }).click();
+  await expect(page.getByPlaceholder(/Clé API ManyChat/i)).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("onglet Mon profil : carte d'abonnement rendue (ALE-274)", async ({ page }) => {
+test("Mon profil › Automatisations : les 3 choses qui tournent sans toi", async ({ page }) => {
   await gotoTab(page, "Mon profil");
-  // La carte d'abonnement ouvre la page de paiement Stripe (hébergée) — on ne la
-  // déclenche pas ici : lecture seule, aucun paiement, aucun coût.
-  await expect(page.getByText(/^Abonnement$/)).toBeVisible({ timeout: 60_000 });
-  // Trois états possibles selon l'environnement et le compte de test : facturation
-  // non configurée (clés Stripe absentes), abonnement actif, ou bouton « S'abonner ».
-  const notConfigured = page.locator(".status-pill", { hasText: /Non configuré/i });
+  await page.locator(".tab", { hasText: "Automatisations" }).click();
+
+  await expect(page.getByText(/Une idée de post chaque matin/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/Les posts de ta semaine/i)).toBeVisible();
+  await expect(page.getByText(/Réponses aux messages Instagram/i)).toBeVisible();
+
+  // La FAQ de l'agent (gros champ de texte, ex-carte pleine page) n'est chargée
+  // et rendue qu'une fois sa ligne dépliée.
+  await expect(page.locator("textarea")).toHaveCount(0);
+  await page.locator("[role=button][aria-expanded]").filter({ hasText: "Réponses aux messages Instagram" }).click();
+  await expect(page.locator("textarea")).toBeVisible();
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
+test("l'abonnement a rejoint le solde de crédits, dans la barre latérale", async ({ page }) => {
+  await gotoTab(page, "Mon profil");
+  // La carte « Abonnement » a quitté le profil (ce n'est pas un réglage) : elle vit
+  // sous le solde, là où on vient regarder ce qu'il reste. On ne clique pas :
+  // ça ouvrirait une page de paiement Stripe.
+  await expect(page.getByText(/^Abonnement$/)).toHaveCount(0);
+
   const subscribeBtn = page.getByRole("button", { name: /S'abonner/i });
-  const manageBtn = page.getByRole("button", { name: /Gérer mon abonnement/i });
-  await expect(notConfigured.or(subscribeBtn).or(manageBtn).first()).toBeVisible();
+  const manageBtn = page.getByRole("button", { name: /Abonnement .*· Gérer/i });
+  // Sur un environnement sans clés Stripe, la facturation est désactivée et rien
+  // ne s'affiche — les trois cas sont légitimes.
+  const billingHidden = (await subscribeBtn.count()) === 0 && (await manageBtn.count()) === 0;
+  if (!billingHidden) {
+    await expect(subscribeBtn.or(manageBtn).first()).toBeVisible();
+  }
   await expect(page.locator(".error")).toHaveCount(0);
-});
-
-test("onglet Mon profil : encart de publication X (Twitter) rendu", async ({ page }) => {
-  await gotoTab(page, "Mon profil");
-  // L'encart de cross-post X est présent (entre LinkedIn et Slack).
-  await expect(page.getByText(/Publier sur X \(Twitter\)/i)).toBeVisible();
-  // Selon l'état de connexion du compte de test : soit le bouton « Connecter X »,
-  // soit le pill « Connecté ». L'un des deux doit être visible, sans bandeau d'erreur.
-  const connectBtn = page.getByRole("button", { name: /Connecter X/i });
-  const connectedPill = page.locator(".status-pill.ok", { hasText: /Connecté/i });
-  await expect(connectBtn.or(connectedPill).first()).toBeVisible();
 });
 
 // ALE-223 : le sous-onglet « Mes contenus » a été fusionné dans « Ma bibliothèque »
