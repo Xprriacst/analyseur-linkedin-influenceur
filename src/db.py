@@ -1527,8 +1527,14 @@ def reconcile_stale_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
 # fois terminé. L'état vit en base : l'utilisateur peut quitter la page et
 # revenir, le résultat est conservé.
 
+# Toute colonne absente de cette projection est lue `None` par le thread de
+# génération, SANS erreur : c'est ainsi que `template_id` a été ignoré pendant
+# toute la vie d'ALE-216 (le template choisi n'atteignait jamais le modèle).
+# Ajouter une colonne au job ⇒ l'ajouter ici.
 _GENERATION_JOB_COLS = (
-    "id,status,topic,editorial_role,web_search,count,template_id,result,error,created_at,updated_at"
+    "id,status,topic,editorial_role,web_search,count,template_id,"
+    "inspiration_text,inspiration_author,inspiration_url,"
+    "result,error,created_at,updated_at"
 )
 
 
@@ -1539,6 +1545,7 @@ def create_generation_job(
     web_search: bool,
     count: int,
     template_id: str | None = None,
+    inspiration: dict | None = None,
 ) -> dict | None:
     """Crée un job de génération `queued`. Retourne la ligne créée."""
     user = get_user(access_token)
@@ -1555,6 +1562,10 @@ def create_generation_job(
     }
     if template_id:
         row["template_id"] = template_id
+    if inspiration and (inspiration.get("text") or "").strip():
+        row["inspiration_text"] = inspiration["text"].strip()[:6000]
+        row["inspiration_author"] = (inspiration.get("author") or "").strip()[:200] or None
+        row["inspiration_url"] = (inspiration.get("url") or "").strip()[:2000] or None
     resp = (
         db.table("generation_jobs")
         .insert(row)
