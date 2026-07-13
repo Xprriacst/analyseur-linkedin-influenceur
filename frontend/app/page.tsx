@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Clock3,
   Copy,
+  CreditCard,
   Download,
   Eye,
   FileText,
@@ -2128,6 +2129,112 @@ function linkedinAccountDetail(status?: LinkedInStatus | null): string | null {
 }
 
 /** Statut de connexion LinkedIn (via Zernio) + lancement du flux OAuth. */
+// ─── ALE-274 : abonnement Stripe (49 €/mois = 1000 crédits) ───
+type BillingPlan = {
+  amount: number | null;
+  currency: string | null;
+  interval: string | null;
+  credits: number;
+};
+
+type BillingStatus = {
+  enabled: boolean;          // clés Stripe posées côté serveur
+  subscribed: boolean;       // abonnement en cours (actif / essai / impayé en cours de relance)
+  status: string | null;
+  cancel_at_period_end: boolean;
+  current_period_end: string | null;
+  has_customer: boolean;
+  plan: BillingPlan | null;
+};
+
+const BILLING_INTERVALS: Record<string, { price: string; period: string }> = {
+  month: { price: "par mois", period: "chaque mois" },
+  year: { price: "par an", period: "chaque année" },
+  week: { price: "par semaine", period: "chaque semaine" },
+};
+
+/** « 49 € par mois » — le montant vient de Stripe, jamais codé en dur ici. */
+function planPriceLabel(plan: BillingPlan | null | undefined): string {
+  if (!plan || plan.amount === null) return "Abonnement";
+  const amount = new Intl.NumberFormat("fr-FR", {
+    style: "currency",
+    currency: (plan.currency || "eur").toUpperCase(),
+    maximumFractionDigits: plan.amount % 1 === 0 ? 0 : 2,
+  }).format(plan.amount);
+  const interval = BILLING_INTERVALS[plan.interval || ""]?.price;
+  return interval ? `${amount} ${interval}` : amount;
+}
+
+function planPeriodLabel(plan: BillingPlan | null | undefined): string {
+  return BILLING_INTERVALS[plan?.interval || ""]?.period || "à chaque période";
+}
+
+function formatBillingDate(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? iso
+    : date.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+}
+
+/** Abonnement Stripe : lecture de l'état + redirection vers Checkout / Customer Portal. */
+function useBilling(isAuthed: boolean) {
+  const [status, setStatus] = useState<BillingStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) { setStatus(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/billing`, { headers: await authHeaders() });
+        if (!res.ok) return;
+        setStatus(await res.json());
+      } catch { /* ignore */ }
+    })();
+  }, [isAuthed]);
+
+  /** Ouvre la page de paiement hébergée par Stripe. Le crédit arrive par webhook. */
+  async function subscribe() {
+    setError("");
+    setBusy(true);
+    try {
+      const base = `${window.location.origin}${window.location.pathname}`;
+      const res = await fetch(`${DIRECT_API_URL}/me/billing/checkout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ success_url: `${base}?billing=success`, cancel_url: `${base}?billing=cancelled` }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Paiement indisponible");
+      window.location.href = data.url;
+    } catch (err: any) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  /** Customer Portal Stripe : carte, factures, résiliation. */
+  async function manage() {
+    setError("");
+    setBusy(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/billing/portal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ return_url: `${window.location.origin}${window.location.pathname}` }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Gestion de l'abonnement indisponible");
+      window.location.href = data.url;
+    } catch (err: any) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  return { status, busy, error, subscribe, manage };
+}
+
 function useLinkedIn(isAuthed: boolean) {
   const [status, setStatus] = useState<LinkedInStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -7036,6 +7143,7 @@ function ProfileView({
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
+  const billing = useBilling(isAuthed);
   const [weeklyEnabled, setWeeklyEnabled] = useState(false);
   const [weeklySchedule, setWeeklySchedule] = useState<{day_of_week: number; hour: number; timezone: string}[]>([]);
   const [weeklySaving, setWeeklySaving] = useState(false);
@@ -7355,6 +7463,48 @@ function ProfileView({
           </button>
         </div>
       </div>
+
+      <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <CreditCard size={20} color="#635bff" />
+          <div>
+            <strong>Abonnement</strong>
+            <p className="section-desc" style={{ margin: 0 }}>
+              {!billing.status?.enabled
+                ? "Facturation non configurée sur cet environnement."
+                : billing.status.subscribed
+                ? `Ton abonnement te recharge à ${billing.status.plan?.credits ?? 1000} crédits ${planPeriodLabel(billing.status.plan)}. Les crédits non utilisés ne sont pas reportés.`
+                : `${planPriceLabel(billing.status.plan)} — ${billing.status.plan?.credits ?? 1000} crédits rechargés ${planPeriodLabel(billing.status.plan)}. Paiement et résiliation gérés par Stripe.`}
+            </p>
+            {billing.status?.subscribed && billing.status.current_period_end && (
+              <p className="section-desc" style={{ margin: "4px 0 0", fontSize: 12 }}>
+                {billing.status.cancel_at_period_end
+                  ? `Résiliation programmée : accès jusqu'au ${formatBillingDate(billing.status.current_period_end)}.`
+                  : `Prochain rechargement le ${formatBillingDate(billing.status.current_period_end)}.`}
+              </p>
+            )}
+          </div>
+        </div>
+        {!billing.status?.enabled ? (
+          <span className="status-pill">Non configuré</span>
+        ) : billing.status.subscribed ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className={`status-pill ${billing.status.cancel_at_period_end ? "" : "ok"}`}>
+              {billing.status.cancel_at_period_end ? "Se termine bientôt" : <><CheckCircle2 size={14} /> Actif</>}
+            </span>
+            <button className="secondary-button" onClick={billing.manage} disabled={billing.busy} style={{ fontSize: 12 }}>
+              {billing.busy ? <Loader2 size={12} className="spinning" /> : null}
+              Gérer mon abonnement
+            </button>
+          </div>
+        ) : (
+          <button className="primary-button" onClick={billing.subscribe} disabled={billing.busy}>
+            {billing.busy ? <Loader2 size={14} className="spinning" /> : <CreditCard size={14} />}
+            {billing.busy ? "Redirection…" : "S'abonner"}
+          </button>
+        )}
+      </section>
+      {billing.error ? <div className="error" style={{ marginBottom: 12 }}>{billing.error}</div> : null}
 
       <section className="card" style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -10826,6 +10976,34 @@ export default function Home() {
       const qs = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
       setView("profile");
+    })();
+  }, [isAuthed]);
+
+  // ALE-274 — retour de la page de paiement Stripe. Le crédit et l'état
+  // d'abonnement sont posés par le webhook (source de vérité) : ce retour ne fait
+  // que resynchroniser l'affichage. Le webhook peut arriver une poignée de
+  // secondes après la redirection, d'où la relecture du solde en léger différé.
+  useEffect(() => {
+    if (!isAuthed) return;
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get("billing");
+    if (outcome !== "success" && outcome !== "cancelled") return;
+    params.delete("billing");
+    const qs = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+    setView("profile");
+    if (outcome !== "success") return;
+    (async () => {
+      try {
+        await fetch(`${DIRECT_API_URL}/me/billing/refresh`, { method: "POST", headers: await authHeaders() });
+      } catch { /* ignore */ }
+      for (const delay of [0, 3000]) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        try {
+          const res = await fetch(`${DIRECT_API_URL}/me/credits`, { headers: await authHeaders() });
+          if (res.ok) emitCredits((await res.json()).balance);
+        } catch { /* ignore */ }
+      }
     })();
   }, [isAuthed]);
 

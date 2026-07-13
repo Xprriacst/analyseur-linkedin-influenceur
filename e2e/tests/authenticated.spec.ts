@@ -83,6 +83,20 @@ test("onglet Mon profil : 2ᵉ switch « idée du jour » présent et synchronis
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
+test("onglet Mon profil : carte d'abonnement rendue (ALE-274)", async ({ page }) => {
+  await gotoTab(page, "Mon profil");
+  // La carte d'abonnement ouvre la page de paiement Stripe (hébergée) — on ne la
+  // déclenche pas ici : lecture seule, aucun paiement, aucun coût.
+  await expect(page.getByText(/^Abonnement$/)).toBeVisible({ timeout: 60_000 });
+  // Trois états possibles selon l'environnement et le compte de test : facturation
+  // non configurée (clés Stripe absentes), abonnement actif, ou bouton « S'abonner ».
+  const notConfigured = page.locator(".status-pill", { hasText: /Non configuré/i });
+  const subscribeBtn = page.getByRole("button", { name: /S'abonner/i });
+  const manageBtn = page.getByRole("button", { name: /Gérer mon abonnement/i });
+  await expect(notConfigured.or(subscribeBtn).or(manageBtn).first()).toBeVisible();
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
 test("onglet Mon profil : encart de publication X (Twitter) rendu", async ({ page }) => {
   await gotoTab(page, "Mon profil");
   // L'encart de cross-post X est présent (entre LinkedIn et Slack).
