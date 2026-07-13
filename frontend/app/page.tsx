@@ -10979,6 +10979,62 @@ export default function Home() {
     })();
   }, [isAuthed]);
 
+  // ALE-274 — arrivée depuis la page de vente (/offre → `?subscribe=1`).
+  //
+  // On ne peut PAS envoyer le prospect sur un lien de paiement Stripe autonome :
+  // les crédits sont attribués par le webhook, qui doit savoir à quel compte
+  // rattacher le paiement. Le passage par un compte est donc obligatoire.
+  //
+  // L'intention est mémorisée en localStorage (et pas en sessionStorage) pour
+  // survivre au cas « confirmation d'e-mail activée » : le lien de confirmation
+  // ouvre un autre onglet, et on veut quand même reprendre le paiement là où on
+  // l'avait laissé. Purgée au bout d'une heure pour ne pas rediriger quelqu'un
+  // vers un paiement qu'il ne demande plus.
+  const SUBSCRIBE_INTENT_KEY = "cibl_subscribe_intent";
+  const SUBSCRIBE_INTENT_TTL_MS = 60 * 60 * 1000;
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("subscribe") !== "1") return;
+    params.delete("subscribe");
+    const qs = params.toString();
+    window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+    try { localStorage.setItem(SUBSCRIBE_INTENT_KEY, String(Date.now())); } catch { /* ignore */ }
+    if (!isAuthed) {
+      requireAuth("Crée ton compte, puis tu es redirigé vers le paiement sécurisé Stripe.", "signup");
+    }
+  }, [isAuthed]);
+
+  // Intention d'abonnement en attente + utilisateur désormais connecté → on
+  // enchaîne sur le paiement. Couvre les deux cas : session immédiate après
+  // inscription, ou retour après confirmation d'e-mail.
+  useEffect(() => {
+    if (!isAuthed) return;
+    let stamp: string | null = null;
+    try { stamp = localStorage.getItem(SUBSCRIBE_INTENT_KEY); } catch { /* ignore */ }
+    if (!stamp) return;
+    try { localStorage.removeItem(SUBSCRIBE_INTENT_KEY); } catch { /* ignore */ }
+    if (Date.now() - Number(stamp) > SUBSCRIBE_INTENT_TTL_MS) return;
+    (async () => {
+      try {
+        const base = `${window.location.origin}${window.location.pathname}`;
+        const res = await fetch(`${DIRECT_API_URL}/me/billing/checkout`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ success_url: `${base}?billing=success`, cancel_url: `${base}?billing=cancelled` }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Paiement indisponible");
+        window.location.href = data.url;
+      } catch {
+        // Échec (facturation non configurée, réseau…) : on n'affiche pas d'erreur
+        // brutale — l'utilisateur atterrit sur son profil, où la carte
+        // « Abonnement » lui permet de réessayer.
+        setView("profile");
+      }
+    })();
+  }, [isAuthed]);
+
   // ALE-274 — retour de la page de paiement Stripe. Le crédit et l'état
   // d'abonnement sont posés par le webhook (source de vérité) : ce retour ne fait
   // que resynchroniser l'affichage. Le webhook peut arriver une poignée de

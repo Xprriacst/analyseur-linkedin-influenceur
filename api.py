@@ -1525,6 +1525,19 @@ def _ensure_stripe_customer(token: str) -> tuple[str, str]:
     return user["id"], customer_id
 
 
+@app.get("/billing/plan")
+def billing_plan() -> dict[str, Any]:
+    """Offre publique (page de vente) — prix et crédits lus depuis Stripe.
+
+    Sans authentification : ne renvoie que ce qui est déjà public (le montant
+    affiché sur la page de paiement). Évite de figer « 49 € » en dur dans la page
+    de vente et de se retrouver avec un prix qui ment si le tarif change.
+    """
+    if not stripe_billing.enabled():
+        return {"enabled": False, "plan": None}
+    return {"enabled": True, "plan": stripe_billing.plan_summary()}
+
+
 @app.get("/me/billing")
 def me_billing(token: str = Depends(require_token)) -> dict[str, Any]:
     """État d'abonnement de l'utilisateur (pour la carte « Abonnement » du profil)."""
