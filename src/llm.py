@@ -1160,6 +1160,188 @@ def _auto_role_mix() -> list[str]:
     return roles
 
 
+# ── Parcours guidé de génération (ALE-286) ──
+#
+# Trois petits appels qui préparent la génération sans jamais la remplacer :
+# l'angle déduit d'un post d'inspiration, le rôle éditorial recommandé, et le
+# choix des templates. Tous sont *best-effort* : chacun a un repli qui laisse le
+# parcours avancer. Un service d'aide à la décision qui tombe ne doit pas
+# empêcher le client d'écrire son post.
+
+
+def suggest_angle_from_post(
+    post_text: str,
+    user_context: dict[str, Any] | None = None,
+) -> str:
+    """Déduit l'angle à prendre pour un post inspiré d'un post repéré ailleurs.
+
+    Rend une phrase d'intention, que le client relit et corrige avant de lancer
+    la génération. Ce n'est pas un résumé du post source : c'est sa transposition
+    au métier du client (le post source, lui, part en référence à la génération).
+    """
+    system = (
+        "Tu es un stratège contenu LinkedIn. À partir d'un post qui a plu au client, "
+        "tu formules l'angle qu'IL devrait prendre sur SON métier — jamais un résumé du post source. "
+        + _date_directive()
+        + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    user = (
+        "Contexte client :\n"
+        + _format_user_context(user_context)
+        + f"\n\nPost qui a inspiré le client :\n{str(post_text)[:2500]}"
+        + """
+
+Formule l'angle du post que le client devrait écrire, en une phrase de 10-15 mots max.
+Règles :
+- Transpose au métier, au marché et à l'audience du client — ne recopie pas le sujet du post source
+- Dis quel angle prendre, pas un thème vague ("parler d'IA" est inutile)
+- Français, pas de markdown
+
+Schéma JSON attendu :
+{"angle": "l'angle en une phrase"}"""
+    )
+    data = _call(system, user, max_tokens=512, temperature=0.7)
+    return str(data.get("angle") or "").strip()
+
+
+def recommend_editorial_role(
+    idea: str,
+    user_context: dict[str, Any] | None = None,
+) -> dict:
+    """Recommande UN rôle éditorial pour une idée, avec sa justification.
+
+    Le client garde la main (les 7 rôles restent proposés) : c'est une
+    pré-sélection argumentée, pas une décision. Repli sur "performance" si le
+    modèle rend un rôle inconnu — un rôle inventé casserait la génération.
+    """
+    roles_block = "\n".join(
+        f'- "{key}" ({spec["label"]}) : {spec["guidance"].split(".")[0]}.'
+        for key, spec in ROLE_SPECS.items()
+    )
+    system = (
+        "Tu es un stratège contenu LinkedIn. Tu choisis le rôle éditorial le plus adapté à une idée de post. "
+        + _date_directive()
+        + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    user = (
+        "Contexte client :\n"
+        + _format_user_context(user_context)
+        + f"\n\nIdée de post retenue par le client :\n« {str(idea)[:1000]} »"
+        + f"\n\nRôles éditoriaux disponibles :\n{roles_block}"
+        + """
+
+Choisis LE rôle le plus adapté à cette idée et à ce client, et justifie-le.
+Règles :
+- Le code du rôle doit être exactement l'un de ceux listés ci-dessus
+- La justification tient en une phrase, adressée au client (tutoiement), sans jargon
+- Français, pas de markdown
+
+Schéma JSON attendu :
+{"editorial_role": "le code exact du rôle", "reason": "pourquoi ce rôle pour cette idée, en une phrase"}"""
+    )
+    data = _call(system, user, max_tokens=512, temperature=0.3)
+    role = str(data.get("editorial_role") or "").strip()
+    if role not in ROLE_SPECS:
+        role = "performance"
+    return {"editorial_role": role, "reason": str(data.get("reason") or "").strip()}
+
+
+def pick_templates_for_idea(
+    idea: str,
+    editorial_role: str,
+    templates: list[dict],
+    count: int = 3,
+) -> list[str]:
+    """Choisit jusqu'à `count` templates DISTINCTS de la bibliothèque pour une idée.
+
+    Rend une liste d'identifiants de templates. Tout identifiant inventé par le
+    modèle est écarté (il ferait échouer l'insertion du job sur la clé
+    étrangère). Repli : les `count` premiers templates de la bibliothèque —
+    l'appelant complète en structure libre s'il en manque.
+    """
+    usable = [t for t in templates if t.get("id")]
+    if len(usable) <= count:
+        return [str(t["id"]) for t in usable]
+
+    catalogue = "\n".join(
+        f'- id={t["id"]} | {str(t.get("structure_label") or "sans nom")} | '
+        f'structure: {str(t.get("structure_text") or "—")[:300]} | '
+        f'extrait: {str(t.get("post_text") or "—")[:200]}'
+        for t in usable[:40]
+    )
+    role_label = ROLE_SPECS.get(editorial_role, {}).get("label", editorial_role)
+    system = (
+        "Tu es un stratège contenu LinkedIn. Tu choisis, dans la bibliothèque de structures d'un client, "
+        "celles qui serviront le mieux une idée de post donnée. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    user = (
+        f"Idée de post : « {str(idea)[:800]} »\n"
+        f"Rôle éditorial retenu : {role_label}\n\n"
+        f"Bibliothèque de structures du client :\n{catalogue}\n\n"
+        f"""Choisis exactement {count} structures DIFFÉRENTES, celles qui serviront le mieux cette idée avec ce rôle.
+Règles :
+- Reprends les identifiants EXACTEMENT tels qu'ils apparaissent ci-dessus, sans en inventer
+- Privilégie la variété : trois angles de traitement distincts, pas trois variations de la même forme
+- Classe-les de la plus pertinente à la moins pertinente
+
+Schéma JSON attendu :
+{{"template_ids": ["id1", "id2", "id3"]}}"""
+    )
+    try:
+        data = _call(system, user, max_tokens=512, temperature=0.4)
+    except Exception:  # noqa: BLE001 — l'aide au choix ne doit jamais bloquer la génération
+        return [str(t["id"]) for t in usable[:count]]
+
+    known = {str(t["id"]) for t in usable}
+    picked: list[str] = []
+    for raw in data.get("template_ids") or []:
+        tid = str(raw).strip()
+        if tid in known and tid not in picked:
+            picked.append(tid)
+        if len(picked) == count:
+            break
+    # Le modèle a pu en rendre moins de `count` (ou que des inconnus) : on complète
+    # dans l'ordre de la bibliothèque plutôt que de rendre une liste trop courte.
+    for t in usable:
+        if len(picked) == count:
+            break
+        tid = str(t["id"])
+        if tid not in picked:
+            picked.append(tid)
+    return picked
+
+
+WIZARD_STRUCTURE_CHOICES = 3
+
+
+def suggest_structures(
+    idea: str,
+    editorial_role: str,
+    library: list[dict],
+    count: int = WIZARD_STRUCTURE_CHOICES,
+) -> list[dict]:
+    """Propose au client les structures les plus adaptées à son idée, la meilleure en tête.
+
+    Rend les entrées de bibliothèque elles-mêmes (le client doit pouvoir LIRE ce
+    qu'il choisit), pas des identifiants nus. Liste vide = bibliothèque vide ou
+    sans contenu exploitable : l'appelant enchaîne alors en structure libre plutôt
+    que de bloquer un compte neuf sur une étape sans option.
+
+    Vit ici, et pas dans le corps de l'endpoint, pour rester vérifiable sans base
+    ni serveur web (même partage que `outreach_engine` / `outreach_sender`).
+    """
+    usable = [
+        t for t in library
+        if (t.get("structure_text") or "").strip() or (t.get("post_text") or "").strip()
+    ]
+    if not usable:
+        return []
+    by_id = {str(t["id"]): t for t in usable if t.get("id")}
+    ordered = pick_templates_for_idea(idea, editorial_role, usable, count=count)
+    return [by_id[tid] for tid in ordered if tid in by_id]
+
+
 def generate_posts(
     topic: str | None,
     top_posts_examples: list[dict],

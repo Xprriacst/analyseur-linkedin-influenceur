@@ -77,8 +77,8 @@ test("onglet Mon profil : contexte éditorial direct (plus de sous-onglet Tablea
 
 test("onglet Mon profil : 2ᵉ switch « idée du jour » présent et synchronisé (ALE-224)", async ({ page }) => {
   await gotoTab(page, "Mon profil");
-  // Le switch d'opt-in « idée du jour » est aussi accessible depuis le profil
-  // (en plus de Contenu › Idée du jour), sans bandeau d'erreur.
+  // ALE-286 : c'est désormais le SEUL interrupteur côté agence (le sous-onglet
+  // « Idée du jour » n'existe plus que dans la vue client), sans bandeau d'erreur.
   await expect(page.getByText(/Recevoir une idée chaque matin/i)).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
@@ -111,15 +111,37 @@ test("onglet Mon profil : encart de publication X (Twitter) rendu", async ({ pag
 // ALE-223 : le sous-onglet « Mes contenus » a été fusionné dans « Ma bibliothèque »
 // (tiroir « Mes contenus sauvegardés ») — couvert par le test « onglet fusionné à tiroirs ».
 
-test("Contenu › Générateur de posts : formulaires rendus", async ({ page }) => {
+test("Contenu › Générateur de posts : bouton unique + file d'attente (ALE-286)", async ({ page }) => {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Générateur de posts");
-  // Sections idées + posts fusionnées en un seul bloc « Générer des idées de posts » (idée = post).
-  await expect(page.getByRole("heading", { name: /Générer des idées de posts/i })).toBeVisible();
-  await expect(page.getByPlaceholder(/Sujet du post/i)).toBeVisible();
-  // ALE-222 : le menu Template est toujours visible pour un compte connecté
-  // (texte d'aide si la bibliothèque est vide).
-  await expect(page.getByText(/Template :/)).toBeVisible();
+  // ALE-286 : l'ancien formulaire (sujet + rôle + template + nb de variants) est
+  // passé dans le parcours guidé — la page ne porte plus qu'un bouton et la file.
+  await expect(page.getByRole("button", { name: /Générer un post/i })).toBeVisible();
+  await expect(page.getByPlaceholder(/Sujet du post/i)).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: /Mes posts/i })).toBeVisible();
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
+test("Contenu › Générateur : le parcours propose les 3 points de départ (ALE-286)", async ({ page }) => {
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Générateur de posts");
+  await page.getByRole("button", { name: /Générer un post/i }).click();
+  // LECTURE SEULE : on ouvre la pop-up et on vérifie les 3 portes d'entrée, sans
+  // cliquer « Je n'ai pas d'idée » (qui déclencherait une génération payante).
+  const modal = page.getByRole("dialog", { name: /Générer un post/i });
+  await expect(modal.getByRole("heading", { name: /Par où on commence/i })).toBeVisible();
+  await expect(modal.getByRole("button", { name: /J'ai une idée/i })).toBeVisible();
+  await expect(modal.getByRole("button", { name: /Je n'ai pas d'idée/i })).toBeVisible();
+  await expect(modal.getByRole("button", { name: /J'ai une inspiration/i })).toBeVisible();
+
+  // « J'ai une idée » : le champ + le réservoir (déplacé ici depuis l'onglet
+  // « Idée du jour », retiré côté agence) + les deux issues.
+  await modal.getByRole("button", { name: /J'ai une idée/i }).click();
+  await expect(modal.getByLabel(/De quoi veux-tu parler/i)).toBeVisible();
+  await expect(modal.getByRole("button", { name: /Enregistrer pour plus tard/i })).toBeVisible();
+  await expect(modal.getByRole("button", { name: /Continuer/i })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
 });
 
 test("onglet Agent IA : interface chat rendue", async ({ page }) => {
@@ -128,26 +150,12 @@ test("onglet Agent IA : interface chat rendue", async ({ page }) => {
   await expect(page.locator(".nav-item.active", { hasText: "Agent IA" })).toBeVisible();
 });
 
-test("Contenu › Idée du jour : idée + réservoir sans erreur", async ({ page }) => {
+test("Contenu : le sous-onglet « Idée du jour » a disparu de la vue agence (ALE-286)", async ({ page }) => {
   await gotoTab(page, "Contenu");
-  await gotoSubTab(page, "Idée du jour");
-  await expect(page.getByRole("heading", { name: /^Idée du jour$/i })).toBeVisible();
-  // Le réservoir est rendu.
-  await expect(page.getByRole("heading", { name: /Mon réservoir d'idées/i })).toBeVisible();
-  await expect(page.getByPlaceholder(/Une idée de post/i)).toBeVisible();
-  // ALE-224 : le switch d'opt-in a été déplacé dans Mon profil → plus ici.
-  await expect(page.getByText(/Recevoir une idée chaque matin/i)).toHaveCount(0);
-  // Aucun bandeau d'erreur de chargement (daily-ideas + idea-seeds).
-  await expect(page.locator(".error")).toHaveCount(0);
-});
-
-test("Contenu › Idée du jour : plus de posts de référence ni de note de renvoi (ALE-222/224)", async ({ page }) => {
-  await gotoTab(page, "Contenu");
-  await gotoSubTab(page, "Idée du jour");
-  // L'ancienne section ALE-67 n'existe plus ici (déménagée dans Ma bibliothèque)…
-  await expect(page.getByRole("heading", { name: /Mes posts de référence/i })).toHaveCount(0);
-  // …et la note de renvoi temporaire a été retirée (ALE-224).
-  await expect(page.getByText(/Tes posts de référence sont désormais dans/i)).toHaveCount(0);
+  // Il ne subsiste que dans la vue client (compte `ideas_only`), qui n'a pas de
+  // sous-onglets du tout — le compte de test, lui, est un compte agence.
+  await expect(page.locator(".tab", { hasText: /^Idée du jour$/ })).toHaveCount(0);
+  await expect(page.locator(".tab", { hasText: /Générateur de posts/ })).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 

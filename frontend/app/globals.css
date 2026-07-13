@@ -2400,3 +2400,78 @@ tr.tr-top3 .tr-rank { color: var(--primary); }
 .tr-name { font-weight: 600; font-size: 13.5px; color: var(--ink); text-decoration: none; }
 .tr-name:hover { color: var(--primary); }
 .tr-sub { display: block; font-size: 11.5px; color: var(--muted); }
+
+/* ── Générateur de posts : parcours guidé + file d'attente (ALE-286) ── */
+/* ⚠️ N'utiliser que des variables réellement déclarées dans :root — une
+   var(--…) inexistante ne "tombe" pas en valeur par défaut : elle invalide la
+   propriété ENTIÈRE (piège vécu sur `border: 2px solid var(--accent)`). */
+
+.gen-hero {
+  display: flex; align-items: center; justify-content: space-between; gap: 20px;
+  flex-wrap: wrap; padding: 24px; border: 1px solid var(--border);
+  border-radius: 14px; background: var(--surface);
+}
+.gen-hero-button { min-height: 52px; padding: 0 26px; font-size: 16px; font-weight: 600; }
+
+.post-queue { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.post-queue-row {
+  border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface); overflow: hidden;
+}
+.post-queue-row.open { border-color: var(--primary); }
+.post-queue-line {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+  text-align: left; width: 100%;
+}
+.post-queue-line[role="button"] { cursor: pointer; }
+.post-queue-line[role="button"]:hover { background: rgba(70, 72, 212, 0.04); }
+.post-queue-status { display: flex; flex-shrink: 0; }
+.post-queue-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.post-queue-topic {
+  font-size: 14px; font-weight: 600; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.post-queue-meta {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 12px; color: var(--muted);
+}
+.post-queue-chevron { display: flex; color: var(--muted); flex-shrink: 0; }
+.post-queue-body { padding: 4px 14px 16px; border-top: 1px solid var(--border); }
+
+.wizard-start-card {
+  display: flex; align-items: flex-start; gap: 14px; text-align: left;
+  padding: 16px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface); cursor: pointer; width: 100%;
+}
+.wizard-start-card:hover { border-color: var(--primary); background: rgba(70, 72, 212, 0.04); }
+.wizard-start-icon { display: flex; color: var(--primary); flex-shrink: 0; margin-top: 2px; }
+.wizard-start-desc { display: block; font-size: 13px; color: var(--muted); margin-top: 3px; }
+
+.wizard-idea-line {
+  display: flex; align-items: flex-start; gap: 10px; text-align: left; width: 100%;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); cursor: pointer;
+}
+.wizard-idea-line:hover { border-color: var(--primary); }
+.wizard-idea-line.selected {
+  border-color: var(--primary); box-shadow: 0 0 0 3px rgba(70, 72, 212, 0.15);
+}
+.wizard-idea-check { display: flex; color: var(--primary); flex-shrink: 0; margin-top: 1px; }
+.wizard-idea-dot {
+  display: block; width: 14px; height: 14px; border-radius: 50%;
+  border: 1px solid var(--border);
+}
+.wizard-idea-source { display: block; font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+.wizard-role-card {
+  display: flex; flex-direction: column; gap: 6px; text-align: left; width: 100%;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); cursor: pointer;
+}
+.wizard-role-card:hover { border-color: var(--primary); }
+.wizard-role-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wizard-role-goal { font-size: 13px; color: var(--muted); }
+.wizard-role-reco {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  color: var(--primary); font-weight: 500;
+}

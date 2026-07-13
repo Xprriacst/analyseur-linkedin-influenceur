@@ -24,6 +24,7 @@ from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message
+from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
@@ -1284,8 +1285,23 @@ def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(opt
     )
 
 
+class InspirationPost(BaseModel):
+    """Post LinkedIn dont le client a demandé de s'inspirer (parcours guidé, ALE-286)."""
+    text: str = Field(..., min_length=20, max_length=6000)
+    author: str | None = Field(default=None, max_length=200)
+    url: str | None = Field(default=None, max_length=2000)
+
+
+class GenerationJobRequest(GenerateRequest):
+    """Requête de la file d'attente. Modèle à part et non un champ de plus sur
+    `GenerateRequest` : seul le chemin par jobs sait porter l'inspiration jusqu'au
+    modèle. L'ajouter au modèle commun l'aurait fait accepter — puis **ignorer en
+    silence** — par `/generate` et `/generate/stream`."""
+    inspiration: InspirationPost | None = Field(default=None)
+
+
 @app.post("/generate/jobs")
-def create_generation_job(payload: GenerateRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+def create_generation_job(payload: GenerationJobRequest, token: str = Depends(require_token)) -> dict[str, Any]:
     """Lance une génération de posts en arrière-plan (file d'attente — ALE-141).
 
     Non bloquant : on débite les crédits, on crée le job et on lance le thread,
@@ -1307,7 +1323,11 @@ def create_generation_job(payload: GenerateRequest, token: str = Depends(require
 
     role = (payload.editorial_role or "").strip() or None
     topic = (payload.topic or "").strip() or None
-    job = db.create_generation_job(token, topic, role, payload.web_search, payload.count, template_id=payload.template_id)
+    job = db.create_generation_job(
+        token, topic, role, payload.web_search, payload.count,
+        template_id=payload.template_id,
+        inspiration=payload.inspiration.model_dump() if payload.inspiration else None,
+    )
     if not job:
         raise HTTPException(status_code=500, detail="Création du job de génération impossible.")
     start_generation_job_thread(token, job["id"])
@@ -1337,6 +1357,118 @@ def cancel_generation_job(job_id: str, token: str = Depends(require_token)) -> d
     if not job:
         raise HTTPException(status_code=404, detail="Job de génération introuvable.")
     return job
+
+
+# --------------------------------------------------------------------------- #
+# Parcours guidé de génération (ALE-286)
+# --------------------------------------------------------------------------- #
+# Le client part d'un des trois points d'entrée (une idée à lui, aucune idée, un
+# post qui l'a inspiré), converge sur un rôle éditorial, puis sur une structure
+# de sa bibliothèque, et obtient UN post. Trois endpoints d'aide à la décision —
+# lire l'inspiration, recommander le rôle, proposer les structures — tous gratuits
+# et sans effet de bord : le post, lui, part par la file d'attente existante
+# (`POST /generate/jobs`), qui sait déjà débiter, créer le job et le suivre.
+
+
+class InspirationRequest(BaseModel):
+    url: str = Field(..., min_length=8, max_length=2000)
+
+
+@app.post("/generate/inspiration")
+def read_inspiration_post(payload: InspirationRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Lit le post LinkedIn dont le client veut s'inspirer et en déduit un angle.
+
+    Gratuit (aucun crédit) : c'est une aide à la décision, pas une génération —
+    le client peut se tromper de lien sans que ça lui coûte quoi que ce soit.
+    """
+    url = payload.url.strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="Colle un lien de post LinkedIn (https://…).")
+
+    detail = fetch_post_detail(url)
+    if not detail or not (detail.get("text") or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Impossible de lire le post depuis ce lien — colle son texte directement.",
+        )
+
+    # L'angle est un confort : s'il échoue, le client écrit le sien à la main
+    # plutôt que de voir le parcours s'arrêter sur un post pourtant bien lu.
+    angle = ""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            angle = suggest_angle_from_post(detail["text"], db.get_user_ai_context(token))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[wizard] angle non déduit pour {url}: {exc}", flush=True)
+
+    return {
+        "text": detail["text"],
+        "author": detail.get("author"),
+        "url": detail.get("url") or url,
+        "image_url": detail.get("image_url"),
+        "angle": angle,
+    }
+
+
+class EditorialRoleRequest(BaseModel):
+    idea: str = Field(..., min_length=3, max_length=2000)
+
+
+@app.post("/generate/editorial-role")
+def recommend_role(payload: EditorialRoleRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Recommande un rôle éditorial pour l'idée retenue (gratuit, non contraignant)."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
+    reco = recommend_editorial_role(payload.idea.strip(), db.get_user_ai_context(token))
+    return {
+        "editorial_role": reco["editorial_role"],
+        "reason": reco["reason"],
+        "roles": [{"value": key, "label": spec["label"]} for key, spec in ROLE_SPECS.items()],
+    }
+
+
+class StructuresRequest(BaseModel):
+    idea: str = Field(..., min_length=3, max_length=2000)
+    editorial_role: str = Field(..., max_length=50)
+
+
+@app.post("/generate/structures")
+def suggest_post_structures(payload: StructuresRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Propose les structures de la bibliothèque les plus adaptées à l'idée retenue.
+
+    Gratuit (aucun crédit) : c'est une aide au choix, pas une génération. Le
+    client voit ce qu'il choisit — on rend donc le nom et un extrait de chaque
+    structure, pas des identifiants nus.
+
+    Liste vide = bibliothèque vide ou sans contenu exploitable. Le parcours
+    enchaîne alors en structure libre : un compte neuf n'est jamais bloqué sur une
+    étape sans option.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
+    role = payload.editorial_role.strip()
+    if role not in ROLE_SPECS:
+        raise HTTPException(status_code=422, detail="Rôle éditorial inconnu.")
+
+    try:
+        library = db.list_post_templates(token)
+    except Exception:  # noqa: BLE001 — la bibliothèque est un plus, pas un prérequis
+        library = []
+    suggested = suggest_structures(payload.idea.strip(), role, library)
+
+    return {
+        "structures": [
+            {
+                "id": t["id"],
+                "label": (t.get("structure_label") or "").strip() or None,
+                "structure_text": (t.get("structure_text") or "").strip() or None,
+                "post_text": (t.get("post_text") or "").strip()[:400] or None,
+            }
+            for t in suggested
+        ],
+        # La plus adaptée d'abord : c'est celle que le parcours pré-coche.
+        "recommended_id": suggested[0]["id"] if suggested else None,
+    }
 
 
 @app.get("/me/generated-ideas")
