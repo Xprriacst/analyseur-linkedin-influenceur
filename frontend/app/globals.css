@@ -2407,11 +2407,35 @@ tr.tr-top3 .tr-rank { color: var(--primary); }
    propriété ENTIÈRE (piège vécu sur `border: 2px solid var(--accent)`). */
 
 .gen-hero {
+  position: relative; overflow: hidden;
   display: flex; align-items: center; justify-content: space-between; gap: 20px;
-  flex-wrap: wrap; padding: 24px; border: 1px solid var(--border);
-  border-radius: 14px; background: var(--surface);
+  flex-wrap: wrap; padding: 28px 30px; border-radius: 16px;
+  background: linear-gradient(120deg, #3b3dbd 0%, #4648d4 45%, #5a5de8 100%);
+  box-shadow: 0 14px 34px -16px rgba(70, 72, 212, 0.5);
 }
-.gen-hero-button { min-height: 52px; padding: 0 26px; font-size: 16px; font-weight: 600; }
+/* Reflet en haut à droite du bandeau (purement décoratif). */
+.gen-hero::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(340px 160px at 85% -20%, rgba(255, 255, 255, 0.14), transparent 70%);
+}
+.gen-hero .section-title { color: #fff; font-size: 20px; letter-spacing: -0.01em; }
+.gen-hero .section-desc { color: rgba(255, 255, 255, 0.75); font-size: 13.5px; }
+.gen-hero-button {
+  min-height: 52px; padding: 0 26px; font-size: 16px; font-weight: 600;
+  position: relative; z-index: 1; border-radius: 10px;
+  background: #fff; color: #3b3dbd;
+  box-shadow: 0 8px 20px -10px rgba(20, 20, 60, 0.5);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.gen-hero-button:hover {
+  opacity: 1; transform: translateY(-1px);
+  box-shadow: 0 12px 26px -10px rgba(20, 20, 60, 0.6);
+}
+.gen-hero-button:active { transform: translateY(0); }
+@media (prefers-reduced-motion: reduce) {
+  .gen-hero-button { transition: none; }
+  .gen-hero-button:hover { transform: none; }
+}
 
 .post-queue { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .post-queue-row {
