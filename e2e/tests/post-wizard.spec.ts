@@ -260,6 +260,79 @@ test("bibliothèque vide : le parcours propose la structure libre et n'est pas b
   await expect(modal.getByRole("button", { name: /Générer le post/i })).toBeEnabled();
 });
 
+test("« Fermer » laisse le post en ligne dans la file, cliquable pour reprendre", async ({ page }) => {
+  await mockEmptyQueue(page);
+  await page.route("**/me/idea-seeds", (route) =>
+    route.request().method() === "GET" ? route.fulfill({ contentType: "application/json", body: "[]" }) : route.fallback()
+  );
+  await page.route("**/generate/editorial-role", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ editorial_role: "methodologie", reason: "Une méthode sera plus utile.", roles: [] }),
+    })
+  );
+  await page.route("**/generate/structures", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        structures: [
+          { id: "tpl-b", label: "Méthode en 5 étapes", structure_text: "1\n2\n3", post_text: null },
+          { id: "tpl-a", label: "Story en 4 temps", structure_text: "S\nT\nB", post_text: null },
+        ],
+        recommended_id: "tpl-b",
+      }),
+    })
+  );
+
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Générateur de posts");
+
+  // On va jusqu'à la dernière étape, et on change la structure pré-cochée : c'est
+  // ce choix-là qu'on doit retrouver au retour.
+  await page.getByRole("button", { name: /Générer un post/i }).click();
+  const modal = page.getByRole("dialog", { name: /Générer un post/i });
+  await modal.getByRole("button", { name: /J'ai une idée/i }).click();
+  await modal.getByLabel(/De quoi veux-tu parler/i).fill("Les 4 niveaux de maîtrise n8n");
+  await modal.getByRole("button", { name: /Continuer/i }).click();
+  await modal.getByRole("button", { name: /Continuer/i }).click();
+  await expect(modal.getByRole("heading", { name: /Sur quelle structure/i })).toBeVisible();
+  await modal.getByRole("button", { name: /Story en 4 temps/ }).click();
+
+  // Fermer ne doit RIEN jeter : le parcours coûte des crédits (les idées) et de
+  // l'attente (reco d'angle, structures). Avant, tout repartait de zéro.
+  await modal.getByRole("button", { name: /^Fermer$/ }).click();
+  await expect(modal).toHaveCount(0);
+
+  // Le post inachevé a SA ligne dans la file, qui dit où on en est.
+  const draftLine = page.locator(".post-queue-line").first();
+  await expect(draftLine).toContainText("Les 4 niveaux de maîtrise n8n");
+  await expect(draftLine).toContainText("En cours");
+  await expect(draftLine).toContainText("il reste à choisir la structure");
+
+  // Un clic sur la ligne reprend le parcours EXACTEMENT où il en était — dont la
+  // structure choisie, qui n'est ni la recommandée ni la première.
+  await draftLine.click();
+  const back = page.getByRole("dialog", { name: /Générer un post/i });
+  await expect(back.getByRole("heading", { name: /Sur quelle structure/i })).toBeVisible();
+  await expect(back.getByText(/Les 4 niveaux de maîtrise n8n/)).toBeVisible();
+  await expect(back.getByRole("button", { name: /Story en 4 temps/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(back.getByRole("button", { name: /Méthode en 5 étapes/ })).toHaveAttribute("aria-pressed", "false");
+
+  // Le gros bouton, lui, démarre bien un NOUVEAU post (il ne reprend pas celui-ci).
+  await back.getByRole("button", { name: /^Fermer$/ }).click();
+  await page.getByRole("button", { name: /Générer un post/i }).click();
+  const fresh = page.getByRole("dialog", { name: /Générer un post/i });
+  await expect(fresh.getByRole("heading", { name: /Par où on commence/i })).toBeVisible();
+  await fresh.getByRole("button", { name: /^Fermer$/ }).click();
+  // Ouvert puis refermé sans rien faire : pas de ligne fantôme. L'ancien parcours
+  // est toujours là, lui.
+  await expect(page.locator(".post-queue-line")).toHaveCount(1);
+
+  // Et on peut jeter un parcours dont on ne veut plus.
+  await page.locator(".post-queue-line").first().getByRole("button", { name: /Supprimer/i }).click();
+  await expect(page.getByText(/Aucun post pour l'instant/i)).toBeVisible();
+});
+
 test("« J'ai une inspiration » : le post lu devient l'angle proposé, ajustable", async ({ page }) => {
   await mockEmptyQueue(page);
   await page.route("**/generate/inspiration", (route) =>
