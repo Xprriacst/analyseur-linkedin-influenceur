@@ -11837,6 +11837,24 @@ export default function Home() {
   // écran de chargement neutre plutôt que l'app qui "flashe" puis l'onboarding.
   const [checkingProfile, setCheckingProfile] = useState(false);
   const userIdRef = useRef<string | null>(null);
+
+  // Un post en préparation vit en mémoire de la page : recharger ou fermer
+  // l'onglet le perd (avec les 3 idées déjà payées). On prévient AVANT, pas
+  // après. Posé dans `Home` (jamais démonté) : l'alerte doit se déclencher
+  // depuis n'importe quel onglet de l'app, pas seulement le Générateur.
+  // Le test se fait au déclenchement, pas au montage : rien à re-souscrire quand
+  // la liste des brouillons change.
+  // ⚠️ Le navigateur impose son propre texte — on ne peut que réclamer sa pop-up
+  // (et il ne l'affiche que si l'utilisateur a interagi avec la page).
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (_wizardDrafts.length === 0) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
   const prevJobActiveRef = useRef(false);
   // Analyse anonyme affichée mais pas encore sauvegardée : sauvée dès l'inscription.
   const pendingAnonResultRef = useRef<Analysis | null>(null);
