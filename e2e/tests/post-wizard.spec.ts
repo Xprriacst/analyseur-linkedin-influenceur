@@ -287,6 +287,19 @@ test("« Fermer » laisse le post en ligne dans la file, cliquable pour reprendr
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Générateur de posts");
 
+  /** L'app réclame-t-elle la pop-up « tu vas perdre ta page » du navigateur ?
+   *  (On ne peut pas lire le texte : il appartient au navigateur. On vérifie
+   *  qu'un `beforeunload` est bien annulé — c'est ce qui déclenche sa pop-up.) */
+  const warnsOnLeave = () =>
+    page.evaluate(() => {
+      const e = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    });
+
+  // Rien en préparation ⇒ on n'embête personne au départ.
+  expect(await warnsOnLeave()).toBe(false);
+
   // On va jusqu'à la dernière étape, et on change la structure pré-cochée : c'est
   // ce choix-là qu'on doit retrouver au retour.
   await page.getByRole("button", { name: /Générer un post/i }).click();
@@ -302,6 +315,10 @@ test("« Fermer » laisse le post en ligne dans la file, cliquable pour reprendr
   // l'attente (reco d'angle, structures). Avant, tout repartait de zéro.
   await modal.getByRole("button", { name: /^Fermer$/ }).click();
   await expect(modal).toHaveCount(0);
+
+  // Un post en préparation vit en mémoire : recharger la page le perdrait (avec
+  // les crédits déjà dépensés). L'app doit prévenir AVANT le départ.
+  expect(await warnsOnLeave()).toBe(true);
 
   // Le post inachevé a SA ligne dans la file, qui dit où on en est.
   const draftLine = page.locator(".post-queue-line").first();
@@ -331,6 +348,9 @@ test("« Fermer » laisse le post en ligne dans la file, cliquable pour reprendr
   // Et on peut jeter un parcours dont on ne veut plus.
   await page.locator(".post-queue-line").first().getByRole("button", { name: /Supprimer/i }).click();
   await expect(page.getByText(/Aucun post pour l'instant/i)).toBeVisible();
+
+  // Plus rien à perdre ⇒ l'alerte se tait à nouveau.
+  expect(await warnsOnLeave()).toBe(false);
 });
 
 test("« J'ai une inspiration » : le post lu devient l'angle proposé, ajustable", async ({ page }) => {
