@@ -55,6 +55,13 @@ test("Contenu › Mes contenus : menu Publier + ⋯ sur une carte de post (GET m
   await gotoSubTab(page, "Ma bibliothèque");
   await expect(page.getByRole("heading", { name: /Mes contenus sauvegardés/i })).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
+  // Refonte : le post est une carte-aperçu ; on l'ouvre pour accéder à la barre
+  // d'actions complète, désormais rendue dans la pop-up d'agrandissement.
+  await page.getByRole("button", { name: /Ouvrir « Post de test ALE-185/ }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  // Le texte du post est éditable dans la pop-up.
+  await expect(dialog.locator("textarea.variant-text")).toHaveValue("Post de test ALE-185");
   await checkActionsBar(page, { expectDelete: true });
 
   // Le menu « ⋯ » de Mes contenus porte aussi : joindre des images + régénérer.
@@ -65,9 +72,10 @@ test("Contenu › Mes contenus : menu Publier + ⋯ sur une carte de post (GET m
   await expect(menu.getByRole("menuitem", { name: /Régénérer sur ce sujet/ })).toBeVisible();
   // ALE-189 : retravailler avec l'Agent IA disponible aussi hors Générateur.
   await expect(menu.getByRole("menuitem", { name: /Retravailler avec l'Agent IA/ })).toBeVisible();
-  // Clic hors du menu → fermeture (comportement Cursor-like).
-  await page.getByRole("heading", { name: /Mes contenus sauvegardés/i }).click();
+  // Échap ferme le menu sans fermer la pop-up (la pop-up reste ouverte).
+  await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
+  await expect(dialog).toBeVisible();
 });
 
 test("Agent IA : menu Publier + ⋯ sous une réponse (conversation mockée), avec Joindre des images", async ({ page }) => {
@@ -223,13 +231,18 @@ test("Contenu › Mes contenus : Image IA propose une image de référence depui
 
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Ma bibliothèque");
+  // Refonte : on ouvre la carte-aperçu pour accéder à la barre d'actions.
+  await page.getByRole("button", { name: /Ouvrir « Post de test ALE-221/ }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
   const bar = page.locator(".post-actions-bar").first();
   await bar.getByRole("button", { name: "Plus d'actions" }).click();
   await page.locator(".action-menu").getByRole("menuitem", { name: /Générer une image IA/ }).click();
 
   // La vignette du template apparaît et se sélectionne. ALE-282 : la sélection doit
   // être explicite (état pressé + bandeau qui nomme la référence retenue).
-  const thumbnail = page.getByRole("button", { name: "Accroche choc + 3 bullets" });
+  // exact:true : sinon le libellé matche aussi la carte-aperçu de la référence
+  // (aria-label « Ouvrir « Accroche choc + 3 bullets » ») dans la section bibliothèque.
+  const thumbnail = page.getByRole("button", { name: "Accroche choc + 3 bullets", exact: true });
   await expect(thumbnail).toBeVisible();
   await expect(thumbnail).toHaveAttribute("aria-pressed", "false");
   await thumbnail.click();
