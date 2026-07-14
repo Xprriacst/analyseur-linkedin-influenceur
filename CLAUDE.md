@@ -2,10 +2,12 @@
 
 ## Environnements déployés
 
-| Env | Frontend (Netlify) | Backend (Render) | Branche git |
+| Env | Frontend (Netlify) | Backend (Render, **Francfort**) | Branche git |
 |---|---|---|---|
-| **Prod** | `lkd-outreach.netlify.app` (ID `81f75c05`) | `analyseur-linkedin-influenceur-api.onrender.com` | `main` |
-| **Dev** | `lkd-outreach-dev.netlify.app` (ID `35a2cf5e`) | `analyseur-linkedin-influenceur-api-dev.onrender.com` | `dev` |
+| **Prod** | `lkd-outreach.netlify.app` (ID `81f75c05`) | `analyseur-linkedin-influenceur-api-eu.onrender.com` (`srv-d991660k1i2s73dfrbug`, standard) | `main` |
+| **Dev** | `lkd-outreach-dev.netlify.app` (ID `35a2cf5e`) | `analyseur-linkedin-influenceur-api-dev-eu.onrender.com` (`srv-d990m3l7vvec73esnjhg`, free) | `dev` |
+
+⚠️ **Le suffixe `-eu` n'est pas un détail** (migration Oregon → Francfort du 2026-07-11, ALE-279). Les **anciens services Oregon sans `-eu`** (`analyseur-linkedin-influenceur-api`, `analyseur-linkedin-influenceur-api-dev`) sont restés **debout mais morts** : ils répondent **502**, pas une erreur DNS. Un `.env.local` (fichier local, jamais touché par la migration) resté sur l'ancienne URL donne donc un **« Failed to fetch » sur toute action serveur** alors que la connexion marche encore (Supabase est appelé en direct, pas via le backend) — symptôme trompeur d'« app connectée mais tout casse ». **Devant un « Failed to fetch » : `curl <BACKEND_URL>/health` AVANT de suspecter le code.** Le backend dev est en plan **free** ⇒ réveil à froid mesuré **~90 s** sur le premier appel.
 
 ### Variables d'env Netlify
 - `BACKEND_URL` → URL Render de l'environnement (server-side, proxy Next.js)
@@ -14,8 +16,8 @@
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY` → clé anon Supabase
 
 Valeurs backend attendues :
-- Prod : `BACKEND_URL` / `NEXT_PUBLIC_BACKEND_URL` → `https://analyseur-linkedin-influenceur-api.onrender.com`
-- Dev : `BACKEND_URL` / `NEXT_PUBLIC_BACKEND_URL` → `https://analyseur-linkedin-influenceur-api-dev.onrender.com`
+- Prod : `BACKEND_URL` / `NEXT_PUBLIC_BACKEND_URL` → `https://analyseur-linkedin-influenceur-api-eu.onrender.com`
+- Dev : `BACKEND_URL` / `NEXT_PUBLIC_BACKEND_URL` → `https://analyseur-linkedin-influenceur-api-dev-eu.onrender.com`
 
 ### Variables d'env Render
 - Service prod : branche `main`, start command `uvicorn api:app --host 0.0.0.0 --port $PORT`
