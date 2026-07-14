@@ -29,6 +29,7 @@ import {
   ListChecks,
   Loader2,
   Lock,
+  Maximize2,
   LogIn,
   LogOut,
   Bookmark,
@@ -102,28 +103,6 @@ function ConvListSkeleton({ rows = 6 }: { rows?: number }) {
 }
 
 // Cartes de post (Mes contenus / listes de variants) : entête + bloc de texte.
-function PostCardsSkeleton({ cards = 3 }: { cards?: number }) {
-  return (
-    <div className="variants-list sk-list" aria-hidden>
-      {Array.from({ length: cards }).map((_, i) => (
-        <div className="variant-card" key={i}>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <Sk h={16} w={90} r={6} />
-            <Sk h={16} w={64} r={6} />
-            <Sk h={16} w={70} r={6} style={{ marginLeft: "auto" }} />
-          </div>
-          <div style={{ display: "grid", gap: 8 }}>
-            <Sk h={10} w="100%" />
-            <Sk h={10} w="96%" />
-            <Sk h={10} w="88%" />
-            <Sk h={10} w="70%" />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // Fil de messages (Inbox) : quelques bulles gauche/droite en attendant le fil.
 function MsgThreadSkeleton() {
   const bubbles: Array<{ side: "in" | "out"; w: number }> = [
@@ -5485,45 +5464,140 @@ function DailyIdeasView({
   );
 }
 
-// ALE-223 : tiroir repliable réutilisable pour l'onglet « Ma bibliothèque »
-// (contenus sauvegardés / posts programmés / références & templates).
-function LibDrawer({
-  icon,
-  title,
-  desc,
-  open,
-  onToggle,
-  right,
-  children,
+// ── Refonte « Ma bibliothèque » : galerie 3-up + pop-up d'agrandissement ──
+// Composants partagés par les 4 sections (références, contenus sauvegardés,
+// posts programmés, veille) : en-tête de section, carte-aperçu cliquable,
+// bouton « Voir plus » paginé et pop-up de détail.
+
+const LIB_PAGE = 3; // aperçu initial
+const LIB_STEP = 10; // incrément par « Voir plus »
+
+// En-tête d'une section (icône + titre + compteur + description + zone d'actions).
+function LibSectionHead({
+  icon, title, count, desc, right,
 }: {
   icon: React.ReactNode;
   title: string;
+  count?: number;
   desc?: string;
-  open: boolean;
-  onToggle: () => void;
   right?: React.ReactNode;
-  children: React.ReactNode;
 }) {
   return (
-    <section style={{ marginBottom: 24 }}>
-      <div className="section-header" style={{ marginBottom: open ? 16 : 0 }}>
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={open}
-          title={open ? "Replier" : "Déplier"}
-          style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", color: "inherit", flex: 1, minWidth: 0 }}
-        >
-          <ChevronRight size={20} style={{ marginTop: 2, flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
-          <div>
-            <h2 className="section-title">{icon} {title}</h2>
-            {desc && <p className="section-desc">{desc}</p>}
-          </div>
-        </button>
-        {right}
+    <>
+      <div className="lib-sec-head">
+        <h2><span className="lib-ico">{icon}</span> {title}</h2>
+        {typeof count === "number" && count > 0 && <span className="lib-count">{count}</span>}
+        {right && <span className="lib-sec-right">{right}</span>}
       </div>
-      {open && children}
-    </section>
+      {desc && <p className="lib-sec-desc">{desc}</p>}
+    </>
+  );
+}
+
+// Bouton « Voir plus (N restants) » / « Voir moins » — pagination par paquets.
+function LibMore({
+  total, visible, onMore, onLess,
+}: {
+  total: number;
+  visible: number;
+  onMore: () => void;
+  onLess: () => void;
+}) {
+  if (total <= LIB_PAGE) return null;
+  const remaining = total - visible;
+  if (remaining > 0) {
+    return (
+      <button type="button" className="lib-more" onClick={onMore}>
+        Voir plus ({remaining} restant{remaining > 1 ? "s" : ""}) <ChevronDown size={15} />
+      </button>
+    );
+  }
+  return (
+    <button type="button" className="lib-more" onClick={onLess}>
+      Voir moins <ChevronDown size={15} style={{ transform: "rotate(180deg)" }} />
+    </button>
+  );
+}
+
+// Carte-aperçu cliquable dans la galerie. Le clic ouvre la pop-up de détail ;
+// les boutons d'action (dans `actions`) stoppent la propagation pour agir sans
+// ouvrir la pop-up.
+function LibCard({
+  onOpen, ariaLabel, thumb, title, tags, meta, preview, actions,
+}: {
+  onOpen: () => void;
+  ariaLabel: string;
+  thumb?: string | null;
+  title: React.ReactNode;
+  tags?: React.ReactNode;
+  meta?: React.ReactNode;
+  preview?: React.ReactNode;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <div
+      className="lib-card"
+      role="button"
+      tabIndex={0}
+      aria-label={ariaLabel}
+      onClick={onOpen}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
+    >
+      <span className="lib-card-expand" aria-hidden><Maximize2 size={14} /></span>
+      {thumb && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img className="lib-thumb" src={thumb} alt="" />
+      )}
+      <div className="lib-card-title"><strong>{title}</strong>{tags}</div>
+      {meta && <div className="lib-card-meta">{meta}</div>}
+      {preview && <p className="lib-preview">{preview}</p>}
+      {actions && (
+        <div className="lib-card-actions" onClick={(e) => e.stopPropagation()}>{actions}</div>
+      )}
+    </div>
+  );
+}
+
+// Pop-up d'agrandissement : fond, fermeture au clic dehors / croix / Échap.
+// `lockClose` empêche la fermeture quand une pop-up de confirmation est ouverte
+// PAR-DESSUS (Publier / Programmer / Slack / X) — sinon Échap fermerait les deux.
+function LibModal({
+  title, tags, thumb, onClose, children, lockClose = false,
+}: {
+  title: React.ReactNode;
+  tags?: React.ReactNode;
+  thumb?: string | null;
+  onClose: () => void;
+  children: React.ReactNode;
+  lockClose?: boolean;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Un menu d'actions ou une pop-up de confirmation ouverte gère elle-même Échap.
+      if (lockClose || document.querySelector(".action-menu")) return;
+      onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
+  }, [onClose, lockClose]);
+  return (
+    <div className="lib-modal-overlay" onClick={(e) => { if (e.target === e.currentTarget && !lockClose) onClose(); }}>
+      <div className="lib-modal" role="dialog" aria-modal="true">
+        <div className="lib-modal-head">
+          <h3>{title}</h3>
+          <button type="button" className="lib-modal-close" aria-label="Fermer" onClick={onClose}><X size={16} /></button>
+        </div>
+        {tags && <div className="lib-modal-tags">{tags}</div>}
+        {thumb && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img className="lib-modal-thumb" src={thumb} alt="" />
+        )}
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -5554,10 +5628,12 @@ function LibraryView({
   const [editedPosts, setEditedPosts] = useState<Record<string, string>>({});
   const [savingPost, setSavingPost] = useState<string | null>(null);
   const [savedPost, setSavedPost] = useState<string | null>(null);
-  // Tiroirs repliables (ALE-223) : les contenus sauvegardés sont ouverts par défaut,
-  // les posts programmés repliés.
-  const [savedOpen, setSavedOpen] = useState(true);
-  const [scheduledOpen, setScheduledOpen] = useState(false);
+  // Refonte : galerie 3-up (aperçu) + pop-up de détail au clic, pour les contenus
+  // sauvegardés comme pour les posts programmés.
+  const [visibleSaved, setVisibleSaved] = useState(LIB_PAGE);
+  const [expandedSavedId, setExpandedSavedId] = useState<string | null>(null);
+  const [visibleSched, setVisibleSched] = useState(LIB_PAGE);
+  const [expandedSchedId, setExpandedSchedId] = useState<string | null>(null);
   const slack = useSlack(isAuthed);
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
@@ -5845,40 +5921,99 @@ function LibraryView({
     );
   }
 
+  const expandedSavedPost = posts.find((p) => p.id === expandedSavedId) || null;
+  const savedTitle = (p: SavedPost) => {
+    const line = (p.post || "").split("\n").map((l) => l.trim()).find(Boolean) || p.topic || "Post";
+    return line.length > 70 ? `${line.slice(0, 70)}…` : line;
+  };
+  const expandedSchedPost = scheduledPosts.find((p) => p.id === expandedSchedId) || null;
+  const schedTitle = (p: ScheduledPost) => {
+    const line = (p.post_text || "").split("\n").map((l) => l.trim()).find(Boolean) || "Post programmé";
+    return line.length > 70 ? `${line.slice(0, 70)}…` : line;
+  };
+  const schedStatus = (p: ScheduledPost) => {
+    const label =
+      p.status === "published" ? "Publié ✓"
+      : p.status === "failed" ? "Échec"
+      : p.status === "cancelled" && p.slack_status === "declined" ? "Refusé Slack — annulé"
+      : p.status === "cancelled" ? "Annulé"
+      : p.slack_status === "validated" ? "Validé — en attente"
+      : "Validation Slack en attente";
+    const cls =
+      p.status === "published" || p.slack_status === "validated" ? "ok"
+      : p.status === "cancelled" ? "g"
+      : "";
+    return { label, cls };
+  };
+
   return (
     <div>
-      <div className="section-header">
-        <button
-          onClick={() => setSavedOpen((v) => !v)}
-          aria-expanded={savedOpen}
-          title={savedOpen ? "Replier les posts sauvegardés" : "Déplier les posts sauvegardés"}
-          style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", color: "inherit" }}
-        >
-          <ChevronRight size={20} style={{ marginTop: 2, flexShrink: 0, transform: savedOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
-          <div>
-            <h2 className="section-title"><Bookmark size={20} /> Mes contenus sauvegardés{posts.length ? ` (${posts.length})` : ""}</h2>
-            <p className="section-desc">Retrouve les posts que tu as sauvegardés depuis le générateur. Relis-les, copie-les ou réutilise-les.</p>
-          </div>
-        </button>
-        <button className="secondary-button" onClick={loadAll} disabled={loading}>
-          {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
-          Rafraîchir
-        </button>
-      </div>
+      <section className="lib-sec">
+        <LibSectionHead
+          icon={<Bookmark size={18} />}
+          title="Mes contenus sauvegardés"
+          count={posts.length}
+          desc="Les posts que tu as générés et gardés. Clique pour lire en entier, éditer, republier ou retravailler avec l'Agent IA."
+          right={
+            <button className="secondary-button" style={{ fontSize: 13 }} onClick={loadAll} disabled={loading}>
+              {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />} Rafraîchir
+            </button>
+          }
+        />
 
       {error &&<div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {!savedOpen ? null : loading && posts.length === 0 ? (
-        <PostCardsSkeleton cards={3} />
+      {loading && posts.length === 0 ? (
+        <div className="lib-grid" aria-hidden>
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div className="card" key={i} style={{ display: "grid", gap: 8, padding: 14 }}>
+              <Sk h={14} w={160} r={6} />
+              <Sk h={10} w="92%" />
+              <Sk h={10} w="78%" />
+            </div>
+          ))}
+        </div>
       ) : (
         posts.length === 0 ? (
-          <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>
-            Aucun post sauvegardé pour l'instant. Génère des posts dans l'onglet « Générateur de posts ».
+          <div className="lib-empty">
+            Aucun post sauvegardé pour l&apos;instant. Génère des posts dans l&apos;onglet « Générateur de posts ».
           </div>
         ) : (
-          <div className="variants-list">
-            {posts.map((p) => (
-              <div className="variant-card" key={p.id}>
+          <>
+            <div className="lib-grid">
+              {posts.slice(0, visibleSaved).map((p) => (
+                <LibCard
+                  key={p.id}
+                  onOpen={() => setExpandedSavedId(p.id)}
+                  ariaLabel={`Ouvrir « ${savedTitle(p)} »`}
+                  title={savedTitle(p)}
+                  tags={
+                    <>
+                      {p.editorial_role && <span className="lib-tag">{roleLabels[p.editorial_role] || p.editorial_role}</span>}
+                      {p.slack_status === "validated" && <span className="lib-tag ok">✅ Validé</span>}
+                      {p.slack_status === "pending" && <span className="lib-tag g">Slack en attente</span>}
+                      {(p.media_items || []).length > 0 && <span className="lib-tag">image</span>}
+                    </>
+                  }
+                  meta={fmtDate(p.created_at)}
+                  preview={editedPosts[p.id] ?? p.post}
+                />
+              ))}
+            </div>
+            <LibMore
+              total={posts.length}
+              visible={visibleSaved}
+              onMore={() => setVisibleSaved((v) => v + LIB_STEP)}
+              onLess={() => setVisibleSaved(LIB_PAGE)}
+            />
+            {expandedSavedPost && (
+              <LibModal
+                title={savedTitle(expandedSavedPost)}
+                onClose={() => setExpandedSavedId(null)}
+                lockClose={!!confirmPublishPostId || !!scheduleForPost || !!confirmXPostId || !!confirmSlackPostId || !!imageModalSaved || editingSchedule !== null}
+              >
+                {[expandedSavedPost].map((p) => (
+              <div className="variant-card" key={p.id} style={{ border: "none", padding: 0, boxShadow: "none" }}>
                 <div className="variant-header" style={{ flexWrap: "wrap" }}>
                   {p.editorial_role && (
                     <span className="badge role-badge">{roleLabels[p.editorial_role] || p.editorial_role}</span>
@@ -6132,65 +6267,84 @@ function LibraryView({
                   <div className="error" style={{ marginTop: 6, fontSize: 13 }}>{publishError}</div>
                 )}
               </div>
-            ))}
-          </div>
+                ))}
+              </LibModal>
+            )}
+          </>
         )
       )}
+      </section>
 
       {linkedin.status?.connected && (
-        <LibDrawer
-          icon={<Clock3 size={20} />}
-          title={`Posts programmés${scheduledPosts.length ? ` (${scheduledPosts.length})` : ""}`}
-          desc="Posts en attente de publication ou déjà publiés via la programmation LinkedIn."
-          open={scheduledOpen}
-          onToggle={() => setScheduledOpen((v) => !v)}
-        >
+        <section className="lib-sec">
+          <LibSectionHead
+            icon={<Clock3 size={18} />}
+            title="Posts programmés"
+            count={scheduledPosts.length}
+            desc="Ce qui partira sur LinkedIn automatiquement, aux créneaux que tu as choisis."
+          />
           {scheduledPosts.length === 0 ? (
-            <div className="card" style={{ padding: 24, textAlign: "center", color: "var(--muted)" }}>
-              Aucun post programmé pour l'instant. Programme un post depuis le Générateur.
+            <div className="lib-empty">
+              Aucun post programmé pour l&apos;instant. Programme un post depuis le Générateur.
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {scheduledPosts.map((p) => {
-                const statusLabel =
-                  p.status === "published" ? "Publié ✓"
-                  : p.status === "failed" ? "Échec"
-                  : p.status === "cancelled" && p.slack_status === "declined" ? "Refusé Slack — annulé"
-                  : p.status === "cancelled" ? "Annulé"
-                  : p.slack_status === "validated" ? "Validé Slack — en attente"
-                  : "Validation Slack en attente";
-                const statusColor =
-                  p.status === "published" || p.slack_status === "validated" ? "var(--success, #38a169)"
-                  : p.status === "failed" ? "var(--error, #e53e3e)"
-                  : p.status === "cancelled" ? "var(--muted)"
-                  : "var(--accent)";
+            <>
+              <div className="lib-grid">
+                {scheduledPosts.slice(0, visibleSched).map((p) => {
+                  const st = schedStatus(p);
+                  return (
+                    <LibCard
+                      key={p.id}
+                      onOpen={() => setExpandedSchedId(p.id)}
+                      ariaLabel={`Ouvrir « ${schedTitle(p)} »`}
+                      title={schedTitle(p)}
+                      tags={<span className={`lib-tag ${st.cls}`}>{st.label}</span>}
+                      meta={new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
+                      preview={p.post_text}
+                    />
+                  );
+                })}
+              </div>
+              <LibMore
+                total={scheduledPosts.length}
+                visible={visibleSched}
+                onMore={() => setVisibleSched((v) => v + LIB_STEP)}
+                onLess={() => setVisibleSched(LIB_PAGE)}
+              />
+              {expandedSchedPost && (() => {
+                const p = expandedSchedPost;
+                const st = schedStatus(p);
                 return (
-                  <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <p style={{ margin: "0 0 4px", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.post_text.slice(0, 120)}{p.post_text.length > 120 ? "…" : ""}</p>
-                      <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
-                        {new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
-                        {" — "}
-                        <span style={{ color: statusColor }}>{statusLabel}</span>
-                      </p>
-                      {p.status === "failed" && p.error_message && <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--error, #e53e3e)" }}>{p.error_message}</p>}
-                    </div>
+                  <LibModal
+                    title={schedTitle(p)}
+                    onClose={() => setExpandedSchedId(null)}
+                    tags={
+                      <>
+                        <span className={`lib-tag ${st.cls}`}>{st.label}</span>
+                        <span className="lib-tag g">{new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}</span>
+                      </>
+                    }
+                  >
+                    <p style={{ whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.6, margin: "0 0 14px" }}>{p.post_text}</p>
+                    {p.status === "failed" && p.error_message && (
+                      <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--danger)" }}>{p.error_message}</p>
+                    )}
                     {p.status === "pending" && (
-                      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                        <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={editingPost === p.id || cancellingPost === p.id} onClick={() => openEditScheduled(p)}>
-                          <Pencil size={12} /> Modifier
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+                        <button className="secondary-button" style={{ fontSize: 13 }} disabled={editingPost === p.id || cancellingPost === p.id} onClick={() => { openEditScheduled(p); setExpandedSchedId(null); }}>
+                          <Pencil size={14} /> Modifier
                         </button>
-                        <button className="secondary-button" style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }} disabled={cancellingPost === p.id || editingPost === p.id} onClick={() => cancelScheduled(p.id)}>
-                          {cancellingPost === p.id ? <Loader2 size={12} className="spinning" /> : <Trash2 size={12} />}
+                        <button className="secondary-button" style={{ fontSize: 13, color: "var(--danger)" }} disabled={cancellingPost === p.id || editingPost === p.id} onClick={() => { cancelScheduled(p.id); setExpandedSchedId(null); }}>
+                          {cancellingPost === p.id ? <Loader2 size={14} className="spinning" /> : <Trash2 size={14} />} Annuler l&apos;envoi
                         </button>
                       </div>
                     )}
-                  </div>
+                  </LibModal>
                 );
-              })}
-            </div>
+              })()}
+            </>
           )}
-        </LibDrawer>
+        </section>
       )}
 
       {imageModalSaved && (
@@ -9703,8 +9857,9 @@ function MonitoringFeedView({
   const [checkMsg, setCheckMsg] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
-  const [open, setOpen] = useState(false); // tiroir replié par défaut (compact)
-  const [showAll, setShowAll] = useState(false); // aperçu 3 posts → « Voir tout »
+  // Refonte : galerie 3-up (aperçu) + pop-up de détail au clic.
+  const [visibleFeed, setVisibleFeed] = useState(LIB_PAGE);
+  const [expandedFeedId, setExpandedFeedId] = useState<string | null>(null);
 
   async function load() {
     if (!isAuthed) return;
@@ -9813,121 +9968,134 @@ function MonitoringFeedView({
     );
   }
 
+  const expandedFeed = posts.find((p) => p.id === expandedFeedId) || null;
+
   return (
-    <LibDrawer
-      icon={<Eye size={20} />}
-      title={`Veille des influenceurs suivis${posts.length ? ` (${posts.length})` : ""}`}
-      desc="Les derniers posts de tes influenceurs suivis — inspire-t'en en un clic, ou garde-les pour plus tard."
-      open={open}
-      onToggle={() => setOpen((v) => !v)}
-    >
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-        <button type="button" className="secondary-button" style={{ fontSize: 13 }} disabled={loading} onClick={() => void load()}>
-          {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />} Rafraîchir
-        </button>
-        {followedCount > 0 && (
-          <button
-            type="button"
-            className="primary-button"
-            style={{ fontSize: 13 }}
-            disabled={checking}
-            title="Scrape les derniers posts de tes influenceurs suivis et enregistre les nouveaux"
-            onClick={checkNow}
-          >
-            {checking ? <Loader2 size={14} className="spinning" /> : <Zap size={14} />} Vérifier les nouveaux posts
-          </button>
-        )}
-      </div>
+    <section className="lib-sec">
+      <LibSectionHead
+        icon={<Eye size={18} />}
+        title="Veille des influenceurs suivis"
+        count={posts.length}
+        desc="Les derniers posts de tes influenceurs suivis. Clique pour lire en entier, t'en inspirer ou le garder dans ta bibliothèque."
+        right={
+          <>
+            <button type="button" className="secondary-button" style={{ fontSize: 13 }} disabled={loading} onClick={() => void load()}>
+              {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />} Rafraîchir
+            </button>
+            {followedCount > 0 && (
+              <button
+                type="button"
+                className="primary-button"
+                style={{ fontSize: 13 }}
+                disabled={checking}
+                title="Scrape les derniers posts de tes influenceurs suivis et enregistre les nouveaux"
+                onClick={checkNow}
+              >
+                {checking ? <Loader2 size={14} className="spinning" /> : <Zap size={14} />} Vérifier les nouveaux posts
+              </button>
+            )}
+          </>
+        }
+      />
 
       {checkMsg && <div className="card" style={{ marginBottom: 12, padding: "10px 14px", fontSize: 13, color: "var(--muted)" }}>{checkMsg}</div>}
       {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
       {followedCount === 0 ? (
-        <div className="card" style={{ textAlign: "center", padding: 32 }}>
+        <div className="lib-empty">
           <Eye size={24} style={{ opacity: 0.35, marginBottom: 8 }} />
-          <p style={{ margin: 0, color: "var(--muted)" }}>
+          <p style={{ margin: 0 }}>
             Tu ne suis encore aucun influenceur. Va dans « Mes influenceurs » et clique « Suivre » (jusqu&apos;à 5) pour activer la veille.
           </p>
         </div>
       ) : loading && posts.length === 0 ? (
-        <div className="sk-list" aria-hidden style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+        <div className="lib-grid" aria-hidden>
           {Array.from({ length: 3 }).map((_, i) => (
-            <div className="card" key={i} style={{ flex: "1 1 220px", display: "grid", gap: 8, padding: 12 }}>
+            <div className="card" key={i} style={{ display: "grid", gap: 8, padding: 12 }}>
               <Sk h={14} w={120} r={6} />
-              <Sk h={90} w="100%" r={6} />
+              <Sk h={82} w="100%" r={6} />
               <Sk h={10} w="94%" />
               <Sk h={10} w="70%" />
             </div>
           ))}
         </div>
       ) : posts.length === 0 ? (
-        <div className="card" style={{ textAlign: "center", padding: 32 }}>
-          <p style={{ margin: 0, color: "var(--muted)" }}>
-            Aucun post récent en stock pour tes influenceurs suivis. Clique « Vérifier les nouveaux posts », attends ~30 s par influenceur, puis « Rafraîchir ».
-          </p>
+        <div className="lib-empty">
+          Aucun post récent en stock pour tes influenceurs suivis. Clique « Vérifier les nouveaux posts », attends ~30 s par influenceur, puis « Rafraîchir ».
         </div>
       ) : (
         <>
-          {/* Aperçu compact : 3 posts côte à côte, « Voir tout » déroule le reste. */}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-            {(showAll ? posts : posts.slice(0, 3)).map((p) => {
-              const img = firstImage(p);
-              const text = p.text || "";
-              const preview = text.length > 160 ? `${text.slice(0, 160)}…` : text;
-              return (
-                <div key={p.id} className="card" style={{ flex: "1 1 220px", minWidth: 0, display: "flex", flexDirection: "column", gap: 8, padding: 12 }}>
-                  <div style={{ display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" }}>
-                    <strong style={{ fontSize: 13 }}>{p.influencer_name || p.influencer_handle}</strong>
-                    <span style={{ fontSize: 11, color: "var(--muted)" }}>{fmtFeedDate(p.posted_at)}</span>
-                    {isNew(p) && <span className="daily-seed-tag" style={{ background: "var(--primary)", color: "#fff" }}>Nouveau</span>}
-                  </div>
-                  <span style={{ fontSize: 11, color: "var(--muted)" }}>👍 {fmt(p.likes)} · 💬 {fmt(p.comments)} · 🔁 {fmt(p.reposts)}</span>
-                  {img && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={img} alt="" style={{ width: "100%", height: 90, objectFit: "cover", borderRadius: 6 }} />
-                  )}
-                  <p style={{ margin: 0, fontSize: 13, whiteSpace: "pre-wrap", color: "var(--muted)" }}>{preview}</p>
-                  <div style={{ display: "flex", gap: 6, marginTop: "auto", flexWrap: "wrap", alignItems: "center" }}>
-                    <button
-                      type="button"
-                      className="primary-button"
-                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                      title="Génère un post pour toi sur le même angle, réécrit selon ton profil"
-                      onClick={() => inspire(p)}
-                    >
-                      <Sparkles size={12} /> M&apos;en inspirer
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      style={{ fontSize: 12, minHeight: 30, padding: "0 10px" }}
-                      disabled={savingId === p.id || !!savedIds[p.id]}
-                      title="Garde ce post (texte, image, structure extraite par l'IA) dans ta bibliothèque"
-                      onClick={() => void keepInLibrary(p)}
-                    >
-                      {savingId === p.id
-                        ? <Loader2 size={12} className="spinning" />
-                        : savedIds[p.id] ? <CheckCircle2 size={12} /> : <BookmarkPlus size={12} />}
-                      {savedIds[p.id] ? " Gardé ✓" : savingId === p.id ? " …" : " Garder"}
-                    </button>
-                    {safeHttpUrl(p.url) && (
-                      <a href={safeHttpUrl(p.url)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "var(--muted)" }} title="Voir sur LinkedIn">
-                        ↗
-                      </a>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+          <div className="lib-grid">
+            {posts.slice(0, visibleFeed).map((p) => (
+              <LibCard
+                key={p.id}
+                onOpen={() => setExpandedFeedId(p.id)}
+                ariaLabel={`Ouvrir le post de ${p.influencer_name || p.influencer_handle}`}
+                thumb={firstImage(p) || undefined}
+                title={p.influencer_name || p.influencer_handle}
+                tags={isNew(p) ? <span className="lib-tag ok">Nouveau</span> : undefined}
+                meta={<>👍 {fmt(p.likes)} · 💬 {fmt(p.comments)} · 🔁 {fmt(p.reposts)} · {fmtFeedDate(p.posted_at)}</>}
+                preview={p.text || ""}
+              />
+            ))}
           </div>
-          {posts.length > 3 && (
-            <button type="button" className="link-button" style={{ marginTop: 12, fontSize: 13 }} onClick={() => setShowAll((v) => !v)}>
-              {showAll ? "Voir moins" : `Voir tout (${posts.length})`}
-            </button>
-          )}
+          <LibMore
+            total={posts.length}
+            visible={visibleFeed}
+            onMore={() => setVisibleFeed((v) => v + LIB_STEP)}
+            onLess={() => setVisibleFeed(LIB_PAGE)}
+          />
+          {expandedFeed && (() => {
+            const p = expandedFeed;
+            return (
+              <LibModal
+                title={p.influencer_name || p.influencer_handle}
+                thumb={firstImage(p) || undefined}
+                onClose={() => setExpandedFeedId(null)}
+                tags={
+                  <>
+                    {isNew(p) && <span className="lib-tag ok">Nouveau</span>}
+                    <span className="lib-tag g">👍 {fmt(p.likes)} · 💬 {fmt(p.comments)} · 🔁 {fmt(p.reposts)}</span>
+                    <span className="lib-tag g">{fmtFeedDate(p.posted_at)}</span>
+                  </>
+                }
+              >
+                <p style={{ whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.6, margin: "0 0 16px" }}>{p.text}</p>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    style={{ fontSize: 13 }}
+                    title="Génère un post pour toi sur le même angle, réécrit selon ton profil"
+                    onClick={() => { inspire(p); setExpandedFeedId(null); }}
+                  >
+                    <Sparkles size={14} /> M&apos;en inspirer
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{ fontSize: 13 }}
+                    disabled={savingId === p.id || !!savedIds[p.id]}
+                    title="Garde ce post (texte, image, structure extraite par l'IA) dans ta bibliothèque"
+                    onClick={() => void keepInLibrary(p)}
+                  >
+                    {savingId === p.id
+                      ? <Loader2 size={14} className="spinning" />
+                      : savedIds[p.id] ? <CheckCircle2 size={14} /> : <BookmarkPlus size={14} />}
+                    {savedIds[p.id] ? " Gardé ✓" : savingId === p.id ? " …" : " Garder dans ma bibliothèque"}
+                  </button>
+                  {safeHttpUrl(p.url) && (
+                    <a href={safeHttpUrl(p.url)} target="_blank" rel="noopener noreferrer" className="secondary-button" style={{ fontSize: 13, textDecoration: "none", marginLeft: "auto" }} title="Voir sur LinkedIn">
+                      <Link2 size={14} /> Voir sur LinkedIn
+                    </a>
+                  )}
+                </div>
+              </LibModal>
+            );
+          })()}
         </>
       )}
-    </LibDrawer>
+    </section>
   );
 }
 
@@ -10098,8 +10266,9 @@ function MyLibraryView({
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
 }) {
-  // ALE-223 : rendu en tiroir repliable au sein de l'onglet « Ma bibliothèque ».
-  const [open, setOpen] = useState(true); // ALE-231 : ouvert par défaut (import rapide en haut)
+  // Refonte : galerie 3-up (aperçu) + pop-up de détail au clic.
+  const [visibleRefs, setVisibleRefs] = useState(LIB_PAGE);
+  const [expandedRefId, setExpandedRefId] = useState<string | null>(null);
   const [entries, setEntries] = useState<PostTemplate[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -10111,8 +10280,6 @@ function MyLibraryView({
   const [imageNote, setImageNote] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [adding, setAdding] = useState(false);
-  // ALE-233 : déplier un post tronqué pour voir le texte complet (chaque post = template).
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   // ALE-234 : sources de prospection croisées avec la bibliothèque par URL de post.
   const [leadSources, setLeadSources] = useState<Record<string, LibraryLeadSource>>({});
   const [collectingId, setCollectingId] = useState<string | null>(null);
@@ -10250,206 +10417,223 @@ function MyLibraryView({
     );
   }
 
+  const expandedRef = entries.find((e) => e.id === expandedRefId) || null;
+
   return (
-    <LibDrawer
-      icon={<ListChecks size={20} />}
-      title={`Posts de référence & templates${entries.length ? ` (${entries.length})` : ""}`}
-      desc="Garde ici tout ce qui te sert de référence : des posts qui t'ont plu et des structures qui marchent. L'IA s'en inspire à la génération (toujours réécrits, jamais copiés), les structures deviennent des templates dans le Générateur, et les images servent de référence visuelle."
-      open={open}
-      onToggle={() => setOpen((v) => !v)}
-    >
-      <div className="card daily-reservoir">
-        <h3 className="daily-subtitle" style={{ margin: 0 }}><PlusCircle size={16} /> Ajouter à ma bibliothèque</h3>
-        <div className="ref-add" style={{ marginTop: 12, display: "grid", gap: 8 }}>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+    <>
+      {/* Barre d'ajout en surbrillance, tout en haut de « Ma bibliothèque ». */}
+      <div className="lib-hero">
+        <h2 className="lib-hero-title"><PlusCircle size={18} /> Ajouter à ma bibliothèque</h2>
+        <p className="lib-hero-desc">
+          Colle le lien d&apos;un post LinkedIn qui t&apos;a plu — texte, auteur, image et structure sont importés
+          automatiquement. L&apos;IA s&apos;en inspire ensuite à la génération (toujours réécrit, jamais copié).
+        </p>
+        <div className="lib-hero-row">
+          <input
+            type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addEntry(); } }}
+            placeholder="https://www.linkedin.com/posts/…"
+            maxLength={2000}
+          />
+          <button className="lib-hero-btn" onClick={addEntry} disabled={adding || !canAdd}>
+            {adding ? <Loader2 size={16} className="spinning" /> : <PlusCircle size={16} />} Ajouter
+          </button>
+        </div>
+        <details className="lib-hero-more">
+          <summary>Plus d&apos;options — texte collé, structure à la main, image ↓</summary>
+          <div className="lib-hero-optbox">
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Ou colle le texte du post directement (si tu n'as pas le lien)"
+              maxLength={6000}
+              rows={4}
+            />
             <input
               type="text"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addEntry(); } }}
-              placeholder="Colle le lien du post LinkedIn — texte, auteur, image et structure importés automatiquement"
-              maxLength={2000}
-              style={{ flex: "1 1 320px" }}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Pourquoi il te plaît ? (optionnel — guide l'IA)"
+              maxLength={500}
             />
-            <button className="primary-button" onClick={addEntry} disabled={adding || !canAdd}>
-              {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter à ma bibliothèque
-            </button>
-          </div>
-          <details>
-            <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--muted)" }}>Plus d&apos;options — texte collé, structure à la main, image</summary>
-            <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-              <textarea
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                placeholder="Ou colle le texte du post directement (si tu n'as pas le lien)"
-                maxLength={6000}
-                rows={4}
-              />
+            <input
+              type="text"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Nom de la structure (optionnel) — ex. « Accroche choc + 3 bullets + CTA »"
+              maxLength={200}
+            />
+            <textarea
+              value={structure}
+              onChange={(e) => setStructure(e.target.value)}
+              placeholder={"Structure à la main (optionnel), ligne par ligne — ex. :\n1. Accroche en une phrase choc\n2. 3 bullets avec un chiffre chacun\n3. Question finale pour faire commenter"}
+              maxLength={4000}
+              rows={4}
+            />
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <input
                 type="text"
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                placeholder="Pourquoi il te plaît ? (optionnel — guide l'IA)"
+                value={imageNote}
+                onChange={(e) => setImageNote(e.target.value)}
+                placeholder="Type d'image (optionnel) — ex. « juste deux logos côte à côte »"
                 maxLength={500}
+                style={{ flex: "2 1 220px" }}
               />
               <input
                 type="text"
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                placeholder="Nom de la structure (optionnel) — ex. « Accroche choc + 3 bullets + CTA »"
-                maxLength={200}
+                value={imageUrl}
+                onChange={(e) => setImageUrl(e.target.value)}
+                placeholder="Lien d'une image d'exemple (optionnel)"
+                maxLength={2000}
+                style={{ flex: "1 1 180px" }}
               />
-              <textarea
-                value={structure}
-                onChange={(e) => setStructure(e.target.value)}
-                placeholder={"Structure à la main (optionnel), ligne par ligne — ex. :\n1. Accroche en une phrase choc\n2. 3 bullets avec un chiffre chacun\n3. Question finale pour faire commenter"}
-                maxLength={4000}
-                rows={4}
-              />
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <input
-                  type="text"
-                  value={imageNote}
-                  onChange={(e) => setImageNote(e.target.value)}
-                  placeholder="Type d'image (optionnel) — ex. « juste deux logos côte à côte »"
-                  maxLength={500}
-                  style={{ flex: "2 1 220px" }}
-                />
-                <input
-                  type="text"
-                  value={imageUrl}
-                  onChange={(e) => setImageUrl(e.target.value)}
-                  placeholder="Lien d'une image d'exemple (optionnel)"
-                  maxLength={2000}
-                  style={{ flex: "1 1 180px" }}
-                />
-              </div>
             </div>
-          </details>
-        </div>
-        {error && <div className="error" style={{ marginTop: 8 }}>{error}</div>}
-        {collectMsg && (
-          <div style={{ marginTop: 8, fontSize: 13, color: "var(--success)" }}>✓ {collectMsg}</div>
-        )}
+          </div>
+        </details>
       </div>
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+      {collectMsg && (
+        <div style={{ marginBottom: 12, fontSize: 13, color: "var(--success)" }}>✓ {collectMsg}</div>
+      )}
 
-      <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
+      {/* Section « Posts de référence & templates » — galerie 3-up. */}
+      <section className="lib-sec">
+        <LibSectionHead
+          icon={<ListChecks size={18} />}
+          title="Posts de référence & templates"
+          count={entries.length}
+          desc="Les posts qui t'ont plu et les structures qui marchent. Les structures deviennent des templates dans le Générateur, les images servent de référence visuelle."
+        />
         {loading && entries.length === 0 ? (
-          <div className="sk-list" aria-hidden style={{ display: "grid", gap: 12 }}>
+          <div className="lib-grid" aria-hidden>
             {Array.from({ length: 3 }).map((_, i) => (
               <div className="card" key={i} style={{ display: "grid", gap: 8 }}>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <Sk h={14} w={160} r={6} />
-                  <Sk h={14} w={54} r={6} />
-                </div>
+                <Sk h={14} w={160} r={6} />
                 <Sk h={10} w="92%" />
                 <Sk h={10} w="78%" />
               </div>
             ))}
           </div>
         ) : entries.length === 0 ? (
-          <div className="card" style={{ textAlign: "center", padding: 24 }}>
-            <p style={{ margin: 0, color: "var(--muted)" }}>
-              Ta bibliothèque est vide — colle le lien d&apos;un post qui t&apos;a plu ci-dessus, tu le retrouveras
-              comme inspiration et comme template dans le Générateur.
-            </p>
+          <div className="lib-empty">
+            Ta bibliothèque est vide — colle le lien d&apos;un post qui t&apos;a plu ci-dessus, tu le retrouveras
+            comme inspiration et comme template dans le Générateur.
           </div>
         ) : (
-          entries.map((t) => {
-            const postText = (t.post_text || "").trim();
-            const structureText = (t.structure_text || "").trim();
-            const leadSource = t.source_post_url ? leadSources[t.source_post_url] : undefined;
-            return (
-              <div key={t.id} className="card" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-                    <strong>{libraryEntryTitle(t)}</strong>
-                    {postText && <span className="daily-seed-tag">texte</span>}
-                    {structureText && <span className="daily-seed-tag">structure</span>}
-                    {t.image_url && <span className="daily-seed-tag">image</span>}
-                    {t.source === "influencer" && (
-                      <span className="daily-seed-tag">depuis la veille{t.source_author ? ` · ${t.source_author}` : ""}</span>
-                    )}
-                    {leadSource && (
-                      <span
-                        className="daily-seed-tag"
-                        style={{ color: "var(--success)", fontWeight: 600 }}
-                        title="Ce post demande de commenter un mot-clé pour recevoir une ressource — ses commentateurs sont des prospects chauds"
-                      >
-                        🎯 lead magnet{leadSource.trigger_keyword ? ` · « ${leadSource.trigger_keyword} »` : ""}
-                      </span>
-                    )}
-                  </div>
-                  {postText && (
-                    <>
-                      <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
-                        {expanded[t.id] || postText.length <= 300 ? postText : `${postText.slice(0, 300)}…`}
-                      </p>
-                      {postText.length > 300 && (
-                        <button
-                          type="button"
-                          className="link-button"
-                          style={{ fontSize: 12, marginTop: 4 }}
-                          onClick={() => setExpanded((prev) => ({ ...prev, [t.id]: !prev[t.id] }))}
-                        >
-                          {expanded[t.id] ? "Voir moins" : "Voir le post complet"}
-                        </button>
-                      )}
-                    </>
-                  )}
-                  {structureText && (
-                    <p style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)" }}>
-                      <ListChecks size={12} style={{ verticalAlign: "-2px" }} />{" "}
-                      {structureText.length > 400 ? `${structureText.slice(0, 400)}…` : structureText}
-                    </p>
-                  )}
-                  {t.note && (
-                    <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>↳ pourquoi : {t.note}</p>
-                  )}
-                  {t.image_note && (
-                    <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
-                      <ImageIcon size={12} style={{ verticalAlign: "-2px" }} /> Image : {t.image_note}
-                    </p>
-                  )}
-                  {(t.source_author || t.source_post_url) && !t.structure_label && (
-                    <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
-                      {safeHttpUrl(t.source_post_url) ? (
-                        <a href={safeHttpUrl(t.source_post_url)} target="_blank" rel="noreferrer">voir le post</a>
-                      ) : null}
-                    </p>
-                  )}
-                  {/* ALE-233 : ce post est directement sélectionnable comme template dans le
-                      Générateur (menu « Template ») — plus de bouton d'extraction ni de
-                      « Générer un post inspiré » (chemin redondant). Seule action restante :
-                      la collecte de commentateurs quand le post est un lead magnet. */}
-                  {leadSource && (
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                      <button
-                        className="secondary-button"
-                        style={{ fontSize: 12, minHeight: 28, padding: "0 10px" }}
-                        title="Récupère les personnes qui ont commenté ce post — elles deviennent des leads dans l'onglet Prospection"
-                        onClick={() => collectCommenters(leadSource)}
-                        disabled={collectingId === leadSource.id}
-                      >
-                        {collectingId === leadSource.id ? <Loader2 size={12} className="spinning" /> : <Users size={12} />}{" "}
-                        {leadSource.collected_at
-                          ? `Mettre à jour les commentateurs (${leadSource.comments_count ?? 0} récupérés)`
-                          : "Récupérer les commentateurs"}
-                      </button>
-                    </div>
-                  )}
-                </div>
-                {t.image_url && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={t.image_url} alt="" style={{ width: 90, maxHeight: 90, objectFit: "cover", borderRadius: 8, flex: "0 0 auto" }} />
-                )}
-                <button className="icon-button" title="Supprimer" onClick={() => deleteEntry(t.id)}><Trash2 size={14} /></button>
-              </div>
-            );
-          })
+          <>
+            <div className="lib-grid">
+              {entries.slice(0, visibleRefs).map((t) => {
+                const postText = (t.post_text || "").trim();
+                const structureText = (t.structure_text || "").trim();
+                const leadSource = t.source_post_url ? leadSources[t.source_post_url] : undefined;
+                return (
+                  <LibCard
+                    key={t.id}
+                    onOpen={() => setExpandedRefId(t.id)}
+                    ariaLabel={`Ouvrir « ${libraryEntryTitle(t)} »`}
+                    thumb={t.image_url || undefined}
+                    title={libraryEntryTitle(t)}
+                    tags={
+                      <>
+                        {postText && <span className="lib-tag">texte</span>}
+                        {structureText && <span className="lib-tag">structure</span>}
+                        {t.image_url && <span className="lib-tag">image</span>}
+                        {t.source === "influencer" && <span className="lib-tag g">veille</span>}
+                        {leadSource && <span className="lib-tag ok">🎯 lead magnet</span>}
+                      </>
+                    }
+                    preview={postText || structureText}
+                  />
+                );
+              })}
+            </div>
+            <LibMore
+              total={entries.length}
+              visible={visibleRefs}
+              onMore={() => setVisibleRefs((v) => v + LIB_STEP)}
+              onLess={() => setVisibleRefs(LIB_PAGE)}
+            />
+          </>
         )}
-      </div>
-    </LibDrawer>
+      </section>
+
+      {/* Pop-up de détail d'une référence. */}
+      {expandedRef && (() => {
+        const t = expandedRef;
+        const postText = (t.post_text || "").trim();
+        const structureText = (t.structure_text || "").trim();
+        const leadSource = t.source_post_url ? leadSources[t.source_post_url] : undefined;
+        const link = safeHttpUrl(t.source_post_url);
+        return (
+          <LibModal
+            title={libraryEntryTitle(t)}
+            thumb={t.image_url || undefined}
+            onClose={() => setExpandedRefId(null)}
+            tags={
+              <>
+                {postText && <span className="lib-tag">texte</span>}
+                {structureText && <span className="lib-tag">structure</span>}
+                {t.image_url && <span className="lib-tag">image</span>}
+                {t.source === "influencer" && (
+                  <span className="lib-tag g">depuis la veille{t.source_author ? ` · ${t.source_author}` : ""}</span>
+                )}
+                {leadSource && (
+                  <span className="lib-tag ok">🎯 lead magnet{leadSource.trigger_keyword ? ` · « ${leadSource.trigger_keyword} »` : ""}</span>
+                )}
+              </>
+            }
+          >
+            {postText && (
+              <p style={{ whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.6, margin: "0 0 14px" }}>{postText}</p>
+            )}
+            {structureText && (
+              <div style={{ background: "var(--surface-low)", border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
+                <p style={{ margin: "0 0 6px", fontSize: 12, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".03em" }}>
+                  <ListChecks size={13} style={{ verticalAlign: "-2px" }} /> Structure
+                </p>
+                <p style={{ whiteSpace: "pre-wrap", fontSize: 13.5, lineHeight: 1.55, margin: 0 }}>{structureText}</p>
+              </div>
+            )}
+            {t.note && <p style={{ margin: "0 0 8px", fontSize: 13, color: "var(--muted)" }}>↳ pourquoi : {t.note}</p>}
+            {t.image_note && (
+              <p style={{ margin: "0 0 8px", fontSize: 13, color: "var(--muted)" }}>
+                <ImageIcon size={13} style={{ verticalAlign: "-2px" }} /> Image : {t.image_note}
+              </p>
+            )}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", borderTop: "1px solid var(--border)", paddingTop: 16, marginTop: 4 }}>
+              {link && (
+                <a href={link} target="_blank" rel="noreferrer" className="secondary-button" style={{ fontSize: 13, textDecoration: "none" }}>
+                  <Link2 size={14} /> Voir le post
+                </a>
+              )}
+              {leadSource && (
+                <button
+                  className="secondary-button"
+                  style={{ fontSize: 13 }}
+                  title="Récupère les personnes qui ont commenté ce post — elles deviennent des leads dans l'onglet Prospection"
+                  onClick={() => collectCommenters(leadSource)}
+                  disabled={collectingId === leadSource.id}
+                >
+                  {collectingId === leadSource.id ? <Loader2 size={14} className="spinning" /> : <Users size={14} />}{" "}
+                  {leadSource.collected_at
+                    ? `Mettre à jour les commentateurs (${leadSource.comments_count ?? 0})`
+                    : "Récupérer les commentateurs"}
+                </button>
+              )}
+              <button
+                className="secondary-button"
+                style={{ fontSize: 13, marginLeft: "auto", color: "var(--danger)" }}
+                onClick={() => { deleteEntry(t.id); setExpandedRefId(null); }}
+              >
+                <Trash2 size={14} /> Supprimer
+              </button>
+            </div>
+          </LibModal>
+        );
+      })()}
+    </>
   );
 }
 
@@ -11331,7 +11515,7 @@ function MyContentHub({
   return (
     <div>
       <p className="section-desc" style={{ marginTop: 0, marginBottom: 20 }}>
-        Ta bibliothèque de références, tes contenus sauvegardés, tes posts programmés et la veille de tes influenceurs suivis — pour t&apos;y retrouver facilement.
+        Ta bibliothèque de références, tes contenus sauvegardés, tes posts programmés et la veille de tes influenceurs suivis — pour t&apos;y retrouver facilement. Clique une carte pour l&apos;agrandir, l&apos;éditer et agir dessus.
       </p>
       {/* Bloc « Posts de référence & templates » tout en haut (demande Alex). */}
       <MyLibraryView isAuthed={isAuthed} requireAuth={requireAuth} />

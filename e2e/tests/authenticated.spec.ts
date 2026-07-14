@@ -29,31 +29,31 @@ test("Contenu › Analyses : page empilée (Veille fusionnée, ALE-257)", async 
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Contenu › Ma bibliothèque : onglet fusionné à tiroirs (ALE-223)", async ({ page }) => {
+test("Contenu › Ma bibliothèque : barre d'ajout en haut + sections en galerie", async ({ page }) => {
+  // Refonte : la barre d'ajout est un bandeau en surbrillance toujours visible en
+  // haut de page, et chaque section est une galerie (plus de tiroirs à déplier).
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Ma bibliothèque");
   // ALE-223 : le sous-onglet « Mes contenus » a été fusionné ici → il n'existe plus.
   await expect(page.locator(".tab", { hasText: "Mes contenus" })).toHaveCount(0);
-  // Tiroir 1 (ouvert par défaut) : les contenus sauvegardés.
+  // Barre d'ajout en surbrillance : titre, champ lien et bouton visibles d'emblée.
+  const hero = page.locator(".lib-hero");
+  await expect(hero.getByRole("heading", { name: /Ajouter à ma bibliothèque/i })).toBeVisible();
+  await expect(hero.getByPlaceholder(/linkedin\.com\/posts/i)).toBeVisible();
+  await expect(hero.getByRole("button", { name: /^Ajouter$/i })).toBeVisible();
+  // Sections rendues en galerie (titres visibles sans rien déplier).
+  await expect(page.getByRole("heading", { name: /Posts de référence & templates/i })).toBeVisible();
   await expect(page.getByRole("heading", { name: /Mes contenus sauvegardés/i })).toBeVisible();
-  // Tiroir « Posts de référence & templates » : replié par défaut → le champ d'ajout
-  // par lien est masqué tant qu'on n'a pas ouvert le tiroir.
-  const libToggle = page.getByRole("button", { name: /Posts de référence & templates/i });
-  await expect(libToggle).toBeVisible();
-  await expect(page.getByPlaceholder(/Colle le lien du post LinkedIn/i)).toHaveCount(0);
-  await libToggle.click();
-  await expect(page.getByPlaceholder(/Colle le lien du post LinkedIn/i)).toBeVisible();
-  await expect(page.getByRole("button", { name: /Ajouter à ma bibliothèque/i })).toBeVisible();
-  // Le tiroir interne « Plus d'options » expose texte collé, note, structure à la main.
+  // « Plus d'options » expose texte collé, note, structure à la main.
   await page.getByText(/Plus d'options/i).click();
   await expect(page.getByPlaceholder(/colle le texte du post directement/i)).toBeVisible();
   await expect(page.getByPlaceholder(/Nom de la structure/i)).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
-test("Contenu › Ma bibliothèque : veille des influenceurs (tiroir compact) (ALE-215/257)", async ({ page }) => {
-  // La veille des influenceurs suivis est un tiroir compact (replié par défaut),
-  // en bas de Ma bibliothèque — déplacé depuis l'onglet Analyses puis rationalisé.
+test("Contenu › Ma bibliothèque : section veille des influenceurs (ALE-215/257)", async ({ page }) => {
+  // La veille des influenceurs suivis est une section en galerie, en bas de
+  // Ma bibliothèque — déplacée depuis l'onglet Analyses puis rationalisée.
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Ma bibliothèque");
   await expect(page.getByRole("heading", { name: /Veille des influenceurs suivis/i })).toBeVisible();
