@@ -3478,35 +3478,141 @@ function IdeaReservoir({
 }
 
 /** Pop-up du parcours guidé : départ → idée → profil éditorial → structure → 1 post (ALE-286). */
+type WizardStep = "start" | "idea" | "ideas" | "inspiration" | "role" | "structure";
+
+/** L'état complet d'un parcours guidé, tel qu'il survit à une fermeture. */
+type WizardDraft = {
+  id: string;
+  step: WizardStep;
+  idea: string;
+  inspiration: InspirationPost | null;
+  ideaLines: IdeaLine[];
+  pickedLine: string;
+  role: string;
+  reco: { editorial_role: string; reason: string } | null;
+  structures: StructureChoice[];
+  // "" = structure libre (aucune imposée) — c'est aussi le repli quand la
+  // bibliothèque est vide, pour qu'un compte neuf ne reste pas coincé là.
+  templateId: string;
+  recommendedId: string | null;
+  url: string;
+  pasteMode: boolean;
+  pasted: string;
+};
+
+function newWizardDraft(idea = ""): WizardDraft {
+  return {
+    id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    step: idea ? "idea" : "start",
+    idea,
+    inspiration: null,
+    ideaLines: [],
+    pickedLine: "",
+    role: "",
+    reco: null,
+    structures: [],
+    templateId: "",
+    recommendedId: null,
+    url: "",
+    pasteMode: false,
+    pasted: "",
+  };
+}
+
+// « Fermer » ne jette pas le parcours : il le laisse EN LIGNE dans la file, au
+// statut « à terminer ». Le parcours coûte des crédits (les 3 idées) et de
+// l'attente (lecture du post d'inspiration, reco d'angle, structures) — le
+// refermer ne doit pas revenir à tout repayer. Plusieurs parcours peuvent
+// coexister : le gros bouton en démarre toujours un NOUVEAU, on reprend un
+// ancien en cliquant sa ligne. Store module-level (même patron que `_genCache`)
+// : il survit à un changement d'onglet, pas à un rechargement de page.
+let _wizardDrafts: WizardDraft[] = [];
+// Chaque ouverture prend un numéro. Une réponse réseau qui arrive après une
+// fermeture n'écrit dans le brouillon que si personne ne l'a rouvert entre-temps
+// — sinon elle écraserait l'état courant par celui d'avant.
+let _wizardOpenSeq = 0;
+
+function upsertWizardDraft(draft: WizardDraft) {
+  const i = _wizardDrafts.findIndex((d) => d.id === draft.id);
+  if (i === -1) _wizardDrafts = [draft, ..._wizardDrafts];
+  else _wizardDrafts = _wizardDrafts.map((d) => (d.id === draft.id ? draft : d));
+}
+
+/** Un parcours ouvert puis refermé aussitôt ne mérite pas de ligne. */
+function wizardDraftHasContent(d: WizardDraft): boolean {
+  return d.step !== "start" || d.idea.trim().length > 0;
+}
+
+/** Ce qui nomme la ligne : l'idée si elle est écrite, sinon celle qu'on a cochée. */
+function wizardDraftTitle(d: WizardDraft): string {
+  return d.idea.trim() || d.pickedLine.trim() || (d.inspiration ? `D'après le post de ${d.inspiration.author || "LinkedIn"}` : "") || "Post en préparation";
+}
+
+/** Où en est le parcours — dit au client ce qu'il lui reste à faire. */
+function wizardDraftStepLabel(d: WizardDraft): string {
+  if (d.step === "structure") return "il reste à choisir la structure";
+  if (d.step === "role") return "il reste à choisir l'angle";
+  if (d.step === "ideas") return d.pickedLine ? "idée choisie, à continuer" : "il reste à choisir une idée";
+  if (d.step === "inspiration") return d.inspiration ? "post lu, à continuer" : "il reste à coller le lien du post";
+  return "à continuer";
+}
+
 function PostWizardModal({
-  initialIdea,
+  draftId,
   onClose,
   onLaunched,
 }: {
-  initialIdea?: string;
+  draftId: string;
   onClose: () => void;
   onLaunched: (job: GenerationJob) => void;
 }) {
-  type Step = "start" | "idea" | "ideas" | "inspiration" | "role" | "structure";
-  const [step, setStep] = useState<Step>(initialIdea ? "idea" : "start");
-  const [idea, setIdea] = useState(initialIdea || "");
-  const [inspiration, setInspiration] = useState<InspirationPost | null>(null);
+  type Step = WizardStep;
+  const initial = useRef(_wizardDrafts.find((d) => d.id === draftId) || newWizardDraft()).current;
+  const openSeq = useRef(0);
+  if (openSeq.current === 0) openSeq.current = ++_wizardOpenSeq;
+  const done = useRef(false);
+
+  const [step, setStep] = useState<Step>(initial.step);
+  const [idea, setIdea] = useState(initial.idea);
+  const [inspiration, setInspiration] = useState<InspirationPost | null>(initial.inspiration);
   const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
-  const [ideaLines, setIdeaLines] = useState<IdeaLine[]>([]);
-  const [pickedLine, setPickedLine] = useState<string>("");
-  const [role, setRole] = useState("");
-  const [reco, setReco] = useState<{ editorial_role: string; reason: string } | null>(null);
-  const [structures, setStructures] = useState<StructureChoice[]>([]);
-  // "" = structure libre (aucune imposée) — c'est aussi le repli quand la
-  // bibliothèque est vide, pour qu'un compte neuf ne reste pas coincé ici.
-  const [templateId, setTemplateId] = useState("");
-  const [recommendedId, setRecommendedId] = useState<string | null>(null);
-  const [url, setUrl] = useState("");
-  const [pasteMode, setPasteMode] = useState(false);
-  const [pasted, setPasted] = useState("");
+  const [ideaLines, setIdeaLines] = useState<IdeaLine[]>(initial.ideaLines);
+  const [pickedLine, setPickedLine] = useState<string>(initial.pickedLine);
+  const [role, setRole] = useState(initial.role);
+  const [reco, setReco] = useState<{ editorial_role: string; reason: string } | null>(initial.reco);
+  const [structures, setStructures] = useState<StructureChoice[]>(initial.structures);
+  const [templateId, setTemplateId] = useState(initial.templateId);
+  const [recommendedId, setRecommendedId] = useState<string | null>(initial.recommendedId);
+  const [url, setUrl] = useState(initial.url);
+  const [pasteMode, setPasteMode] = useState(initial.pasteMode);
+  const [pasted, setPasted] = useState(initial.pasted);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [seedSaved, setSeedSaved] = useState(false);
+
+  // Le brouillon suit l'état à chaque frappe : au moment où le client ferme, sa
+  // ligne est déjà à jour — rien à sauver dans le gestionnaire de fermeture.
+  useEffect(() => {
+    if (done.current) return;
+    upsertWizardDraft({ id: initial.id, step, idea, inspiration, ideaLines, pickedLine, role, reco, structures, templateId, recommendedId, url, pasteMode, pasted });
+  }, [initial.id, step, idea, inspiration, ideaLines, pickedLine, role, reco, structures, templateId, recommendedId, url, pasteMode, pasted]);
+
+  /** Écrit dans le brouillon une réponse arrivée APRÈS une fermeture (fermer
+   *  pendant que les 3 idées se génèrent ne doit pas les perdre : elles sont
+   *  déjà payées). Sans effet si le parcours a été rouvert entre-temps. */
+  function patchDraft(patch: Partial<WizardDraft>) {
+    if (done.current || _wizardOpenSeq !== openSeq.current) return;
+    const current = _wizardDrafts.find((d) => d.id === initial.id);
+    if (!current) return;
+    upsertWizardDraft({ ...current, ...patch });
+  }
+
+  /** Post lancé (ou idée rangée au réservoir) : le parcours est consommé, sa
+   *  ligne disparaît. Le drapeau empêche l'effet ci-dessus de la ressusciter. */
+  function clearDraft() {
+    done.current = true;
+    _wizardDrafts = _wizardDrafts.filter((d) => d.id !== initial.id);
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -3540,8 +3646,12 @@ function PostWizardModal({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Génération des idées impossible");
       if (typeof data.credits === "number") emitCredits(data.credits);
-      setIdeaLines(Array.isArray(data.ideas) ? data.ideas : []);
+      const list: IdeaLine[] = Array.isArray(data.ideas) ? data.ideas : [];
+      setIdeaLines(list);
       setPickedLine("");
+      // Les idées sont payées : elles doivent être là au retour, même si le
+      // client a fermé la pop-up pendant la génération.
+      patchDraft({ step: "ideas", ideaLines: list, pickedLine: "" });
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -3560,11 +3670,14 @@ function PostWizardModal({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Lecture du post impossible");
-      setInspiration({ text: data.text, author: data.author, url: data.url, image_url: data.image_url });
+      const insp: InspirationPost = { text: data.text, author: data.author, url: data.url, image_url: data.image_url };
+      setInspiration(insp);
       setIdea(data.angle || "");
+      patchDraft({ step: "inspiration", inspiration: insp, idea: data.angle || "" });
     } catch (err: any) {
       setError(err.message);
       setPasteMode(true);
+      patchDraft({ pasteMode: true });
     } finally {
       setBusy("");
     }
@@ -3595,13 +3708,17 @@ function PostWizardModal({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Recommandation indisponible");
-      setReco({ editorial_role: data.editorial_role, reason: data.reason || "" });
+      const nextReco = { editorial_role: data.editorial_role as string, reason: (data.reason as string) || "" };
+      setReco(nextReco);
       setRole(data.editorial_role);
+      patchDraft({ step: "role", idea: text, reco: nextReco, role: data.editorial_role });
     } catch (err: any) {
       // La reco n'est qu'un confort : sans elle, le client choisit lui-même son
       // rôle plutôt que de voir le parcours s'arrêter là.
       setError(`Recommandation indisponible (${err.message}) — choisis toi-même le profil.`);
-      setRole((r) => r || "performance");
+      const fallback = role || "performance";
+      setRole(fallback);
+      patchDraft({ step: "role", idea: text, role: fallback });
     } finally {
       setBusy("");
     }
@@ -3620,6 +3737,8 @@ function PostWizardModal({
       });
       if (!res.ok) throw new Error("Enregistrement impossible");
       setSeedSaved(true);
+      // L'idée est au chaud dans le réservoir : plus rien à reprendre ici.
+      clearDraft();
       setTimeout(onClose, 900);
     } catch (err: any) {
       setError(err.message);
@@ -3647,6 +3766,7 @@ function PostWizardModal({
       setRecommendedId(data.recommended_id ?? null);
       // Pré-cochée : la plus adaptée selon l'IA. Bibliothèque vide → structure libre.
       setTemplateId(data.recommended_id ?? "");
+      patchDraft({ step: "structure", structures: list, recommendedId: data.recommended_id ?? null, templateId: data.recommended_id ?? "" });
     } catch (err: any) {
       // La proposition n'est qu'un confort : sans elle, on écrit le post en
       // structure libre plutôt que d'arrêter le client au bord de l'arrivée.
@@ -3654,6 +3774,7 @@ function PostWizardModal({
       setStructures([]);
       setRecommendedId(null);
       setTemplateId("");
+      patchDraft({ step: "structure", structures: [], recommendedId: null, templateId: "" });
     } finally {
       setBusy("");
     }
@@ -3681,6 +3802,9 @@ function PostWizardModal({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Lancement de la génération impossible");
       if (typeof data.credits === "number") emitCredits(data.credits);
+      // Le post est parti en file : le brouillon est consommé, la prochaine
+      // ouverture repart de « Par où on commence ? ».
+      clearDraft();
       onLaunched(data as GenerationJob);
       onClose();
     } catch (err: any) {
@@ -3716,7 +3840,14 @@ function PostWizardModal({
       <div className="card" style={{ maxWidth: 720, width: "100%", padding: 24, maxHeight: "88vh", overflowY: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 4 }}>
           <h3 style={{ margin: 0 }}>{stepTitle[step]}</h3>
-          <button className="secondary-button" style={{ minHeight: 30, padding: "0 10px", fontSize: 12 }} onClick={onClose}>Fermer</button>
+          <button
+            className="secondary-button"
+            style={{ minHeight: 30, padding: "0 10px", fontSize: 12 }}
+            title="Ferme la fenêtre — ton post reste dans la file, à terminer quand tu veux."
+            onClick={onClose}
+          >
+            Fermer
+          </button>
         </div>
 
         {step !== "start" && (
@@ -4035,7 +4166,11 @@ function PostWizardModal({
 }
 
 function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated, imageJobs, onImageJobCreated, onRework }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void; imageJobs: ImageJob[]; onImageJobCreated: (job: ImageJob) => void; onRework?: (post: string) => void }) {
-  const [wizard, setWizard] = useState<{ idea: string } | null>(null);
+  // Les parcours inachevés vivent dans `_wizardDrafts` (module-level) : ils
+  // s'affichent en lignes dans la file, au-dessus des posts. `wizardId` ne dit
+  // que lequel est ouvert dans la pop-up (null = aucune pop-up).
+  const [drafts, setDrafts] = useState<WizardDraft[]>(_wizardDrafts);
+  const [wizardId, setWizardId] = useState<string | null>(null);
   const [templates, setTemplates] = useState<PostTemplate[]>([]);
   const [expanded, setExpanded] = useState<string | null>(_genCache.expanded);
   const [cancelling, setCancelling] = useState<string | null>(null);
@@ -4099,7 +4234,9 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   // avec le sujet déjà écrit, plutôt que de lancer une génération à l'aveugle.
   useEffect(() => {
     if (!seed?.topic) return;
-    setWizard({ idea: seed.topic });
+    const draft = newWizardDraft(seed.topic);
+    upsertWizardDraft(draft);
+    setWizardId(draft.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed?.nonce]);
 
@@ -4271,10 +4408,27 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     setTimeout(() => setCopied((c) => (c === line.key ? null : c)), 1500);
   }
 
-  function openWizard() {
+  /** Le gros bouton démarre TOUJOURS un nouveau post : les parcours déjà entamés
+   *  se reprennent depuis leur ligne dans la file, pas depuis ce bouton. */
+  function startWizard(idea = "") {
     if (!isAuthed) { requireAuth("Connecte-toi pour générer des posts."); return; }
     setError("");
-    setWizard({ idea: "" });
+    const draft = newWizardDraft(idea);
+    upsertWizardDraft(draft);
+    setWizardId(draft.id);
+  }
+
+  /** Fermeture : le parcours entamé reste en ligne dans la file. Celui qu'on a
+   *  ouvert sans rien y faire, lui, ne laisse pas de trace. */
+  function closeWizard() {
+    _wizardDrafts = _wizardDrafts.filter(wizardDraftHasContent);
+    setDrafts(_wizardDrafts);
+    setWizardId(null);
+  }
+
+  function discardDraft(id: string) {
+    _wizardDrafts = _wizardDrafts.filter((d) => d.id !== id);
+    setDrafts(_wizardDrafts);
   }
 
   return (
@@ -4290,7 +4444,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
             Une idée, un angle, une structure de ta bibliothèque — et ton post s&apos;écrit.
           </p>
         </div>
-        <button className="primary-button gen-hero-button" onClick={openWizard}>
+        <button className="primary-button gen-hero-button" onClick={() => startWizard()}>
           <Sparkles size={18} /> Générer un post
         </button>
       </div>
@@ -4298,14 +4452,46 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       <div style={{ marginTop: 24 }}>
         <h3 className="section-title" style={{ fontSize: 16 }}>
           <ListChecks size={18} /> Mes posts
-          {activeCount > 0 && <span className="badge" style={{ marginLeft: 8 }}>{activeCount} en cours</span>}
+          {activeCount + drafts.length > 0 && (
+            <span className="badge" style={{ marginLeft: 8 }}>{activeCount + drafts.length} en cours</span>
+          )}
         </h3>
-        {lines.length === 0 ? (
+        {lines.length === 0 && drafts.length === 0 ? (
           <p className="role-picker-hint">
             Aucun post pour l&apos;instant. Clique sur « Générer un post » : les posts apparaîtront ici, un par ligne, au fur et à mesure.
           </p>
         ) : (
           <div className="post-queue">
+            {/* Un parcours refermé avant la fin garde SA ligne : c'est là qu'on le
+                reprend. Toujours en tête — c'est ce qui attend une action. */}
+            {drafts.map((d) => (
+              <div key={d.id} className="post-queue-row">
+                <div
+                  className="post-queue-line"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setWizardId(d.id)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setWizardId(d.id); } }}
+                >
+                  <span className="post-queue-status"><PenTool size={16} color="var(--primary)" /></span>
+                  <span className="post-queue-main">
+                    <span className="post-queue-topic">{wizardDraftTitle(d)}</span>
+                    <span className="post-queue-meta">
+                      <span className="badge">En cours</span>
+                      <span>· {wizardDraftStepLabel(d)}</span>
+                    </span>
+                  </span>
+                  <button
+                    className="secondary-button"
+                    style={{ minHeight: 30, padding: "0 10px", fontSize: 12 }}
+                    onClick={(e) => { e.stopPropagation(); discardDraft(d.id); }}
+                  >
+                    Supprimer
+                  </button>
+                  <span className="post-queue-chevron"><ChevronRight size={18} /></span>
+                </div>
+              </div>
+            ))}
             {shownLines.map((line) => {
               const { job, key, variant } = line;
               const open = expanded === key;
@@ -4579,20 +4765,17 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
         <IdeaReservoir
           isAuthed={isAuthed}
           desc="Note tes idées quand elles viennent. Génère le post quand tu veux — l'idée du jour pioche aussi dedans, de haut en bas."
-          onGenerate={(text) => {
-            if (!isAuthed) { requireAuth("Connecte-toi pour générer des posts."); return; }
-            setWizard({ idea: text });
-          }}
+          onGenerate={(text) => startWizard(text)}
         />
       </div>
 
       {publishError && <div className="error" style={{ marginTop: 12 }}>{publishError}</div>}
       {imageError && <div className="error" style={{ marginTop: 12 }}>{imageError}</div>}
 
-      {wizard && (
+      {wizardId && (
         <PostWizardModal
-          initialIdea={wizard.idea}
-          onClose={() => setWizard(null)}
+          draftId={wizardId}
+          onClose={closeWizard}
           onLaunched={(job) => {
             // Le post apparaît aussitôt en file, sans attendre le prochain tour
             // de polling — sinon le client croirait que son clic n'a rien fait.
@@ -11999,6 +12182,10 @@ export default function Home() {
       _genCache.edited = {};
       _genCache.images = {};
       _genCache.expanded = null;
+      // Les parcours inachevés sont gardés en mémoire : sans cette purge, les
+      // idées (et les structures) du compte précédent réapparaîtraient en file
+      // chez le suivant dans le même onglet.
+      _wizardDrafts = [];
       _dailyIdeaCache.ideaImages = {};
       _dailyIdeaCache.appliedImageJobIds = new Set();
       _libraryAppliedImageJobIds.clear();
