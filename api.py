@@ -2584,6 +2584,11 @@ class OutreachMessageRequest(BaseModel):
 
 class OutreachChatSendRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=1500)
+    # ALE-253 : texte proposé par « Générer une réponse IA » avant édition, si le
+    # message envoyé en découle — permet de journaliser suggestion vs envoi pour
+    # les règles apprises. Facultatif : absent si le message a été écrit à la main.
+    suggested_text: str | None = Field(default=None, max_length=1500)
+    learn_opt_out: bool = False
 
 
 def _outreach_quota(account: dict[str, Any], counts: dict[str, int], counts_ok: bool = True) -> dict[str, Any]:
@@ -3156,8 +3161,9 @@ def me_linkedin_outreach_chat_reply_preview(
     history.sort(key=lambda m: str(m.get("created_at") or ""))
     lead = db.get_lead_by_chat_id(token, chat_id)
     targeting = db.get_lead_targeting(token) or {}
+    learned_rules = (db.get_ai_learned_rules(token, "linkedin") or {}).get("content") or ""
     try:
-        text = generate_reply(targeting, lead, history)
+        text = generate_reply(targeting, lead, history, learned_rules)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Génération de la réponse échouée : {exc}") from exc
     return {"message": text}
@@ -3174,12 +3180,22 @@ def me_linkedin_outreach_chat_send(
     quota = _outreach_quota(account, counts, ok)
     if not quota["can_message"]:
         raise HTTPException(status_code=(429 if ok else 503), detail=quota["message_blocked_reason"] or "Plafond de messages atteint.")
+    text = payload.text.strip()
     try:
-        unipile.send_message(chat_id, payload.text.strip())
+        unipile.send_message(chat_id, text)
     except unipile.UnipileError as exc:
         db.log_outreach_action(token, action_type="message", status="failed", chat_id=chat_id, error=str(exc))
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     db.log_outreach_action(token, action_type="message", status="sent", chat_id=chat_id)
+    if payload.suggested_text and payload.suggested_text.strip():
+        db.log_ai_reply_feedback(
+            token,
+            channel="linkedin",
+            conversation_ref=chat_id,
+            suggested_text=payload.suggested_text,
+            sent_text=text,
+            learn_opt_out=payload.learn_opt_out,
+        )
     return {"ok": True, "quota": _outreach_quota(account, *_safe_counts(token))}
 
 
@@ -4529,6 +4545,7 @@ def me_ig_drafts(
 
 class IgDraftSendRequest(BaseModel):
     text: str | None = Field(default=None, max_length=4000)
+    learn_opt_out: bool = False
 
 
 @app.post("/me/ig/drafts/{draft_id}/send")
@@ -4541,7 +4558,10 @@ def me_ig_draft_send(
 
     `text` fourni = version éditée par Alex (statut `edited`) ; sinon la
     suggestion telle quelle (statut `approved`). Envoie via ManyChat + persiste
-    le message sortant, puis marque le draft `sent`.
+    le message sortant, puis marque le draft `sent`. La suggestion originale et
+    le texte finalement envoyé sont aussi journalisés (`ai_reply_feedback`,
+    ALE-253) pour nourrir les règles apprises de l'agent — sauf si
+    `learn_opt_out` est coché (correction ponctuelle, pas un vrai pattern).
     """
     draft = db.get_ig_draft(token, draft_id)
     if not draft:
@@ -4551,12 +4571,22 @@ def me_ig_draft_send(
     conv = db.get_ig_conversation(token, draft["conversation_id"])
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation introuvable.")
-    edited = payload.text is not None and payload.text.strip() != (draft.get("reply") or "").strip()
-    text = (payload.text if payload.text is not None else draft.get("reply") or "").strip()
+    suggested = (draft.get("reply") or "").strip()
+    edited = payload.text is not None and payload.text.strip() != suggested
+    text = (payload.text if payload.text is not None else suggested).strip()
     if not text:
         raise HTTPException(status_code=400, detail="Réponse vide.")
     msg = _ig_send_to_conversation(token, conv, text)
     db.update_ig_draft(token, draft_id, status="sent", reply=text if edited else None)
+    if suggested:
+        db.log_ai_reply_feedback(
+            token,
+            channel="instagram",
+            conversation_ref=draft["conversation_id"],
+            suggested_text=suggested,
+            sent_text=text,
+            learn_opt_out=payload.learn_opt_out,
+        )
     return {"ok": True, "message": msg, "edited": edited}
 
 
@@ -4663,6 +4693,40 @@ def me_ig_faq_set(payload: IgFaqRequest, token: str = Depends(require_token)) ->
     row = db.set_ig_faq(token, payload.content)
     if row is None:
         raise HTTPException(status_code=500, detail="Enregistrement de la FAQ impossible.")
+    return {"ok": True, "content": row.get("content", ""), "updated_at": row.get("updated_at")}
+
+
+_LEARNED_RULES_CHANNELS = {"instagram", "linkedin"}
+
+
+@app.get("/me/ai/learned-rules/{channel}")
+def me_ai_learned_rules_get(channel: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Règles de style apprises pour un canal — distillées des corrections passées (ALE-253)."""
+    if channel not in _LEARNED_RULES_CHANNELS:
+        raise HTTPException(status_code=404, detail="Canal inconnu.")
+    row = db.get_ai_learned_rules(token, channel)
+    return {
+        "channel": channel,
+        "content": (row or {}).get("content") or "",
+        "last_distilled_at": (row or {}).get("last_distilled_at"),
+        "updated_at": (row or {}).get("updated_at"),
+    }
+
+
+class AiLearnedRulesRequest(BaseModel):
+    content: str = Field(default="", max_length=20000)
+
+
+@app.put("/me/ai/learned-rules/{channel}")
+def me_ai_learned_rules_set(
+    channel: str, payload: AiLearnedRulesRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Éditer à la main les règles apprises d'un canal (relecture/correction par le client)."""
+    if channel not in _LEARNED_RULES_CHANNELS:
+        raise HTTPException(status_code=404, detail="Canal inconnu.")
+    row = db.set_ai_learned_rules(token, channel, payload.content)
+    if row is None:
+        raise HTTPException(status_code=500, detail="Enregistrement des règles apprises impossible.")
     return {"ok": True, "content": row.get("content", ""), "updated_at": row.get("updated_at")}
 
 
