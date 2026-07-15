@@ -2616,7 +2616,7 @@ tr.tr-top3 .tr-rank { color: var(--primary); }
 .reply-bar { position: relative; display: flex; gap: 8px; align-items: flex-end; }
 
 .reply-field {
-  flex: 1; display: flex; align-items: flex-end; gap: 6px;
+  flex: 1; display: flex; align-items: flex-end; gap: 6px; min-height: 50px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
   padding: 6px; transition: border-color .15s, box-shadow .15s;
 }
@@ -2641,7 +2641,7 @@ tr.tr-top3 .tr-rank { color: var(--primary); }
 
 .reply-send-btn {
   flex: none; display: grid; place-items: center; cursor: pointer;
-  width: 44px; height: 44px; border-radius: 11px; border: none;
+  width: 50px; height: 50px; border-radius: 14px; border: none;
   background: var(--primary); color: #fff; transition: filter .12s, transform .1s;
 }
 .reply-send-btn:hover:not(:disabled) { filter: brightness(1.08); }
