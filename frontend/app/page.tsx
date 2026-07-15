@@ -7403,6 +7403,7 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
   const [draftText, setDraftText] = useState("");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [generatingDraft, setGeneratingDraft] = useState(false);
   const [error, setError] = useState("");
   const [killSwitch, setKillSwitch] = useState(false);
   // La FAQ/objectif de l'agent et la connexion ManyChat ont été déplacées dans
@@ -7658,6 +7659,23 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
     }
   }
 
+  async function generateDraft() {
+    if (!active) return;
+    setGeneratingDraft(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ig/conversations/${active.id}/generate-draft`, {
+        method: "POST", headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Génération impossible");
+      if (activeId) await loadThread(activeId);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setGeneratingDraft(false);
+    }
+  }
+
   async function toggleMode() {
     if (!active) return;
     const next = active.mode === "autopilot" ? "supervised" : "autopilot";
@@ -7848,6 +7866,15 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
             </div>
 
             <div style={{ padding: 12, borderTop: "1px solid rgba(128,128,128,0.2)", display: "flex", gap: 8, alignItems: "flex-end", flex: "none" }}>
+              <button
+                className="secondary-button"
+                onClick={generateDraft}
+                disabled={generatingDraft || busy || !lastInbound}
+                title={!lastInbound ? "Aucun message du prospect pour l'instant" : "Générer une suggestion de réponse avec l'agent IA"}
+                style={{ fontSize: 12, whiteSpace: "nowrap" }}
+              >
+                {generatingDraft ? "…" : "✨ Générer une réponse IA"}
+              </button>
               <textarea
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
