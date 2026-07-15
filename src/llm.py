@@ -696,6 +696,54 @@ def generate_first_message(targeting: dict, lead: dict) -> str:
     return message[:1500]
 
 
+def generate_reply(targeting: dict, lead: dict | None, history: list[dict]) -> str:
+    """Rédige une réponse LinkedIn dans une conversation déjà engagée.
+
+    Contrairement à l'agent IG, il n'y a pas d'auto-envoi côté LinkedIn : cette
+    fonction ne fait que proposer un brouillon, relu et édité à la main avant
+    envoi (bouton « Générer une réponse IA » dans l'Inbox). `lead` peut être
+    `None` si la conversation n'a pas pu être rattachée à un lead scrapé —
+    dans ce cas la génération s'appuie uniquement sur l'historique + le ciblage.
+    """
+    ideal = str(targeting.get("ideal_client") or "").strip()
+    offer = str(targeting.get("offer") or "").strip()
+
+    convo_lines = []
+    for m in history[-20:]:
+        who = "Moi" if m.get("from_me") else "Le contact"
+        text = (m.get("text") or "").strip()
+        if text:
+            convo_lines.append(f"{who}: {text}")
+    convo_block = "\n".join(convo_lines) if convo_lines else "(aucun message pour l'instant)"
+
+    system = (
+        "Tu es l'utilisateur lui-même qui répond dans SA conversation de messagerie "
+        "LinkedIn, en son nom. La réponse doit être COURTE (2-5 phrases), humaine, "
+        "dans la continuité naturelle de l'échange, SANS lien, SANS pitch commercial "
+        "agressif, SANS emoji à outrance. Écris en français, sauf si la conversation "
+        "indique clairement une autre langue. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown."
+    )
+    ctx = [f"CE QUE JE VENDS (offre) : {offer or '(non précisé)'}", f"MON CLIENT IDÉAL : {ideal or '(non précisé)'}"]
+    if lead:
+        name = str(lead.get("name") or "").strip()
+        headline = str(lead.get("headline") or "").strip()
+        if name or headline:
+            ctx.append(f"LE CONTACT — nom : {name or '(inconnu)'} · intitulé : {headline or '(inconnu)'}")
+    ctx.append(f"HISTORIQUE DE LA CONVERSATION (le plus ancien en premier) :\n{convo_block}")
+
+    user = (
+        "\n".join(ctx)
+        + "\n\nSchéma JSON attendu :\n"
+        + '{"message": "le texte de ma réponse, prête à envoyer"}'
+    )
+    data = _call(system, user, max_tokens=700, temperature=0.7)
+    message = str(data.get("message") or "").strip()
+    if not message:
+        raise RuntimeError("Le modèle n'a pas produit de réponse.")
+    return message[:1500]
+
+
 def _format_template(template: dict | None) -> str:
     """Render a chosen reference post (ALE-233) as a strict structure directive.
 
