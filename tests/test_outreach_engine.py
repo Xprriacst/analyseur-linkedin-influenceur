@@ -267,6 +267,23 @@ class AcceptanceChecksTest(unittest.TestCase):
         due = engine.pick_acceptance_checks(TUESDAY_10H, [self._lead("l1", None)], limit=0)
         self.assertEqual(due, [])
 
+    def test_invitation_trop_ancienne_est_abandonnee(self):
+        # Invitée il y a 30 j (> 21 j) et jamais vérifiée : on cesse de guetter.
+        old_invite = (TUESDAY_10H - datetime.timedelta(days=30)).isoformat()
+        lead = {"id": "l1", "outreach_updated_at": old_invite, "outreach_last_checked_at": None}
+        self.assertEqual(engine.pick_acceptance_checks(TUESDAY_10H, [lead]), [])
+
+    def test_invitation_recente_est_gardee(self):
+        recent_invite = (TUESDAY_10H - datetime.timedelta(days=5)).isoformat()
+        lead = {"id": "l1", "outreach_updated_at": recent_invite, "outreach_last_checked_at": None}
+        due = engine.pick_acceptance_checks(TUESDAY_10H, [lead])
+        self.assertEqual([l["id"] for l in due], ["l1"])
+
+    def test_invitation_sans_date_nest_jamais_abandonnee(self):
+        # Pas de date d'envoi connue : on préfère vérifier que perdre le lead.
+        due = engine.pick_acceptance_checks(TUESDAY_10H, [{"id": "l1", "outreach_last_checked_at": None}])
+        self.assertEqual([l["id"] for l in due], ["l1"])
+
 
 class OwnershipTest(unittest.TestCase):
     """Le moteur tourne en service-role : la base ne cloisonne plus rien pour lui."""

@@ -5235,7 +5235,7 @@ def admin_list_leads_awaiting_acceptance(user_id: str, *, limit: int = 100) -> l
     resp = (
         admin_client()
         .table("leads")
-        .select("id, user_id, provider_id, profile_url, outreach_status, outreach_last_checked_at")
+        .select("id, user_id, provider_id, profile_url, outreach_status, outreach_updated_at, outreach_last_checked_at")
         .eq("user_id", user_id)
         .eq("outreach_status", "invite_sent")
         .limit(limit)
