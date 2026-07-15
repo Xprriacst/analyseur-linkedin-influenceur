@@ -79,8 +79,9 @@ def generate_draft(
     remontée à l'appelant (qui l'avale en tâche de fond). Renvoie le draft créé.
     """
     faq = load_faq(user_id)
+    learned_rules = db.admin_get_learned_rules(user_id, "instagram")
     history = db.list_ig_messages_admin(user_id, conversation_id)
-    result = qualify_prospect(faq, history, latest_message)
+    result = qualify_prospect(faq, history, latest_message, learned_rules)
     draft = db.create_ig_draft_admin(
         user_id,
         conversation_id,
