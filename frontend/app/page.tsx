@@ -42,6 +42,7 @@ import {
   RefreshCw,
   Send,
   Settings2,
+  Sparkle,
   Sparkles,
   Target,
   TrendingUp,
@@ -9159,7 +9160,7 @@ function ProfileView({
 
           <SettingRow
             icon={<Lightbulb size={18} style={{ color: "var(--coral)" }} />}
-            name="Réponses aux messages Instagram"
+            name="Réponses aux messages Inbox"
             why="L'agent répond seul quand la réponse est dans sa FAQ, sinon il te passe la main"
             open={openRow === "faq"}
             onToggle={() => toggleRow("faq")}
