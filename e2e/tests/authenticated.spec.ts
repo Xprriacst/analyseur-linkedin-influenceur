@@ -104,13 +104,14 @@ test("Mon profil › Automatisations : les 3 choses qui tournent sans toi", asyn
 
   await expect(page.getByText(/Une idée de post chaque matin/i)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText(/Les posts de ta semaine/i)).toBeVisible();
-  await expect(page.getByText(/Réponses aux messages Instagram/i)).toBeVisible();
+  await expect(page.getByText(/Réponses aux messages Inbox/i)).toBeVisible();
 
   // La FAQ de l'agent (gros champ de texte, ex-carte pleine page) n'est chargée
-  // et rendue qu'une fois sa ligne dépliée.
+  // et rendue qu'une fois sa ligne dépliée. Une fois ouverte, la ligne porte
+  // DEUX zones de texte : la FAQ + le style appris (ALE-253).
   await expect(page.locator("textarea")).toHaveCount(0);
-  await page.locator("[role=button][aria-expanded]").filter({ hasText: "Réponses aux messages Instagram" }).click();
-  await expect(page.locator("textarea")).toBeVisible();
+  await page.locator("[role=button][aria-expanded]").filter({ hasText: "Réponses aux messages Inbox" }).click();
+  await expect(page.locator("textarea").first()).toBeVisible();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
