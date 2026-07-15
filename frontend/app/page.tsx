@@ -7462,6 +7462,47 @@ function LearnedRulesEditor({ isAuthed, active, channel }: { isAuthed: boolean; 
   );
 }
 
+// Zone de saisie de la barre de réponse qui grandit avec le texte : 1 ligne au
+// repos, puis s'étend ligne par ligne jusqu'à `maxHeight` px, puis scroll interne.
+// Évite le `rows` fixe + `resize` manuel — le champ s'adapte au message.
+function AutoGrowTextarea({
+  value,
+  onChange,
+  onKeyDown,
+  placeholder,
+  disabled,
+  maxHeight = 168,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  placeholder?: string;
+  disabled?: boolean;
+  maxHeight?: number;
+}) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [value, maxHeight]);
+  return (
+    <textarea
+      ref={ref}
+      className="reply-textarea"
+      rows={1}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={onKeyDown}
+      placeholder={placeholder}
+      disabled={disabled}
+      style={{ maxHeight }}
+    />
+  );
+}
+
 function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalActiveId = null }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; hideChrome?: boolean; externalActiveId?: string | null }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
   // Faux tant que le premier /me/ig/conversations n'a pas répondu : évite d'afficher
@@ -7947,26 +7988,38 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
               <div ref={endRef} />
             </div>
 
-            <div style={{ padding: 12, borderTop: "1px solid rgba(128,128,128,0.2)", display: "flex", gap: 8, alignItems: "flex-end", flex: "none" }}>
-              <button
-                className="secondary-button"
-                onClick={generateDraft}
-                disabled={generatingDraft || busy || !lastInbound}
-                title={!lastInbound ? "Aucun message du prospect pour l'instant" : "Générer une suggestion de réponse avec l'agent IA"}
-                style={{ fontSize: 12, whiteSpace: "nowrap" }}
-              >
-                {generatingDraft ? "…" : "✨ Générer une réponse IA"}
-              </button>
-              <textarea
-                value={replyText}
-                onChange={(e) => setReplyText(e.target.value)}
-                placeholder="Écris une réponse…"
-                rows={2}
-                style={{ flex: 1, resize: "vertical", padding: 8, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 14 }}
-              />
-              <button className="primary-button" onClick={sendManual} disabled={busy || !replyText.trim()} style={{ fontSize: 13 }}>
-                {busy ? "…" : "Envoyer"}
-              </button>
+            <div className="reply-composer">
+              <div className="reply-bar">
+                <div className="reply-field">
+                  <button
+                    type="button"
+                    className="ai-icon-btn"
+                    onClick={generateDraft}
+                    disabled={generatingDraft || busy || !lastInbound}
+                    aria-label="Générer une réponse IA"
+                    title={!lastInbound ? "Aucun message du prospect pour l'instant" : "Générer une suggestion de réponse avec l'agent IA"}
+                  >
+                    {generatingDraft ? <Loader2 size={18} className="spinning" /> : <Sparkle size={19} fill="currentColor" strokeWidth={0} />}
+                  </button>
+                  <AutoGrowTextarea
+                    value={replyText}
+                    onChange={setReplyText}
+                    placeholder="Écris ta réponse… (Entrée pour envoyer)"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (replyText.trim()) sendManual(); }
+                    }}
+                  />
+                </div>
+                <button
+                  className="reply-send-btn"
+                  onClick={sendManual}
+                  disabled={busy || !replyText.trim()}
+                  title="Envoyer"
+                >
+                  {busy ? <Loader2 size={16} className="spinning" /> : <Send size={16} />}
+                </button>
+              </div>
+              <div className="reply-hint"><kbd>Entrée</kbd> envoyer · <kbd>Maj</kbd>+<kbd>Entrée</kbd> nouvelle ligne</div>
             </div>
             {error && <div style={{ padding: "0 16px 12px", color: "#d33", fontSize: 13 }}>{error}</div>}
           </>
@@ -8082,38 +8135,54 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
         <div ref={endRef} />
       </div>
       {error && <div className="error" style={{ margin: "0 12px 8px" }}>{error}</div>}
-      {suggestedReply && reply.trim() !== suggestedReply.trim() && (
-        <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11, opacity: 0.75, margin: "0 12px 6px", cursor: "pointer" }}>
-          <input type="checkbox" checked={learnOptOut} onChange={(e) => setLearnOptOut(e.target.checked)} />
-          Ne pas apprendre de cette correction
-        </label>
-      )}
-      <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "flex-end" }}>
-        <button
-          className="secondary-button"
-          onClick={generateReply}
-          disabled={generating || busy}
-          title="Générer une suggestion de réponse avec l'IA"
-          style={{ fontSize: 12, whiteSpace: "nowrap" }}
-        >
-          {generating ? <Loader2 size={14} className="spinning" /> : "✨ Générer une réponse IA"}
-        </button>
-        <textarea
-          value={reply}
-          onChange={(e) => setReply(e.target.value)}
-          rows={2}
-          placeholder="Écris ta réponse… (Cmd/Ctrl+Entrée pour envoyer)"
-          style={{ flex: 1, resize: "none", padding: 8, fontSize: 13 }}
-          onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") sendReply(); }}
-        />
-        <button
-          className="primary-button"
-          disabled={busy || !reply.trim() || !quota?.can_message}
-          title={!quota?.can_message ? (quota?.message_blocked_reason || "") : "Envoyer"}
-          onClick={sendReply}
-        >
-          {busy ? <Loader2 size={14} className="spinning" /> : <Send size={14} />}
-        </button>
+      <div className="reply-composer">
+        <div className="reply-bar">
+          {/* Étiquette d'apprentissage (proposition C) : n'apparaît qu'après avoir
+              généré une réponse IA. Cochée par défaut (la réponse nourrit l'IA) ;
+              un clic l'exclut pour un cas particulier. */}
+          {suggestedReply && (
+            <button
+              type="button"
+              className={`reply-corner-tab${learnOptOut ? " off" : ""}`}
+              onClick={() => setLearnOptOut((v) => !v)}
+              title={learnOptOut
+                ? "Cas particulier : l'IA n'apprendra pas de cette réponse. Clique pour l'enregistrer."
+                : "Cette réponse aide l'IA à s'améliorer. Clique pour ne pas l'enregistrer."}
+            >
+              <span className="rct-ico">{learnOptOut ? <X size={12} /> : <Check size={12} />}</span>
+              {learnOptOut ? "Non enregistrée" : "Enregistrée"}
+            </button>
+          )}
+          <div className="reply-field">
+            <button
+              type="button"
+              className="ai-icon-btn"
+              onClick={generateReply}
+              disabled={generating || busy}
+              aria-label="Générer une réponse IA"
+              title="Générer une réponse IA"
+            >
+              {generating ? <Loader2 size={18} className="spinning" /> : <Sparkle size={19} fill="currentColor" strokeWidth={0} />}
+            </button>
+            <AutoGrowTextarea
+              value={reply}
+              onChange={setReply}
+              placeholder="Écris ta réponse… (Entrée pour envoyer)"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (quota?.can_message) sendReply(); }
+              }}
+            />
+          </div>
+          <button
+            className="reply-send-btn"
+            disabled={busy || !reply.trim() || !quota?.can_message}
+            title={!quota?.can_message ? (quota?.message_blocked_reason || "") : "Envoyer"}
+            onClick={sendReply}
+          >
+            {busy ? <Loader2 size={16} className="spinning" /> : <Send size={16} />}
+          </button>
+        </div>
+        <div className="reply-hint"><kbd>Entrée</kbd> envoyer · <kbd>Maj</kbd>+<kbd>Entrée</kbd> nouvelle ligne</div>
       </div>
       {!quota?.can_message && quota?.message_blocked_reason && (
         <p style={{ margin: "0 12px 10px", fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{quota.message_blocked_reason}</p>
