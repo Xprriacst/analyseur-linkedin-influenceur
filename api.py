@@ -4540,6 +4540,36 @@ def me_ig_draft_reject(draft_id: str, token: str = Depends(require_token)) -> di
     return {"ok": True, "draft": updated}
 
 
+@app.post("/me/ig/conversations/{conversation_id}/generate-draft")
+def me_ig_generate_draft(
+    conversation_id: str, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Générer à la demande une réponse IA pour le dernier message du prospect.
+
+    Réutilise le même cerveau (`ig_agent.generate_draft`) que la génération
+    automatique sur DM entrant, mais déclenché uniquement par un clic — utile
+    pour obtenir une suggestion sans attendre un nouveau message, ou pour en
+    régénérer une. N'envoie rien : le draft créé reste `pending`, à valider/
+    éditer via `/me/ig/drafts/{id}/send` comme toute autre suggestion.
+    """
+    conv = db.get_ig_conversation(token, conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation introuvable.")
+    user = db.get_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Utilisateur introuvable.")
+    if not db.admin_enabled():
+        raise HTTPException(status_code=503, detail="Service-role Supabase indisponible.")
+    inbound = [m for m in db.list_ig_messages(token, conversation_id) if m.get("role") == "in"]
+    if not inbound:
+        raise HTTPException(status_code=400, detail="Aucun message du prospect à qui répondre.")
+    last = inbound[-1]
+    draft = ig_agent.generate_draft(user["id"], conversation_id, last["id"], last.get("text") or "")
+    if not draft:
+        raise HTTPException(status_code=500, detail="Génération de la réponse impossible.")
+    return {"ok": True, "draft": draft}
+
+
 class IgModeRequest(BaseModel):
     mode: str = Field(..., pattern="^(supervised|autopilot)$")
 
