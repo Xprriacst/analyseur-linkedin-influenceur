@@ -4778,6 +4778,20 @@ def get_lead(access_token: str, lead_id: str) -> dict | None:
     return resp.data[0] if resp.data else None
 
 
+def get_lead_by_chat_id(access_token: str, chat_id: str) -> dict | None:
+    """Le lead scrapé rattaché à une conversation LinkedIn (RLS scope), si connu.
+
+    Une conversation LinkedIn ouverte depuis l'Inbox ne provient pas toujours
+    d'un lead qu'on a scrapé (l'utilisateur peut avoir déjà des messages sur
+    son compte) — `None` dans ce cas, à l'appelant de dégrader proprement.
+    """
+    if not supabase_enabled() or not chat_id:
+        return None
+    db = client_for_token(access_token)
+    resp = db.table("leads").select("*").eq("outreach_chat_id", chat_id).limit(1).execute()
+    return resp.data[0] if resp.data else None
+
+
 def set_lead_contact_status(
     access_token: str, lead_id: str, contact_status: str, skip_reason: str | None
 ) -> dict | None:

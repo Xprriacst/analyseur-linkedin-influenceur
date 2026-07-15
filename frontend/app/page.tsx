@@ -7901,6 +7901,7 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
   const [loading, setLoading] = useState(false);
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
   const chatId = chat.id;
@@ -7927,6 +7928,19 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
   }, [chatId]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+
+  async function generateReply() {
+    setGenerating(true); setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats/${encodeURIComponent(chatId)}/reply/preview`, {
+        method: "POST", headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Génération impossible");
+      setReply(data.message || "");
+    } catch (err: any) { setError(err.message); }
+    finally { setGenerating(false); }
+  }
 
   async function sendReply() {
     if (!reply.trim()) return;
@@ -7970,6 +7984,15 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
       </div>
       {error && <div className="error" style={{ margin: "0 12px 8px" }}>{error}</div>}
       <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "flex-end" }}>
+        <button
+          className="secondary-button"
+          onClick={generateReply}
+          disabled={generating || busy}
+          title="Générer une suggestion de réponse avec l'IA"
+          style={{ fontSize: 12, whiteSpace: "nowrap" }}
+        >
+          {generating ? <Loader2 size={14} className="spinning" /> : "✨ Générer une réponse IA"}
+        </button>
         <textarea
           value={reply}
           onChange={(e) => setReply(e.target.value)}

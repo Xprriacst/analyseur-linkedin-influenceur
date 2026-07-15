@@ -23,7 +23,7 @@ from src.pipeline import run_analysis
 from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
-from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message
+from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
 from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
@@ -3132,6 +3132,35 @@ def me_linkedin_outreach_chat_messages(
     # de haut en bas (auto-scroll vers le bas) → tri chronologique ascendant.
     normalized.sort(key=lambda m: str(m.get("created_at") or ""))
     return {"messages": normalized}
+
+
+@app.post("/me/linkedin/outreach/chats/{chat_id}/reply/preview")
+def me_linkedin_outreach_chat_reply_preview(
+    chat_id: str, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Génère (sans envoyer, sans consommer de quota) une réponse IA à relire.
+
+    Déclenché uniquement par un clic dans l'Inbox — jamais automatique. Sur le
+    même patron que `/me/leads/{id}/message/preview` (premier message) : la
+    conversation existante remplace le contexte lead+commentaire déclencheur.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=503, detail="Génération IA non configurée.")
+    account = _require_outreach_account(token)
+    _require_owned_chat(account, chat_id)
+    try:
+        msgs = unipile.list_chat_messages(chat_id)
+    except unipile.UnipileError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    history = [unipile.normalize_message(m) for m in msgs]
+    history.sort(key=lambda m: str(m.get("created_at") or ""))
+    lead = db.get_lead_by_chat_id(token, chat_id)
+    targeting = db.get_lead_targeting(token) or {}
+    try:
+        text = generate_reply(targeting, lead, history)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Génération de la réponse échouée : {exc}") from exc
+    return {"message": text}
 
 
 @app.post("/me/linkedin/outreach/chats/{chat_id}/messages")
