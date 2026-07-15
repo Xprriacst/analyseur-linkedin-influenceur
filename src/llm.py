@@ -696,7 +696,7 @@ def generate_first_message(targeting: dict, lead: dict) -> str:
     return message[:1500]
 
 
-def generate_reply(targeting: dict, lead: dict | None, history: list[dict]) -> str:
+def generate_reply(targeting: dict, lead: dict | None, history: list[dict], learned_rules: str = "") -> str:
     """Rédige une réponse LinkedIn dans une conversation déjà engagée.
 
     Contrairement à l'agent IG, il n'y a pas d'auto-envoi côté LinkedIn : cette
@@ -704,6 +704,8 @@ def generate_reply(targeting: dict, lead: dict | None, history: list[dict]) -> s
     envoi (bouton « Générer une réponse IA » dans l'Inbox). `lead` peut être
     `None` si la conversation n'a pas pu être rattachée à un lead scrapé —
     dans ce cas la génération s'appuie uniquement sur l'historique + le ciblage.
+    `learned_rules` : préférences de style distillées des corrections passées
+    (ALE-253), optionnel.
     """
     ideal = str(targeting.get("ideal_client") or "").strip()
     offer = str(targeting.get("offer") or "").strip()
@@ -716,12 +718,19 @@ def generate_reply(targeting: dict, lead: dict | None, history: list[dict]) -> s
             convo_lines.append(f"{who}: {text}")
     convo_block = "\n".join(convo_lines) if convo_lines else "(aucun message pour l'instant)"
 
+    learned_block = ""
+    if learned_rules.strip():
+        learned_block = (
+            "\n\nSTYLE APPRIS DE L'UTILISATEUR (corrections passées, à respecter) :\n"
+            f"{learned_rules.strip()}"
+        )
     system = (
         "Tu es l'utilisateur lui-même qui répond dans SA conversation de messagerie "
         "LinkedIn, en son nom. La réponse doit être COURTE (2-5 phrases), humaine, "
         "dans la continuité naturelle de l'échange, SANS lien, SANS pitch commercial "
         "agressif, SANS emoji à outrance. Écris en français, sauf si la conversation "
-        "indique clairement une autre langue. "
+        "indique clairement une autre langue."
+        f"{learned_block}\n\n"
         "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown."
     )
     ctx = [f"CE QUE JE VENDS (offre) : {offer or '(non précisé)'}", f"MON CLIENT IDÉAL : {ideal or '(non précisé)'}"]
@@ -742,6 +751,44 @@ def generate_reply(targeting: dict, lead: dict | None, history: list[dict]) -> s
     if not message:
         raise RuntimeError("Le modèle n'a pas produit de réponse.")
     return message[:1500]
+
+
+def distill_learned_rules(current_rules: str, edits: list[dict], channel: str) -> str:
+    """Met à jour les règles de style apprises à partir de corrections récentes (ALE-253).
+
+    `edits` : [{"suggested": str, "sent": str}, ...] — suggestion IA vs texte
+    réellement envoyé par l'utilisateur, pour des messages où il a édité la
+    proposition avant envoi. Distille des règles de STYLE/FORMAT actionnables
+    et concises (jamais des faits sur l'activité du client — ça, c'est la FAQ/
+    le ciblage) ; fusionne avec les règles déjà apprises (`current_rules`) au
+    lieu de les remplacer, pour ne pas perdre ce qui a déjà été validé.
+    """
+    channel_label = "Instagram (agent de pré-qualification prospects)" if channel == "instagram" else "LinkedIn (réponses de prospection)"
+    system = (
+        f"Tu maintiens une liste de règles de STYLE apprises pour les réponses générées sur {channel_label}. "
+        "Ces règles seront réinjectées telles quelles dans le prompt de génération. Chaque règle doit être "
+        "courte, actionnable, formulée à l'impératif (ex. « Raccourcis toujours l'accroche », « Ne propose "
+        "jamais d'appel, seulement un échange par message »). Ignore les corrections qui ne révèlent aucun "
+        "pattern réutilisable (fautes de frappe, changement isolé de contexte). Ne modifie jamais des faits "
+        "sur l'activité, l'offre ou la cible du client — uniquement le ton, la longueur, la structure, les "
+        "formulations à éviter ou préférer. Fusionne avec les règles existantes : garde ce qui tient encore, "
+        "retire ce qui est contredit par les nouvelles corrections, ajoute les nouveaux patterns clairs. "
+        "Vise moins de 15 règles ; élague les plus faibles si la liste déborde. "
+        "Réponds UNIQUEMENT avec un objet JSON, sans texte avant ni après, sans balise markdown."
+    )
+    edits_block = "\n\n".join(
+        f"- Suggestion IA : {e['suggested']!r}\n  Envoyé par l'utilisateur : {e['sent']!r}"
+        for e in edits
+        if e.get("suggested") and e.get("sent")
+    )
+    user = (
+        f"RÈGLES ACTUELLEMENT APPRISES :\n{current_rules.strip() or '(aucune pour le moment)'}\n\n"
+        f"NOUVELLES CORRECTIONS À ANALYSER :\n{edits_block}\n\n"
+        "Schéma JSON attendu :\n"
+        '{"rules": "liste à puces markdown des règles apprises, à jour"}'
+    )
+    data = _call(system, user, max_tokens=1200, temperature=0.2)
+    return str(data.get("rules") or "").strip()
 
 
 def _format_template(template: dict | None) -> str:
@@ -1750,22 +1797,35 @@ def qualify_prospect(
     faq_text: str,
     history: list[dict],
     latest_message: str,
+    learned_rules: str = "",
 ) -> dict[str, Any]:
     """Produire une réponse suggérée ancrée dans la FAQ + un signal « je sais / je ne sais pas ».
 
     - `faq_text` : contenu du fichier FAQ+objectif (config externe, collé tel quel).
     - `history` : messages précédents [{role: in|out, text}], du plus ancien au plus récent.
     - `latest_message` : dernier message du prospect à traiter.
+    - `learned_rules` : règles de style distillées des corrections passées de
+      l'utilisateur (ALE-253) — jamais une source de faits, uniquement du ton/
+      format ; ne doit jamais changer le jugement de couverture ci-dessous.
 
     « Sait » = **couvert par la FAQ/objectif** (jugement de couverture), pas
     connaissance du monde. Si ce n'est pas ancré dans la FAQ → `besoin_humain=true`.
     Sortie toujours conforme au schéma `IgQualification` (validée Pydantic).
     """
+    learned_block = ""
+    if learned_rules.strip():
+        learned_block = (
+            "\n=== STYLE APPRIS DE L'UTILISATEUR (corrections passées, ton/format uniquement) ===\n"
+            f"{learned_rules.strip()}\n"
+            "Applique ces préférences de style/formulation quand tu écris la réponse. Elles "
+            "n'ajoutent AUCUN fait et ne changent JAMAIS le jugement de couverture ci-dessus.\n"
+            "=== FIN STYLE APPRIS ===\n"
+        )
     system = (
         "Tu es l'agent de pré-qualification des prospects arrivant en message privé Instagram. "
         "Tu réponds en français, dans le ton et le persona définis ci-dessous, et tu poursuis "
-        "UN objectif de conversation. Ta seule source de vérité est la FAQ+objectif ci-dessous : "
-        "tu n'inventes JAMAIS d'information qui n'y figure pas.\n\n"
+        "UN objectif de conversation. Ta seule source de vérité factuelle est la FAQ+objectif "
+        "ci-dessous : tu n'inventes JAMAIS d'information qui n'y figure pas.\n\n"
         "Règle de couverture (impérative) : « savoir » = la réponse est ancrée dans la FAQ ou "
         "l'objectif. Si la question du prospect n'est couverte par aucune entrée, ou relève d'un "
         "cas d'escalade (prix négocié, devis précis, sujet sensible/juridique, prospect agacé), "
@@ -1775,7 +1835,8 @@ def qualify_prospect(
         "`reponse` répond réellement en poussant vers l'objectif quand c'est pertinent.\n\n"
         "=== FAQ + OBJECTIF (source de vérité) ===\n"
         f"{faq_text.strip()}\n"
-        "=== FIN FAQ ===\n\n"
+        "=== FIN FAQ ===\n"
+        f"{learned_block}\n"
         "Réponds UNIQUEMENT avec un objet JSON, sans texte avant ni après, sans balise markdown."
     )
 

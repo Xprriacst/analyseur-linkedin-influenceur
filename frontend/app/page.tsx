@@ -7163,6 +7163,7 @@ function UnipileOutreachConnect({
               dimanche, c&apos;est le signal le plus facile à repérer pour LinkedIn.
             </p>
           </div>
+          <LearnedRulesEditor isAuthed={connected} active={open} channel="linkedin" />
           </>
         )}
       </SettingRow>
@@ -7391,6 +7392,75 @@ function AgentFaqEditor({ isAuthed, active }: { isAuthed: boolean; active: boole
   );
 }
 
+// Style appris automatiquement (ALE-253) : distinct de la FAQ — la FAQ, c'est
+// les faits que TU donnes ; ici, ce sont des règles de ton/format que l'IA
+// déduit toute seule de tes corrections passées (ex. « raccourcis toujours
+// l'accroche »), relisibles et modifiables comme la FAQ. `channel` distingue
+// Instagram (agent DM) de LinkedIn (réponses de prospection) — chacun a sa
+// propre liste, jamais mélangées.
+function LearnedRulesEditor({ isAuthed, active, channel }: { isAuthed: boolean; active: boolean; channel: "instagram" | "linkedin" }) {
+  const [text, setText] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [lastDistilledAt, setLastDistilledAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isAuthed || loaded || !active) return;
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/ai/learned-rules/${channel}`, { headers: await authHeaders() });
+        const data = await res.json();
+        if (res.ok) { setText(data.content || ""); setLastDistilledAt(data.last_distilled_at || null); setLoaded(true); }
+      } catch { /* non bloquant */ }
+    })();
+  }, [isAuthed, active, loaded, channel]);
+
+  async function save() {
+    setSaving(true); setNotice("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/ai/learned-rules/${channel}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content: text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
+      setNotice("✓ Enregistré.");
+    } catch (err: any) {
+      setNotice(`Erreur : ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+      <p style={{ fontSize: 13, fontWeight: 600, margin: "0 0 4px" }}>Style appris automatiquement</p>
+      <p style={{ fontSize: 12, opacity: 0.8, marginTop: 0, marginBottom: 8 }}>
+        À chaque fois que tu corriges une réponse suggérée avant de l&apos;envoyer, l&apos;IA en tire des règles de
+        ton et de format (jamais de faits) et les applique aux prochaines suggestions. Tu peux les relire et
+        les corriger ici — ou décocher &laquo; ne pas apprendre de ça &raquo; sur une correction ponctuelle pour
+        qu&apos;elle n&apos;en nourrisse aucune.
+        {lastDistilledAt ? ` Dernière mise à jour automatique : ${new Date(lastDistilledAt).toLocaleString("fr-FR")}.` : ""}
+      </p>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={loaded ? "Rien d'appris pour l'instant — ça se remplit au fil de tes corrections." : "Chargement…"}
+        rows={6}
+        style={{ width: "100%", resize: "vertical", padding: 10, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 13, fontFamily: "inherit" }}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
+        <button className="secondary-button" onClick={save} disabled={saving || !loaded} style={{ fontSize: 13 }}>
+          {saving ? "Enregistrement…" : "Enregistrer"}
+        </button>
+        {notice && <span style={{ fontSize: 12, opacity: 0.8 }}>{notice}</span>}
+      </div>
+    </div>
+  );
+}
+
 function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalActiveId = null }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; hideChrome?: boolean; externalActiveId?: string | null }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
   // Faux tant que le premier /me/ig/conversations n'a pas répondu : évite d'afficher
@@ -7401,6 +7471,9 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
   const [drafts, setDrafts] = useState<IgDraft[]>([]);
   const [replyText, setReplyText] = useState("");
   const [draftText, setDraftText] = useState("");
+  // ALE-253 : coché sur une correction ponctuelle (pas un vrai pattern de style)
+  // pour qu'elle ne nourrisse pas les règles apprises de l'agent.
+  const [learnOptOut, setLearnOptOut] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [generatingDraft, setGeneratingDraft] = useState(false);
@@ -7599,6 +7672,7 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
 
   useEffect(() => {
     if (pendingDraft) setDraftText(pendingDraft.reply || "");
+    setLearnOptOut(false);
   }, [pendingDraft?.id]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length, pendingDraft?.id]);
@@ -7610,11 +7684,12 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
       const res = await fetch(`${DIRECT_API_URL}/me/ig/drafts/${pendingDraft.id}/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ text: draftText }),
+        body: JSON.stringify({ text: draftText, learn_opt_out: learnOptOut }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi impossible");
       setDraftText("");
+      setLearnOptOut(false);
       if (activeId) await loadThread(activeId);
     } catch (err: any) {
       setError(err.message);
@@ -7831,6 +7906,12 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
                       rows={Math.min(8, Math.max(2, draftText.split("\n").length))}
                       style={{ width: "100%", resize: "vertical", padding: 8, borderRadius: 8, border: "1px solid rgba(128,128,128,0.3)", fontSize: 14, fontFamily: "inherit", background: "transparent" }}
                     />
+                    {draftText.trim() !== (pendingDraft.reply || "").trim() && (
+                      <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11, opacity: 0.75, marginTop: 8, cursor: "pointer" }}>
+                        <input type="checkbox" checked={learnOptOut} onChange={(e) => setLearnOptOut(e.target.checked)} />
+                        Ne pas apprendre de cette correction
+                      </label>
+                    )}
                     <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
                       <button className="secondary-button" onClick={rejectDraft} disabled={busy} style={{ fontSize: 12 }}>
                         ✕ Refuser
@@ -7903,6 +7984,11 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
   const [busy, setBusy] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
+  // ALE-253 : dernière suggestion IA générée (avant édition), pour journaliser
+  // suggestion vs texte envoyé côté serveur — null si le message a été écrit à
+  // la main (rien à apprendre dans ce cas).
+  const [suggestedReply, setSuggestedReply] = useState<string | null>(null);
+  const [learnOptOut, setLearnOptOut] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
   const chatId = chat.id;
 
@@ -7928,6 +8014,10 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
   }, [chatId]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+  // Le contact ne change pas de conversation à conversation : une suggestion
+  // générée pour l'un ne doit jamais être journalisée comme suggestion d'un
+  // autre message envoyé après avoir changé de fil.
+  useEffect(() => { setSuggestedReply(null); setLearnOptOut(false); }, [chatId]);
 
   async function generateReply() {
     setGenerating(true); setError("");
@@ -7938,6 +8028,8 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Génération impossible");
       setReply(data.message || "");
+      setSuggestedReply(data.message || "");
+      setLearnOptOut(false);
     } catch (err: any) { setError(err.message); }
     finally { setGenerating(false); }
   }
@@ -7946,15 +8038,21 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
     if (!reply.trim()) return;
     setBusy(true); setError("");
     try {
+      const text = reply.trim();
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/chats/${encodeURIComponent(chatId)}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ text: reply.trim() }),
+        body: JSON.stringify({
+          text,
+          ...(suggestedReply ? { suggested_text: suggestedReply, learn_opt_out: learnOptOut } : {}),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Envoi impossible");
       if (data.quota) onQuota(data.quota);
       setReply("");
+      setSuggestedReply(null);
+      setLearnOptOut(false);
       await loadMessages();
     } catch (err: any) { setError(err.message); }
     finally { setBusy(false); }
@@ -7983,6 +8081,12 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
         <div ref={endRef} />
       </div>
       {error && <div className="error" style={{ margin: "0 12px 8px" }}>{error}</div>}
+      {suggestedReply && reply.trim() !== suggestedReply.trim() && (
+        <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11, opacity: 0.75, margin: "0 12px 6px", cursor: "pointer" }}>
+          <input type="checkbox" checked={learnOptOut} onChange={(e) => setLearnOptOut(e.target.checked)} />
+          Ne pas apprendre de cette correction
+        </label>
+      )}
       <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "flex-end" }}>
         <button
           className="secondary-button"
@@ -9068,6 +9172,7 @@ function ProfileView({
             }
           >
             <AgentFaqEditor isAuthed={isAuthed} active={openRow === "faq"} />
+            <LearnedRulesEditor isAuthed={isAuthed} active={openRow === "faq"} channel="instagram" />
           </SettingRow>
         </div>
       )}

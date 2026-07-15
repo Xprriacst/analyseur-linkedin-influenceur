@@ -4024,6 +4024,162 @@ def set_ig_faq(access_token: str, content: str) -> dict | None:
     return resp.data[0] if resp.data else None
 
 
+# ---------------------------------------------------------------------------
+# Apprentissage des réponses IA — suggestion vs texte envoyé + règles apprises
+# par canal (Instagram, LinkedIn), distillées par cron (ALE-253).
+# ---------------------------------------------------------------------------
+
+
+def log_ai_reply_feedback(
+    access_token: str,
+    *,
+    channel: str,
+    conversation_ref: str | None,
+    suggested_text: str,
+    sent_text: str,
+    learn_opt_out: bool = False,
+) -> None:
+    """Enregistrer une suggestion IA vs le texte réellement envoyé (RLS).
+
+    Best-effort : ne doit jamais faire échouer l'envoi du message lui-même si
+    la table est absente (migration pas encore appliquée) ou l'insert échoue.
+    """
+    if not supabase_enabled():
+        return
+    user = get_user(access_token)
+    if not user:
+        return
+    suggested = (suggested_text or "").strip()
+    sent = (sent_text or "").strip()
+    if not suggested or not sent:
+        return
+    try:
+        client_for_token(access_token).table("ai_reply_feedback").insert({
+            "user_id": user["id"],
+            "channel": channel,
+            "conversation_ref": conversation_ref,
+            "suggested_text": suggested,
+            "sent_text": sent,
+            "edited": suggested != sent,
+            "learn_opt_out": bool(learn_opt_out),
+        }).execute()
+    except Exception:
+        pass
+
+
+def get_ai_learned_rules(access_token: str, channel: str) -> dict | None:
+    """Règles apprises de l'utilisateur pour un canal (RLS) — pour l'éditeur in-app."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    try:
+        resp = (
+            db.table("ai_learned_rules")
+            .select("*")
+            .eq("channel", channel)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    return resp.data[0] if resp.data else None
+
+
+def set_ai_learned_rules(access_token: str, channel: str, content: str) -> dict | None:
+    """Créer/éditer à la main les règles apprises d'un canal (RLS, une ligne par user+canal)."""
+    user = get_user(access_token)
+    if not user or not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("ai_learned_rules")
+        .upsert(
+            {"user_id": user["id"], "channel": channel, "content": content or "", "updated_at": "now()"},
+            on_conflict="user_id,channel",
+        )
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def admin_list_users_with_pending_feedback(channel: str) -> list[str]:
+    """User ids ayant au moins une édition non apprise sur ce canal (service-role, pour le cron)."""
+    if not admin_enabled():
+        return []
+    try:
+        resp = (
+            admin_client()
+            .table("ai_reply_feedback")
+            .select("user_id")
+            .eq("channel", channel)
+            .eq("learn_opt_out", False)
+            .eq("edited", True)
+            .is_("learned_at", "null")
+            .execute()
+        )
+    except Exception:
+        return []
+    return sorted({r["user_id"] for r in (resp.data or []) if r.get("user_id")})
+
+
+def admin_list_pending_feedback(user_id: str, channel: str, limit: int = 200) -> list[dict]:
+    """Éditions non apprises d'un utilisateur pour un canal (service-role, pour le cron)."""
+    if not admin_enabled():
+        return []
+    resp = (
+        admin_client()
+        .table("ai_reply_feedback")
+        .select("id,suggested_text,sent_text,created_at")
+        .eq("user_id", user_id)
+        .eq("channel", channel)
+        .eq("learn_opt_out", False)
+        .eq("edited", True)
+        .is_("learned_at", "null")
+        .order("created_at")
+        .limit(max(1, min(limit, 500)))
+        .execute()
+    )
+    return resp.data or []
+
+
+def admin_mark_feedback_learned(ids: list[str]) -> None:
+    """Marquer des lignes de feedback comme apprises (service-role, idempotent)."""
+    if not admin_enabled() or not ids:
+        return
+    admin_client().table("ai_reply_feedback").update({"learned_at": "now()"}).in_("id", ids).execute()
+
+
+def admin_get_learned_rules(user_id: str, channel: str) -> str:
+    """Contenu des règles apprises d'un utilisateur pour un canal (service-role) — pour le cerveau agent."""
+    if not admin_enabled():
+        return ""
+    try:
+        resp = (
+            admin_client()
+            .table("ai_learned_rules")
+            .select("content")
+            .eq("user_id", user_id)
+            .eq("channel", channel)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return ""
+    if not resp.data:
+        return ""
+    return (resp.data[0].get("content") or "").strip()
+
+
+def admin_set_learned_rules(user_id: str, channel: str, content: str) -> None:
+    """Écrire les règles apprises distillées par le cron (service-role, upsert user+canal)."""
+    if not admin_enabled():
+        return
+    admin_client().table("ai_learned_rules").upsert(
+        {"user_id": user_id, "channel": channel, "content": content or "", "updated_at": "now()", "last_distilled_at": "now()"},
+        on_conflict="user_id,channel",
+    ).execute()
+
+
 def get_ig_faq_admin(user_id: str) -> str:
     """Contenu FAQ de l'utilisateur (service-role) — pour le cerveau agent.
 
