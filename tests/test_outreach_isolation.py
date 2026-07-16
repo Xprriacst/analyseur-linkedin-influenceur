@@ -58,6 +58,8 @@ class FakeDB:
         self.frozen: list[tuple[str, str]] = []
         self.runs: list[tuple[str, int, str | None]] = []
         self.item_updates: list[tuple[str, str, str, str | None]] = []
+        self.lead_updates: list[tuple[str, str, dict]] = []
+        self.checked: list[tuple[str, str]] = []
 
     # — accès du cron (service-role) —
     def admin_enabled(self) -> bool:
@@ -85,7 +87,21 @@ class FakeDB:
         return dict(lead)
 
     def admin_update_lead_outreach(self, user_id: str, lead_id: str, fields: dict):
-        return None
+        self.lead_updates.append((user_id, lead_id, dict(fields)))
+        lead = self.leads.get(lead_id)
+        if lead is not None and (not self.scoped or lead["user_id"] == user_id):
+            lead.update(fields)
+        return lead
+
+    def admin_list_leads_awaiting_acceptance(self, user_id: str, *, limit: int = 100) -> list[dict]:
+        leads = [
+            dict(lead) for lead in self.leads.values()
+            if lead.get("outreach_status") == "invite_sent" and (not self.scoped or lead["user_id"] == user_id)
+        ]
+        return leads[:limit]
+
+    def admin_mark_lead_checked(self, user_id: str, lead_id: str):
+        self.checked.append((user_id, lead_id))
 
     def admin_log_outreach_action(self, user_id: str, **kwargs):
         self.logged.append({"user_id": user_id, **kwargs})
@@ -114,10 +130,13 @@ class FakeUnipile:
 
     UnipileError = unipile.UnipileError
 
-    def __init__(self, *, fail_with: str | None = None):
+    def __init__(self, *, fail_with: str | None = None, accepted: set | None = None):
         self.invitations: list[tuple[str, str]] = []   # (account_id, provider_id)
         self.messages: list[tuple[str, str, str]] = []  # (account_id, provider_id, texte)
         self.fail_with = fail_with
+        # Provider_ids déjà en relation (1er niveau) : simule des invitations acceptées.
+        self.accepted = accepted or set()
+        self.profile_lookups: list[tuple[str, str]] = []  # (account_id, identifier)
 
     def enabled(self) -> bool:
         return True
@@ -127,8 +146,10 @@ class FakeUnipile:
 
     def get_user_profile(self, account_id, identifier):
         # `identifier` = un provider_id déjà connu, sinon le slug public du profil.
+        self.profile_lookups.append((account_id, identifier))
         provider_id = identifier if str(identifier).startswith("prov-") else f"prov-{str(identifier)[0]}"
-        return {"provider_id": provider_id, "network_distance": "DISTANCE_2"}
+        distance = "DISTANCE_1" if provider_id in self.accepted else "DISTANCE_2"
+        return {"provider_id": provider_id, "network_distance": distance}
 
     def provider_id_of(self, profile):
         return (profile or {}).get("provider_id")
@@ -298,6 +319,66 @@ class EngineBehaviourTest(unittest.TestCase):
         self._run(db, uni)
 
         self.assertEqual(sorted(user_id for user_id, _, _ in db.runs), ["user-a", "user-b"])
+
+
+class AcceptanceDetectionTest(unittest.TestCase):
+    """Détection automatique de l'acceptation, vue de bout en bout (via `run()`)."""
+
+    def _run(self, fake_db, fake_unipile, now=TUESDAY_10H):
+        with patch.object(outreach_sender, "db", fake_db), \
+             patch.object(outreach_sender, "unipile", fake_unipile), \
+             patch.object(outreach_sender, "_now", lambda: now):
+            outreach_sender.run()
+
+    def test_invitation_acceptee_bascule_en_relation(self):
+        db = FakeDB()
+        db.leads["lead-a"]["outreach_status"] = "invite_sent"
+        uni = FakeUnipile(accepted={"prov-a"})  # A a accepté
+
+        self._run(db, uni)
+
+        # Le lead d'A passe « connected », vu depuis le compte d'A uniquement.
+        flips = [(uid, lid, f.get("outreach_status")) for (uid, lid, f) in db.lead_updates]
+        self.assertIn(("user-a", "lead-a", "connected"), flips)
+        self.assertIn(("acc-a", "prov-a"), uni.profile_lookups)
+        # Aucune invitation/message n'est envoyé : détecter n'est pas prospecter.
+        self.assertEqual(uni.invitations, [])
+        self.assertEqual(uni.messages, [])
+
+    def test_invitation_non_acceptee_note_juste_le_re_check(self):
+        db = FakeDB()
+        db.leads["lead-a"]["outreach_status"] = "invite_sent"
+        uni = FakeUnipile()  # personne n'a accepté (DISTANCE_2)
+
+        self._run(db, uni)
+
+        self.assertIn(("user-a", "lead-a"), db.checked)
+        self.assertEqual([(u, l, f.get("outreach_status")) for (u, l, f) in db.lead_updates], [])
+
+    def test_le_lead_dun_client_est_verifie_depuis_SON_compte(self):
+        """Cloisonnement : le profil du lead de B n'est jamais lu via le compte d'A."""
+        db = FakeDB()
+        db.leads["lead-a"]["outreach_status"] = "invite_sent"
+        db.leads["lead-b"]["outreach_status"] = "invite_sent"
+        uni = FakeUnipile(accepted={"prov-a", "prov-b"})
+
+        self._run(db, uni)
+
+        # prov-a n'est lu que par acc-a, prov-b que par acc-b — jamais croisé.
+        self.assertNotIn(("acc-a", "prov-b"), uni.profile_lookups)
+        self.assertNotIn(("acc-b", "prov-a"), uni.profile_lookups)
+
+    def test_compte_gele_aucune_verification(self):
+        db = FakeDB()
+        db.accounts[0] = {**db.accounts[0], "frozen": True, "frozen_at": TUESDAY_10H.isoformat(),
+                          "freeze_reason": "limite LinkedIn"}
+        db.leads["lead-a"]["outreach_status"] = "invite_sent"
+        uni = FakeUnipile(accepted={"prov-a"})
+
+        self._run(db, uni)
+
+        # Pendant un gel, on ne tape pas l'API d'Unipile, même en lecture.
+        self.assertNotIn(("acc-a", "prov-a"), uni.profile_lookups)
 
 
 if __name__ == "__main__":

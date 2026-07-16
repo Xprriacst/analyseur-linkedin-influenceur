@@ -141,6 +141,67 @@ def send_item(account: dict[str, Any], item: dict[str, Any]) -> bool:
         return False
 
 
+def _check_acceptance(account: dict[str, Any], lead: dict[str, Any]) -> bool:
+    """Vérifie l'acceptation de l'invitation d'UN lead. True si elle vient d'être vue.
+
+    C'est une lecture Unipile (le profil), pas un envoi : aucun quota n'est consommé.
+    Cas positif → le lead passe « en relation » (le premier message reste un clic
+    humain). Cas négatif → on note juste la date du re-check (cadence)."""
+    user_id = account["user_id"]
+    account_id = account["unipile_account_id"]
+    # Garde-fou multi-client, juste avant l'appel réseau (voir en-tête du module).
+    engine.assert_same_owner(
+        account.get("user_id"), lead.get("user_id"),
+        context=f"acceptation lead {lead.get('id')}",
+    )
+    provider_id, profile = _resolve_provider_id(account_id, lead)
+    if profile is not None and unipile.is_first_degree(profile):
+        db.admin_update_lead_outreach(user_id, lead["id"], {
+            "outreach_status": "connected",
+            "provider_id": provider_id or lead.get("provider_id"),
+            "outreach_last_checked_at": _now().isoformat(),
+        })
+        logger.info(f"[{user_id}] invitation acceptée — lead {lead['id']} passe en relation.")
+        return True
+    db.admin_mark_lead_checked(user_id, lead["id"])
+    return False
+
+
+def check_acceptances(account: dict[str, Any]) -> int:
+    """Balaie les leads en attente d'acceptation et bascule ceux qui ont accepté.
+
+    Sans ça, un lead reste bloqué en « en attente d'acceptation » tant que le client
+    ne clique pas manuellement — même si la personne a accepté depuis des jours.
+
+    Suspendu pendant un gel : LinkedIn a signalé une limite, on ne tape plus son API,
+    même en lecture. Une erreur de restriction pendant le balayage gèle le compte et
+    stoppe le balayage (comme pour les envois)."""
+    user_id = account.get("user_id")
+    if not user_id:
+        return 0
+    now = _now()
+    if engine.freeze_active(now, account):
+        return 0
+
+    leads = db.admin_list_leads_awaiting_acceptance(user_id)
+    due = engine.pick_acceptance_checks(now, leads)
+    accepted = 0
+    for lead in due:
+        try:
+            if _check_acceptance(account, lead):
+                accepted += 1
+        except unipile.UnipileError as exc:
+            message = str(exc)
+            logger.error(f"[{user_id}] vérification d'acceptation échouée (lead {lead.get('id')}) : {message}")
+            if engine.is_restriction_error(message):
+                db.admin_freeze_outreach_account(user_id, f"LinkedIn a signalé une limite : {message}")
+                logger.error(f"[{user_id}] compte GELÉ après une restriction en lecture : {message}")
+                break
+    if accepted:
+        logger.info(f"[{user_id}] {accepted} invitation(s) nouvellement acceptée(s).")
+    return accepted
+
+
 def process_account(account: dict[str, Any]) -> int:
     """Un passage du moteur sur un compte. Retourne le nombre d'actions envoyées.
 
@@ -209,9 +270,13 @@ def run() -> None:
     logger.info(f"Moteur d'envoi : {len(accounts)} compte(s) de prospection connecté(s).")
 
     total = 0
+    accepted = 0
     for account in accounts:
         user_id = account.get("user_id")
         try:
+            # La détection d'acceptation est indépendante de la file d'envoi : un lead
+            # peut attendre son acceptation sans qu'aucune action ne soit en file.
+            accepted += check_acceptances(account)
             total += process_account(account)
         except engine.OwnershipError as exc:
             # Ne devrait jamais arriver. Si ça arrive, on n'envoie rien et on hurle.
@@ -221,7 +286,7 @@ def run() -> None:
             logger.error(f"[{user_id}] passage en échec : {exc}")
             db.admin_record_engine_run(user_id, sent=0, error=str(exc))
 
-    logger.info(f"Moteur d'envoi : {total} action(s) envoyée(s).")
+    logger.info(f"Moteur d'envoi : {total} action(s) envoyée(s), {accepted} acceptation(s) détectée(s).")
 
 
 if __name__ == "__main__":
