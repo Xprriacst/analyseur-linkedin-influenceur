@@ -5224,6 +5224,45 @@ def admin_update_lead_outreach(user_id: str, lead_id: str, fields: dict[str, Any
     return resp.data[0] if resp.data else None
 
 
+def admin_list_leads_awaiting_acceptance(user_id: str, *, limit: int = 100) -> list[dict]:
+    """Leads de CE client dont l'invitation est partie mais pas encore acceptée
+    (service-role, pour la détection automatique d'acceptation).
+
+    Le filtre `user_id` est la sécurité : la clé service-role contourne la RLS, donc
+    sans lui on remonterait les leads de tous les clients."""
+    if not admin_enabled() or not user_id:
+        return []
+    resp = (
+        admin_client()
+        .table("leads")
+        .select("id, user_id, provider_id, profile_url, outreach_status, outreach_updated_at, outreach_last_checked_at")
+        .eq("user_id", user_id)
+        .eq("outreach_status", "invite_sent")
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def admin_mark_lead_checked(user_id: str, lead_id: str) -> None:
+    """Note qu'un lead vient d'être re-vérifié sans changement d'état (service-role).
+
+    Sert de cadence : on repousse ainsi le prochain re-check de ce lead. Distinct de
+    `outreach_updated_at` (qui, lui, ne bouge que quand l'ÉTAT change) pour ne pas
+    faire croire à un changement de statut à chaque lecture."""
+    if not admin_enabled() or not user_id or not lead_id:
+        return
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    (
+        admin_client()
+        .table("leads")
+        .update({"outreach_last_checked_at": now})
+        .eq("id", lead_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+
 def admin_log_outreach_action(
     user_id: str,
     *,

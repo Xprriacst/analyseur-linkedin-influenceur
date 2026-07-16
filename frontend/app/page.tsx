@@ -11604,9 +11604,12 @@ function ProspectingView({
                       {oStatus === "invite_sent" && (
                         <>
                           <div style={{ fontSize: 13 }}>⏳ Demande envoyée — en attente d&apos;acceptation.</div>
+                          <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                            L&apos;acceptation est détectée <strong>automatiquement</strong> (LinkedIn peut mettre plusieurs heures à la propager). Tu peux aussi vérifier tout de suite&nbsp;:
+                          </div>
                           <button className="secondary-button" disabled={outreachBusy} onClick={() => checkConnection(selected)}>
                             {outreachBusy ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
-                            Vérifier l&apos;acceptation
+                            Vérifier maintenant
                           </button>
                         </>
                       )}

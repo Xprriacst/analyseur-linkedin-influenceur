@@ -55,6 +55,22 @@ ENGINE_STALE_MINUTES = 40
 # une fois la période passée — un gel définitif serait une impasse, pas un garde-fou.
 FREEZE_COOLDOWN_HOURS = 24
 
+# Détection automatique de l'acceptation des invitations. Le moteur balaie les leads
+# en « invitation envoyée » et bascule en « en relation » ceux qui ont accepté — sans
+# ça, le lead reste bloqué tant que le client ne clique pas « Vérifier l'acceptation ».
+# C'est une LECTURE (pas d'invitation/message envoyé, aucun quota consommé), mais on la
+# cadence quand même : re-checker un lead en boucle taperait l'API Unipile pour rien.
+ACCEPTANCE_CHECKS_PER_TICK = 5
+# LinkedIn met lui-même jusqu'à ~8 h à propager l'acceptation : re-vérifier plus souvent
+# ne révèle rien de nouveau. On re-checke chaque lead au plus une fois toutes les 4 h →
+# l'acceptation est vue dans les ~4-8 h, pour ~6 lectures/jour/lead au pire.
+ACCEPTANCE_RECHECK_HOURS = 4
+# Au-delà de ce délai depuis l'envoi de l'invitation, on arrête de guetter l'acceptation :
+# une invitation vieille de 3 semaines ne sera quasi jamais acceptée, et continuer à la
+# re-vérifier gonflerait sans fin les appels Unipile (donc les requêtes LinkedIn du
+# compte du client). Le bouton manuel reste disponible pour un cas particulier.
+ACCEPTANCE_MAX_AGE_DAYS = 21
+
 DEFAULT_TIMEZONE = "Europe/Paris"
 DEFAULT_HOUR_START = 9
 DEFAULT_HOUR_END = 18
@@ -413,3 +429,44 @@ def pick_sendable(
         if decision.code in ("frozen", "closed", "gap", "counts_unavailable", "warmup"):
             break
     return None, last
+
+
+def pick_acceptance_checks(
+    now: datetime.datetime,
+    leads: Sequence[dict[str, Any]],
+    *,
+    limit: int = ACCEPTANCE_CHECKS_PER_TICK,
+    recheck_hours: float = ACCEPTANCE_RECHECK_HOURS,
+    max_age_days: float = ACCEPTANCE_MAX_AGE_DAYS,
+) -> list[dict[str, Any]]:
+    """Parmi les leads en attente d'acceptation, ceux à re-vérifier à ce passage.
+
+    Trois garde-fous : on abandonne les invitations parties depuis plus de
+    `max_age_days` jours (une invitation de 3 semaines ne sera quasi jamais acceptée,
+    la re-guetter ne fait que gonfler les appels) ; on ne re-checke pas un lead vérifié
+    il y a moins de `recheck_hours` heures (le signal LinkedIn met jusqu'à ~8 h à se
+    propager) ; et on plafonne à `limit` leads par passage. Les leads jamais vérifiés —
+    ou vérifiés le plus anciennement — passent en premier, pour qu'aucun ne soit affamé.
+
+    L'âge de l'invitation se lit sur `outreach_updated_at` (posé à l'envoi et inchangé
+    tant que le lead reste « invitation envoyée »). Un lead sans cette date n'est jamais
+    abandonné (on préfère le vérifier que le perdre).
+
+    Fonction PURE : l'appelant a déjà filtré sur `outreach_status = 'invite_sent'` ;
+    ici on ne décide que du rythme.
+    """
+    if limit <= 0:
+        return []
+    recheck_cutoff = now - datetime.timedelta(hours=recheck_hours)
+    age_cutoff = now - datetime.timedelta(days=max_age_days)
+    epoch = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+    due: list[dict[str, Any]] = []
+    for lead in leads:
+        invited = _parse_dt(lead.get("outreach_updated_at"))
+        if invited is not None and invited < age_cutoff:
+            continue  # invitation trop ancienne : on cesse de guetter
+        checked = _parse_dt(lead.get("outreach_last_checked_at"))
+        if checked is None or checked <= recheck_cutoff:
+            due.append(lead)
+    due.sort(key=lambda lead: _parse_dt(lead.get("outreach_last_checked_at")) or epoch)
+    return due[:limit]

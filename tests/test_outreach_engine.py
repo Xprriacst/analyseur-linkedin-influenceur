@@ -228,6 +228,63 @@ class PickSendableTest(unittest.TestCase):
         self.assertEqual(decision.code, "closed")
 
 
+class AcceptanceChecksTest(unittest.TestCase):
+    """Détection automatique de l'acceptation : le RYTHME du balayage (logique pure)."""
+
+    def _lead(self, lead_id, checked_at):
+        return {"id": lead_id, "outreach_last_checked_at": checked_at}
+
+    def test_jamais_verifie_est_inclus(self):
+        leads = [self._lead("l1", None)]
+        due = engine.pick_acceptance_checks(TUESDAY_10H, leads)
+        self.assertEqual([l["id"] for l in due], ["l1"])
+
+    def test_verifie_recemment_est_ecarte(self):
+        # Vérifié il y a 1 h (< 4 h de cadence) → pas encore re-vérifiable.
+        recent = (TUESDAY_10H - datetime.timedelta(hours=1)).isoformat()
+        due = engine.pick_acceptance_checks(TUESDAY_10H, [self._lead("l1", recent)])
+        self.assertEqual(due, [])
+
+    def test_verifie_il_y_a_longtemps_repasse(self):
+        old = (TUESDAY_10H - datetime.timedelta(hours=5)).isoformat()
+        due = engine.pick_acceptance_checks(TUESDAY_10H, [self._lead("l1", old)])
+        self.assertEqual([l["id"] for l in due], ["l1"])
+
+    def test_les_plus_anciens_dabord_et_jamais_verifie_prioritaire(self):
+        h5 = (TUESDAY_10H - datetime.timedelta(hours=5)).isoformat()
+        h9 = (TUESDAY_10H - datetime.timedelta(hours=9)).isoformat()
+        leads = [self._lead("recent5h", h5), self._lead("jamais", None), self._lead("vieux9h", h9)]
+        due = engine.pick_acceptance_checks(TUESDAY_10H, leads)
+        # None (epoch) < 9 h < 5 h : jamais vérifié en premier, puis le plus ancien.
+        self.assertEqual([l["id"] for l in due], ["jamais", "vieux9h", "recent5h"])
+
+    def test_plafond_par_passage(self):
+        leads = [self._lead(f"l{i}", None) for i in range(10)]
+        due = engine.pick_acceptance_checks(TUESDAY_10H, leads, limit=3)
+        self.assertEqual(len(due), 3)
+
+    def test_limite_zero_ne_verifie_rien(self):
+        due = engine.pick_acceptance_checks(TUESDAY_10H, [self._lead("l1", None)], limit=0)
+        self.assertEqual(due, [])
+
+    def test_invitation_trop_ancienne_est_abandonnee(self):
+        # Invitée il y a 30 j (> 21 j) et jamais vérifiée : on cesse de guetter.
+        old_invite = (TUESDAY_10H - datetime.timedelta(days=30)).isoformat()
+        lead = {"id": "l1", "outreach_updated_at": old_invite, "outreach_last_checked_at": None}
+        self.assertEqual(engine.pick_acceptance_checks(TUESDAY_10H, [lead]), [])
+
+    def test_invitation_recente_est_gardee(self):
+        recent_invite = (TUESDAY_10H - datetime.timedelta(days=5)).isoformat()
+        lead = {"id": "l1", "outreach_updated_at": recent_invite, "outreach_last_checked_at": None}
+        due = engine.pick_acceptance_checks(TUESDAY_10H, [lead])
+        self.assertEqual([l["id"] for l in due], ["l1"])
+
+    def test_invitation_sans_date_nest_jamais_abandonnee(self):
+        # Pas de date d'envoi connue : on préfère vérifier que perdre le lead.
+        due = engine.pick_acceptance_checks(TUESDAY_10H, [{"id": "l1", "outreach_last_checked_at": None}])
+        self.assertEqual([l["id"] for l in due], ["l1"])
+
+
 class OwnershipTest(unittest.TestCase):
     """Le moteur tourne en service-role : la base ne cloisonne plus rien pour lui."""
 
