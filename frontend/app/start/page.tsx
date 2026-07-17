@@ -24,7 +24,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Loader2, Lock, Target } from "lucide-react";
+import { ArrowRight, CheckCircle2, Flame, Loader2, Lock } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
 import OnboardingScreen, { type OnboardingProfile } from "../components/Onboarding";
 
@@ -33,6 +33,13 @@ const DIRECT_API_URL =
 
 /** Les réponses de l'onboarding, le temps d'arriver jusqu'à la création du compte. */
 const PENDING_PROFILE_KEY = "cibl_pending_profile";
+
+// Offre de lancement — mêmes valeurs que la landing (/offre), à garder alignées.
+// ⚠️ « Tu gardes 49 € » se tient DANS STRIPE : au passage à 150 €, créer un NOUVEAU
+// tarif (les abonnés y restent seuls). Modifier le tarif existant les ferait tous
+// basculer et trahirait cette promesse.
+const LAUNCH_SEATS = 150;
+const FUTURE_PRICE = "150 €";
 
 type Phase = "onboarding" | "account";
 
@@ -231,7 +238,7 @@ export default function StartPage() {
               marginBottom: 8,
             }}
           >
-            <Target size={12} /> Abonnement Cibl · {price}/mois
+            <Flame size={12} /> Offre de lancement · {LAUNCH_SEATS} premiers clients
           </span>
 
           <h2 className="auth-title" style={{ fontSize: 22 }}>
@@ -315,7 +322,13 @@ export default function StartPage() {
           </button>
 
           <p style={{ margin: "8px 0 0", fontSize: 12.5, color: "var(--muted)", textAlign: "center" }}>
-            {price}/mois · {credits.toLocaleString("fr-FR")} crédits par mois · sans engagement
+            <strong style={{ color: "var(--ink)" }}>{price}/mois</strong>{" "}
+            <span style={{ textDecoration: "line-through" }}>{FUTURE_PRICE}</span> ·{" "}
+            {credits.toLocaleString("fr-FR")} crédits par mois · sans engagement
+          </p>
+          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)", textAlign: "center", lineHeight: 1.5 }}>
+            Le prix passera à {FUTURE_PRICE}/mois passé les {LAUNCH_SEATS} premiers clients — tu gardes {price} tant
+            que ton abonnement reste actif.
           </p>
 
           <button

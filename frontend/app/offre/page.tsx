@@ -19,6 +19,7 @@ import {
   ArrowRight,
   BarChart3,
   CheckCircle2,
+  Flame,
   Inbox,
   Lightbulb,
   Lock,
@@ -32,6 +33,20 @@ import {
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
+
+/**
+ * Offre de lancement.
+ *
+ * ⚠️ « Tu gardes 49 € » est une promesse qui se tient DANS STRIPE, pas ici : un
+ * abonnement reste attaché au tarif sur lequel il a été souscrit. Le jour du passage
+ * à 150 €, il faut donc créer un NOUVEAU tarif — les abonnés à 49 € y restent seuls.
+ * Modifier le tarif existant les ferait TOUS basculer et trahirait cette page.
+ *
+ * ⚠️ Pas de compteur « il reste N places » : tant qu'il n'est pas branché sur le vrai
+ * nombre de clients, c'est un faux. Le formuler en texte fixe est tenable, l'inventer non.
+ */
+const LAUNCH_SEATS = 150;
+const FUTURE_PRICE = "150 €";
 
 /** Tendances réellement mesurées par l'outil sur le corpus analysé. */
 const PROOF_STATS: { up: boolean; text: string }[] = [
@@ -224,6 +239,23 @@ export default function OffrePage() {
         <div aria-hidden style={{ position: "absolute", bottom: -200, left: -160, width: 520, height: 520, borderRadius: "50%", background: "radial-gradient(circle, rgba(0,0,0,0.22) 0%, rgba(0,0,0,0) 65%)" }} />
 
         <div style={{ position: "relative", maxWidth: 1080, margin: "0 auto", textAlign: "center" }}>
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              marginBottom: 22,
+              padding: "6px 14px",
+              borderRadius: 20,
+              fontSize: 13,
+              fontWeight: 700,
+              background: "rgba(255,255,255,0.14)",
+              border: "1px solid rgba(255,255,255,0.28)",
+            }}
+          >
+            <Flame size={14} /> Offre de lancement — {LAUNCH_SEATS} premiers clients
+          </span>
+
           <h1 style={{ margin: 0, fontSize: "clamp(32px, 4.4vw, 56px)", lineHeight: 1.1, letterSpacing: "-0.028em" }}>
             Arrête de deviner<br />
             <span style={{ background: "linear-gradient(transparent 68%, rgba(255,255,255,0.32) 68%)" }}>ce qui marche</span> sur LinkedIn.
@@ -237,9 +269,57 @@ export default function OffrePage() {
           <div style={{ marginTop: 30, display: "flex", justifyContent: "center" }}>
             <StartButton light />
           </div>
-          <p style={{ margin: "14px 0 0", fontSize: 13, opacity: 0.78 }}>
-            Sans engagement · résiliable en un clic
+          <p style={{ margin: "14px 0 0", fontSize: 13.5, opacity: 0.85 }}>
+            <strong style={{ fontWeight: 700 }}>{price}/mois</strong>{" "}
+            <span style={{ textDecoration: "line-through", opacity: 0.6 }}>{FUTURE_PRICE}</span> · sans engagement
           </p>
+          <p style={{ margin: "6px 0 0", fontSize: 12.5, opacity: 0.7 }}>
+            Ce prix passera à {FUTURE_PRICE}/mois — tu gardes {price} tant que ton abonnement reste actif.
+          </p>
+
+          {/* ── Mockup MacBook ── */}
+          <div style={{ margin: "48px auto 0", maxWidth: 880 }}>
+            <div
+              style={{
+                padding: "10px 10px 8px",
+                borderRadius: 14,
+                background: "linear-gradient(180deg, #2f3040 0%, #1c1d28 100%)",
+                boxShadow: "0 30px 70px rgba(0,0,0,0.42), 0 0 0 1px rgba(255,255,255,0.09)",
+              }}
+            >
+              {/* Encoche caméra */}
+              <div aria-hidden style={{ display: "flex", justifyContent: "center", marginBottom: 6 }}>
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: "rgba(255,255,255,0.22)" }} />
+              </div>
+              <img
+                src="/app-preview.png"
+                alt="L'application Cibl : le générateur de posts, la veille et la prospection dans une seule interface."
+                style={{ display: "block", width: "100%", borderRadius: 6, background: "#fff" }}
+              />
+            </div>
+            {/* Socle : sa largeur > celle de l'écran, sinon la charnière ne se lit pas. */}
+            <div
+              aria-hidden
+              style={{
+                width: "108%",
+                marginLeft: "-4%",
+                height: 13,
+                borderRadius: "0 0 12px 12px",
+                background: "linear-gradient(180deg, #c9ccd6 0%, #8f93a4 62%, #6c7080 100%)",
+                boxShadow: "0 12px 26px rgba(0,0,0,0.34)",
+              }}
+            >
+              <div
+                style={{
+                  width: 84,
+                  height: 4,
+                  margin: "0 auto",
+                  borderRadius: "0 0 5px 5px",
+                  background: "rgba(0,0,0,0.22)",
+                }}
+              />
+            </div>
+          </div>
 
           {/* Preuve : tendances réellement mesurées par l'outil */}
           <div
@@ -371,15 +451,36 @@ export default function OffrePage() {
               border: "1px solid rgba(70,72,212,0.18)",
             }}
           >
-            <Target size={12} /> Abonnement Cibl
+            <Flame size={12} /> Offre de lancement · {LAUNCH_SEATS} premiers clients
           </span>
 
-          <div style={{ marginTop: 18, display: "flex", alignItems: "baseline", justifyContent: "center", gap: 8 }}>
+          <div style={{ marginTop: 18, display: "flex", alignItems: "baseline", justifyContent: "center", gap: 10 }}>
             <span style={{ fontSize: 46, fontWeight: 800, letterSpacing: "-0.025em" }}>{price}</span>
+            <span style={{ fontSize: 22, fontWeight: 600, color: "var(--muted)", textDecoration: "line-through" }}>
+              {FUTURE_PRICE}
+            </span>
             <span style={{ fontSize: 16, color: "var(--muted)" }}>/ mois</span>
           </div>
           <p style={{ margin: "8px 0 0", fontSize: 14.5, color: "var(--muted)" }}>
             {credits.toLocaleString("fr-FR")} crédits rechargés chaque mois · sans engagement · résiliable en un clic
+          </p>
+
+          <p
+            style={{
+              margin: "16px auto 0",
+              maxWidth: 420,
+              padding: "11px 14px",
+              borderRadius: 12,
+              fontSize: 13.5,
+              lineHeight: 1.55,
+              color: "var(--ink)",
+              background: "rgba(70,72,212,0.06)",
+              border: "1px solid rgba(70,72,212,0.16)",
+            }}
+          >
+            Passé les {LAUNCH_SEATS} premiers clients, l'abonnement passera à{" "}
+            <strong>{FUTURE_PRICE}/mois</strong>. Si tu t'abonnes maintenant, tu gardes{" "}
+            <strong>{price}/mois</strong> tant que ton abonnement reste actif.
           </p>
 
           <ul style={{ listStyle: "none", padding: 0, margin: "26px 0 0", display: "grid", gap: 11, textAlign: "left" }}>
