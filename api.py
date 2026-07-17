@@ -2665,6 +2665,11 @@ class UnipileSettingsRequest(BaseModel):
     send_hour_start: int | None = Field(default=None, ge=0, le=23)
     send_hour_end: int | None = Field(default=None, ge=1, le=24)
     send_days: list[int] | None = Field(default=None)  # ISO : 1 = lundi … 7 = dimanche
+    # ALE-284 — auto-prospection : opt-in explicite + seuil de score + plafond auto.
+    auto_prospection_enabled: bool | None = Field(default=None)
+    auto_invite_min_score: int | None = Field(default=None, ge=0, le=100)
+    auto_invite_daily_cap: int | None = Field(default=None, ge=1, le=50)
+    auto_first_message_enabled: bool | None = Field(default=None)
 
 
 class OutreachInviteRequest(BaseModel):
@@ -2792,6 +2797,15 @@ def _engine_state(token: str, account: dict[str, Any]) -> dict[str, Any]:
             "hour_start": start,
             "hour_end": end,
             "days": list(outreach_engine.send_days(account)),
+        },
+        # ALE-284 — réglages d'auto-prospection (opt-in). Inerte tant que le cron
+        # d'auto-invitation n'est pas livré : ces valeurs pilotent l'UI, pas encore
+        # d'envoi automatique.
+        "automation": {
+            "enabled": bool(account.get("auto_prospection_enabled")),
+            "invite_min_score": int(account.get("auto_invite_min_score") or 70),
+            "invite_daily_cap": int(account.get("auto_invite_daily_cap") or 15),
+            "first_message_enabled": bool(account.get("auto_first_message_enabled")),
         },
     }
 
@@ -2960,6 +2974,10 @@ def me_linkedin_outreach_settings(
         send_hour_start=payload.send_hour_start,
         send_hour_end=payload.send_hour_end,
         send_days=payload.send_days,
+        auto_prospection_enabled=payload.auto_prospection_enabled,
+        auto_invite_min_score=payload.auto_invite_min_score,
+        auto_invite_daily_cap=payload.auto_invite_daily_cap,
+        auto_first_message_enabled=payload.auto_first_message_enabled,
     )
     return _unipile_outreach_status(token)
 

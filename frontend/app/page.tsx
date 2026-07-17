@@ -2382,6 +2382,14 @@ type OutreachEngine = {
   immediate_left: number;        // soupape « envoyer maintenant » restante sur 24 h
   immediate_cap: number;
   window: { timezone: string; hour_start: number; hour_end: number; days: number[] };
+  // ALE-284 — réglages d'auto-prospection (opt-in). Optionnel : absent tant que le
+  // backend qui l'expose n'est pas déployé (ancienne instance en vol).
+  automation?: {
+    enabled: boolean;
+    invite_min_score: number;    // 0-100 : seuil de score pour inviter un lead automatiquement
+    invite_daily_cap: number;    // plafond d'invitations auto déposées en file par jour
+    first_message_enabled: boolean;
+  };
 };
 
 type OutreachQueueItem = {
@@ -7002,13 +7010,23 @@ function UnipileOutreachConnect({
   // ALE-174 — fenêtre d'envoi du moteur (heures de bureau du client).
   const [hoursDraft, setHoursDraft] = useState<[number, number]>([9, 18]);
   const [daysDraft, setDaysDraft] = useState<number[]>([1, 2, 3, 4, 5]);
+  // ALE-284 — brouillons des réglages d'auto-prospection (seuil de score + plafond auto).
+  const [minScoreDraft, setMinScoreDraft] = useState<number>(70);
+  const [autoCapDraft, setAutoCapDraft] = useState<number>(15);
 
   const st = outreach.status;
   const connected = !!st?.connected;
   const q = st?.quota;
   const eng = st?.engine;
+  const auto = eng?.automation;
 
   useEffect(() => { if (q?.daily_cap) setCapDraft(q.daily_cap); }, [q?.daily_cap]);
+  useEffect(() => {
+    if (auto) {
+      setMinScoreDraft(auto.invite_min_score);
+      setAutoCapDraft(auto.invite_daily_cap);
+    }
+  }, [auto?.invite_min_score, auto?.invite_daily_cap]);
   useEffect(() => {
     if (eng?.window) {
       setHoursDraft([eng.window.hour_start, eng.window.hour_end]);
@@ -7165,6 +7183,83 @@ function UnipileOutreachConnect({
               dimanche, c&apos;est le signal le plus facile à repérer pour LinkedIn.
             </p>
           </div>
+
+          {/* ALE-284 — prospection automatique (opt-in explicite). Rendu seulement si le
+              backend expose ces réglages (sinon `auto` absent → on n'affiche rien plutôt
+              qu'un interrupteur qui écrirait dans le vide). L'envoi automatique lui-même
+              arrive dans une phase suivante : ici on ne pose que le consentement + les bornes. */}
+          {auto && (
+            <div style={{ display: "grid", gap: 10, borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Prospection automatique</div>
+              <p style={{ fontSize: 12.5, color: "var(--muted)", margin: 0 }}>
+                Aujourd&apos;hui, tu cliques « Inviter » sur chaque lead. En activant la prospection automatique,
+                l&apos;app envoie elle-même les demandes de connexion à tes leads les mieux notés — au même rythme
+                de sécurité (plage horaire, mise en route progressive, plafonds). Tu gardes la main : tu peux la
+                couper à tout moment, et le bouton « Inviter » manuel reste disponible.
+              </p>
+
+              <label style={{ display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={auto.enabled}
+                  disabled={outreach.busy}
+                  onChange={() => outreach.saveSettings({ auto_prospection_enabled: !auto.enabled })}
+                  style={{ marginTop: 3, width: 16, height: 16, flexShrink: 0 }}
+                />
+                <span>
+                  <strong>Activer la prospection automatique.</strong> Des demandes de connexion partiront en ton
+                  nom, sans clic, vers tes leads qualifiés. Le rythme de sécurité s&apos;applique toujours.
+                </span>
+              </label>
+
+              {auto.enabled && (
+                <div style={{ display: "grid", gap: 10, paddingLeft: 26 }}>
+                  <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, flexWrap: "wrap" }}>
+                    Inviter les leads à partir d&apos;un score de
+                    <input
+                      type="number" min={0} max={100} value={minScoreDraft}
+                      onChange={(e) => setMinScoreDraft(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+                      style={{ width: 72, padding: 8, fontSize: 13 }}
+                    />
+                    / 100
+                    <button
+                      className="primary-button"
+                      onClick={() => outreach.saveSettings({ auto_invite_min_score: minScoreDraft })}
+                      disabled={outreach.busy || minScoreDraft === auto.invite_min_score}
+                      style={{ fontSize: 13 }}
+                    >
+                      {outreach.busy ? <Loader2 size={13} className="spinning" /> : <CheckCircle2 size={13} />} Enregistrer
+                    </button>
+                  </label>
+
+                  <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, flexWrap: "wrap" }}>
+                    Au maximum
+                    <input
+                      type="number" min={1} max={50} value={autoCapDraft}
+                      onChange={(e) => setAutoCapDraft(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+                      style={{ width: 72, padding: 8, fontSize: 13 }}
+                    />
+                    invitations automatiques par jour
+                    <button
+                      className="primary-button"
+                      onClick={() => outreach.saveSettings({ auto_invite_daily_cap: autoCapDraft })}
+                      disabled={outreach.busy || autoCapDraft === auto.invite_daily_cap}
+                      style={{ fontSize: 13 }}
+                    >
+                      {outreach.busy ? <Loader2 size={13} className="spinning" /> : <CheckCircle2 size={13} />} Enregistrer
+                    </button>
+                  </label>
+
+                  <p style={{ fontSize: 11.5, color: "var(--muted)", margin: 0 }}>
+                    La mise en route progressive et les plafonds de sécurité s&apos;appliquent en plus : ce nombre est
+                    un plafond, pas un objectif. Un score plus haut = moins d&apos;invitations, mais mieux acceptées —
+                    et un taux d&apos;acceptation qui reste bon, c&apos;est ce qui protège ton compte sur la durée.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           <LearnedRulesEditor isAuthed={connected} active={open} channel="linkedin" />
           </>
         )}

@@ -4742,6 +4742,10 @@ def upsert_linkedin_outreach_account(
     send_hour_start: int | None = None,
     send_hour_end: int | None = None,
     send_days: list[int] | None = None,
+    auto_prospection_enabled: bool | None = None,
+    auto_invite_min_score: int | None = None,
+    auto_invite_daily_cap: int | None = None,
+    auto_first_message_enabled: bool | None = None,
 ) -> dict | None:
     """Crée/met à jour le compte Unipile + la config de cadençage (RLS scope, upsert).
 
@@ -4780,6 +4784,15 @@ def upsert_linkedin_outreach_account(
     if send_days is not None:
         days = sorted({int(d) for d in send_days if 1 <= int(d) <= 7})
         row["send_days"] = days or [1, 2, 3, 4, 5]
+    # ALE-284 — réglages d'auto-prospection (opt-in + seuil de score + plafond auto).
+    if auto_prospection_enabled is not None:
+        row["auto_prospection_enabled"] = bool(auto_prospection_enabled)
+    if auto_invite_min_score is not None:
+        row["auto_invite_min_score"] = max(0, min(100, int(auto_invite_min_score)))
+    if auto_invite_daily_cap is not None:
+        row["auto_invite_daily_cap"] = max(1, min(50, int(auto_invite_daily_cap)))
+    if auto_first_message_enabled is not None:
+        row["auto_first_message_enabled"] = bool(auto_first_message_enabled)
     resp = (
         db.table("linkedin_outreach_accounts")
         .upsert(row, on_conflict="user_id")
