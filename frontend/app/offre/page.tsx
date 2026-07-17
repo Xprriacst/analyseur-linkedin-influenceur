@@ -7,10 +7,9 @@
  * questionne, crée le compte puis encaisse). Aucun formulaire ici : on ne demande
  * ni e-mail ni carte avant d'avoir montré le travail fait.
  *
- * ⚠️ Les chiffres de PROOF_STATS sont des tendances RÉELLEMENT mesurées par l'outil
- * (corpus ~400 posts, 17 rapports) — pas des chiffres marketing inventés. Ne pas en
- * ajouter sans la mesure derrière. Idem pour les témoignages : la section n'existe
- * pas tant qu'il n'y a pas de vraies citations de vrais clients.
+ * Preuve affichée dans le hero : le volume analysé (INFLUENCERS_ANALYZED /
+ * POSTS_ANALYZED), qui inclut le travail fait hors app par Alex. Pas de témoignages
+ * tant qu'il n'y a pas de vraies citations de vrais clients.
  */
 
 import { useEffect, useState } from "react";
@@ -26,8 +25,6 @@ import {
   PenLine,
   Radar,
   Target,
-  TrendingDown,
-  TrendingUp,
   Users,
 } from "lucide-react";
 
@@ -40,16 +37,10 @@ const DIRECT_API_URL =
 // ⚠️ Pas de compteur « il reste N places » : tant qu'il n'est pas branché sur le vrai
 // nombre de clients, c'est un faux.
 const LAUNCH_SEATS = 150;
-// Volume d'influenceurs analysés — inclut ceux analysés hors de l'app (autre outil).
-// C'est un fait constaté par Alex, pas un compteur de la base ; à réviser à la main.
+// Volumes analysés — incluent le travail fait hors de l'app (autre outil). Faits
+// constatés par Alex, pas des compteurs de la base ; à réviser à la main.
 const INFLUENCERS_ANALYZED = 150;
-
-/** Tendances réellement mesurées par l'outil sur le corpus analysé. */
-const PROOF_STATS: { up: boolean; text: string }[] = [
-  { up: true, text: "Appels à commenter : engagement ×2,5" },
-  { up: true, text: "Posts texte : +22 % — reposts : −84 %" },
-  { up: false, text: "Publier tous les jours : taux divisé par 4" },
-];
+const POSTS_ANALYZED = 3500;
 
 const STEPS: { n: string; title: string; body: string }[] = [
   {
@@ -255,36 +246,28 @@ export default function OffrePage() {
               <span style={{ fontSize: 13, opacity: 0.78 }}>Sans engagement · résiliable en un clic</span>
             </div>
 
-            {/* Preuve : volume analysé + tendances réellement mesurées */}
+            {/* Preuve : le volume analysé, en deux chiffres. */}
             <div
               style={{
                 margin: "36px 0 0",
-                maxWidth: 520,
-                padding: "18px 20px",
+                maxWidth: 460,
+                padding: "20px 22px",
                 borderRadius: 16,
                 background: "rgba(255,255,255,0.09)",
                 border: "1px solid rgba(255,255,255,0.18)",
                 backdropFilter: "blur(4px)",
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 18,
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: 11, paddingBottom: 14, marginBottom: 14, borderBottom: "1px solid rgba(255,255,255,0.16)" }}>
-                <BarChart3 size={22} style={{ color: "#7ef0c0", flexShrink: 0 }} />
-                <span style={{ fontSize: 17, fontWeight: 800, letterSpacing: "-0.01em" }}>Plus de {INFLUENCERS_ANALYZED} influenceurs analysés</span>
+              <div>
+                <div style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-0.02em" }}>{INFLUENCERS_ANALYZED}+</div>
+                <div style={{ fontSize: 13, opacity: 0.82, marginTop: 3 }}>influenceurs analysés</div>
               </div>
-              <p style={{ margin: "0 0 12px", fontSize: 11.5, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.75 }}>
-                Mesuré sur de vraies analyses — pas du feeling
-              </p>
-              <div style={{ display: "grid", gap: 9 }}>
-                {PROOF_STATS.map((stat) => (
-                  <div key={stat.text} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13.5 }}>
-                    {stat.up ? (
-                      <TrendingUp size={16} style={{ color: "#7ef0c0", flexShrink: 0 }} />
-                    ) : (
-                      <TrendingDown size={16} style={{ color: "#ffb4a8", flexShrink: 0 }} />
-                    )}
-                    <span style={{ opacity: 0.95 }}>{stat.text}</span>
-                  </div>
-                ))}
+              <div>
+                <div style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-0.02em" }}>{POSTS_ANALYZED.toLocaleString("fr-FR")}+</div>
+                <div style={{ fontSize: 13, opacity: 0.82, marginTop: 3 }}>posts analysés</div>
               </div>
             </div>
           </div>
