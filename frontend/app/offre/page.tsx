@@ -34,19 +34,12 @@ import {
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
 
-/**
- * Offre de lancement.
- *
- * ⚠️ « Tu gardes 49 € » est une promesse qui se tient DANS STRIPE, pas ici : un
- * abonnement reste attaché au tarif sur lequel il a été souscrit. Le jour du passage
- * à 150 €, il faut donc créer un NOUVEAU tarif — les abonnés à 49 € y restent seuls.
- * Modifier le tarif existant les ferait TOUS basculer et trahirait cette page.
- *
- * ⚠️ Pas de compteur « il reste N places » : tant qu'il n'est pas branché sur le vrai
- * nombre de clients, c'est un faux. Le formuler en texte fixe est tenable, l'inventer non.
- */
+// La landing ne montre AUCUN prix (décision produit) : le tarif n'apparaît qu'à
+// l'écran de paiement (/start), une fois l'onboarding rempli. On garde seulement
+// le cadrage « offre de lancement / N premiers clients », qui ne révèle pas de prix.
+// ⚠️ Pas de compteur « il reste N places » : tant qu'il n'est pas branché sur le vrai
+// nombre de clients, c'est un faux.
 const LAUNCH_SEATS = 150;
-const FUTURE_PRICE = "150 €";
 
 /** Tendances réellement mesurées par l'outil sur le corpus analysé. */
 const PROOF_STATS: { up: boolean; text: string }[] = [
@@ -137,33 +130,8 @@ function StartButton({ label = "Commencer", light = false }: { label?: string; l
 }
 
 export default function OffrePage() {
-  const [price, setPrice] = useState("49 €");
-  const [credits, setCredits] = useState(1000);
-
-  // Prix lu depuis Stripe (source de vérité) — repli sur 49 € si injoignable.
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch(`${DIRECT_API_URL}/billing/plan`);
-        if (!res.ok) return;
-        const plan = (await res.json())?.plan;
-        if (!plan) return;
-        if (typeof plan.credits === "number") setCredits(plan.credits);
-        if (typeof plan.amount === "number") {
-          setPrice(
-            new Intl.NumberFormat("fr-FR", {
-              style: "currency",
-              currency: (plan.currency || "eur").toUpperCase(),
-              maximumFractionDigits: plan.amount % 1 === 0 ? 0 : 2,
-            }).format(plan.amount)
-          );
-        }
-      } catch {
-        /* repli silencieux */
-      }
-    })();
-  }, []);
-
+  // Aucun appel /billing/plan ici : la landing ne montre pas de prix. Le tarif est
+  // lu depuis Stripe sur /start, à l'écran de paiement.
   return (
     <main style={{ background: "var(--surface-low)" }}>
       {/* ── Barre de navigation ── */}
@@ -202,7 +170,6 @@ export default function OffrePage() {
         <div style={{ display: "flex", alignItems: "center", gap: 22 }}>
           <a href="#comment" className="lp-navlink">Comment ça marche</a>
           <a href="#fonctionnalites" className="lp-navlink">Fonctionnalités</a>
-          <a href="#tarif" className="lp-navlink">Tarif</a>
           <Link href="/" className="lp-navlink">Se connecter</Link>
           <Link
             href="/start"
@@ -269,12 +236,8 @@ export default function OffrePage() {
           <div style={{ marginTop: 30, display: "flex", justifyContent: "center" }}>
             <StartButton light />
           </div>
-          <p style={{ margin: "14px 0 0", fontSize: 13.5, opacity: 0.85 }}>
-            <strong style={{ fontWeight: 700 }}>{price}/mois</strong>{" "}
-            <span style={{ textDecoration: "line-through", opacity: 0.6 }}>{FUTURE_PRICE}</span> · sans engagement
-          </p>
-          <p style={{ margin: "6px 0 0", fontSize: 12.5, opacity: 0.7 }}>
-            Ce prix passera à {FUTURE_PRICE}/mois — tu gardes {price} tant que ton abonnement reste actif.
+          <p style={{ margin: "14px 0 0", fontSize: 13, opacity: 0.78 }}>
+            Sans engagement · résiliable en un clic
           </p>
 
           {/* ── Mockup MacBook ── */}
@@ -420,80 +383,6 @@ export default function OffrePage() {
                 <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: "var(--muted)" }}>{f.body}</p>
               </div>
             ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── Tarif ── */}
-      <section id="tarif" style={{ padding: "clamp(56px, 7vw, 88px) clamp(24px, 6vw, 84px)" }}>
-        <div
-          style={{
-            maxWidth: 560,
-            margin: "0 auto",
-            padding: "36px 32px",
-            borderRadius: 18,
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            textAlign: "center",
-          }}
-        >
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "4px 10px",
-              borderRadius: 20,
-              fontSize: 12,
-              fontWeight: 600,
-              color: "var(--primary)",
-              background: "rgba(70,72,212,0.08)",
-              border: "1px solid rgba(70,72,212,0.18)",
-            }}
-          >
-            <Flame size={12} /> Offre de lancement · {LAUNCH_SEATS} premiers clients
-          </span>
-
-          <div style={{ marginTop: 18, display: "flex", alignItems: "baseline", justifyContent: "center", gap: 10 }}>
-            <span style={{ fontSize: 46, fontWeight: 800, letterSpacing: "-0.025em" }}>{price}</span>
-            <span style={{ fontSize: 22, fontWeight: 600, color: "var(--muted)", textDecoration: "line-through" }}>
-              {FUTURE_PRICE}
-            </span>
-            <span style={{ fontSize: 16, color: "var(--muted)" }}>/ mois</span>
-          </div>
-          <p style={{ margin: "8px 0 0", fontSize: 14.5, color: "var(--muted)" }}>
-            {credits.toLocaleString("fr-FR")} crédits rechargés chaque mois · sans engagement · résiliable en un clic
-          </p>
-
-          <p
-            style={{
-              margin: "16px auto 0",
-              maxWidth: 420,
-              padding: "11px 14px",
-              borderRadius: 12,
-              fontSize: 13.5,
-              lineHeight: 1.55,
-              color: "var(--ink)",
-              background: "rgba(70,72,212,0.06)",
-              border: "1px solid rgba(70,72,212,0.16)",
-            }}
-          >
-            Passé les {LAUNCH_SEATS} premiers clients, l'abonnement passera à{" "}
-            <strong>{FUTURE_PRICE}/mois</strong>. Si tu t'abonnes maintenant, tu gardes{" "}
-            <strong>{price}/mois</strong> tant que ton abonnement reste actif.
-          </p>
-
-          <ul style={{ listStyle: "none", padding: 0, margin: "26px 0 0", display: "grid", gap: 11, textAlign: "left" }}>
-            {FEATURES.map((f) => (
-              <li key={f.title} style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 14.5 }}>
-                <CheckCircle2 size={15} style={{ color: "var(--primary)", flexShrink: 0 }} />
-                <span>{f.title}</span>
-              </li>
-            ))}
-          </ul>
-
-          <div style={{ marginTop: 28, display: "flex", justifyContent: "center" }}>
-            <StartButton />
           </div>
         </div>
       </section>
