@@ -366,6 +366,103 @@ def draft_me_profile(
     }
 
 
+# --- Onboarding public (avant création de compte) ----------------------------
+#
+# ⚠️ Cette route est la SEULE du service à lancer un scrape Apify + un appel Claude
+# SANS compte : chaque appel coûte de l'argent (~1 centime). Elle est donc bornée
+# par IP. Le compteur vit en mémoire du process : il saute à chaque redémarrage
+# Render et ne se partage pas entre instances — c'est un garde-fou anti-abus
+# basique, pas une facturation. Il borne le coût d'un visiteur qui s'acharne,
+# pas celui d'un botnet distribué.
+
+_ONBOARDING_DRAFT_WINDOW_S = 3600.0
+_ONBOARDING_DRAFT_MAX = int(os.environ.get("ONBOARDING_DRAFT_MAX_PER_HOUR", "5"))
+_onboarding_draft_hits: dict[str, list[float]] = {}
+_onboarding_draft_lock = threading.Lock()
+
+
+def _client_ip(request: Request) -> str:
+    """IP d'origine — Render place le vrai client en tête de X-Forwarded-For."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limit_onboarding_draft(request: Request) -> None:
+    ip = _client_ip(request)
+    now = time.time()
+    with _onboarding_draft_lock:
+        hits = [t for t in _onboarding_draft_hits.get(ip, []) if now - t < _ONBOARDING_DRAFT_WINDOW_S]
+        if len(hits) >= _ONBOARDING_DRAFT_MAX:
+            raise HTTPException(
+                status_code=429,
+                detail="Trop d'analyses depuis cette connexion. Réessaie dans une heure, ou crée ton compte.",
+            )
+        hits.append(now)
+        _onboarding_draft_hits[ip] = hits
+        # Purge opportuniste : sans ça le dictionnaire grossit indéfiniment.
+        if len(_onboarding_draft_hits) > 5000:
+            for key in [k for k, v in _onboarding_draft_hits.items() if not v or now - v[-1] > _ONBOARDING_DRAFT_WINDOW_S]:
+                _onboarding_draft_hits.pop(key, None)
+
+
+@app.post("/onboarding/draft")
+def draft_onboarding_profile(payload: EditorialProfileDraftRequest, request: Request) -> dict[str, Any]:
+    """Version publique de /me/profile/draft : le visiteur voit le travail avant de payer.
+
+    Même logique, sans les deux lectures qui exigent un compte (profil déjà analysé,
+    profil éditorial existant) — un visiteur n'en a par définition aucun.
+    """
+    _rate_limit_onboarding_draft(request)
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
+
+    activity = (payload.activity_description or "").strip()
+    linkedin_url = (payload.linkedin_url or "").strip()
+    website_url = (payload.website_url or "").strip()
+    if not activity and not linkedin_url and not website_url:
+        raise HTTPException(status_code=400, detail="Ajoute une description, une URL LinkedIn ou un site web.")
+    if payload.use_apify_linkedin and not linkedin_url:
+        raise HTTPException(status_code=400, detail="Ajoute une URL LinkedIn pour utiliser Apify.")
+    if payload.use_apify_linkedin and not os.environ.get("APIFY_TOKEN"):
+        raise HTTPException(status_code=400, detail="APIFY_TOKEN manquant dans .env")
+
+    linkedin_apify_seed = None
+    if payload.use_apify_linkedin and linkedin_url:
+        try:
+            linkedin_apify_seed = _fetch_linkedin_apify_seed(linkedin_url)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Lecture LinkedIn via Apify impossible : {exc}") from exc
+    website_seed = _fetch_website_summary(website_url) if website_url else None
+    seed = {
+        "activity_description": activity,
+        "linkedin_url": linkedin_url,
+        "website_url": website_url,
+        "linkedin_analyzed_profile": None,
+        "linkedin_apify_profile": linkedin_apify_seed,
+        "website_public_summary": website_seed,
+    }
+    try:
+        profile = draft_editorial_profile(seed, existing_profile={})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Pré-remplissage IA impossible : {exc}") from exc
+
+    if linkedin_url and not profile.get("linkedin_url"):
+        profile["linkedin_url"] = linkedin_url
+    if website_url and not profile.get("website_url"):
+        profile["website_url"] = website_url
+    return {
+        "profile": profile,
+        "sources": {
+            "description": bool(activity),
+            "linkedin_apify": bool(linkedin_apify_seed),
+            "website_summary": bool(website_seed and website_seed.get("summary")),
+        },
+    }
+
+
 @app.get("/me/analyses/{analysis_id}")
 def me_analysis(analysis_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
     """Fetch a single stored analysis (report + computed data)."""
