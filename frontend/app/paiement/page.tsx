@@ -19,27 +19,23 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Flame, Loader2, Lock, TrendingDown, TrendingUp } from "lucide-react";
+import { CheckCircle2, Flame, Loader2, Lock } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
 
 const LAUNCH_SEATS = 150;
-const FUTURE_PRICE = "150 €";
+const FUTURE_PRICE = "149 €";
+// Volumes analysés (dont hors app) — faits constatés, révisés à la main.
+const INFLUENCERS_ANALYZED = 150;
+const POSTS_ANALYZED = 3500;
 
 const PROMISES: string[] = [
   "L'analyse chiffrée de ce qui marche vraiment chez tes concurrents LinkedIn",
   "Des posts générés dans ta voix, à partir de ce qui performe sur ton marché",
   "Une idée de post chaque matin, publication et programmation incluses",
   "Les prospects qui commentent les posts de tes concurrents, contactés depuis l'app",
-];
-
-/** Tendances réellement mesurées par l'outil — pas des chiffres marketing inventés. */
-const PROOF_STATS: { up: boolean; text: string }[] = [
-  { up: true, text: "Appels à commenter : engagement ×2,5" },
-  { up: true, text: "Posts texte : +22 % — reposts : −84 %" },
-  { up: false, text: "Publier tous les jours : taux divisé par 4" },
 ];
 
 export default function PaiementPage() {
@@ -166,30 +162,28 @@ export default function PaiementPage() {
             ))}
           </ul>
 
-          {/* Preuve : tendances réellement mesurées par l'outil */}
+          {/* Preuve : le volume analysé, en deux chiffres. */}
           <div
             style={{
               margin: "30px 0 0",
-              maxWidth: 460,
-              padding: "16px 18px",
+              maxWidth: 420,
+              padding: "18px 20px",
               borderRadius: 14,
               background: "rgba(255,255,255,0.09)",
               border: "1px solid rgba(255,255,255,0.18)",
               backdropFilter: "blur(4px)",
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 16,
             }}
           >
-            <p style={{ margin: "0 0 10px", fontSize: 11.5, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.75 }}>
-              Mesuré sur de vraies analyses — pas du feeling
-            </p>
-            <div style={{ display: "grid", gap: 8 }}>
-              {PROOF_STATS.map((stat) => (
-                <div key={stat.text} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13.5 }}>
-                  {stat.up
-                    ? <TrendingUp size={15} style={{ color: "#7ef0c0", flexShrink: 0 }} />
-                    : <TrendingDown size={15} style={{ color: "#ffb4a8", flexShrink: 0 }} />}
-                  <span style={{ opacity: 0.95 }}>{stat.text}</span>
-                </div>
-              ))}
+            <div>
+              <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em" }}>{INFLUENCERS_ANALYZED}+</div>
+              <div style={{ fontSize: 12.5, opacity: 0.82, marginTop: 3 }}>influenceurs analysés</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em" }}>{POSTS_ANALYZED.toLocaleString("fr-FR")}+</div>
+              <div style={{ fontSize: 12.5, opacity: 0.82, marginTop: 3 }}>posts analysés</div>
             </div>
           </div>
         </div>
