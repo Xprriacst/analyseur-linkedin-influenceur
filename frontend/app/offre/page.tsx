@@ -40,6 +40,9 @@ const DIRECT_API_URL =
 // ⚠️ Pas de compteur « il reste N places » : tant qu'il n'est pas branché sur le vrai
 // nombre de clients, c'est un faux.
 const LAUNCH_SEATS = 150;
+// Volume d'influenceurs analysés — inclut ceux analysés hors de l'app (autre outil).
+// C'est un fait constaté par Alex, pas un compteur de la base ; à réviser à la main.
+const INFLUENCERS_ANALYZED = 150;
 
 /** Tendances réellement mesurées par l'outil sur le corpus analysé. */
 const PROOF_STATS: { up: boolean; text: string }[] = [
@@ -252,7 +255,7 @@ export default function OffrePage() {
               <span style={{ fontSize: 13, opacity: 0.78 }}>Sans engagement · résiliable en un clic</span>
             </div>
 
-            {/* Preuve : tendances réellement mesurées par l'outil */}
+            {/* Preuve : volume analysé + tendances réellement mesurées */}
             <div
               style={{
                 margin: "36px 0 0",
@@ -264,6 +267,10 @@ export default function OffrePage() {
                 backdropFilter: "blur(4px)",
               }}
             >
+              <div style={{ display: "flex", alignItems: "center", gap: 11, paddingBottom: 14, marginBottom: 14, borderBottom: "1px solid rgba(255,255,255,0.16)" }}>
+                <BarChart3 size={22} style={{ color: "#7ef0c0", flexShrink: 0 }} />
+                <span style={{ fontSize: 17, fontWeight: 800, letterSpacing: "-0.01em" }}>Plus de {INFLUENCERS_ANALYZED} influenceurs analysés</span>
+              </div>
               <p style={{ margin: "0 0 12px", fontSize: 11.5, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.75 }}>
                 Mesuré sur de vraies analyses — pas du feeling
               </p>

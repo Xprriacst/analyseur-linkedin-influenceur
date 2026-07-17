@@ -19,14 +19,16 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Flame, Loader2, Lock, TrendingDown, TrendingUp } from "lucide-react";
+import { BarChart3, CheckCircle2, Flame, Loader2, Lock, TrendingDown, TrendingUp } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
 
 const LAUNCH_SEATS = 150;
-const FUTURE_PRICE = "150 €";
+const FUTURE_PRICE = "149 €";
+// Volume d'influenceurs analysés (dont hors app) — fait constaté, révisé à la main.
+const INFLUENCERS_ANALYZED = 150;
 
 const PROMISES: string[] = [
   "L'analyse chiffrée de ce qui marche vraiment chez tes concurrents LinkedIn",
@@ -178,6 +180,10 @@ export default function PaiementPage() {
               backdropFilter: "blur(4px)",
             }}
           >
+            <div style={{ display: "flex", alignItems: "center", gap: 10, paddingBottom: 12, marginBottom: 12, borderBottom: "1px solid rgba(255,255,255,0.16)" }}>
+              <BarChart3 size={20} style={{ color: "#7ef0c0", flexShrink: 0 }} />
+              <span style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: "-0.01em" }}>Plus de {INFLUENCERS_ANALYZED} influenceurs analysés</span>
+            </div>
             <p style={{ margin: "0 0 10px", fontSize: 11.5, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.75 }}>
               Mesuré sur de vraies analyses — pas du feeling
             </p>
