@@ -24,7 +24,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Flame, Loader2, Lock } from "lucide-react";
+import { ArrowRight, CheckCircle2, Loader2 } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
 import OnboardingScreen, { type OnboardingProfile } from "../components/Onboarding";
 
@@ -33,13 +33,6 @@ const DIRECT_API_URL =
 
 /** Les réponses de l'onboarding, le temps d'arriver jusqu'à la création du compte. */
 const PENDING_PROFILE_KEY = "cibl_pending_profile";
-
-// Offre de lancement — mêmes valeurs que la landing (/offre), à garder alignées.
-// ⚠️ « Tu gardes 49 € » se tient DANS STRIPE : au passage à 150 €, créer un NOUVEAU
-// tarif (les abonnés y restent seuls). Modifier le tarif existant les ferait tous
-// basculer et trahirait cette promesse.
-const LAUNCH_SEATS = 150;
-const FUTURE_PRICE = "150 €";
 
 type Phase = "onboarding" | "account";
 
@@ -53,8 +46,6 @@ export default function StartPage() {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
-  const [price, setPrice] = useState("49 €");
-  const [credits, setCredits] = useState(1000);
 
   // Déjà connecté ? Ce parcours ne le concerne pas : l'app gère son onboarding.
   useEffect(() => {
@@ -73,28 +64,6 @@ export default function StartPage() {
         setPhase("account");
       }
     } catch { /* parcours reparti de zéro — sans gravité */ }
-  }, []);
-
-  // Prix lu depuis Stripe (source de vérité) — repli sur 49 € si injoignable.
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch(`${DIRECT_API_URL}/billing/plan`);
-        if (!res.ok) return;
-        const plan = (await res.json())?.plan;
-        if (!plan) return;
-        if (typeof plan.credits === "number") setCredits(plan.credits);
-        if (typeof plan.amount === "number") {
-          setPrice(
-            new Intl.NumberFormat("fr-FR", {
-              style: "currency",
-              currency: (plan.currency || "eur").toUpperCase(),
-              maximumFractionDigits: plan.amount % 1 === 0 ? 0 : 2,
-            }).format(plan.amount)
-          );
-        }
-      } catch { /* repli silencieux */ }
-    })();
   }, []);
 
   /** Fin de l'onboarding : on garde les réponses sous la main et on demande le compte. */
@@ -132,21 +101,14 @@ export default function StartPage() {
     }
   }
 
-  /** Compte prêt (session active) → session Checkout → redirection Stripe. */
-  async function goCheckout() {
-    const res = await fetch(`${DIRECT_API_URL}/me/billing/checkout`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-      body: JSON.stringify({
-        success_url: `${window.location.origin}/?billing=success`,
-        // Paiement abandonné → il entre quand même dans l'app avec ses crédits
-        // offerts, profil déjà enregistré. Rien de ce qu'il a fait n'est perdu.
-        cancel_url: `${window.location.origin}/?billing=cancelled`,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Paiement indisponible — réessaie dans un instant.");
-    window.location.href = data.url;
+  /**
+   * Compte prêt (session active) → on enregistre le profil, puis direction la page
+   * de paiement. On ne part PAS sur Stripe ici : capturer l'e-mail (le compte) est
+   * une étape à part, l'offre et le paiement se révèlent sur /paiement.
+   */
+  async function toPayment() {
+    await persistProfile();
+    router.push("/paiement");
   }
 
   async function submit(e: React.FormEvent) {
@@ -158,8 +120,7 @@ export default function StartPage() {
       if (mode === "signin") {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        await persistProfile();
-        await goCheckout();
+        await toPayment();
         return; // redirection en cours — on garde le spinner
       }
 
@@ -172,15 +133,14 @@ export default function StartPage() {
       if (error) throw error;
 
       if (data.session) {
-        await persistProfile();
-        await goCheckout();
+        await toPayment();
         return;
       }
 
       // Confirmation d'e-mail activée : pas de session, donc ni enregistrement du
       // profil ni paiement possibles maintenant. Les réponses restent en réserve.
       setInfo(
-        "Compte créé ! Confirme ton e-mail, puis reviens ici : on enregistre ton profil et on enchaîne sur le paiement."
+        "Compte créé ! Confirme ton e-mail, puis reviens ici : on enregistre ton profil et on passe au paiement."
       );
       setMode("signin");
       setLoading(false);
@@ -204,7 +164,7 @@ export default function StartPage() {
         anonymous
         onFinish={onboardingDone}
         onSkip={onboardingSkipped}
-        finishLabel="Voir mon offre"
+        finishLabel="Continuer"
       />
     );
   }
@@ -222,34 +182,15 @@ export default function StartPage() {
     >
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16, width: "100%" }}>
         <form onSubmit={submit} className="auth-card" style={{ maxWidth: 420, padding: 32, gap: 6 }}>
-          <span
-            style={{
-              alignSelf: "flex-start",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "4px 10px",
-              borderRadius: 20,
-              fontSize: 12,
-              fontWeight: 600,
-              color: "var(--primary)",
-              background: "rgba(70,72,212,0.08)",
-              border: "1px solid rgba(70,72,212,0.18)",
-              marginBottom: 8,
-            }}
-          >
-            <Flame size={12} /> Offre de lancement · {LAUNCH_SEATS} premiers clients
-          </span>
-
           <h2 className="auth-title" style={{ fontSize: 22 }}>
             {mode === "signup" ? "Ton profil est prêt" : "Connecte-toi pour continuer"}
           </h2>
           <p className="auth-sub">
             {mode === "signup"
               ? profile
-                ? "On a tout ce qu'il faut. Crée ton compte pour le garder et lancer ton abonnement."
-                : "Crée ton compte pour lancer ton abonnement."
-              : "On enregistre ton profil et on enchaîne sur le paiement."}
+                ? "On a tout ce qu'il faut. Crée ton compte pour le garder — dernière étape juste après."
+                : "Crée ton compte pour continuer."
+              : "On récupère ton profil et on continue."}
           </p>
 
           {profile && (
@@ -316,20 +257,10 @@ export default function StartPage() {
               <Loader2 className="spin" size={16} />
             ) : (
               <>
-                {mode === "signup" ? "Créer mon compte et payer" : "Se connecter et payer"} <ArrowRight size={15} />
+                {mode === "signup" ? "Créer mon compte" : "Se connecter"} <ArrowRight size={15} />
               </>
             )}
           </button>
-
-          <p style={{ margin: "8px 0 0", fontSize: 12.5, color: "var(--muted)", textAlign: "center" }}>
-            <strong style={{ color: "var(--ink)" }}>{price}/mois</strong>{" "}
-            <span style={{ textDecoration: "line-through" }}>{FUTURE_PRICE}</span> ·{" "}
-            {credits.toLocaleString("fr-FR")} crédits par mois · sans engagement
-          </p>
-          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)", textAlign: "center", lineHeight: 1.5 }}>
-            Le prix passera à {FUTURE_PRICE}/mois passé les {LAUNCH_SEATS} premiers clients — tu gardes {price} tant
-            que ton abonnement reste actif.
-          </p>
 
           <button
             type="button"
@@ -340,9 +271,6 @@ export default function StartPage() {
           </button>
         </form>
 
-        <p style={{ margin: 0, fontSize: 12.5, color: "var(--muted)", display: "flex", alignItems: "center", gap: 6 }}>
-          <Lock size={13} /> Paiement sécurisé par Stripe — ta carte est gérée par Stripe, jamais par nous.
-        </p>
         <Link href="/offre" style={{ fontSize: 12.5, color: "var(--muted)" }}>
           ← Retour à la présentation
         </Link>

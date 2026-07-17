@@ -205,43 +205,85 @@ export default function OffrePage() {
         <div aria-hidden style={{ position: "absolute", top: -160, right: -120, width: 460, height: 460, borderRadius: "50%", background: "radial-gradient(circle, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 65%)" }} />
         <div aria-hidden style={{ position: "absolute", bottom: -200, left: -160, width: 520, height: 520, borderRadius: "50%", background: "radial-gradient(circle, rgba(0,0,0,0.22) 0%, rgba(0,0,0,0) 65%)" }} />
 
-        <div style={{ position: "relative", maxWidth: 1080, margin: "0 auto", textAlign: "center" }}>
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 7,
-              marginBottom: 22,
-              padding: "6px 14px",
-              borderRadius: 20,
-              fontSize: 13,
-              fontWeight: 700,
-              background: "rgba(255,255,255,0.14)",
-              border: "1px solid rgba(255,255,255,0.28)",
-            }}
-          >
-            <Flame size={14} /> Offre de lancement — {LAUNCH_SEATS} premiers clients
-          </span>
+        {/* Hero en deux colonnes : promesse à gauche, mockup Mac à droite. */}
+        <div
+          className="lp-hero"
+          style={{
+            position: "relative",
+            maxWidth: 1180,
+            margin: "0 auto",
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1.05fr)",
+            alignItems: "center",
+            gap: "clamp(32px, 5vw, 64px)",
+          }}
+        >
+          {/* ── Colonne gauche : le texte ── */}
+          <div className="lp-hero-text">
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 7,
+                marginBottom: 22,
+                padding: "6px 14px",
+                borderRadius: 20,
+                fontSize: 13,
+                fontWeight: 700,
+                background: "rgba(255,255,255,0.14)",
+                border: "1px solid rgba(255,255,255,0.28)",
+              }}
+            >
+              <Flame size={14} /> Offre de lancement — {LAUNCH_SEATS} premiers clients
+            </span>
 
-          <h1 style={{ margin: 0, fontSize: "clamp(32px, 4.4vw, 56px)", lineHeight: 1.1, letterSpacing: "-0.028em" }}>
-            Arrête de deviner<br />
-            <span style={{ background: "linear-gradient(transparent 68%, rgba(255,255,255,0.32) 68%)" }}>ce qui marche</span> sur LinkedIn.
-          </h1>
+            <h1 style={{ margin: 0, fontSize: "clamp(30px, 3.4vw, 50px)", lineHeight: 1.1, letterSpacing: "-0.028em" }}>
+              Arrête de deviner{" "}
+              <span style={{ background: "linear-gradient(transparent 68%, rgba(255,255,255,0.32) 68%)" }}>ce qui marche</span> sur LinkedIn.
+            </h1>
 
-          <p style={{ margin: "22px auto 0", maxWidth: 620, fontSize: "clamp(15px, 1.5vw, 18px)", lineHeight: 1.6, opacity: 0.92 }}>
-            Cibl décrypte les comptes qui performent dans ton marché, écrit tes posts dans ta voix
-            à partir de ce qui marche vraiment, et te ramène les prospects qui commentent tes concurrents.
-          </p>
+            <p style={{ margin: "22px 0 0", maxWidth: 520, fontSize: "clamp(15px, 1.4vw, 17px)", lineHeight: 1.6, opacity: 0.92 }}>
+              Cibl décrypte les comptes qui performent dans ton marché, écrit tes posts dans ta voix
+              à partir de ce qui marche vraiment, et te ramène les prospects qui commentent tes concurrents.
+            </p>
 
-          <div style={{ marginTop: 30, display: "flex", justifyContent: "center" }}>
-            <StartButton light />
+            <div style={{ marginTop: 30, display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+              <StartButton light />
+              <span style={{ fontSize: 13, opacity: 0.78 }}>Sans engagement · résiliable en un clic</span>
+            </div>
+
+            {/* Preuve : tendances réellement mesurées par l'outil */}
+            <div
+              style={{
+                margin: "36px 0 0",
+                maxWidth: 520,
+                padding: "18px 20px",
+                borderRadius: 16,
+                background: "rgba(255,255,255,0.09)",
+                border: "1px solid rgba(255,255,255,0.18)",
+                backdropFilter: "blur(4px)",
+              }}
+            >
+              <p style={{ margin: "0 0 12px", fontSize: 11.5, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.75 }}>
+                Mesuré sur de vraies analyses — pas du feeling
+              </p>
+              <div style={{ display: "grid", gap: 9 }}>
+                {PROOF_STATS.map((stat) => (
+                  <div key={stat.text} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13.5 }}>
+                    {stat.up ? (
+                      <TrendingUp size={16} style={{ color: "#7ef0c0", flexShrink: 0 }} />
+                    ) : (
+                      <TrendingDown size={16} style={{ color: "#ffb4a8", flexShrink: 0 }} />
+                    )}
+                    <span style={{ opacity: 0.95 }}>{stat.text}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-          <p style={{ margin: "14px 0 0", fontSize: 13, opacity: 0.78 }}>
-            Sans engagement · résiliable en un clic
-          </p>
 
-          {/* ── Mockup MacBook ── */}
-          <div style={{ margin: "48px auto 0", maxWidth: 880 }}>
+          {/* ── Colonne droite : le mockup MacBook ── */}
+          <div className="lp-hero-mac">
             <div
               style={{
                 padding: "10px 10px 8px",
@@ -272,45 +314,7 @@ export default function OffrePage() {
                 boxShadow: "0 12px 26px rgba(0,0,0,0.34)",
               }}
             >
-              <div
-                style={{
-                  width: 84,
-                  height: 4,
-                  margin: "0 auto",
-                  borderRadius: "0 0 5px 5px",
-                  background: "rgba(0,0,0,0.22)",
-                }}
-              />
-            </div>
-          </div>
-
-          {/* Preuve : tendances réellement mesurées par l'outil */}
-          <div
-            style={{
-              margin: "44px auto 0",
-              maxWidth: 720,
-              padding: "18px 22px",
-              borderRadius: 16,
-              background: "rgba(255,255,255,0.09)",
-              border: "1px solid rgba(255,255,255,0.18)",
-              backdropFilter: "blur(4px)",
-              textAlign: "left",
-            }}
-          >
-            <p style={{ margin: "0 0 12px", fontSize: 11.5, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.75, textAlign: "center" }}>
-              Mesuré sur de vraies analyses — pas du feeling
-            </p>
-            <div className="lp-proof" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
-              {PROOF_STATS.map((stat) => (
-                <div key={stat.text} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13.5 }}>
-                  {stat.up ? (
-                    <TrendingUp size={16} style={{ color: "#7ef0c0", flexShrink: 0 }} />
-                  ) : (
-                    <TrendingDown size={16} style={{ color: "#ffb4a8", flexShrink: 0 }} />
-                  )}
-                  <span style={{ opacity: 0.95 }}>{stat.text}</span>
-                </div>
-              ))}
+              <div style={{ width: 84, height: 4, margin: "0 auto", borderRadius: "0 0 5px 5px", background: "rgba(0,0,0,0.22)" }} />
             </div>
           </div>
         </div>
@@ -446,9 +450,12 @@ export default function OffrePage() {
         }
         .lp-navlink:hover { color: #fff; }
         @media (max-width: 900px) {
+          .lp-hero { grid-template-columns: 1fr !important; text-align: center; }
+          .lp-hero-text p, .lp-hero-text > div { margin-left: auto !important; margin-right: auto !important; }
+          .lp-hero-text > div[style*="flex"] { justify-content: center; }
+          .lp-hero-mac { max-width: 620px; margin: 8px auto 0; }
           .lp-steps { grid-template-columns: repeat(2, 1fr) !important; }
           .lp-features { grid-template-columns: repeat(2, 1fr) !important; }
-          .lp-proof { grid-template-columns: 1fr !important; }
         }
         @media (max-width: 640px) {
           .lp-steps { grid-template-columns: 1fr !important; }
