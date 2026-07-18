@@ -278,12 +278,12 @@ export default function OnboardingScreen({
                 placeholder="https://linkedin.com/in/ton-profil"
                 autoFocus
               />
-              <button className="onb-cta" onClick={analyze}>
+              <button type="button" className="onb-cta" onClick={analyze}>
                 <Sparkles size={16} /> Analyser
               </button>
             </div>
             {error && <div className="onb-error">{error}</div>}
-            <button className="onb-skip" onClick={() => setStep("page1")}>Continuer sans LinkedIn</button>
+            <button type="button" className="onb-skip" onClick={() => setStep("page1")}>Continuer sans LinkedIn</button>
           </div>
         )}
 
@@ -314,12 +314,14 @@ export default function OnboardingScreen({
               <label className="onb-block-label">À qui tu t'adresses&nbsp;?</label>
               <div className="onb-toggle">
                 <button
+                  type="button"
                   className={"onb-toggle-btn" + (sel.audienceMode === "niche" ? " selected" : "")}
                   onClick={() => up({ audienceMode: "niche" })}
                 >
                   Une cible précise
                 </button>
                 <button
+                  type="button"
                   className={"onb-toggle-btn" + (sel.audienceMode === "large" ? " selected" : "")}
                   onClick={() => up({ audienceMode: "large" })}
                 >
@@ -342,8 +344,8 @@ export default function OnboardingScreen({
             </div>
 
             <div className="onb-nav">
-              <button className="onb-back" onClick={onSkip}>Passer</button>
-              <button className="onb-cta" onClick={() => setStep("page2")}>
+              <button type="button" className="onb-back" onClick={onSkip}>Passer</button>
+              <button type="button" className="onb-cta" onClick={() => setStep("page2")}>
                 Continuer <ChevronRight size={16} />
               </button>
             </div>
@@ -366,10 +368,10 @@ export default function OnboardingScreen({
             </div>
 
             <div className="onb-nav">
-              <button className="onb-back" onClick={() => setStep("page1")}>
+              <button type="button" className="onb-back" onClick={() => setStep("page1")}>
                 <ChevronLeft size={16} /> Retour
               </button>
-              <button className="onb-cta" onClick={finish} disabled={saving}>
+              <button type="button" className="onb-cta" onClick={finish} disabled={saving}>
                 {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />} {finishLabel}
               </button>
             </div>

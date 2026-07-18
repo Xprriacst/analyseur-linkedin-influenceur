@@ -558,9 +558,17 @@ a { color: inherit; text-decoration: none; }
 .onboarding-hint { font-size: 13px; color: var(--muted); margin: 0; }
 
 /* --- Onboarding « Cible » (wizard) --- */
+/* ⚠️ overflow-y:auto + align-content:safe center : sur mobile le contenu
+   (chips + Continuer) dépasse la hauteur d'écran. Sans scroll sur l'overlay
+   fixed, le bas est clipé et on ne peut plus cliquer Continuer. */
 .onb-overlay {
   position: fixed; inset: 0; z-index: 200;
-  display: flex; align-items: center; justify-content: center;
+  display: grid;
+  justify-items: center;
+  align-content: safe center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 24px;
   background:
     radial-gradient(1100px 600px at 50% -12%, rgba(70,72,212,.10), transparent 60%),
@@ -615,7 +623,19 @@ a { color: inherit; text-decoration: none; }
 .onb-other-input { width: 100%; margin-top: 10px; padding: 11px 14px; font-size: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); animation: onb-fade-up .3s ease both; }
 .onb-other-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 4px rgba(70,72,212,.12); }
 
-.onb-nav { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+/* Sticky en bas de l'écran pendant le scroll — Continuer reste atteignable. */
+.onb-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: 14px 0 4px;
+  background: linear-gradient(180deg, rgba(255,255,255,0) 0%, var(--background, #fff) 28%);
+}
 .onb-back { background: none; border: none; color: var(--muted); font-size: 14px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
 .onb-back:hover { color: var(--ink); }
 
