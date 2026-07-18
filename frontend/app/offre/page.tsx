@@ -27,7 +27,6 @@ import {
   Target,
   Users,
 } from "lucide-react";
-import { trackEvent } from "../lib/analytics";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
@@ -100,19 +99,10 @@ const FEATURES: { icon: React.ReactNode; title: string; body: string }[] = [
 ];
 
 /** Bouton principal — même destination partout : le parcours guidé. */
-function StartButton({
-  label = "Commencer",
-  light = false,
-  placement = "section",
-}: {
-  label?: string;
-  light?: boolean;
-  placement?: string;
-}) {
+function StartButton({ label = "Commencer", light = false }: { label?: string; light?: boolean }) {
   return (
     <Link
       href="/start"
-      onClick={() => trackEvent("Landing CTA", { placement })}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -177,7 +167,6 @@ export default function OffrePage() {
           <Link href="/" className="lp-navlink">Se connecter</Link>
           <Link
             href="/start"
-            onClick={() => trackEvent("Landing CTA", { placement: "nav" })}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -253,7 +242,7 @@ export default function OffrePage() {
             </p>
 
             <div style={{ marginTop: 30, display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-              <StartButton light placement="hero" />
+              <StartButton light />
               <span style={{ fontSize: 13, opacity: 0.78 }}>Sans engagement · résiliable en un clic</span>
             </div>
 
@@ -412,7 +401,7 @@ export default function OffrePage() {
             Colle ton profil LinkedIn, réponds à quelques questions, et regarde ce que ça donne.
           </p>
           <div style={{ marginTop: 28, display: "flex", justifyContent: "center" }}>
-            <StartButton light placement="footer" />
+            <StartButton light />
           </div>
         </div>
       </section>

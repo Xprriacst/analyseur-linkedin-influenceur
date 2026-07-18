@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
-import Analytics from "./components/Analytics";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -14,10 +13,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="fr">
-      <body className={`${inter.variable} ${jetbrains.variable}`}>
-        {children}
-        <Analytics />
-      </body>
+      <body className={`${inter.variable} ${jetbrains.variable}`}>{children}</body>
     </html>
   );
 }
