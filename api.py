@@ -23,7 +23,7 @@ from src.pipeline import run_analysis
 from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
-from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
+from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
 from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
@@ -453,8 +453,18 @@ def draft_onboarding_profile(payload: EditorialProfileDraftRequest, request: Req
         profile["linkedin_url"] = linkedin_url
     if website_url and not profile.get("website_url"):
         profile["website_url"] = website_url
+
+    # Preview « Analyse IA » montrée avant la création du compte. Best-effort :
+    # si le 2ᵉ appel Claude tombe, l'onboarding continue sur les chips (page1).
+    preview = None
+    try:
+        preview = draft_onboarding_preview(seed)
+    except Exception:
+        preview = None
+
     return {
         "profile": profile,
+        "preview": preview,
         "sources": {
             "description": bool(activity),
             "linkedin_apify": bool(linkedin_apify_seed),

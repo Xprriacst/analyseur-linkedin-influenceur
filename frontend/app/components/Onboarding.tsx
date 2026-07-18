@@ -6,7 +6,8 @@
  *  - `anonymous` (page /start) : le visiteur n'a pas de compte. L'analyse passe par
  *    la route publique bornée par IP, et les réponses sont RENDUES à l'appelant
  *    (via onFinish) au lieu d'être enregistrées : il n'y a pas encore de compte où
- *    les mettre.
+ *    les mettre. Si une preview IA est dispo, on la montre AVANT les chips puis
+ *    avant la création du compte.
  *  - authentifié (page.tsx) : l'appelant enregistre le profil dans la foulée.
  *
  * Le composant ne décide donc JAMAIS quoi faire des réponses — il les calcule et
@@ -15,7 +16,16 @@
  */
 
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, Linkedin, Loader2, Sparkles, Target } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Linkedin,
+  Loader2,
+  Sparkles,
+  Target,
+} from "lucide-react";
 import { authHeaders } from "../lib/supabase";
 
 const DIRECT_API_URL =
@@ -24,8 +34,24 @@ const DIRECT_API_URL =
 /** Le profil éditorial tel que rendu par l'onboarding (clés du draft + réponses). */
 export type OnboardingProfile = Record<string, string>;
 
-// --- Onboarding « Cible » : wizard accueil → scan → 2 pages de confirmation ---
-type OnbStep = "intro" | "scanning" | "page1" | "page2";
+/** Preview « Analyse IA » renvoyée par `/onboarding/draft` (optionnelle). */
+export type OnboardingPreview = {
+  handle: string;
+  name: string;
+  headline: string;
+  posts_count: number;
+  followers: number;
+  connections: number;
+  niche: string;
+  summary: string;
+  hook: string;
+  hashtags: string[];
+  strengths: string[];
+  improvements: string[];
+};
+
+// --- Onboarding « Cible » : wizard accueil → scan → analyse → confirmation ---
+type OnbStep = "intro" | "scanning" | "analysis" | "analysis_detail" | "page1" | "page2";
 type OnbOption = { label: string; match?: string[] };
 
 const ONB_AUDIENCE_OPTIONS: OnbOption[] = [
@@ -69,6 +95,21 @@ const ONB_SCAN_STEPS = [
   "Identification de ton offre…",
   "On peaufine tout ça…",
 ];
+
+function fmtCompact(n: number): string {
+  if (!n || n < 0) return "—";
+  if (n < 1000) return String(n);
+  if (n < 10000) return `${(n / 1000).toFixed(1).replace(".0", "")}K`;
+  if (n < 1000000) return `${Math.round(n / 1000)}K`;
+  return `${(n / 1000000).toFixed(1).replace(".0", "")}M`;
+}
+
+function initials(name: string, handle: string): string {
+  const base = (name || handle || "?").trim();
+  const parts = base.replace(/[@._-]+/g, " ").split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return base.slice(0, 2).toUpperCase();
+}
 
 function onbMatch(text: string | undefined, options: OnbOption[]): string | null {
   const t = (text || "").toLowerCase();
@@ -173,6 +214,7 @@ export default function OnboardingScreen({
   const [aiInput, setAiInput] = useState("");
   const [error, setError] = useState("");
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const [preview, setPreview] = useState<OnboardingPreview | null>(null);
   const [sel, setSel] = useState(() => onbInitSel({}));
   const [saving, setSaving] = useState(false);
   const [scanIdx, setScanIdx] = useState(0);
@@ -224,12 +266,16 @@ export default function OnboardingScreen({
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || "Analyse impossible");
-        return (data.profile || {}) as Record<string, string>;
+        return data as { profile?: Record<string, string>; preview?: OnboardingPreview | null };
       })();
-      const [d] = await Promise.all([fetchDraft, minWait]);
+      const [data] = await Promise.all([fetchDraft, minWait]);
+      const d = (data.profile || {}) as Record<string, string>;
       setDraft(d);
       setSel(onbInitSel(d));
-      setStep("page1");
+      const p = data.preview && data.preview.niche && data.preview.summary ? data.preview : null;
+      setPreview(p);
+      // Preview uniquement sur le parcours public : le wow avant de demander le compte.
+      setStep(anonymous && p ? "analysis" : "page1");
     } catch (err: any) {
       setError(err?.message || "Analyse impossible");
       setStep("intro");
@@ -255,10 +301,13 @@ export default function OnboardingScreen({
     }
   }
 
+  const showProgress = step === "page1" || step === "page2";
+  const isAnalysis = step === "analysis" || step === "analysis_detail";
+
   return (
-    <div className="onb-overlay">
-      <div className="onb-shell">
-        {(step === "page1" || step === "page2") && (
+    <div className={"onb-overlay" + (isAnalysis ? " onb-overlay-analysis" : "")}>
+      <div className={"onb-shell" + (isAnalysis ? " onb-shell-analysis" : "")}>
+        {showProgress && (
           <div className="onb-progress">
             <div className="onb-progress-fill" style={{ width: step === "page1" ? "50%" : "100%" }} />
           </div>
@@ -294,6 +343,115 @@ export default function OnboardingScreen({
           </div>
         )}
 
+        {step === "analysis" && preview && (
+          <div className="onb-screen onb-analysis" key="analysis">
+            <div className="onb-analysis-card onb-analysis-profile">
+              <div className="onb-analysis-avatar" aria-hidden>
+                {initials(preview.name, preview.handle)}
+              </div>
+              <div className="onb-analysis-handle">
+                {preview.handle ? `@${preview.handle}` : preview.name || "Ton profil"}
+              </div>
+              {(preview.posts_count > 0 || preview.followers > 0 || preview.connections > 0) && (
+                <div className="onb-analysis-stats">
+                  <div>
+                    <strong>{preview.posts_count || "—"}</strong>
+                    <span>Posts lus</span>
+                  </div>
+                  <div>
+                    <strong>{fmtCompact(preview.followers)}</strong>
+                    <span>Abonnés</span>
+                  </div>
+                  <div>
+                    <strong>{fmtCompact(preview.connections)}</strong>
+                    <span>Relations</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <h2 className="onb-analysis-title">Analyse IA</h2>
+
+            <div className="onb-analysis-card">
+              <div className="onb-analysis-label">Niche</div>
+              <p className="onb-analysis-niche">{preview.niche}</p>
+            </div>
+
+            <div className="onb-analysis-card">
+              <div className="onb-analysis-label">Résumé</div>
+              <p className="onb-analysis-summary">{preview.summary}</p>
+            </div>
+
+            <button
+              type="button"
+              className="onb-analysis-cta"
+              onClick={() => setStep("analysis_detail")}
+            >
+              Voir mon potentiel
+            </button>
+          </div>
+        )}
+
+        {step === "analysis_detail" && preview && (
+          <div className="onb-screen onb-analysis" key="analysis_detail">
+            {preview.hook && (
+              <div className="onb-analysis-card">
+                <p className="onb-analysis-summary">{preview.hook}</p>
+              </div>
+            )}
+
+            {preview.hashtags.length > 0 && (
+              <div className="onb-analysis-block">
+                <div className="onb-analysis-label">Hashtags</div>
+                <div className="onb-analysis-tags">
+                  {preview.hashtags.map((tag) => (
+                    <span key={tag} className="onb-analysis-tag">{tag}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="onb-analysis-block">
+              <div className="onb-analysis-label">Points forts</div>
+              <ul className="onb-analysis-list">
+                {preview.strengths.map((s) => (
+                  <li key={s}>
+                    <CheckCircle2 size={16} className="onb-analysis-ok" />
+                    <span>{s}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="onb-analysis-block">
+              <div className="onb-analysis-label">Points à améliorer</div>
+              <ul className="onb-analysis-list">
+                {preview.improvements.map((s) => (
+                  <li key={s}>
+                    <AlertTriangle size={16} className="onb-analysis-warn" />
+                    <span>{s}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <button
+              type="button"
+              className="onb-analysis-cta"
+              onClick={() => setStep("page1")}
+            >
+              Continuer <ChevronRight size={16} />
+            </button>
+            <button
+              type="button"
+              className="onb-analysis-skip"
+              onClick={() => setStep("analysis")}
+            >
+              ← Retour à l&apos;analyse
+            </button>
+          </div>
+        )}
+
         {step === "page1" && (
           <div className="onb-screen" key="page1">
             <h2 className="onb-greeting">Ravi de te voir 👋</h2>
@@ -311,7 +469,7 @@ export default function OnboardingScreen({
             </div>
 
             <div className="onb-block">
-              <label className="onb-block-label">À qui tu t'adresses&nbsp;?</label>
+              <label className="onb-block-label">À qui tu t&apos;adresses&nbsp;?</label>
               <div className="onb-toggle">
                 <button
                   type="button"
@@ -355,7 +513,7 @@ export default function OnboardingScreen({
         {step === "page2" && (
           <div className="onb-screen" key="page2">
             <h2 className="onb-greeting">Presque fini</h2>
-            <p className="onb-lead">Deux derniers points et c'est parti.</p>
+            <p className="onb-lead">Deux derniers points et c&apos;est parti — ensuite tu crées ton compte.</p>
 
             <div className="onb-block">
               <label className="onb-block-label">Ton objectif sur LinkedIn</label>
