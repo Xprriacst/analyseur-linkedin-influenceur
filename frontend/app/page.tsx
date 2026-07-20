@@ -224,7 +224,7 @@ type ScheduledPost = {
   status: "pending" | "published" | "failed" | "cancelled" | string;
   slack_status?: string | null;
   slack_message_ts?: string | null;
-  media_items?: LinkedInImageAttachment[] | null;
+  media_items?: SavedPostMediaItem[] | null;
   error_message?: string | null;
   created_at?: string;
 };
@@ -5651,6 +5651,9 @@ function LibraryView({
   const [editScheduleDate, setEditScheduleDate] = useState("");
   const [editingPost, setEditingPost] = useState<string | null>(null);
   const [scheduleEditError, setScheduleEditError] = useState("");
+  const [attachingScheduledPost, setAttachingScheduledPost] = useState<string | null>(null);
+  const [scheduleImageError, setScheduleImageError] = useState("");
+  const [imageModalScheduled, setImageModalScheduled] = useState<ScheduledPost | null>(null);
 
   useEffect(() => {
     if (!isAuthed || !linkedin.status?.connected) return;
@@ -5828,6 +5831,67 @@ function LibraryView({
     } catch { void loadAll(); }
   }
 
+  // Images d'un post programmé (URLs publiques Zernio, format media_items).
+  function scheduledPostImagePayload(p: ScheduledPost) {
+    return (p.media_items || []).filter((m) => m?.url).map((m) => ({ url: m.url, filename: m.title || undefined }));
+  }
+
+  async function persistScheduledPostImages(p: ScheduledPost, images: Array<{ url?: string; data_url?: string; filename?: string }>) {
+    setAttachingScheduledPost(p.id);
+    setScheduleImageError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${p.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ images }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement des images impossible.");
+      const updated = data.scheduled_post as ScheduledPost;
+      setScheduledPosts((prev) => prev.map((pp) => (pp.id === p.id ? updated : pp)));
+    } catch (err: any) {
+      setScheduleImageError(err.message || "Enregistrement des images impossible.");
+    } finally {
+      setAttachingScheduledPost(null);
+    }
+  }
+
+  function attachImagesToScheduledPost(p: ScheduledPost, files: FileList | null) {
+    if (!files?.length || p.status !== "pending") return;
+    setScheduleImageError("");
+    const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length !== files.length) {
+      setScheduleImageError("Seuls les fichiers image sont acceptés.");
+    }
+    const readers = imageFiles.map((file) => new Promise<{ data_url: string; filename: string } | null>((resolve) => {
+      if (file.size > 8 * 1024 * 1024) {
+        setScheduleImageError("LinkedIn limite chaque image à 8 Mo.");
+        resolve(null);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === "string" && reader.result ? { data_url: reader.result, filename: file.name } : null);
+      reader.onerror = () => { setScheduleImageError(`Lecture impossible pour ${file.name}.`); resolve(null); };
+      reader.readAsDataURL(file);
+    }));
+    void Promise.all(readers).then((added) => {
+      const fresh = added.filter(Boolean) as Array<{ data_url: string; filename: string }>;
+      if (!fresh.length) return;
+      const images = [...scheduledPostImagePayload(p), ...fresh].slice(0, 20);
+      void persistScheduledPostImages(p, images);
+    });
+  }
+
+  function removeScheduledPostImage(p: ScheduledPost, url: string) {
+    const images = scheduledPostImagePayload(p).filter((m) => m.url !== url);
+    void persistScheduledPostImages(p, images);
+  }
+
+  function activeImageJobForScheduledPost(id: string): ImageJob | null {
+    const job = latestImageJobFor(imageJobs, `scheduled:${id}`);
+    return job && imageJobIsActive(job) ? job : null;
+  }
+
   // ALE-179 : images d'un post sauvegardé. Les media_items stockés sont des URLs
   // publiques (hébergées par le backend à la sauvegarde) → payload {url}.
   function savedPostImagePayload(p: SavedPost) {
@@ -5885,23 +5949,29 @@ function LibraryView({
     void persistSavedPostImages(p, images);
   }
 
-  // ALE-261 : rattache l'image dès qu'un job `saved:{id}` termine, même si la
-  // pop-up a été fermée ou l'onglet quitté entre-temps. On relit `posts` (pas le
-  // post capturé à l'ouverture de la pop-up) pour ne pas écraser des images
-  // jointes entre-temps par ailleurs.
+  // ALE-261 : rattache l'image dès qu'un job `saved:{id}` ou `scheduled:{id}` termine.
   useEffect(() => {
     for (const job of imageJobs) {
       if (job.status !== "done" || !job.result?.image_data) continue;
       if (_libraryAppliedImageJobIds.has(job.id)) continue;
-      const match = /^saved:(.+)$/.exec(job.target_key);
-      if (!match) continue;
-      const post = posts.find((pp) => pp.id === match[1]);
-      if (!post) continue;
-      _libraryAppliedImageJobIds.add(job.id);
-      void persistSavedPostImages(post, [...savedPostImagePayload(post), { data_url: job.result.image_data, filename: "image-ia.png" }]);
+      const savedMatch = /^saved:(.+)$/.exec(job.target_key);
+      if (savedMatch) {
+        const post = posts.find((pp) => pp.id === savedMatch[1]);
+        if (!post) continue;
+        _libraryAppliedImageJobIds.add(job.id);
+        void persistSavedPostImages(post, [...savedPostImagePayload(post), { data_url: job.result.image_data, filename: "image-ia.png" }]);
+        continue;
+      }
+      const schedMatch = /^scheduled:(.+)$/.exec(job.target_key);
+      if (schedMatch) {
+        const post = scheduledPosts.find((pp) => pp.id === schedMatch[1]);
+        if (!post || post.status !== "pending") continue;
+        _libraryAppliedImageJobIds.add(job.id);
+        void persistScheduledPostImages(post, [...scheduledPostImagePayload(post), { data_url: job.result.image_data, filename: "image-ia.png" }]);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageJobs, posts]);
+  }, [imageJobs, posts, scheduledPosts]);
 
   function activeImageJobForSavedPost(id: string): ImageJob | null {
     const job = latestImageJobFor(imageJobs, `saved:${id}`);
@@ -6300,7 +6370,12 @@ function LibraryView({
                       onOpen={() => setExpandedSchedId(p.id)}
                       ariaLabel={`Ouvrir « ${schedTitle(p)} »`}
                       title={schedTitle(p)}
-                      tags={<span className={`lib-tag ${st.cls}`}>{st.label}</span>}
+                      tags={
+                        <>
+                          <span className={`lib-tag ${st.cls}`}>{st.label}</span>
+                          {(p.media_items || []).length > 0 && <span className="lib-tag">image</span>}
+                        </>
+                      }
                       meta={new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
                       preview={p.post_text}
                     />
@@ -6328,11 +6403,71 @@ function LibraryView({
                     }
                   >
                     <p style={{ whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.6, margin: "0 0 14px" }}>{p.post_text}</p>
+                    {(p.media_items || []).length > 0 && (
+                      <div style={{ marginBottom: 14 }}>
+                        <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                          {(p.media_items || []).length} image{(p.media_items || []).length > 1 ? "s" : ""} jointe{(p.media_items || []).length > 1 ? "s" : ""} — seront publiées avec le post.
+                        </p>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
+                          {(p.media_items || []).map((image, imageIndex) => (
+                            <div key={image.url} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
+                              <img src={image.url} alt={`Image programmée ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                              <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                                <a
+                                  href={image.url}
+                                  download={image.title || `post-image-${imageIndex + 1}.png`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="secondary-button"
+                                  style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}
+                                >
+                                  <Download size={12} /> Télécharger
+                                </a>
+                                {p.status === "pending" && (
+                                  <button
+                                    className="secondary-button"
+                                    style={{ minHeight: 28, padding: "0 8px", fontSize: 12 }}
+                                    disabled={attachingScheduledPost === p.id}
+                                    onClick={() => removeScheduledPostImage(p, image.url)}
+                                  >
+                                    <Trash2 size={12} /> Retirer
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {activeImageJobForScheduledPost(p.id) && (
+                      <p className="role-picker-hint" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 6 }}>
+                        <Loader2 size={12} className="spinning" /> Image IA en cours de génération… elle rejoindra ce post automatiquement.
+                      </p>
+                    )}
                     {p.status === "failed" && p.error_message && (
                       <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--danger)" }}>{p.error_message}</p>
                     )}
                     {p.status === "pending" && (
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+                        <label className="secondary-button" style={{ fontSize: 13, cursor: attachingScheduledPost === p.id ? "wait" : "pointer" }}>
+                          {attachingScheduledPost === p.id ? <Loader2 size={14} className="spinning" /> : <ImagePlus size={14} />} Joindre des images
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+                            multiple
+                            style={{ display: "none" }}
+                            disabled={attachingScheduledPost === p.id}
+                            onChange={(e) => { attachImagesToScheduledPost(p, e.target.files); e.target.value = ""; }}
+                          />
+                        </label>
+                        <button
+                          className="secondary-button"
+                          style={{ fontSize: 13 }}
+                          disabled={attachingScheduledPost === p.id}
+                          onClick={() => setImageModalScheduled(p)}
+                        >
+                          <ImageIcon size={14} /> Générer une image IA
+                        </button>
                         <button className="secondary-button" style={{ fontSize: 13 }} disabled={editingPost === p.id || cancellingPost === p.id} onClick={() => { openEditScheduled(p); setExpandedSchedId(null); }}>
                           <Pencil size={14} /> Modifier
                         </button>
@@ -6340,6 +6475,9 @@ function LibraryView({
                           {cancellingPost === p.id ? <Loader2 size={14} className="spinning" /> : <Trash2 size={14} />} Annuler l&apos;envoi
                         </button>
                       </div>
+                    )}
+                    {scheduleImageError && attachingScheduledPost === null && (
+                      <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{scheduleImageError}</div>
                     )}
                   </LibModal>
                 );
@@ -6356,6 +6494,16 @@ function LibraryView({
           imageJobs={imageJobs}
           onImageJobCreated={onImageJobCreated}
           onClose={() => setImageModalSaved(null)}
+        />
+      )}
+
+      {imageModalScheduled && (
+        <ImageGenModal
+          postText={imageModalScheduled.post_text}
+          targetKey={`scheduled:${imageModalScheduled.id}`}
+          imageJobs={imageJobs}
+          onImageJobCreated={onImageJobCreated}
+          onClose={() => setImageModalScheduled(null)}
         />
       )}
 
