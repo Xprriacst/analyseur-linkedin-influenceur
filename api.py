@@ -670,25 +670,32 @@ def me_linkedin_schedule(
             raise HTTPException(status_code=500, detail="Impossible d'enregistrer le post planifié.")
         return {"ok": True, "scheduled_post": row}
 
-    # Option B : validation Slack avant publication (comportement existant).
-    if not slack_client.feature_enabled():
-        raise HTTPException(status_code=400, detail="Validation Slack désactivée.")
+    # Option B : validation avant publication. Slack si actif + connecté,
+    # sinon file d'attente in-app (vue client `ideas_only`).
     slack_row = db.get_slack_integration(token)
-    if not slack_row:
-        raise HTTPException(status_code=400, detail="Connecte Slack dans ton profil pour valider les posts programmés.")
-    channel_id: str = slack_row.get("channel_id") or ""
-    bot_token: str = slack_row.get("access_token") or ""
-    if not channel_id or not bot_token:
-        raise HTTPException(status_code=400, detail="Intégration Slack incomplète (channel ou token manquant).")
-
     row = db.create_scheduled_post(
         token,
         payload.content.strip(),
         payload.scheduled_at,
         media_items=media_items,
+        require_slack=payload.validate_via_slack,
     )
     if row is None:
         raise HTTPException(status_code=500, detail="Impossible d'enregistrer le post planifié.")
+
+    if not payload.validate_via_slack:
+        return {"ok": True, "scheduled_post": row}
+
+    use_slack = slack_client.feature_enabled() and slack_row
+    if not use_slack:
+        # Pas de Slack (désactivé ou non connecté) : validation in-app.
+        return {"ok": True, "scheduled_post": row, "validation": "in_app"}
+
+    channel_id: str = slack_row.get("channel_id") or ""
+    bot_token: str = slack_row.get("access_token") or ""
+    if not channel_id or not bot_token:
+        return {"ok": True, "scheduled_post": row, "validation": "in_app"}
+
     try:
         message_ts = slack_client.send_scheduled_post_for_validation(bot_token, channel_id, row)
     except slack_client.SlackError as exc:
@@ -833,6 +840,52 @@ def me_linkedin_scheduled_update(
     if row is None:
         raise HTTPException(status_code=404, detail="Post planifié introuvable ou non éditable.")
     return {"ok": True, "scheduled_post": row}
+
+
+@app.post("/me/linkedin/scheduled/{post_id}/validate")
+def me_linkedin_scheduled_validate(
+    post_id: str,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Validate a scheduled post in-app (replaces Slack « Valider » for client accounts)."""
+    updated = db.validate_scheduled_post_user(token, post_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Post introuvable ou déjà validé.")
+    return {"ok": True, "scheduled_post": updated}
+
+
+@app.post("/me/linkedin/scheduled/{post_id}/reject")
+def me_linkedin_scheduled_reject(
+    post_id: str,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Decline a scheduled post in-app (replaces Slack « Refuser »)."""
+    updated = db.reject_scheduled_post_user(token, post_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Post introuvable ou déjà traité.")
+    return {"ok": True, "scheduled_post": updated}
+
+
+@app.get("/me/validation-queue")
+def me_validation_queue(
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Posts awaiting client validation + validated schedules (vue client `ideas_only`)."""
+    scheduled = db.list_scheduled_posts(token, limit=100)
+    pending_generated = db.list_generated_posts(token, limit=50, pending_validation=True)
+    pending_scheduled = [
+        p for p in scheduled
+        if p.get("status") == "pending" and p.get("slack_status") == "pending"
+    ]
+    validated_scheduled = [
+        p for p in scheduled
+        if p.get("status") == "pending" and p.get("slack_status") == "validated"
+    ]
+    return {
+        "pending_generated": pending_generated,
+        "pending_scheduled": pending_scheduled,
+        "validated_scheduled": validated_scheduled,
+    }
 
 
 @app.get("/reports")
@@ -1683,6 +1736,80 @@ def update_me_generated_post(post_id: str, payload: UpdatePostRequest, token: st
     if media_error:
         updated["media_error"] = True
     return updated
+
+
+@app.post("/me/generated-posts/{post_id}/submit-for-validation")
+def submit_generated_post_for_validation(
+    post_id: str,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Queue a generated post for in-app client validation (sans Slack)."""
+    post = db.get_generated_post(token, post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail="Post introuvable.")
+    if post.get("zernio_post_id"):
+        raise HTTPException(status_code=400, detail="Ce post a déjà été publié.")
+    updated = db.submit_generated_post_for_validation(token, post_id)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Mise en file de validation impossible.")
+    return {"ok": True, "post": updated}
+
+
+class ValidateGeneratedPostRequest(BaseModel):
+    content: str | None = Field(default=None, max_length=50000)
+
+
+@app.post("/me/generated-posts/{post_id}/validate")
+def validate_generated_post(
+    post_id: str,
+    payload: ValidateGeneratedPostRequest = ValidateGeneratedPostRequest(),
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Validate and publish a generated post in-app (remplace Slack « Valider »)."""
+    post = db.get_generated_post(token, post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail="Post introuvable.")
+    if post.get("slack_status") != "pending":
+        raise HTTPException(status_code=400, detail="Ce post n'est pas en attente de validation.")
+    if post.get("zernio_post_id"):
+        return {"ok": True, "post": post, "already_published": True}
+
+    content = (payload.content if payload else None) or post.get("post") or ""
+    content = content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Le texte du post ne peut pas être vide.")
+    if content != (post.get("post") or ""):
+        updated = db.update_generated_post(token, post_id, content)
+        post = updated or {**post, "post": content}
+
+    if not zernio.enabled():
+        raise HTTPException(status_code=503, detail="Publication LinkedIn indisponible côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    account_id = profile.get("zernio_account_id")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté.")
+
+    try:
+        media_items = zernio.prepare_image_media_items(post.get("media_items") or [])
+        result = zernio.create_post(content, account_id, publish_now=True, media_items=media_items)
+        z_post = result.get("post") or result
+        published = db.mark_generated_post_published_user(token, post_id, (z_post or {}).get("_id"))
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=f"Publication LinkedIn impossible : {exc}") from exc
+
+    return {"ok": True, "post": published or post}
+
+
+@app.post("/me/generated-posts/{post_id}/reject")
+def reject_generated_post(
+    post_id: str,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Decline a generated post awaiting validation."""
+    updated = db.reject_generated_post_user(token, post_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Post introuvable ou déjà traité.")
+    return {"ok": True, "post": updated}
 
 
 # --------------------------------------------------------------------------- #

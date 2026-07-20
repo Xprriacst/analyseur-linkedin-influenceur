@@ -778,12 +778,17 @@ def list_generated_ideas(access_token: str, limit: int = 100) -> list[dict]:
 
 
 def list_generated_posts(
-    access_token: str, limit: int = 100, saved_only: bool = False
+    access_token: str,
+    limit: int = 100,
+    saved_only: bool = False,
+    pending_validation: bool = False,
 ) -> list[dict]:
     """List the user's generated posts, newest first.
 
     With ``saved_only=True``, only posts explicitly marked ``saved`` are returned
     (ALE-135 : « Mes contenus » n'affiche que les posts sauvegardés).
+    With ``pending_validation=True``, only posts awaiting client validation
+    (``slack_status='pending'``, not yet published on LinkedIn).
     """
     if not supabase_enabled():
         return []
@@ -798,6 +803,8 @@ def list_generated_posts(
     )
     if saved_only:
         query = query.eq("saved", True)
+    if pending_validation:
+        query = query.eq("slack_status", "pending").is_("zernio_post_id", "null")
     resp = query.order("created_at", desc=True).limit(limit).execute()
     return resp.data or []
 
@@ -2944,7 +2951,7 @@ def update_scheduled_post_slack_status(post_id: str, user_id: str, status: str) 
     payload: dict[str, Any] = {"slack_status": status, "updated_at": "now()"}
     if status == "declined":
         payload["status"] = "cancelled"
-        payload["error_message"] = "Publication annulée après refus Slack."
+        payload["error_message"] = "Publication annulée après refus."
     resp = (
         admin_client()
         .table("scheduled_posts")
@@ -2954,6 +2961,104 @@ def update_scheduled_post_slack_status(post_id: str, user_id: str, status: str) 
         .execute()
     )
     return bool(resp.data)
+
+
+def validate_scheduled_post_user(access_token: str, post_id: str) -> dict | None:
+    """Mark a pending scheduled post as validated (in-app validation, JWT)."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .update({"slack_status": "validated", "updated_at": "now()"})
+        .eq("id", post_id)
+        .eq("status", "pending")
+        .eq("slack_status", "pending")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def reject_scheduled_post_user(access_token: str, post_id: str) -> dict | None:
+    """Decline a pending scheduled post (in-app validation, JWT)."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("scheduled_posts")
+        .update({
+            "slack_status": "declined",
+            "status": "cancelled",
+            "error_message": "Publication annulée après refus.",
+            "updated_at": "now()",
+        })
+        .eq("id", post_id)
+        .eq("status", "pending")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def submit_generated_post_for_validation(access_token: str, post_id: str) -> dict | None:
+    """Queue a generated post for in-app validation (replaces Slack send)."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"slack_status": "pending"})
+        .eq("id", post_id)
+        .is_("zernio_post_id", "null")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def validate_generated_post_user(access_token: str, post_id: str) -> dict | None:
+    """Mark a generated post validated (publication handled by the API layer)."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"slack_status": "validated"})
+        .eq("id", post_id)
+        .eq("slack_status", "pending")
+        .is_("zernio_post_id", "null")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def reject_generated_post_user(access_token: str, post_id: str) -> dict | None:
+    """Decline a generated post awaiting validation."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"slack_status": "declined"})
+        .eq("id", post_id)
+        .eq("slack_status", "pending")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def mark_generated_post_published_user(
+    access_token: str, post_id: str, zernio_post_id: str | None
+) -> dict | None:
+    """Record LinkedIn publication of a validated generated post (JWT)."""
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("generated_posts")
+        .update({"slack_status": "published", "zernio_post_id": zernio_post_id})
+        .eq("id", post_id)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
 
 
 def update_scheduled_post_text_admin(post_id: str, user_id: str, text: str) -> dict | None:

@@ -2729,9 +2729,9 @@ function SchedulePostModal({
       <div className="card" style={{ maxWidth: 520, width: "100%", padding: 24 }}>
         <h3 style={{ marginTop: 0, marginBottom: 8 }}>Programmer ce post</h3>
         <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-          {slackAvailable(slackStatus)
+          {slackCanUse(slackStatus)
             ? "Choisis la date/heure, puis programme directement sur LinkedIn, ou demande d'abord une validation Slack — dans ce cas le post n'est publié à l'heure choisie que s'il est validé sur Slack."
-            : "Choisis la date/heure, puis programme directement sur LinkedIn."}
+            : "Choisis la date/heure. Tu peux programmer directement sur LinkedIn, ou soumettre le post pour validation — il sera publié une fois validé dans l'app."}
         </p>
         <textarea
           readOnly
@@ -2771,14 +2771,23 @@ function SchedulePostModal({
           <button className="secondary-button" disabled={scheduling} onClick={onClose}>
             Annuler
           </button>
-          {slackAvailable(slackStatus) && (
+          {slackCanUse(slackStatus) ? (
             <button
               className="secondary-button"
-              disabled={scheduling || !scheduleDate || !slackCanUse(slackStatus)}
-              title={slackCanUse(slackStatus) ? "Envoyer une demande de validation Slack avant publication" : "Connecte Slack dans l'onglet Profil pour valider"}
+              disabled={scheduling || !scheduleDate}
+              title="Envoyer une demande de validation Slack avant publication"
               onClick={() => doSchedule(true)}
             >
               {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Valider via Slack
+            </button>
+          ) : (
+            <button
+              className="secondary-button"
+              disabled={scheduling || !scheduleDate}
+              title="Le client validera ce post dans son espace"
+              onClick={() => doSchedule(true)}
+            >
+              {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Soumettre pour validation
             </button>
           )}
           <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={() => doSchedule(false)}>
@@ -4919,6 +4928,303 @@ const _dailyIdeaCache: { ideaImages: Record<string, string[]>; appliedImageJobId
   appliedImageJobIds: new Set(),
 };
 
+/** Vue client (`ideas_only`) : posts à valider + posts programmés.
+ * Remplace le flux Slack pour les comptes restreints (ex. Joëlle) :
+ * l'agence génère/programme, le client valide ici, LinkedIn publie ensuite.
+ */
+function ClientValidationView({ isAuthed }: { isAuthed: boolean }) {
+  const linkedin = useLinkedIn(isAuthed);
+  const [pendingGenerated, setPendingGenerated] = useState<SavedPost[]>([]);
+  const [pendingScheduled, setPendingScheduled] = useState<ScheduledPost[]>([]);
+  const [validatedScheduled, setValidatedScheduled] = useState<ScheduledPost[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [editedTexts, setEditedTexts] = useState<Record<string, string>>({});
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [doneId, setDoneId] = useState<string | null>(null);
+
+  const loadQueue = useCallback(async () => {
+    if (!isAuthed) {
+      setPendingGenerated([]);
+      setPendingScheduled([]);
+      setValidatedScheduled([]);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/validation-queue`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Chargement impossible");
+      setPendingGenerated(Array.isArray(data.pending_generated) ? data.pending_generated : []);
+      setPendingScheduled(Array.isArray(data.pending_scheduled) ? data.pending_scheduled : []);
+      setValidatedScheduled(Array.isArray(data.validated_scheduled) ? data.validated_scheduled : []);
+    } catch (err: any) {
+      setError(err.message || "Chargement impossible");
+    } finally {
+      setLoading(false);
+    }
+  }, [isAuthed]);
+
+  useEffect(() => { void loadQueue(); }, [loadQueue]);
+
+  const fmtSchedule = (iso: string) => {
+    try {
+      return new Date(iso).toLocaleString("fr-FR", {
+        weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit",
+      });
+    } catch { return iso; }
+  };
+
+  const postTitle = (text: string) => {
+    const line = (text || "").split("\n").map((l) => l.trim()).find(Boolean) || "Post";
+    return line.length > 80 ? `${line.slice(0, 80)}…` : line;
+  };
+
+  async function validateGenerated(post: SavedPost) {
+    if (!linkedin.status?.connected) {
+      setError("Connecte ton compte LinkedIn dans Mon profil pour publier.");
+      return;
+    }
+    setBusyId(`gen:${post.id}`);
+    setError("");
+    try {
+      const content = editedTexts[`gen:${post.id}`] ?? post.post;
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${post.id}/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ content }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Validation impossible");
+      setDoneId(`gen:${post.id}`);
+      setTimeout(() => setDoneId(null), 2500);
+      void loadQueue();
+    } catch (err: any) {
+      setError(err.message || "Validation impossible");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function rejectGenerated(postId: string) {
+    setBusyId(`rej-gen:${postId}`);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${postId}/reject`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Refus impossible");
+      void loadQueue();
+    } catch (err: any) {
+      setError(err.message || "Refus impossible");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function validateScheduled(post: ScheduledPost) {
+    setBusyId(`sched:${post.id}`);
+    setError("");
+    try {
+      const text = editedTexts[`sched:${post.id}`];
+      if (text !== undefined && text.trim() !== post.post_text) {
+        const patchRes = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${post.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ post_text: text.trim() }),
+        });
+        if (!patchRes.ok) {
+          const patchData = await patchRes.json();
+          throw new Error(patchData.detail || "Modification impossible");
+        }
+      }
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${post.id}/validate`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Validation impossible");
+      setDoneId(`sched:${post.id}`);
+      setTimeout(() => setDoneId(null), 2500);
+      void loadQueue();
+    } catch (err: any) {
+      setError(err.message || "Validation impossible");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function rejectScheduled(postId: string) {
+    setBusyId(`rej-sched:${postId}`);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${postId}/reject`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Refus impossible");
+      void loadQueue();
+    } catch (err: any) {
+      setError(err.message || "Refus impossible");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const pendingCount = pendingGenerated.length + pendingScheduled.length;
+  if (!isAuthed) return null;
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <div className="section-header">
+        <div>
+          <h2 className="section-title"><ListChecks size={20} /> Tes posts</h2>
+          <p className="section-desc">
+            Valide les posts préparés pour toi — une fois validés, ils partent sur LinkedIn (immédiatement ou à la date prévue).
+          </p>
+        </div>
+        <button className="secondary-button" style={{ fontSize: 13 }} onClick={() => void loadQueue()} disabled={loading}>
+          {loading ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />} Rafraîchir
+        </button>
+      </div>
+
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {loading && pendingCount === 0 && validatedScheduled.length === 0 ? (
+        <div className="card" style={{ padding: 24, textAlign: "center", color: "var(--muted)" }}>
+          <Loader2 size={20} className="spinning" style={{ marginBottom: 8 }} />
+          <p style={{ margin: 0 }}>Chargement…</p>
+        </div>
+      ) : (
+        <>
+          <section className="card" style={{ marginBottom: 16, padding: 16 }}>
+            <h3 style={{ margin: "0 0 4px", fontSize: 16 }}>
+              À valider {pendingCount > 0 && <span className="lib-count">{pendingCount}</span>}
+            </h3>
+            <p className="section-desc" style={{ margin: "0 0 12px" }}>
+              Relis le texte, modifie-le si besoin, puis valide ou refuse.
+            </p>
+
+            {pendingCount === 0 ? (
+              <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Aucun post en attente de validation.</p>
+            ) : (
+              <div style={{ display: "grid", gap: 12 }}>
+                {pendingScheduled.map((p) => (
+                  <div key={`sched-${p.id}`} className="variant-card" style={{ padding: 14 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                      <span className="badge" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        <CalendarDays size={12} /> Programmé — {fmtSchedule(p.scheduled_at)}
+                      </span>
+                    </div>
+                    <textarea
+                      className="variant-text"
+                      rows={8}
+                      value={editedTexts[`sched:${p.id}`] ?? p.post_text}
+                      onChange={(e) => setEditedTexts((prev) => ({ ...prev, [`sched:${p.id}`]: e.target.value }))}
+                      style={{ width: "100%", boxSizing: "border-box", marginBottom: 10 }}
+                    />
+                    {(p.media_items || []).length > 0 && (
+                      <p className="role-picker-hint" style={{ marginBottom: 10 }}>
+                        {p.media_items!.length} image{p.media_items!.length > 1 ? "s" : ""} jointe{p.media_items!.length > 1 ? "s" : ""}
+                      </p>
+                    )}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        className="primary-button"
+                        disabled={busyId === `sched:${p.id}`}
+                        onClick={() => void validateScheduled(p)}
+                      >
+                        {busyId === `sched:${p.id}` ? <Loader2 size={14} className="spinning" /> : <CheckCircle2 size={14} />}
+                        {doneId === `sched:${p.id}` ? " Validé ✓" : " Valider — publier à l'heure prévue"}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        disabled={busyId === `rej-sched:${p.id}`}
+                        onClick={() => void rejectScheduled(p.id)}
+                      >
+                        {busyId === `rej-sched:${p.id}` ? <Loader2 size={14} className="spinning" /> : <XCircle size={14} />} Refuser
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {pendingGenerated.map((p) => (
+                  <div key={`gen-${p.id}`} className="variant-card" style={{ padding: 14 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                      <span className="badge">Publication immédiate après validation</span>
+                      {p.topic && <span className="badge role-badge">{p.topic}</span>}
+                    </div>
+                    <textarea
+                      className="variant-text"
+                      rows={8}
+                      value={editedTexts[`gen:${p.id}`] ?? p.post}
+                      onChange={(e) => setEditedTexts((prev) => ({ ...prev, [`gen:${p.id}`]: e.target.value }))}
+                      style={{ width: "100%", boxSizing: "border-box", marginBottom: 10 }}
+                    />
+                    {(p.media_items || []).length > 0 && (
+                      <p className="role-picker-hint" style={{ marginBottom: 10 }}>
+                        {p.media_items!.length} image{p.media_items!.length > 1 ? "s" : ""} jointe{p.media_items!.length > 1 ? "s" : ""}
+                      </p>
+                    )}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        className="primary-button"
+                        disabled={busyId === `gen:${p.id}` || !linkedin.status?.connected}
+                        title={linkedin.status?.connected ? "Publier sur LinkedIn maintenant" : "Connecte LinkedIn dans Mon profil"}
+                        onClick={() => void validateGenerated(p)}
+                      >
+                        {busyId === `gen:${p.id}` ? <Loader2 size={14} className="spinning" /> : <Linkedin size={14} />}
+                        {doneId === `gen:${p.id}` ? " Publié ✓" : " Valider et publier"}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        disabled={busyId === `rej-gen:${p.id}`}
+                        onClick={() => void rejectGenerated(p.id)}
+                      >
+                        {busyId === `rej-gen:${p.id}` ? <Loader2 size={14} className="spinning" /> : <XCircle size={14} />} Refuser
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="card" style={{ padding: 16 }}>
+            <h3 style={{ margin: "0 0 4px", fontSize: 16 }}>
+              Programmés {validatedScheduled.length > 0 && <span className="lib-count">{validatedScheduled.length}</span>}
+            </h3>
+            <p className="section-desc" style={{ margin: "0 0 12px" }}>
+              Déjà validés — publication automatique aux dates ci-dessous.
+            </p>
+            {validatedScheduled.length === 0 ? (
+              <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Aucun post programmé pour l&apos;instant.</p>
+            ) : (
+              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 10 }}>
+                {validatedScheduled.map((p) => (
+                  <li key={p.id} className="idea-line-item" style={{ alignItems: "flex-start" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                        <Clock3 size={13} /> {fmtSchedule(p.scheduled_at)}
+                        <span className="lib-tag ok" style={{ marginLeft: 4 }}>Validé</span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: 14, lineHeight: 1.45 }}>{postTitle(p.post_text)}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
 function DailyIdeasView({
   isAuthed,
   requireAuth,
@@ -5184,11 +5490,13 @@ function DailyIdeasView({
 
   return (
     <div>
+      {reservoirOnly && <ClientValidationView isAuthed={isAuthed} />}
+
       {reservoirOnly && (
-        <div className="section-header">
+        <div className="section-header" style={{ marginTop: 8 }}>
           <div>
             <h2 className="section-title"><Lightbulb size={20} /> Mes idées de posts</h2>
-            <p className="section-desc">Ajoute ici tes idées de posts : on s'en sert pour rédiger tes contenus.</p>
+            <p className="section-desc">Ajoute ici tes idées de posts : on s&apos;en sert pour rédiger tes contenus.</p>
           </div>
         </div>
       )}
@@ -5676,6 +5984,7 @@ function LibraryView({
   const twitter = useTwitter(isAuthed);
   const [slackSent, setSlackSent] = useState<Record<string, boolean>>({});
   const [slackSending, setSlackSending] = useState<Record<string, boolean>>({});
+  const [appValidationSending, setAppValidationSending] = useState<Record<string, boolean>>({});
   const [publishingPost, setPublishingPost] = useState<string | null>(null);
   const [publishedPost, setPublishedPost] = useState<string | null>(null);
   const [publishError, setPublishError] = useState("");
@@ -5815,6 +6124,32 @@ function LibraryView({
     }
     setPublishError("");
     setScheduleForPost(p.id);
+  }
+
+  async function submitForClientValidation(p: SavedPost) {
+    setAppValidationSending((prev) => ({ ...prev, [p.id]: true }));
+    setPublishError("");
+    try {
+      const text = editedPosts[p.id] ?? p.post;
+      if (text !== p.post) {
+        await fetch(`${DIRECT_API_URL}/me/generated-posts/${p.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ post: text }),
+        });
+      }
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${p.id}/submit-for-validation`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Soumission impossible");
+      setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, post: text, slack_status: "pending" } : pp));
+    } catch (err: any) {
+      setPublishError(err.message || "Soumission impossible");
+    } finally {
+      setAppValidationSending((prev) => ({ ...prev, [p.id]: false }));
+    }
   }
 
   const roleLabels: Record<string, string> = {
@@ -5972,10 +6307,10 @@ function LibraryView({
     const label =
       p.status === "published" ? "Publié ✓"
       : p.status === "failed" ? "Échec"
-      : p.status === "cancelled" && p.slack_status === "declined" ? "Refusé Slack — annulé"
+      : p.status === "cancelled" && p.slack_status === "declined" ? "Refusé — annulé"
       : p.status === "cancelled" ? "Annulé"
       : p.slack_status === "validated" ? "Validé — en attente"
-      : "Validation Slack en attente";
+      : "Validation en attente";
     const cls =
       p.status === "published" || p.slack_status === "validated" ? "ok"
       : p.status === "cancelled" ? "g"
@@ -6028,7 +6363,7 @@ function LibraryView({
                     <>
                       {p.editorial_role && <span className="lib-tag">{roleLabels[p.editorial_role] || p.editorial_role}</span>}
                       {p.slack_status === "validated" && <span className="lib-tag ok">✅ Validé</span>}
-                      {p.slack_status === "pending" && <span className="lib-tag g">Slack en attente</span>}
+                      {p.slack_status === "pending" && <span className="lib-tag g">En attente de validation</span>}
                       {(p.media_items || []).length > 0 && <span className="lib-tag">image</span>}
                     </>
                   }
@@ -6142,6 +6477,16 @@ function LibraryView({
                       sending: slackSending[p.id],
                       onClick: () => setConfirmSlackPostId(p.id),
                     }),
+                    ...(!slackCanUse(slack.status)
+                      ? [{
+                          key: "app-validation",
+                          icon: <Send size={14} />,
+                          label: p.slack_status === "pending" ? "En attente client ✓" : "Soumettre pour validation client",
+                          disabled: !!appValidationSending[p.id] || p.slack_status === "pending",
+                          title: "Le client validera ce post dans son espace",
+                          onClick: () => void submitForClientValidation(p),
+                        } satisfies PostAction]
+                      : []),
                     ...(twitter.status?.connected
                       ? [{
                           key: "x",
