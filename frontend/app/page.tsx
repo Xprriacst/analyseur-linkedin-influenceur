@@ -2569,10 +2569,43 @@ function useTwitter(isAuthed: boolean) {
 type SlackStatus = {
   connected: boolean;
   configured: boolean;
+  available?: boolean;
   team_name?: string | null;
   channel_id?: string | null;
   connected_at?: string | null;
 };
+
+function slackAvailable(status: SlackStatus | null | undefined): boolean {
+  return status?.available !== false;
+}
+
+function slackCanUse(status: SlackStatus | null | undefined): boolean {
+  return slackAvailable(status) && !!status?.connected;
+}
+
+// Validation Slack désactivée (ou compte non connecté) → aucune entrée dans le
+// menu du post, plutôt qu'un bouton mort.
+function buildSlackPostAction(opts: {
+  status: SlackStatus | null | undefined;
+  sent?: boolean;
+  sending?: boolean;
+  needsSavedPost?: boolean;
+  onClick: () => void;
+}): PostAction[] {
+  if (!slackCanUse(opts.status)) return [];
+  const sent = !!opts.sent;
+  const sending = !!opts.sending;
+  return [{
+    key: "slack",
+    icon: <Send size={14} />,
+    label: sent ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
+    disabled: sending || sent || !!opts.needsSavedPost,
+    title: opts.needsSavedPost
+      ? "Sauvegarde d'abord le post pour l'envoyer sur Slack"
+      : "Envoyer sur Slack pour validation",
+    onClick: opts.onClick,
+  }];
+}
 
 function useSlack(isAuthed: boolean) {
   const [status, setStatus] = useState<SlackStatus | null>(null);
@@ -2638,13 +2671,13 @@ type ScheduleModalImage = { url: string; filename?: string };
 function SchedulePostModal({
   text,
   images = [],
-  slackConnected,
+  slackStatus,
   onClose,
   onScheduled,
 }: {
   text: string;
   images?: ScheduleModalImage[];
-  slackConnected: boolean;
+  slackStatus: SlackStatus | null;
   onClose: () => void;
   onScheduled: (viaSlack: boolean) => void;
 }) {
@@ -2696,7 +2729,9 @@ function SchedulePostModal({
       <div className="card" style={{ maxWidth: 520, width: "100%", padding: 24 }}>
         <h3 style={{ marginTop: 0, marginBottom: 8 }}>Programmer ce post</h3>
         <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-          Choisis la date/heure, puis programme directement sur LinkedIn, ou demande d&apos;abord une validation Slack — dans ce cas le post n&apos;est publié à l&apos;heure choisie que s&apos;il est validé sur Slack.
+          {slackAvailable(slackStatus)
+            ? "Choisis la date/heure, puis programme directement sur LinkedIn, ou demande d'abord une validation Slack — dans ce cas le post n'est publié à l'heure choisie que s'il est validé sur Slack."
+            : "Choisis la date/heure, puis programme directement sur LinkedIn."}
         </p>
         <textarea
           readOnly
@@ -2736,14 +2771,16 @@ function SchedulePostModal({
           <button className="secondary-button" disabled={scheduling} onClick={onClose}>
             Annuler
           </button>
-          <button
-            className="secondary-button"
-            disabled={scheduling || !scheduleDate || !slackConnected}
-            title={slackConnected ? "Envoyer une demande de validation Slack avant publication" : "Connecte Slack dans l'onglet Profil pour valider"}
-            onClick={() => doSchedule(true)}
-          >
-            {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Valider via Slack
-          </button>
+          {slackAvailable(slackStatus) && (
+            <button
+              className="secondary-button"
+              disabled={scheduling || !scheduleDate || !slackCanUse(slackStatus)}
+              title={slackCanUse(slackStatus) ? "Envoyer une demande de validation Slack avant publication" : "Connecte Slack dans l'onglet Profil pour valider"}
+              onClick={() => doSchedule(true)}
+            >
+              {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Valider via Slack
+            </button>
+          )}
           <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={() => doSchedule(false)}>
             {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Programmer sur LinkedIn</>}
           </button>
@@ -4584,15 +4621,13 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                               : "Connecte ton compte LinkedIn dans l'onglet Profil",
                             onClick: () => openScheduleModal(line),
                           },
-                          ...(slack.status?.connected && variant.id
-                            ? [{
-                                key: "slack",
-                                icon: <Send size={14} />,
-                                label: slackSent[key] ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
-                                disabled: !!slackSending[key] || !!slackSent[key],
-                                onClick: () => setConfirmSlack(key),
-                              } satisfies PostAction]
-                            : []),
+                          ...buildSlackPostAction({
+                            status: slack.status,
+                            sent: slackSent[key],
+                            sending: slackSending[key],
+                            needsSavedPost: !variant.id,
+                            onClick: () => setConfirmSlack(key),
+                          }),
                           ...(twitter.status?.connected
                             ? [{
                                 key: "x",
@@ -4825,7 +4860,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
         <SchedulePostModal
           text={scheduleModal.text}
           images={scheduleModal.images}
-          slackConnected={!!slack.status?.connected}
+          slackStatus={slack.status}
           onClose={() => setScheduleModal(null)}
           onScheduled={(viaSlack) => {
             setScheduled((prev) => ({ ...prev, [scheduleModal.key]: viaSlack ? "slack" : "direct" }));
@@ -5407,7 +5442,7 @@ function DailyIdeasView({
                         <SchedulePostModal
                           text={postTextOf(it)}
                           images={ideaImagePayload(it)}
-                          slackConnected={!!slack.status?.connected}
+                          slackStatus={slack.status}
                           onClose={() => setScheduleModalIdea(null)}
                           onScheduled={() => {
                             setScheduledId(it.id);
@@ -6101,15 +6136,12 @@ function LibraryView({
                         : "Connecte ton compte LinkedIn dans l'onglet Profil",
                       onClick: () => openSchedulePost(p),
                     },
-                    ...(slack.status?.connected
-                      ? [{
-                          key: "slack",
-                          icon: <Send size={14} />,
-                          label: slackSent[p.id] || p.slack_status === "pending" ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
-                          disabled: !!slackSending[p.id] || !!slackSent[p.id] || p.slack_status === "pending",
-                          onClick: () => setConfirmSlackPostId(p.id),
-                        } satisfies PostAction]
-                      : []),
+                    ...buildSlackPostAction({
+                      status: slack.status,
+                      sent: slackSent[p.id] || p.slack_status === "pending",
+                      sending: slackSending[p.id],
+                      onClick: () => setConfirmSlackPostId(p.id),
+                    }),
                     ...(twitter.status?.connected
                       ? [{
                           key: "x",
@@ -6184,7 +6216,7 @@ function LibraryView({
                   <SchedulePostModal
                     text={editedPosts[p.id] ?? p.post}
                     images={savedPostImagePayload(p)}
-                    slackConnected={!!slack.status?.connected}
+                    slackStatus={slack.status}
                     onClose={() => setScheduleForPost(null)}
                     onScheduled={() => {
                       setScheduledPostIds((prev) => ({ ...prev, [p.id]: true }));
@@ -6604,15 +6636,12 @@ function AssistantMessageActions({
               : "Connecte ton compte LinkedIn dans l'onglet Profil",
             onClick: openSchedule,
           },
-          ...(slack.status?.connected
-            ? [{
-                key: "slack",
-                icon: <Send size={14} />,
-                label: slackSent ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
-                disabled: slackSending || slackSent,
-                onClick: () => setConfirmSlack(true),
-              } satisfies PostAction]
-            : []),
+          ...buildSlackPostAction({
+            status: slack.status,
+            sent: slackSent,
+            sending: slackSending,
+            onClick: () => setConfirmSlack(true),
+          }),
           ...(twitter.status?.connected
             ? [{
                 key: "x",
@@ -6716,7 +6745,7 @@ function AssistantMessageActions({
         <SchedulePostModal
           text={postText}
           images={images.map((image) => ({ url: image.url, filename: image.filename }))}
-          slackConnected={!!slack.status?.connected}
+          slackStatus={slack.status}
           onClose={() => setScheduleOpen(false)}
           onScheduled={() => { setScheduled(true); setScheduleOpen(false); }}
         />
@@ -8706,6 +8735,7 @@ function ProfileView({
   const [openRow, setOpenRow] = useState<string | null>(null);
   const toggleRow = (key: string) => setOpenRow((prev) => (prev === key ? null : key));
   const [weeklyEnabled, setWeeklyEnabled] = useState(false);
+  const [weeklyAvailable, setWeeklyAvailable] = useState(true);
   const [weeklySchedule, setWeeklySchedule] = useState<{day_of_week: number; hour: number; timezone: string}[]>([]);
   const [weeklySaving, setWeeklySaving] = useState(false);
   const [weeklyRunning, setWeeklyRunning] = useState(false);
@@ -8753,6 +8783,7 @@ function ProfileView({
         const res = await fetch(`${DIRECT_API_URL}/me/weekly-posts`, { headers: await authHeaders() });
         if (res.ok) {
           const data = await res.json();
+          setWeeklyAvailable(data.available !== false);
           setWeeklyEnabled(!!data.enabled);
           setWeeklySchedule(data.schedule || []);
         }
@@ -9072,14 +9103,29 @@ function ProfileView({
             }
             name="Slack"
             why={
-              slack.status?.connected
-                ? `Valider tes posts depuis ton téléphone · ${slack.status.team_name || "Slack"}`
-                : !slack.status?.configured
-                  ? "Intégration Slack non configurée sur le serveur."
-                  : "Valider tes posts et tes idées depuis ton téléphone"
+              !slackAvailable(slack.status)
+                ? "Validation Slack désactivée pour le moment."
+                : slack.status?.connected
+                  ? `Valider tes posts depuis ton téléphone · ${slack.status.team_name || "Slack"}`
+                  : !slack.status?.configured
+                    ? "Intégration Slack non configurée sur le serveur."
+                    : "Valider tes posts et tes idées depuis ton téléphone"
             }
             right={
-              slack.status?.connected ? (
+              !slackAvailable(slack.status) ? (
+                <>
+                  {slack.status?.connected && (
+                    <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+                  )}
+                  <span className="status-pill">Désactivé</span>
+                  {slack.status?.connected && (
+                    <button className="secondary-button" onClick={slack.disconnect} disabled={slack.busy} style={{ fontSize: 12 }}>
+                      {slack.busy ? <Loader2 size={14} className="spinning" /> : null}
+                      Déconnecter
+                    </button>
+                  )}
+                </>
+              ) : slack.status?.connected ? (
                 <>
                   <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
                   <button className="secondary-button" onClick={slack.disconnect} disabled={slack.busy} style={{ fontSize: 12 }}>
@@ -9149,16 +9195,28 @@ function ProfileView({
             icon={<CalendarDays size={18} style={{ color: "var(--coral)" }} />}
             name="Les posts de ta semaine"
             why={
-              !weeklyReady
-                ? "Connecte LinkedIn (onglet Connexions) pour activer"
-                : weeklyEnabled && weeklySchedule.length
-                  ? `3 posts écrits le vendredi, publiés ${weeklySchedule.map((s) => `${["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."][s.day_of_week]} ${String(s.hour).padStart(2, "0")} h`).join(" · ")}`
-                  : "3 posts écrits le vendredi matin pour la semaine suivante"
+              !weeklyAvailable
+                ? "Désactivés pour le moment."
+                : !weeklyReady
+                  ? "Connecte LinkedIn (onglet Connexions) pour activer"
+                  : weeklyEnabled && weeklySchedule.length
+                    ? `3 posts écrits le vendredi, publiés ${weeklySchedule.map((s) => `${["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."][s.day_of_week]} ${String(s.hour).padStart(2, "0")} h`).join(" · ")}`
+                    : "3 posts écrits le vendredi matin pour la semaine suivante"
             }
             open={openRow === "weekly"}
-            onToggle={weeklyReady && weeklyEnabled ? () => toggleRow("weekly") : undefined}
+            onToggle={weeklyAvailable && weeklyReady && weeklyEnabled ? () => toggleRow("weekly") : undefined}
             right={
-              weeklyReady ? (
+              !weeklyAvailable ? (
+                <>
+                  <span className="status-pill">Désactivé</span>
+                  {weeklyEnabled && (
+                    <label className="daily-switch">
+                      <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
+                      <span>Activé</span>
+                    </label>
+                  )}
+                </>
+              ) : weeklyReady ? (
                 <label className="daily-switch">
                   <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
                   <span>Activer</span>
@@ -9171,9 +9229,9 @@ function ProfileView({
             <p style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 0, marginBottom: 10 }}>
               Chaque <strong>vendredi matin (vers 6-7 h, heure de Paris)</strong>, 3 posts sont écrits pour la{" "}
               <strong>semaine suivante</strong>
-              {slack.status?.connected
+              {slackCanUse(slack.status)
                 ? " et envoyés sur Slack pour validation, puis publiés aux créneaux ci-dessous une fois validés."
-                : " puis publiés automatiquement aux créneaux ci-dessous. Connecte Slack (onglet Connexions) pour les valider avant publication."}
+                : " puis publiés automatiquement aux créneaux ci-dessous."}
             </p>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 8 }}>
               Jours de publication (fuseau Europe/Paris) :

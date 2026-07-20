@@ -857,6 +857,136 @@ EDITORIAL_PROFILE_KEYS = [
 ]
 
 
+def linkedin_handle_from_url(url: str) -> str:
+    """Extrait le slug `/in/{handle}` d'une URL LinkedIn (forme affichable)."""
+    if not url:
+        return ""
+    m = re.search(r"linkedin\.com/in/([^/?#]+)", url, flags=re.I)
+    if not m:
+        return ""
+    from urllib.parse import unquote
+
+    return unquote(m.group(1)).strip().strip("/")
+
+
+def normalize_onboarding_preview(
+    raw: dict[str, Any] | None,
+    *,
+    seed: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Assainit la preview d'analyse onboarding (forme fixe, listes bornées).
+
+    Pure : pas d'appel réseau. Retourne None si trop pauvre pour l'afficher.
+    """
+    if not isinstance(raw, dict):
+        return None
+    seed = seed or {}
+    apify = seed.get("linkedin_apify_profile") or {}
+    profile = apify.get("profile") or {}
+    posts = apify.get("top_posts") or []
+
+    def _str(key: str, fallback: str = "") -> str:
+        return str(raw.get(key) or fallback or "").strip()
+
+    def _list(key: str, limit: int) -> list[str]:
+        val = raw.get(key) or []
+        if not isinstance(val, list):
+            return []
+        out: list[str] = []
+        for item in val:
+            s = str(item or "").strip()
+            if s:
+                out.append(s)
+            if len(out) >= limit:
+                break
+        return out
+
+    handle = _str("handle") or linkedin_handle_from_url(str(seed.get("linkedin_url") or ""))
+    name = _str("name") or str(profile.get("name") or "").strip()
+    niche = _str("niche")
+    summary = _str("summary")
+    strengths = _list("strengths", 3)
+    improvements = _list("improvements", 3)
+    # Sans niche + résumé + au moins un point de chaque côté, l'écran ne vaut pas le coup.
+    if not (niche and summary and strengths and improvements):
+        return None
+
+    followers = int(profile.get("follower_count") or 0)
+    connections = int(profile.get("connections_count") or 0)
+    posts_count = len(posts) if posts else int(raw.get("posts_count") or 0)
+
+    hashtags = []
+    for tag in _list("hashtags", 8):
+        t = tag if tag.startswith("#") else f"#{tag.lstrip('#')}"
+        hashtags.append(t.replace(" ", ""))
+
+    return {
+        "handle": handle,
+        "name": name,
+        "headline": _str("headline") or str(profile.get("headline") or "").strip(),
+        "posts_count": posts_count,
+        "followers": followers,
+        "connections": connections,
+        "niche": niche,
+        "summary": summary,
+        "hook": _str("hook") or summary.split(".")[0].strip() + ("." if summary else ""),
+        "hashtags": hashtags,
+        "strengths": strengths,
+        "improvements": improvements,
+    }
+
+
+def draft_onboarding_preview(seed: dict[str, Any]) -> dict[str, Any] | None:
+    """Génère l'écran « Analyse IA » montré avant la création de compte.
+
+    Ancré sur les posts/profil Apify (ou la description libre). N'invente pas
+    de chiffres d'engagement absents des sources — les compteurs viennent du
+    scrape, pas du modèle.
+    """
+    system = (
+        "Tu es un stratège LinkedIn B2B franc et utile. Tu produis une analyse "
+        "courte et personnalisée pour accrocher un prospect pendant l'onboarding. "
+        "Tu t'appuies UNIQUEMENT sur les sources fournies. Tu n'inventes aucun "
+        "chiffre d'engagement, aucune vue, aucun taux. Si un fait manque, tu "
+        "restes qualitatif. Réponds UNIQUEMENT en JSON valide, sans markdown."
+    )
+    user = (
+        "À partir de ces sources, rédige une analyse LinkedIn personnalisée.\n\n"
+        + json.dumps({"sources": seed}, ensure_ascii=False, indent=2)
+        + """
+
+Règles :
+- Français, tutoiement, ton direct (pas corporate).
+- niche : 1 ligne qui résume positionnement + offre (ex. « Founder SaaS B2B, cold call artisans »).
+- summary : 3 à 5 phrases. Ce qui marche, ce qui stagne, une piste concrète. Ancre-toi sur les posts fournis (formats, sujets, eng. likes/comments/reposts) sans inventer de vues.
+- hook : 1 phrase d'accroche pour l'écran suivant (ex. « Tu postes sans framework clair… »).
+- hashtags : 3 à 6 hashtags pertinents (avec #).
+- strengths / improvements : exactement 3 items chacun, courts (≤ 12 mots), actionnables.
+- name / headline / handle : déduis-les des sources si possibles, sinon chaîne vide.
+
+Schéma JSON attendu :
+{
+  "preview": {
+    "handle": "",
+    "name": "",
+    "headline": "",
+    "niche": "",
+    "summary": "",
+    "hook": "",
+    "hashtags": ["#Exemple"],
+    "strengths": ["…", "…", "…"],
+    "improvements": ["…", "…", "…"]
+  }
+}"""
+    )
+    try:
+        data = _call(system, user, max_tokens=1800, temperature=0.4)
+    except Exception:
+        return None
+    preview = data.get("preview", data)
+    return normalize_onboarding_preview(preview if isinstance(preview, dict) else None, seed=seed)
+
+
 def draft_editorial_profile(
     seed: dict[str, Any],
     existing_profile: dict[str, Any] | None = None,

@@ -105,11 +105,26 @@ class SlackError(RuntimeError):
     """Raised when Slack returns an error or is not configured."""
 
 
-def enabled() -> bool:
+def _env_flag(name: str, *, default: str = "false") -> bool:
+    return os.environ.get(name, default).lower() not in ("0", "false", "no", "off")
+
+
+def credentials_configured() -> bool:
+    """True when Slack OAuth credentials are present (independent of the feature flag)."""
     return bool(
         os.environ.get("SLACK_CLIENT_ID")
         and os.environ.get("SLACK_CLIENT_SECRET")
     )
+
+
+def feature_enabled() -> bool:
+    """Product flag — when off, Slack stays visible in the UI but actions are disabled."""
+    return _env_flag("SLACK_FEATURE_ENABLED", default="false")
+
+
+def enabled() -> bool:
+    """True when Slack is both enabled by flag and configured with credentials."""
+    return feature_enabled() and credentials_configured()
 
 
 def _client_id() -> str:

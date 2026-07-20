@@ -648,6 +648,94 @@ a { color: inherit; text-decoration: none; }
   .onb-cta:active, .onb-chip:active { transform: none; }
 }
 
+/* --- Preview « Analyse IA » (onboarding public, avant création de compte) --- */
+.onb-overlay-analysis {
+  background:
+    radial-gradient(900px 520px at 20% -10%, rgba(70,72,212,.45), transparent 55%),
+    radial-gradient(700px 480px at 90% 110%, rgba(93,96,234,.35), transparent 50%),
+    #0f1024;
+  color: #fff;
+}
+.onb-shell-analysis { max-width: 420px; }
+.onb-analysis { display: flex; flex-direction: column; gap: 14px; }
+.onb-analysis-card {
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 18px;
+  padding: 18px 18px 16px;
+}
+.onb-analysis-profile { text-align: center; }
+.onb-analysis-avatar {
+  width: 72px; height: 72px; margin: 0 auto 12px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 22px; font-weight: 700; letter-spacing: .02em;
+  color: #fff;
+  background: linear-gradient(145deg, #4648d4, #7a7cf0);
+  box-shadow: 0 10px 28px rgba(70,72,212,.45);
+}
+.onb-analysis-handle { font-size: 15px; font-weight: 600; opacity: .92; }
+.onb-analysis-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  margin-top: 16px; padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,.12);
+}
+.onb-analysis-stats strong { display: block; font-size: 17px; font-weight: 700; }
+.onb-analysis-stats span { display: block; margin-top: 2px; font-size: 12px; opacity: .7; }
+.onb-analysis-title {
+  margin: 6px 2px 0; font-size: 22px; font-weight: 700; letter-spacing: -.02em;
+}
+.onb-analysis-label {
+  font-size: 13px; font-weight: 600; opacity: .72; margin-bottom: 8px;
+}
+.onb-analysis-niche {
+  margin: 0; font-size: 16px; font-weight: 600; line-height: 1.4;
+  color: #c4c6ff;
+}
+.onb-analysis-summary {
+  margin: 0; font-size: 14.5px; line-height: 1.55; opacity: .92;
+}
+.onb-analysis-block { margin-top: 4px; }
+.onb-analysis-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+.onb-analysis-tag {
+  padding: 7px 12px; border-radius: 999px; font-size: 13px; font-weight: 500;
+  color: #d0d2ff;
+  background: rgba(70,72,212,.28);
+  border: 1px solid rgba(160,164,255,.28);
+}
+.onb-analysis-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.onb-analysis-list li {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 11px 13px; border-radius: 12px;
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.08);
+  font-size: 14px; line-height: 1.4;
+}
+.onb-analysis-ok { color: #3ecf8e; flex-shrink: 0; margin-top: 1px; }
+.onb-analysis-warn { color: #f0a35a; flex-shrink: 0; margin-top: 1px; }
+.onb-analysis-cta {
+  margin-top: 8px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; height: 50px;
+  border-radius: 999px; border: 1px solid transparent;
+  font-size: 15px; font-weight: 700; color: #fff; cursor: pointer;
+  background:
+    linear-gradient(#171833, #171833) padding-box,
+    linear-gradient(120deg, #6a6cf0, #4648d4, #8b5cf6) border-box;
+  transition: transform .12s, opacity .2s;
+}
+.onb-analysis-cta:hover { opacity: .95; }
+.onb-analysis-cta:active { transform: scale(.98); }
+.onb-analysis-skip {
+  display: block; margin: 4px auto 0;
+  background: none; border: none; color: rgba(255,255,255,.55);
+  font-size: 13px; cursor: pointer;
+}
+.onb-analysis-skip:hover { color: rgba(255,255,255,.85); }
+
 .jobs-list {
   display: grid;
   gap: 18px;

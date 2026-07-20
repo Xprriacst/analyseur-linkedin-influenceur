@@ -12,16 +12,22 @@
  * tant qu'il n'y a pas de vraies citations de vrais clients.
  */
 
+import { useState } from "react";
 import Link from "next/link";
 import {
   ArrowRight,
   BarChart3,
+  ChevronDown,
   Flame,
   Inbox,
   Lightbulb,
   Lock,
+  MessageSquare,
   PenLine,
   Radar,
+  Search,
+  Send,
+  ShieldCheck,
   Target,
   Users,
 } from "lucide-react";
@@ -93,6 +99,47 @@ const FEATURES: { icon: React.ReactNode; title: string; body: string }[] = [
   },
 ];
 
+/** Les 3 façons dont Cibl touche à LinkedIn — réponse type à la question « c'est safe ? ». */
+const TRUST: { icon: React.ReactNode; title: string; method: string; body: string }[] = [
+  {
+    icon: <Search size={18} />,
+    title: "Analyse",
+    method: "Données publiques · zéro connexion",
+    body: "Ton compte, les influenceurs de ton secteur, leurs meilleurs posts : on lit ce qui est public via un prestataire spécialisé. Aucune connexion à ton LinkedIn. Tu peux t'en servir seul, sans jamais activer la publication ni la prospection.",
+  },
+  {
+    icon: <Send size={18} />,
+    title: "Publication",
+    method: "API officielle LinkedIn",
+    body: "Quand tu publies ou programmes un post depuis Cibl, ça passe par l'API officielle LinkedIn. Conforme, traçable, sans script parallèle.",
+  },
+  {
+    icon: <MessageSquare size={18} />,
+    title: "Prospection",
+    method: "Prestataire spécialisé · garde-fous",
+    body: "Invitations, messages, signaux d'intention : LinkedIn ne propose pas d'API officielle pour ça. On passe par un prestataire spécialisé (pratique courante), avec plafonds jour/semaine, délais aléatoires, warm-up progressif, et pause auto au moindre signal d'alerte.",
+  },
+];
+
+const FAQ: { q: string; a: string }[] = [
+  {
+    q: "Comment Cibl agit-il sur LinkedIn — API officielle, scripts, ou usage natif ?",
+    a: "Ça dépend de l'action. L'analyse lit des données publiques sans se connecter à ton compte. La publication passe par l'API officielle LinkedIn. La prospection (invitations, messages) utilise un prestataire spécialisé — LinkedIn n'offre pas d'API officielle pour ça — avec des garde-fous stricts (plafonds, délais aléatoires, warm-up, pause auto).",
+  },
+  {
+    q: "Est-ce que je dois connecter mon compte LinkedIn pour commencer ?",
+    a: "Non. Tu peux coller ton profil, recevoir ton analyse et t'inspirer des comptes qui performent sans jamais relier ton LinkedIn. La connexion ne devient utile que le jour où tu veux publier ou prospecter depuis l'app.",
+  },
+  {
+    q: "Est-ce risqué pour mon compte ?",
+    a: "L'analyse : zéro risque (pas de connexion). La publication : API officielle. La prospection : c'est le seul volet qui touche à ton compte en envoi — d'où les plafonds quotidiens/hebdo, le warm-up sur les comptes neufs, et l'arrêt automatique si LinkedIn signale une limite.",
+  },
+  {
+    q: "Puis-je n'utiliser que l'analyse, sans prospection ?",
+    a: "Oui. Beaucoup de clients s'en tiennent à la veille, au générateur et à la publication. La prospection s'active seulement si tu connectes ton compte pour ça, dans Mon profil.",
+  },
+];
+
 /** Bouton principal — même destination partout : le parcours guidé. */
 function StartButton({ label = "Commencer", light = false }: { label?: string; light?: boolean }) {
   return (
@@ -118,6 +165,24 @@ function StartButton({ label = "Commencer", light = false }: { label?: string; l
   );
 }
 
+function FaqItem({ q, a }: { q: string; a: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={"lp-faq-item" + (open ? " open" : "")}>
+      <button
+        type="button"
+        className="lp-faq-q"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span>{q}</span>
+        <ChevronDown size={18} className="lp-faq-chevron" />
+      </button>
+      {open && <p className="lp-faq-a">{a}</p>}
+    </div>
+  );
+}
+
 export default function OffrePage() {
   // Aucun appel /billing/plan ici : la landing ne montre pas de prix. Le tarif est
   // lu depuis Stripe sur /start, à l'écran de paiement.
@@ -135,6 +200,8 @@ export default function OffrePage() {
         <div className="lp-nav-actions">
           <a href="#comment" className="lp-navlink lp-navlink-anchor">Comment ça marche</a>
           <a href="#fonctionnalites" className="lp-navlink lp-navlink-anchor">Fonctionnalités</a>
+          <a href="#securite" className="lp-navlink lp-navlink-anchor">Sécurité</a>
+          <a href="#faq" className="lp-navlink lp-navlink-anchor">FAQ</a>
           <Link href="/" className="lp-navlink lp-navlink-login">Se connecter</Link>
           <Link href="/start" className="lp-nav-cta">
             Commencer
@@ -244,6 +311,45 @@ export default function OffrePage() {
         </div>
       </section>
 
+      {/* ── Sécurité LinkedIn ── */}
+      <section id="securite" className="lp-section">
+        <div className="lp-section-inner">
+          <div className="lp-trust-eyebrow">
+            <ShieldCheck size={16} /> Comment on touche à ton LinkedIn
+          </div>
+          <h2 className="lp-section-title">Trois actions, trois niveaux de risque</h2>
+          <p className="lp-section-desc">
+            On ne mélange pas analyse, publication et prospection. Chaque brique a son canal — et tu actives seulement ce dont tu as besoin.
+          </p>
+
+          <div className="lp-trust">
+            {TRUST.map((t) => (
+              <div key={t.title} className="lp-trust-card">
+                <span className="lp-feature-icon">{t.icon}</span>
+                <h3 className="lp-feature-title">{t.title}</h3>
+                <div className="lp-trust-method">{t.method}</div>
+                <p className="lp-feature-body">{t.body}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── FAQ ── */}
+      <section id="faq" className="lp-section lp-section-alt">
+        <div className="lp-section-inner lp-faq-inner">
+          <h2 className="lp-section-title">Questions fréquentes</h2>
+          <p className="lp-section-desc">
+            La question qu&apos;on nous pose le plus — et ce qu&apos;il faut savoir avant de commencer.
+          </p>
+          <div className="lp-faq">
+            {FAQ.map((item) => (
+              <FaqItem key={item.q} q={item.q} a={item.a} />
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* ── CTA final ── */}
       <section className="lp-cta">
         <div aria-hidden className="lp-blob lp-blob-c" />
@@ -252,7 +358,7 @@ export default function OffrePage() {
             Ton prochain post, écrit à partir de ce qui marche.
           </h2>
           <p className="lp-cta-desc">
-            Colle ton profil LinkedIn, réponds à quelques questions, et regarde ce que ça donne.
+            Colle ton profil LinkedIn : tu reçois ton analyse avant même de créer un compte.
           </p>
           <div className="lp-cta-btn">
             <StartButton light />
@@ -519,7 +625,12 @@ export default function OffrePage() {
         .lp-section-inner {
           max-width: 1080px;
           margin: 0 auto;
+          text-align: center;
         }
+        .lp-section-inner .lp-steps,
+        .lp-section-inner .lp-features,
+        .lp-section-inner .lp-trust,
+        .lp-section-inner .lp-faq { text-align: left; }
         .lp-section-title {
           margin: 0;
           font-size: clamp(24px, 2.8vw, 34px);
@@ -564,6 +675,83 @@ export default function OffrePage() {
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 18px;
+        }
+        .lp-trust-eyebrow {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          margin: 0 auto 14px;
+          padding: 6px 12px;
+          border-radius: 999px;
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--primary);
+          background: rgba(70,72,212,0.08);
+          border: 1px solid rgba(70,72,212,0.16);
+        }
+        .lp-trust {
+          margin: 44px 0 0;
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 18px;
+        }
+        .lp-trust-card {
+          padding: 22px;
+          border-radius: 14px;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          min-width: 0;
+        }
+        .lp-trust-method {
+          display: inline-block;
+          margin: 0 0 10px;
+          padding: 4px 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--primary);
+          background: rgba(70,72,212,0.08);
+        }
+        .lp-faq-inner { max-width: 720px; }
+        .lp-faq {
+          margin: 36px 0 0;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .lp-faq-item {
+          border: 1px solid var(--border);
+          border-radius: 14px;
+          background: var(--surface-low);
+          overflow: hidden;
+        }
+        .lp-faq-q {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 14px;
+          padding: 16px 18px;
+          border: none;
+          background: transparent;
+          text-align: left;
+          font-size: 15px;
+          font-weight: 600;
+          color: var(--ink);
+          cursor: pointer;
+        }
+        .lp-faq-chevron {
+          flex-shrink: 0;
+          color: var(--muted);
+          transition: transform .18s ease;
+        }
+        .lp-faq-item.open .lp-faq-chevron { transform: rotate(180deg); color: var(--primary); }
+        .lp-faq-a {
+          margin: 0;
+          padding: 0 18px 16px;
+          font-size: 14.5px;
+          line-height: 1.6;
+          color: var(--muted);
         }
         .lp-feature {
           padding: 22px;
@@ -674,7 +862,8 @@ export default function OffrePage() {
           .lp-badge { justify-content: center; }
           .lp-hero-mac { margin: 4px auto 0; }
           .lp-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-          .lp-features { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .lp-features,
+          .lp-trust { grid-template-columns: 1fr; }
         }
         @media (max-width: 640px) {
           .lp-nav { padding-top: 12px; padding-bottom: 12px; }
@@ -690,7 +879,9 @@ export default function OffrePage() {
           .lp-hero-cta { flex-direction: column; align-items: center; gap: 10px; }
           .lp-proof { padding: 16px 14px; gap: 12px; }
           .lp-steps,
-          .lp-features { grid-template-columns: 1fr; margin-top: 32px; }
+          .lp-features,
+          .lp-trust { grid-template-columns: 1fr; margin-top: 32px; }
+          .lp-faq-q { font-size: 14px; padding: 14px 14px; }
           .lp-footer {
             flex-direction: column;
             align-items: flex-start;
