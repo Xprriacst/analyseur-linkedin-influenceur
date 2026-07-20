@@ -2668,6 +2668,24 @@ function useSlack(isAuthed: boolean) {
 // propre programmation : tout passe par ce composant.
 type ScheduleModalImage = { url: string; filename?: string };
 
+/** Compte « client » (rôle `ideas_only` dans app_metadata) : le seul type de
+ * compte dont l'espace affiche la file « À valider ». La soumission pour
+ * validation in-app n'a de sens que là — sur tout autre compte, le post
+ * partirait dans une file que personne ne peut voir ni valider. */
+function useIdeasAccount(): boolean {
+  const [ideasAccount, setIdeasAccount] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!alive) return;
+      const role = (data.session?.user?.app_metadata as Record<string, unknown> | undefined)?.role;
+      setIdeasAccount(role === "ideas_only");
+    });
+    return () => { alive = false; };
+  }, []);
+  return ideasAccount;
+}
+
 function SchedulePostModal({
   text,
   images = [],
@@ -2690,6 +2708,7 @@ function SchedulePostModal({
   });
   const [scheduling, setScheduling] = useState(false);
   const [error, setError] = useState("");
+  const ideasAccount = useIdeasAccount();
 
   async function doSchedule(validateViaSlack: boolean) {
     setError("");
@@ -2731,7 +2750,9 @@ function SchedulePostModal({
         <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
           {slackCanUse(slackStatus)
             ? "Choisis la date/heure, puis programme directement sur LinkedIn, ou demande d'abord une validation Slack — dans ce cas le post n'est publié à l'heure choisie que s'il est validé sur Slack."
-            : "Choisis la date/heure. Tu peux programmer directement sur LinkedIn, ou soumettre le post pour validation — il sera publié une fois validé dans l'app."}
+            : ideasAccount
+              ? "Choisis la date/heure. Tu peux programmer directement sur LinkedIn, ou soumettre le post pour validation — il sera publié une fois validé dans l'app."
+              : "Choisis la date/heure : le post sera publié automatiquement sur LinkedIn à l'heure choisie."}
         </p>
         <textarea
           readOnly
@@ -2780,7 +2801,7 @@ function SchedulePostModal({
             >
               {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Valider via Slack
             </button>
-          ) : (
+          ) : ideasAccount ? (
             <button
               className="secondary-button"
               disabled={scheduling || !scheduleDate}
@@ -2789,7 +2810,7 @@ function SchedulePostModal({
             >
               {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Soumettre pour validation
             </button>
-          )}
+          ) : null}
           <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={() => doSchedule(false)}>
             {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Programmer sur LinkedIn</>}
           </button>
@@ -5982,6 +6003,7 @@ function LibraryView({
   const slack = useSlack(isAuthed);
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
+  const ideasAccount = useIdeasAccount();
   const [slackSent, setSlackSent] = useState<Record<string, boolean>>({});
   const [slackSending, setSlackSending] = useState<Record<string, boolean>>({});
   const [appValidationSending, setAppValidationSending] = useState<Record<string, boolean>>({});
@@ -6477,7 +6499,7 @@ function LibraryView({
                       sending: slackSending[p.id],
                       onClick: () => setConfirmSlackPostId(p.id),
                     }),
-                    ...(!slackCanUse(slack.status)
+                    ...(!slackCanUse(slack.status) && ideasAccount
                       ? [{
                           key: "app-validation",
                           icon: <Send size={14} />,
