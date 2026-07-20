@@ -3350,6 +3350,7 @@ class WeeklyScheduleRequest(BaseModel):
 def get_me_weekly_posts(token: str = Depends(require_token)) -> dict[str, Any]:
     """Return the user's weekly-posts opt-in state and schedule."""
     return {
+        "available": weekly_posts.feature_enabled(),
         "enabled": db.get_weekly_posts_enabled(token),
         "schedule": db.get_weekly_schedule(token),
     }
@@ -3361,6 +3362,9 @@ def set_me_weekly_posts_enabled(
     token: str = Depends(require_token),
 ) -> dict[str, bool]:
     """Toggle the weekly-posts opt-in for the authenticated user."""
+    # Feature désactivée : on peut toujours se désinscrire, jamais s'inscrire.
+    if payload.enabled and not weekly_posts.feature_enabled():
+        raise HTTPException(status_code=400, detail="Posts automatiques de la semaine désactivés.")
     db.set_weekly_posts_enabled(token, payload.enabled)
     return {"enabled": payload.enabled}
 
@@ -3371,6 +3375,8 @@ def put_me_weekly_posts_schedule(
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
     """Replace the user's weekly-posts schedule."""
+    if not weekly_posts.feature_enabled():
+        raise HTTPException(status_code=400, detail="Posts automatiques de la semaine désactivés.")
     slots = [s.model_dump() for s in payload.schedule]
     saved = db.set_weekly_schedule(token, slots)
     return {"schedule": saved}
@@ -3393,6 +3399,8 @@ def run_me_weekly_posts_now(token: str = Depends(require_token)) -> dict[str, An
     sur Slack à valider. Lancé en tâche de fond (peut prendre ~1 min) ; idempotent :
     ne recrée pas un post déjà planifié pour une date.
     """
+    if not weekly_posts.feature_enabled():
+        raise HTTPException(status_code=400, detail="Posts automatiques de la semaine désactivés.")
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
     if not db.admin_enabled():

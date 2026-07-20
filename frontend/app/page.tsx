@@ -2575,8 +2575,6 @@ type SlackStatus = {
   connected_at?: string | null;
 };
 
-const SLACK_DISABLED_HINT = "Validation Slack désactivée";
-
 function slackAvailable(status: SlackStatus | null | undefined): boolean {
   return status?.available !== false;
 }
@@ -2585,36 +2583,28 @@ function slackCanUse(status: SlackStatus | null | undefined): boolean {
   return slackAvailable(status) && !!status?.connected;
 }
 
-function slackActionTitle(
-  status: SlackStatus | null | undefined,
-  whenReady = "Envoyer sur Slack pour validation",
-): string {
-  if (!slackAvailable(status)) return SLACK_DISABLED_HINT;
-  if (!status?.connected) return "Connecte Slack dans l'onglet Profil";
-  return whenReady;
-}
-
+// Validation Slack désactivée (ou compte non connecté) → aucune entrée dans le
+// menu du post, plutôt qu'un bouton mort.
 function buildSlackPostAction(opts: {
   status: SlackStatus | null | undefined;
   sent?: boolean;
   sending?: boolean;
   needsSavedPost?: boolean;
   onClick: () => void;
-}): PostAction {
+}): PostAction[] {
+  if (!slackCanUse(opts.status)) return [];
   const sent = !!opts.sent;
   const sending = !!opts.sending;
-  let title = slackActionTitle(opts.status);
-  if (slackCanUse(opts.status) && opts.needsSavedPost) {
-    title = "Sauvegarde d'abord le post pour l'envoyer sur Slack";
-  }
-  return {
+  return [{
     key: "slack",
     icon: <Send size={14} />,
     label: sent ? "Sur Slack ✓" : "Envoyer sur Slack pour validation",
-    disabled: !slackCanUse(opts.status) || sending || sent || !!opts.needsSavedPost,
-    title,
+    disabled: sending || sent || !!opts.needsSavedPost,
+    title: opts.needsSavedPost
+      ? "Sauvegarde d'abord le post pour l'envoyer sur Slack"
+      : "Envoyer sur Slack pour validation",
     onClick: opts.onClick,
-  };
+  }];
 }
 
 function useSlack(isAuthed: boolean) {
@@ -2781,14 +2771,16 @@ function SchedulePostModal({
           <button className="secondary-button" disabled={scheduling} onClick={onClose}>
             Annuler
           </button>
-          <button
-            className="secondary-button"
-            disabled={scheduling || !scheduleDate || !slackCanUse(slackStatus)}
-            title={slackActionTitle(slackStatus, "Envoyer une demande de validation Slack avant publication")}
-            onClick={() => doSchedule(true)}
-          >
-            {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Valider via Slack
-          </button>
+          {slackAvailable(slackStatus) && (
+            <button
+              className="secondary-button"
+              disabled={scheduling || !scheduleDate || !slackCanUse(slackStatus)}
+              title={slackCanUse(slackStatus) ? "Envoyer une demande de validation Slack avant publication" : "Connecte Slack dans l'onglet Profil pour valider"}
+              onClick={() => doSchedule(true)}
+            >
+              {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Valider via Slack
+            </button>
+          )}
           <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={() => doSchedule(false)}>
             {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Programmer sur LinkedIn</>}
           </button>
@@ -4629,7 +4621,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                               : "Connecte ton compte LinkedIn dans l'onglet Profil",
                             onClick: () => openScheduleModal(line),
                           },
-                          buildSlackPostAction({
+                          ...buildSlackPostAction({
                             status: slack.status,
                             sent: slackSent[key],
                             sending: slackSending[key],
@@ -6144,7 +6136,7 @@ function LibraryView({
                         : "Connecte ton compte LinkedIn dans l'onglet Profil",
                       onClick: () => openSchedulePost(p),
                     },
-                    buildSlackPostAction({
+                    ...buildSlackPostAction({
                       status: slack.status,
                       sent: slackSent[p.id] || p.slack_status === "pending",
                       sending: slackSending[p.id],
@@ -6644,7 +6636,7 @@ function AssistantMessageActions({
               : "Connecte ton compte LinkedIn dans l'onglet Profil",
             onClick: openSchedule,
           },
-          buildSlackPostAction({
+          ...buildSlackPostAction({
             status: slack.status,
             sent: slackSent,
             sending: slackSending,
@@ -8743,6 +8735,7 @@ function ProfileView({
   const [openRow, setOpenRow] = useState<string | null>(null);
   const toggleRow = (key: string) => setOpenRow((prev) => (prev === key ? null : key));
   const [weeklyEnabled, setWeeklyEnabled] = useState(false);
+  const [weeklyAvailable, setWeeklyAvailable] = useState(true);
   const [weeklySchedule, setWeeklySchedule] = useState<{day_of_week: number; hour: number; timezone: string}[]>([]);
   const [weeklySaving, setWeeklySaving] = useState(false);
   const [weeklyRunning, setWeeklyRunning] = useState(false);
@@ -8790,6 +8783,7 @@ function ProfileView({
         const res = await fetch(`${DIRECT_API_URL}/me/weekly-posts`, { headers: await authHeaders() });
         if (res.ok) {
           const data = await res.json();
+          setWeeklyAvailable(data.available !== false);
           setWeeklyEnabled(!!data.enabled);
           setWeeklySchedule(data.schedule || []);
         }
@@ -9201,16 +9195,28 @@ function ProfileView({
             icon={<CalendarDays size={18} style={{ color: "var(--coral)" }} />}
             name="Les posts de ta semaine"
             why={
-              !weeklyReady
-                ? "Connecte LinkedIn (onglet Connexions) pour activer"
-                : weeklyEnabled && weeklySchedule.length
-                  ? `3 posts écrits le vendredi, publiés ${weeklySchedule.map((s) => `${["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."][s.day_of_week]} ${String(s.hour).padStart(2, "0")} h`).join(" · ")}`
-                  : "3 posts écrits le vendredi matin pour la semaine suivante"
+              !weeklyAvailable
+                ? "Désactivés pour le moment."
+                : !weeklyReady
+                  ? "Connecte LinkedIn (onglet Connexions) pour activer"
+                  : weeklyEnabled && weeklySchedule.length
+                    ? `3 posts écrits le vendredi, publiés ${weeklySchedule.map((s) => `${["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."][s.day_of_week]} ${String(s.hour).padStart(2, "0")} h`).join(" · ")}`
+                    : "3 posts écrits le vendredi matin pour la semaine suivante"
             }
             open={openRow === "weekly"}
-            onToggle={weeklyReady && weeklyEnabled ? () => toggleRow("weekly") : undefined}
+            onToggle={weeklyAvailable && weeklyReady && weeklyEnabled ? () => toggleRow("weekly") : undefined}
             right={
-              weeklyReady ? (
+              !weeklyAvailable ? (
+                <>
+                  <span className="status-pill">Désactivé</span>
+                  {weeklyEnabled && (
+                    <label className="daily-switch">
+                      <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
+                      <span>Activé</span>
+                    </label>
+                  )}
+                </>
+              ) : weeklyReady ? (
                 <label className="daily-switch">
                   <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
                   <span>Activer</span>

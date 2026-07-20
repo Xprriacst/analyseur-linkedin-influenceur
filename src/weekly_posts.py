@@ -25,6 +25,11 @@ from src.llm import generate_posts
 from src import slack as slack_client
 
 
+def feature_enabled() -> bool:
+    """Product flag — when off, the Friday cron and manual runs create nothing."""
+    return os.environ.get("WEEKLY_POSTS_FEATURE_ENABLED", "false").lower() not in ("0", "false", "no", "off")
+
+
 # --------------------------------------------------------------------------- #
 # Date helpers                                                                  #
 # --------------------------------------------------------------------------- #
@@ -174,6 +179,9 @@ def run_for_user(user_id: str, run_date: datetime.date | None = None) -> int:
     Même logique que le cron du vendredi (créneaux de la semaine suivante,
     validation Slack, idempotent). Retourne le nombre de posts créés.
     """
+    if not feature_enabled():
+        print(f"  · {user_id}: posts hebdo désactivés (WEEKLY_POSTS_FEATURE_ENABLED), skip")
+        return 0
     return _generate_for_user(user_id, run_date or datetime.date.today())
 
 
@@ -182,6 +190,9 @@ def run_for_user(user_id: str, run_date: datetime.date | None = None) -> int:
 # --------------------------------------------------------------------------- #
 
 def main() -> int:
+    if not feature_enabled():
+        print("Posts hebdo désactivés (WEEKLY_POSTS_FEATURE_ENABLED) — cron sans effet.")
+        return 0
     if not db.admin_enabled():
         print("SUPABASE_SERVICE_ROLE_KEY manquant — cron désactivé.", file=sys.stderr)
         return 1
