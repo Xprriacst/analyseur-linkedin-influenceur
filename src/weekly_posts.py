@@ -122,11 +122,12 @@ def _generate_for_user(user_id: str, run_date: datetime.date) -> int:
             continue
 
         scheduled_at_iso = utc_dt.isoformat()
-        # Sans Slack connecté, le webhook Slack (seul chemin vers 'validated')
+        # Sans Slack actif, le webhook Slack (seul chemin vers 'validated')
         # n'existe pas : un post 'pending' resterait bloqué pour toujours.
         # On l'auto-valide donc → il partira au créneau choisi via le
         # scheduler de publication (ALE-272). Avec Slack : flux inchangé
         # (pending + message de validation).
+        slack_cfg = slack_cfg if slack_client.feature_enabled() else None
         slack_status = "pending" if slack_cfg else "validated"
         row = db.create_scheduled_post_admin(
             user_id, post_text, scheduled_at_iso, slack_status=slack_status

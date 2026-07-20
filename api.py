@@ -671,6 +671,8 @@ def me_linkedin_schedule(
         return {"ok": True, "scheduled_post": row}
 
     # Option B : validation Slack avant publication (comportement existant).
+    if not slack_client.feature_enabled():
+        raise HTTPException(status_code=400, detail="Validation Slack désactivée.")
     slack_row = db.get_slack_integration(token)
     if not slack_row:
         raise HTTPException(status_code=400, detail="Connecte Slack dans ton profil pour valider les posts programmés.")
@@ -3583,20 +3585,27 @@ class SlackSendPostsRequest(BaseModel):
     images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
 
 
+def _slack_status_payload(row: dict | None) -> dict[str, Any]:
+    """Shared Slack status fields for the authenticated user."""
+    payload: dict[str, Any] = {
+        "connected": bool(row),
+        "configured": slack_client.credentials_configured(),
+        "available": slack_client.feature_enabled(),
+    }
+    if row:
+        payload.update({
+            "team_name": row.get("team_name"),
+            "team_id": row.get("team_id"),
+            "channel_id": row.get("channel_id"),
+            "connected_at": row.get("connected_at"),
+        })
+    return payload
+
+
 @app.get("/me/integrations/slack/status")
 def slack_status(token: str = Depends(require_token)) -> dict[str, Any]:
     """Check whether the authenticated user has connected their Slack workspace."""
-    row = db.get_slack_integration(token)
-    if not row:
-        return {"connected": False, "configured": slack_client.enabled()}
-    return {
-        "connected": True,
-        "configured": slack_client.enabled(),
-        "team_name": row.get("team_name"),
-        "team_id": row.get("team_id"),
-        "channel_id": row.get("channel_id"),
-        "connected_at": row.get("connected_at"),
-    }
+    return _slack_status_payload(db.get_slack_integration(token))
 
 
 @app.post("/me/integrations/slack/connect")
@@ -3605,7 +3614,9 @@ def slack_connect(
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
     """Return the Slack OAuth authorization URL to redirect the user to."""
-    if not slack_client.enabled():
+    if not slack_client.feature_enabled():
+        raise HTTPException(status_code=400, detail="Validation Slack désactivée.")
+    if not slack_client.credentials_configured():
         raise HTTPException(status_code=400, detail="SLACK_CLIENT_ID / SLACK_CLIENT_SECRET manquants sur le serveur.")
     user = db.get_user(token) or {}
     user_id = user.get("id", "")
@@ -3625,7 +3636,9 @@ def slack_callback(
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
     """Exchange an OAuth code for tokens and persist the Slack integration."""
-    if not slack_client.enabled():
+    if not slack_client.feature_enabled():
+        raise HTTPException(status_code=400, detail="Validation Slack désactivée.")
+    if not slack_client.credentials_configured():
         raise HTTPException(status_code=400, detail="SLACK_CLIENT_ID / SLACK_CLIENT_SECRET manquants sur le serveur.")
     if payload.state:
         stored = _slack_oauth_states.pop(payload.state, None)
@@ -3681,6 +3694,8 @@ def slack_send_ideas(
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
     """Send a batch of generated ideas to the user's Slack DM for validation."""
+    if not slack_client.feature_enabled():
+        raise HTTPException(status_code=400, detail="Validation Slack désactivée.")
     row = db.get_slack_integration(token)
     if not row:
         raise HTTPException(status_code=400, detail="Compte Slack non connecté. Connecte Slack dans ton profil.")
@@ -3714,6 +3729,8 @@ def slack_send_post(
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
     """Send a generated post to the user's Slack DM for validation (Option B)."""
+    if not slack_client.feature_enabled():
+        raise HTTPException(status_code=400, detail="Validation Slack désactivée.")
     row = db.get_slack_integration(token)
     if not row:
         raise HTTPException(status_code=400, detail="Compte Slack non connecté. Connecte Slack dans ton profil.")
