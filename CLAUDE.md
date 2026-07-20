@@ -82,6 +82,15 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-20 #2 (RELEASE PROD : validation in-app des posts pour la vue client — PR #335 → release #336)
+- **Ce qui change pour Joëlle (vue `ideas_only`)** : nouvelle section « À valider » dans son espace — les posts programmés en attente se valident (« Valider — publier à l'heure prévue ») ou se refusent (annulé) directement dans l'app, et les posts soumis par l'agence se valident avec publication LinkedIn **immédiate** (texte éditable avant). Remplace la validation Slack coupée à la release #334 — c'est le déblocage des posts `pending` qui n'avaient plus aucun chemin vers `validated`.
+- **Côté agence** : « Soumettre pour validation client » dans le menu des posts sauvegardés (Mes contenus) ; la modale Programmer propose « Soumettre pour validation » → file in-app quand Slack est coupé (plus de 400 « Validation Slack désactivée »).
+- **Pas 100 % « juste pour Joëlle »** : le cron des posts hebdo (éteint par flag, dormant) crée désormais **toujours** des posts `pending`, plus jamais d'auto-validés — ferme définitivement le trou « publication sans relecture » si le flag est rallumé. Aucun endpoint ne peut valider un post qui n'est pas `pending` (pas de conflit avec le webhook Slack résiduel).
+- **Aucune migration, aucune env var** — tout réutilise `slack_status`/`zernio_post_id` existants. PR #335 écrite par l'agent Cursor, complétée d'aucune retouche.
+- **Vérifié post-deploy** : delta `main..dev` énuméré AVANT merge (= uniquement #335 + changelog) · `/me/validation-queue` prod → **401 stable 3/3 à 5 s d'intervalle** (parade ancienne instance en vol) · `/me/linkedin/scheduled/{id}/validate` et `/me/generated-posts/{id}/submit-for-validation` → 401 · `/health` tout vert · bundle Netlify prod (non vide, 1,2 Mo) contient `validation-queue`, `submit-for-validation` et « Soumettre pour validation ».
+- **Effet immédiat en prod** : les 2 posts de joelle.larroche@gmail.com bloqués en `pending` Slack (20/07 13:00, 22/07 13:00 UTC) sont désormais validables par elle dans son espace. ⚠️ Celui du 20/07 13:00 est déjà passé — validé après coup, il part au tick suivant du cron (~5 min), pas à l'heure prévue.
+- **Reste à faire** : aucun spec e2e ajouté (feature UI, règle du repo) — à rattraper ; test manuel d'Alex/Joëlle en prod (soumettre → valider → publication).
+
 ### 2026-07-20 (RELEASE PROD : validation Slack + posts hebdo auto DÉSACTIVÉS par flags — PR #333 → release #334)
 - **Demande Alex** : retirer l'option Slack et couper les posts automatiques de la semaine (générés le vendredi, publiés seuls), sans supprimer le code. Base : PR #333 draft (agent Cursor, volet Slack seul) **complétée** avant merge — elle laissait un trou dangereux : Slack coupé ⇒ les posts hebdo passaient en **auto-validés** ⇒ publication LinkedIn **sans aucune relecture**.
 - **Deux interrupteurs serveur, éteints par défaut** (rien à poser sur Render ; réactivation = poser la var à `true` sur le web service **ET** le cron `analyseur-weekly-posts`, chacun a ses propres env vars) : `SLACK_FEATURE_ENABLED` et `WEEKLY_POSTS_FEATURE_ENABLED`.
