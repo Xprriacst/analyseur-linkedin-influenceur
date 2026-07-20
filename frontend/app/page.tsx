@@ -205,6 +205,12 @@ type LinkedInImageAttachment = {
 type SavedIdea = Idea & { id: string; created_at?: string };
 // Image persistée sur un post sauvegardé (URL publique Zernio, format media_items).
 type SavedPostMediaItem = { type?: string; url: string; title?: string };
+// Image d'un post programmé : URL publique Zernio, ou data_url base64 sur les posts programmés avant le passage aux URLs.
+type ScheduledPostMediaItem = { type?: string; url?: string; data_url?: string; title?: string; filename?: string };
+// URLs affichables des images jointes d'un post (tolère l'ancien format data_url base64).
+function mediaItemImageUrls(items?: { url?: string; data_url?: string }[] | null): string[] {
+  return (items || []).map((m) => m?.url || m?.data_url).filter(Boolean) as string[];
+}
 type SavedPost = {
   id: string;
   topic?: string;
@@ -224,7 +230,7 @@ type ScheduledPost = {
   status: "pending" | "published" | "failed" | "cancelled" | string;
   slack_status?: string | null;
   slack_message_ts?: string | null;
-  media_items?: LinkedInImageAttachment[] | null;
+  media_items?: ScheduledPostMediaItem[] | null;
   error_message?: string | null;
   created_at?: string;
 };
@@ -5148,10 +5154,22 @@ function ClientValidationView({ isAuthed }: { isAuthed: boolean }) {
                       onChange={(e) => setEditedTexts((prev) => ({ ...prev, [`sched:${p.id}`]: e.target.value }))}
                       style={{ width: "100%", boxSizing: "border-box", marginBottom: 10 }}
                     />
-                    {(p.media_items || []).length > 0 && (
-                      <p className="role-picker-hint" style={{ marginBottom: 10 }}>
-                        {p.media_items!.length} image{p.media_items!.length > 1 ? "s" : ""} jointe{p.media_items!.length > 1 ? "s" : ""}
-                      </p>
+                    {mediaItemImageUrls(p.media_items).length > 0 && (
+                      <div style={{ marginBottom: 10 }}>
+                        <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                          {mediaItemImageUrls(p.media_items).length} image{mediaItemImageUrls(p.media_items).length > 1 ? "s" : ""} jointe{mediaItemImageUrls(p.media_items).length > 1 ? "s" : ""}
+                        </p>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 10 }}>
+                          {mediaItemImageUrls(p.media_items).map((src, i) => (
+                            <img
+                              key={i}
+                              src={src}
+                              alt={`Image jointe ${i + 1}`}
+                              style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
+                            />
+                          ))}
+                        </div>
+                      </div>
                     )}
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <button
@@ -5186,10 +5204,22 @@ function ClientValidationView({ isAuthed }: { isAuthed: boolean }) {
                       onChange={(e) => setEditedTexts((prev) => ({ ...prev, [`gen:${p.id}`]: e.target.value }))}
                       style={{ width: "100%", boxSizing: "border-box", marginBottom: 10 }}
                     />
-                    {(p.media_items || []).length > 0 && (
-                      <p className="role-picker-hint" style={{ marginBottom: 10 }}>
-                        {p.media_items!.length} image{p.media_items!.length > 1 ? "s" : ""} jointe{p.media_items!.length > 1 ? "s" : ""}
-                      </p>
+                    {mediaItemImageUrls(p.media_items).length > 0 && (
+                      <div style={{ marginBottom: 10 }}>
+                        <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                          {mediaItemImageUrls(p.media_items).length} image{mediaItemImageUrls(p.media_items).length > 1 ? "s" : ""} jointe{mediaItemImageUrls(p.media_items).length > 1 ? "s" : ""}
+                        </p>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 10 }}>
+                          {mediaItemImageUrls(p.media_items).map((src, i) => (
+                            <img
+                              key={i}
+                              src={src}
+                              alt={`Image jointe ${i + 1}`}
+                              style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
+                            />
+                          ))}
+                        </div>
+                      </div>
                     )}
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <button
@@ -6325,6 +6355,7 @@ function LibraryView({
     const line = (p.post_text || "").split("\n").map((l) => l.trim()).find(Boolean) || "Post programmé";
     return line.length > 70 ? `${line.slice(0, 70)}…` : line;
   };
+  const schedImages = (p: ScheduledPost) => mediaItemImageUrls(p.media_items);
   const schedStatus = (p: ScheduledPost) => {
     const label =
       p.status === "published" ? "Publié ✓"
@@ -6699,7 +6730,12 @@ function LibraryView({
                       onOpen={() => setExpandedSchedId(p.id)}
                       ariaLabel={`Ouvrir « ${schedTitle(p)} »`}
                       title={schedTitle(p)}
-                      tags={<span className={`lib-tag ${st.cls}`}>{st.label}</span>}
+                      tags={
+                        <>
+                          <span className={`lib-tag ${st.cls}`}>{st.label}</span>
+                          {schedImages(p).length > 0 && <span className="lib-tag">image</span>}
+                        </>
+                      }
                       meta={new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
                       preview={p.post_text}
                     />
@@ -6727,6 +6763,23 @@ function LibraryView({
                     }
                   >
                     <p style={{ whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.6, margin: "0 0 14px" }}>{p.post_text}</p>
+                    {schedImages(p).length > 0 && (
+                      <div style={{ margin: "0 0 14px" }}>
+                        <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+                          {schedImages(p).length} image{schedImages(p).length > 1 ? "s" : ""} jointe{schedImages(p).length > 1 ? "s" : ""} — {schedImages(p).length > 1 ? "elles partiront" : "elle partira"} avec le post.
+                        </p>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10 }}>
+                          {schedImages(p).map((src, i) => (
+                            <img
+                              key={i}
+                              src={src}
+                              alt={`Image jointe ${i + 1}`}
+                              style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     {p.status === "failed" && p.error_message && (
                       <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--danger)" }}>{p.error_message}</p>
                     )}
