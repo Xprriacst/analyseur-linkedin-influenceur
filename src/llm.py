@@ -901,7 +901,9 @@ def normalize_onboarding_preview(
                 break
         return out
 
-    handle = _str("handle") or linkedin_handle_from_url(str(seed.get("linkedin_url") or ""))
+    # Le modèle renvoie parfois le handle déjà préfixé « @ » — le front en
+    # ajoute un lui-même, d'où des « @@ » à l'écran si on ne nettoie pas ici.
+    handle = (_str("handle") or linkedin_handle_from_url(str(seed.get("linkedin_url") or ""))).lstrip("@")
     name = _str("name") or str(profile.get("name") or "").strip()
     niche = _str("niche")
     summary = _str("summary")
@@ -924,6 +926,8 @@ def normalize_onboarding_preview(
         "handle": handle,
         "name": name,
         "headline": _str("headline") or str(profile.get("headline") or "").strip(),
+        # La photo vient du scrape, jamais du modèle (une URL inventée = image cassée).
+        "avatar_url": str(profile.get("avatar_url") or "").strip(),
         "posts_count": posts_count,
         "followers": followers,
         "connections": connections,
@@ -958,7 +962,7 @@ def draft_onboarding_preview(seed: dict[str, Any]) -> dict[str, Any] | None:
 Règles :
 - Français, tutoiement, ton direct (pas corporate).
 - niche : 1 ligne qui résume positionnement + offre (ex. « Founder SaaS B2B, cold call artisans »).
-- summary : 3 à 5 phrases. Ce qui marche, ce qui stagne, une piste concrète. Ancre-toi sur les posts fournis (formats, sujets, eng. likes/comments/reposts) sans inventer de vues.
+- summary : 2 ou 3 paragraphes COURTS (2-3 phrases chacun), séparés par une ligne vide (\\n\\n). Paragraphe 1 : ce qui marche. Paragraphe 2 : ce qui stagne. Paragraphe 3 : une piste concrète. Ancre-toi sur les posts fournis (formats, sujets, eng. likes/comments/reposts) sans inventer de vues. Pas de pavé : chaque paragraphe doit se lire d'un coup d'œil sur mobile.
 - hook : 1 phrase d'accroche pour l'écran suivant (ex. « Tu postes sans framework clair… »).
 - hashtags : 3 à 6 hashtags pertinents (avec #).
 - strengths / improvements : exactement 3 items chacun, courts (≤ 12 mots), actionnables.
@@ -979,8 +983,12 @@ Schéma JSON attendu :
   }
 }"""
     )
+    # Modèle surchargeable pour cet appel seul (test Fable 5 vs Sonnet 5 sur la
+    # qualité de l'accroche). ⚠️ Fable/Mythos : la réflexion est toujours active
+    # et décomptée de max_tokens — d'où un budget large, sinon JSON tronqué.
+    model = os.environ.get("ONBOARDING_PREVIEW_MODEL", "").strip() or None
     try:
-        data = _call(system, user, max_tokens=1800, temperature=0.4)
+        data = _call(system, user, max_tokens=4000, temperature=0.4, model=model)
     except Exception:
         return None
     preview = data.get("preview", data)
