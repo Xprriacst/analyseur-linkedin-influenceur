@@ -82,6 +82,13 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-21 (RELEASE PROD : vignettes des images des posts programmés — PR #339 → release #340)
+- **Déclencheur** : retour d'Alex « dans la vue de Joëlle on ne voit pas les images des posts ». Diagnostic : le fix existait déjà (PR #339, mergée sur `dev` la veille au soir — reprise du WIP Cursor #332) mais n'avait **pas été releasé en prod** ; la vue de validation client n'y affichait qu'un texte « N images jointes ».
+- **Ce qui change pour Joëlle (et Ma bibliothèque)** : les images jointes s'affichent en vignettes dans la vue de validation client — pour les **posts programmés en attente ET les posts soumis par l'agence** — et dans la pop-up d'un post programmé de Ma bibliothèque (+ badge « image » sur la carte). Tolère l'ancien format `data_url` base64 des posts programmés d'avant la PR #169.
+- **Release #340** : delta `main..dev` énuméré avant merge (= uniquement PR #339 + changelog, aucun passager clandestin). Frontend seul, aucune migration, aucune env var. Guardrails + previews Netlify verts avant merge.
+- **Vérifié post-deploy** : bundle JS prod (`lkd-outreach.netlify.app`) contient « Image jointe » (grep positif sur le bundle téléchargé, pas de faux positif fichier vide).
+- **Reste à faire** : test visuel d'Alex/Joëlle en prod (ouvrir la vue client → un post avec image → vignettes visibles).
+
 ### 2026-07-20 #3 (RELEASE PROD : bouton « Soumettre pour validation client » réservé aux comptes `ideas_only` — PR #337 → release #338)
 - **Trou UX de la release #336 fermé** (repéré en répondant à « le bouton apparaît juste pour Joëlle, non ? » — réponse : non) : le bouton de Mes contenus et l'option de la modale Programmer s'affichaient sur **tous** les comptes dès que Slack était inutilisable, alors que seule la vue client `ideas_only` affiche la file « À valider » — un post soumis depuis un compte normal partait dans une file **invisible pour tout le monde** (post programmé bloqué en `pending` à jamais). Nouveau hook `useIdeasAccount()` (rôle lu depuis `app_metadata`, même source que la bascule de vue) ; sans vue client ni Slack, la modale Programmer ne propose plus que la programmation directe.
 - **Vérifications avant release** : delta `main..dev` énuméré (fix + docs seulement) ; suite e2e contre le site dev → **27 verts**, 5 échecs tous expliqués : 4 **préexistants** (reproduits à l'identique contre la prod : Prospection ALE-229 + 3 specs Inbox IG — l'onglet Instagram est grisé depuis #293, specs à recaler un jour) et 1 environnemental.
