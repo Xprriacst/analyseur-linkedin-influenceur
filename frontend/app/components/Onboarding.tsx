@@ -6,9 +6,11 @@
  *  - `anonymous` (page /start) : le visiteur n'a pas de compte. L'analyse passe par
  *    la route publique bornée par IP, et les réponses sont RENDUES à l'appelant
  *    (via onFinish) au lieu d'être enregistrées : il n'y a pas encore de compte où
- *    les mettre. Si une preview IA est dispo, on la montre AVANT les chips puis
- *    avant la création du compte.
+ *    les mettre.
  *  - authentifié (page.tsx) : l'appelant enregistre le profil dans la foulée.
+ *
+ * Dans les DEUX cas, si une preview « Analyse IA » est dispo, on la montre avant
+ * les chips (include_preview: true sur les deux routes).
  *
  * Le composant ne décide donc JAMAIS quoi faire des réponses — il les calcule et
  * les passe. C'est ce qui lui permet de servir avant ET après la création du compte
@@ -39,6 +41,7 @@ export type OnboardingPreview = {
   handle: string;
   name: string;
   headline: string;
+  avatar_url?: string;
   posts_count: number;
   followers: number;
   connections: number;
@@ -262,6 +265,7 @@ export default function OnboardingScreen({
             linkedin_url: isLinkedin ? trimmed : "",
             website_url: isWebsite ? trimmed : "",
             use_apify_linkedin: isLinkedin,
+            include_preview: true,
           }),
         });
         const data = await res.json();
@@ -274,8 +278,9 @@ export default function OnboardingScreen({
       setSel(onbInitSel(d));
       const p = data.preview && data.preview.niche && data.preview.summary ? data.preview : null;
       setPreview(p);
-      // Preview uniquement sur le parcours public : le wow avant de demander le compte.
-      setStep(anonymous && p ? "analysis" : "page1");
+      // L'analyse s'affiche sur les DEUX parcours (public /start ET wizard d'un
+      // compte connecté) — sans elle, on saute directement aux questions.
+      setStep(p ? "analysis" : "page1");
     } catch (err: any) {
       setError(err?.message || "Analyse impossible");
       setStep("intro");
@@ -346,12 +351,26 @@ export default function OnboardingScreen({
         {step === "analysis" && preview && (
           <div className="onb-screen onb-analysis" key="analysis">
             <div className="onb-analysis-card onb-analysis-profile">
-              <div className="onb-analysis-avatar" aria-hidden>
-                {initials(preview.name, preview.handle)}
-              </div>
-              <div className="onb-analysis-handle">
-                {preview.handle ? `@${preview.handle}` : preview.name || "Ton profil"}
-              </div>
+              {preview.avatar_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  className="onb-analysis-avatar onb-analysis-avatar-img"
+                  src={preview.avatar_url}
+                  alt=""
+                  onError={(e) => { e.currentTarget.style.display = "none"; }}
+                />
+              ) : (
+                <div className="onb-analysis-avatar" aria-hidden>
+                  {initials(preview.name, preview.handle)}
+                </div>
+              )}
+              <div className="onb-analysis-name">{preview.name || "Ton profil"}</div>
+              {preview.handle && (
+                <div className="onb-analysis-handle">@{preview.handle.replace(/^@+/, "")}</div>
+              )}
+              {preview.headline && (
+                <div className="onb-analysis-headline">{preview.headline}</div>
+              )}
               {(preview.posts_count > 0 || preview.followers > 0 || preview.connections > 0) && (
                 <div className="onb-analysis-stats">
                   <div>
@@ -379,7 +398,9 @@ export default function OnboardingScreen({
 
             <div className="onb-analysis-card">
               <div className="onb-analysis-label">Résumé</div>
-              <p className="onb-analysis-summary">{preview.summary}</p>
+              {preview.summary.split(/\n{2,}/).filter(Boolean).map((para, i) => (
+                <p key={i} className="onb-analysis-summary">{para.trim()}</p>
+              ))}
             </div>
 
             <button
