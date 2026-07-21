@@ -4955,11 +4955,23 @@ const _dailyIdeaCache: { ideaImages: Record<string, string[]>; appliedImageJobId
   appliedImageJobIds: new Set(),
 };
 
+// Dédoublonnage des jobs d'image appliqués dans la vue client de validation
+// (régénération d'image sur un post à valider) — même patron que _libraryAppliedImageJobIds.
+const _validationAppliedImageJobIds = new Set<string>();
+
 /** Vue client (`ideas_only`) : posts à valider + posts programmés.
  * Remplace le flux Slack pour les comptes restreints (ex. Joëlle) :
  * l'agence génère/programme, le client valide ici, LinkedIn publie ensuite.
  */
-function ClientValidationView({ isAuthed }: { isAuthed: boolean }) {
+function ClientValidationView({
+  isAuthed,
+  imageJobs,
+  onImageJobCreated,
+}: {
+  isAuthed: boolean;
+  imageJobs: ImageJob[];
+  onImageJobCreated: (job: ImageJob) => void;
+}) {
   const linkedin = useLinkedIn(isAuthed);
   const [pendingGenerated, setPendingGenerated] = useState<SavedPost[]>([]);
   const [pendingScheduled, setPendingScheduled] = useState<ScheduledPost[]>([]);
@@ -4969,6 +4981,7 @@ function ClientValidationView({ isAuthed }: { isAuthed: boolean }) {
   const [editedTexts, setEditedTexts] = useState<Record<string, string>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [doneId, setDoneId] = useState<string | null>(null);
+  const [imageModalTarget, setImageModalTarget] = useState<{ kind: "gen" | "sched"; id: string; text: string } | null>(null);
 
   const loadQueue = useCallback(async () => {
     if (!isAuthed) {
@@ -4994,6 +5007,66 @@ function ClientValidationView({ isAuthed }: { isAuthed: boolean }) {
   }, [isAuthed]);
 
   useEffect(() => { void loadQueue(); }, [loadQueue]);
+
+  async function persistGeneratedImage(post: SavedPost, dataUrl: string) {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${post.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ images: [{ data_url: dataUrl, filename: "image-ia.png" }] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement de l'image impossible.");
+      if (data.media_error) throw new Error("Hébergement de l'image impossible, réessaie.");
+      setPendingGenerated((prev) => prev.map((p) => (p.id === post.id ? { ...p, media_items: data.media_items || [] } : p)));
+    } catch (err: any) {
+      setError(err.message || "Enregistrement de l'image impossible.");
+    }
+  }
+
+  async function persistScheduledImage(post: ScheduledPost, dataUrl: string) {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${post.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ images: [{ data_url: dataUrl, filename: "image-ia.png" }] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement de l'image impossible.");
+      const updated = data.scheduled_post;
+      setPendingScheduled((prev) => prev.map((p) => (p.id === post.id ? { ...p, media_items: updated?.media_items ?? p.media_items } : p)));
+    } catch (err: any) {
+      setError(err.message || "Enregistrement de l'image impossible.");
+    }
+  }
+
+  // Rattache l'image dès que le job `valgen:{id}`/`valsched:{id}` termine, même
+  // si la pop-up a été fermée entre-temps (même patron qu'ALE-261 sur les autres écrans).
+  useEffect(() => {
+    for (const job of imageJobs) {
+      if (job.status !== "done" || !job.result?.image_data) continue;
+      if (_validationAppliedImageJobIds.has(job.id)) continue;
+      const genMatch = /^valgen:(.+)$/.exec(job.target_key);
+      const schedMatch = /^valsched:(.+)$/.exec(job.target_key);
+      if (genMatch) {
+        const post = pendingGenerated.find((p) => p.id === genMatch[1]);
+        if (!post) continue;
+        _validationAppliedImageJobIds.add(job.id);
+        void persistGeneratedImage(post, job.result.image_data);
+      } else if (schedMatch) {
+        const post = pendingScheduled.find((p) => p.id === schedMatch[1]);
+        if (!post) continue;
+        _validationAppliedImageJobIds.add(job.id);
+        void persistScheduledImage(post, job.result.image_data);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageJobs, pendingGenerated, pendingScheduled]);
+
+  function activeImageJobFor(kind: "gen" | "sched", id: string): ImageJob | null {
+    const job = latestImageJobFor(imageJobs, `${kind === "gen" ? "valgen" : "valsched"}:${id}`);
+    return job && imageJobIsActive(job) ? job : null;
+  }
 
   const fmtSchedule = (iso: string) => {
     try {
@@ -5187,6 +5260,14 @@ function ClientValidationView({ isAuthed }: { isAuthed: boolean }) {
                       >
                         {busyId === `rej-sched:${p.id}` ? <Loader2 size={14} className="spinning" /> : <XCircle size={14} />} Refuser
                       </button>
+                      <button
+                        className="secondary-button"
+                        disabled={!!activeImageJobFor("sched", p.id)}
+                        onClick={() => setImageModalTarget({ kind: "sched", id: p.id, text: editedTexts[`sched:${p.id}`] ?? p.post_text })}
+                      >
+                        {activeImageJobFor("sched", p.id) ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
+                        {" "}{mediaItemImageUrls(p.media_items).length > 0 ? "Régénérer l'image" : "Générer une image IA"}
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -5238,6 +5319,14 @@ function ClientValidationView({ isAuthed }: { isAuthed: boolean }) {
                       >
                         {busyId === `rej-gen:${p.id}` ? <Loader2 size={14} className="spinning" /> : <XCircle size={14} />} Refuser
                       </button>
+                      <button
+                        className="secondary-button"
+                        disabled={!!activeImageJobFor("gen", p.id)}
+                        onClick={() => setImageModalTarget({ kind: "gen", id: p.id, text: editedTexts[`gen:${p.id}`] ?? p.post })}
+                      >
+                        {activeImageJobFor("gen", p.id) ? <Loader2 size={14} className="spinning" /> : <ImageIcon size={14} />}
+                        {" "}{mediaItemImageUrls(p.media_items).length > 0 ? "Régénérer l'image" : "Générer une image IA"}
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -5271,6 +5360,16 @@ function ClientValidationView({ isAuthed }: { isAuthed: boolean }) {
             )}
           </section>
         </>
+      )}
+
+      {imageModalTarget && (
+        <ImageGenModal
+          postText={imageModalTarget.text}
+          targetKey={`${imageModalTarget.kind === "gen" ? "valgen" : "valsched"}:${imageModalTarget.id}`}
+          imageJobs={imageJobs}
+          onImageJobCreated={onImageJobCreated}
+          onClose={() => setImageModalTarget(null)}
+        />
       )}
     </div>
   );
@@ -5541,7 +5640,7 @@ function DailyIdeasView({
 
   return (
     <div>
-      {reservoirOnly && <ClientValidationView isAuthed={isAuthed} />}
+      {reservoirOnly && <ClientValidationView isAuthed={isAuthed} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />}
 
       {reservoirOnly && (
         <div className="section-header" style={{ marginTop: 8 }}>
@@ -12768,6 +12867,7 @@ export default function Home() {
       _dailyIdeaCache.ideaImages = {};
       _dailyIdeaCache.appliedImageJobIds = new Set();
       _libraryAppliedImageJobIds.clear();
+      _validationAppliedImageJobIds.clear();
       setError("");
       setView("content");
       setShowOnboarding(false);

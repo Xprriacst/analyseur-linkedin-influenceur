@@ -2735,6 +2735,7 @@ def update_scheduled_post(
     *,
     post_text: str | None = None,
     scheduled_at_iso: str | None = None,
+    media_items: list[dict] | None = None,
 ) -> dict | None:
     """Update a pending scheduled post owned by the authenticated user."""
     if not supabase_enabled():
@@ -2747,6 +2748,8 @@ def update_scheduled_post(
         payload["post_text"] = post_text
     if scheduled_at_iso is not None:
         payload["scheduled_at"] = scheduled_at_iso
+    if media_items is not None:
+        payload["media_items"] = media_items
     if len(payload) == 1:
         return None
     db = client_for_token(access_token)
