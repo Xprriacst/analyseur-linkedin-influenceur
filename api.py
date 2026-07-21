@@ -158,6 +158,10 @@ class EditorialProfileDraftRequest(BaseModel):
     linkedin_url: str | None = Field(default=None, max_length=500)
     website_url: str | None = Field(default=None, max_length=500)
     use_apify_linkedin: bool = False
+    # Preview « Analyse IA » en plus du brouillon de profil. Opt-in : seul le
+    # wizard d'onboarding la demande — le bouton « Pré-remplir » de Mon profil
+    # utilise le même endpoint et ne doit pas payer un appel LLM de plus.
+    include_preview: bool = False
 
 
 @app.get("/health")
@@ -355,8 +359,21 @@ def draft_me_profile(
         profile["linkedin_url"] = linkedin_url
     if website_url and not profile.get("website_url"):
         profile["website_url"] = website_url
+
+    # Même preview « Analyse IA » que le parcours public /onboarding/draft — le
+    # wizard s'affiche aussi pour un compte déjà créé (sans profil éditorial),
+    # qui n'avait jusqu'ici aucune analyse. Best-effort : un échec n'empêche
+    # jamais le pré-remplissage de rendre la main.
+    preview = None
+    if payload.include_preview:
+        try:
+            preview = draft_onboarding_preview(seed)
+        except Exception:
+            preview = None
+
     return {
         "profile": profile,
+        "preview": preview,
         "sources": {
             "description": bool(activity),
             "linkedin_analyzed": bool(linkedin_seed),
