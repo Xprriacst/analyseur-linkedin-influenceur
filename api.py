@@ -638,6 +638,8 @@ class LinkedInScheduleRequest(BaseModel):
 class LinkedInScheduledPostUpdateRequest(BaseModel):
     post_text: str | None = Field(None, min_length=1, max_length=8000)
     scheduled_at: str | None = Field(None, description="ISO 8601 datetime (ex. 2026-06-22T09:00:00+02:00)")
+    # None = ne pas toucher aux images ; [] = tout retirer.
+    images: list[LinkedInImageRequest] | None = Field(default=None, max_length=zernio.MAX_LINKEDIN_IMAGES)
 
 
 def _validate_future_scheduled_at(scheduled_at: str) -> None:
@@ -836,7 +838,7 @@ def me_linkedin_scheduled_update(
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
     """Edit a pending scheduled LinkedIn post."""
-    if payload.post_text is None and payload.scheduled_at is None:
+    if payload.post_text is None and payload.scheduled_at is None and payload.images is None:
         raise HTTPException(status_code=400, detail="Indique au moins un champ à modifier.")
 
     post_text: str | None = None
@@ -848,11 +850,19 @@ def me_linkedin_scheduled_update(
     if payload.scheduled_at is not None:
         _validate_future_scheduled_at(payload.scheduled_at)
 
+    media_items: list[dict[str, Any]] | None = None
+    if payload.images is not None:
+        try:
+            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
+        except zernio.ZernioError as exc:
+            raise HTTPException(status_code=502, detail=f"Hébergement des images impossible : {exc}") from exc
+
     row = db.update_scheduled_post(
         token,
         post_id,
         post_text=post_text,
         scheduled_at_iso=payload.scheduled_at,
+        media_items=media_items,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Post planifié introuvable ou non éditable.")
