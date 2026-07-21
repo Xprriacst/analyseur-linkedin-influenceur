@@ -4,6 +4,7 @@ from __future__ import annotations
 import unittest
 
 from src.llm import linkedin_handle_from_url, normalize_onboarding_preview
+from src.normalize import normalize_profile
 
 
 class LinkedinHandleTests(unittest.TestCase):
@@ -62,6 +63,41 @@ class NormalizePreviewTests(unittest.TestCase):
         self.assertEqual(len(out["strengths"]), 3)
         self.assertEqual(len(out["improvements"]), 3)
 
+    def test_strips_at_prefix_from_handle(self):
+        # Le front préfixe lui-même « @ » — un handle déjà préfixé donnait « @@ ».
+        raw = {
+            "handle": "@remi-campana",
+            "niche": "N",
+            "summary": "S",
+            "strengths": ["a"],
+            "improvements": ["b"],
+        }
+        out = normalize_onboarding_preview(raw)
+        assert out is not None
+        self.assertEqual(out["handle"], "remi-campana")
+
+    def test_avatar_comes_from_scrape_never_from_llm(self):
+        raw = {
+            "niche": "N",
+            "summary": "S",
+            "strengths": ["a"],
+            "improvements": ["b"],
+            "avatar_url": "https://evil.example/fake.png",
+        }
+        seed = {
+            "linkedin_apify_profile": {
+                "profile": {"avatar_url": "https://media.licdn.com/real.png"},
+                "top_posts": [],
+            },
+        }
+        out = normalize_onboarding_preview(raw, seed=seed)
+        assert out is not None
+        self.assertEqual(out["avatar_url"], "https://media.licdn.com/real.png")
+        # Sans scrape : pas de photo, jamais celle proposée par le modèle.
+        out2 = normalize_onboarding_preview(raw)
+        assert out2 is not None
+        self.assertEqual(out2["avatar_url"], "")
+
     def test_caps_lists(self):
         raw = {
             "niche": "N",
@@ -75,6 +111,23 @@ class NormalizePreviewTests(unittest.TestCase):
         self.assertEqual(len(out["strengths"]), 3)
         self.assertEqual(len(out["improvements"]), 3)
         self.assertEqual(len(out["hashtags"]), 8)
+
+
+class NormalizeProfileAvatarTests(unittest.TestCase):
+    def test_harvestapi_picture_dict(self):
+        raw = {
+            "firstName": "Rémi",
+            "lastName": "Campana",
+            "pictureUrl": {"100x100": "https://cdn/100.png", "400x400": "https://cdn/400.png"},
+        }
+        self.assertEqual(normalize_profile(raw)["avatar_url"], "https://cdn/400.png")
+
+    def test_apimaestro_flat_url(self):
+        raw = {"basic_info": {"fullname": "Rémi", "profile_picture_url": "https://cdn/pic.png"}}
+        self.assertEqual(normalize_profile(raw)["avatar_url"], "https://cdn/pic.png")
+
+    def test_absent_picture_is_empty(self):
+        self.assertEqual(normalize_profile({"firstName": "A"})["avatar_url"], "")
 
 
 if __name__ == "__main__":

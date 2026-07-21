@@ -39,6 +39,7 @@ export type OnboardingPreview = {
   handle: string;
   name: string;
   headline: string;
+  avatar_url?: string;
   posts_count: number;
   followers: number;
   connections: number;
@@ -346,12 +347,26 @@ export default function OnboardingScreen({
         {step === "analysis" && preview && (
           <div className="onb-screen onb-analysis" key="analysis">
             <div className="onb-analysis-card onb-analysis-profile">
-              <div className="onb-analysis-avatar" aria-hidden>
-                {initials(preview.name, preview.handle)}
-              </div>
-              <div className="onb-analysis-handle">
-                {preview.handle ? `@${preview.handle}` : preview.name || "Ton profil"}
-              </div>
+              {preview.avatar_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  className="onb-analysis-avatar onb-analysis-avatar-img"
+                  src={preview.avatar_url}
+                  alt=""
+                  onError={(e) => { e.currentTarget.style.display = "none"; }}
+                />
+              ) : (
+                <div className="onb-analysis-avatar" aria-hidden>
+                  {initials(preview.name, preview.handle)}
+                </div>
+              )}
+              <div className="onb-analysis-name">{preview.name || "Ton profil"}</div>
+              {preview.handle && (
+                <div className="onb-analysis-handle">@{preview.handle.replace(/^@+/, "")}</div>
+              )}
+              {preview.headline && (
+                <div className="onb-analysis-headline">{preview.headline}</div>
+              )}
               {(preview.posts_count > 0 || preview.followers > 0 || preview.connections > 0) && (
                 <div className="onb-analysis-stats">
                   <div>
@@ -379,7 +394,9 @@ export default function OnboardingScreen({
 
             <div className="onb-analysis-card">
               <div className="onb-analysis-label">Résumé</div>
-              <p className="onb-analysis-summary">{preview.summary}</p>
+              {preview.summary.split(/\n{2,}/).filter(Boolean).map((para, i) => (
+                <p key={i} className="onb-analysis-summary">{para.trim()}</p>
+              ))}
             </div>
 
             <button

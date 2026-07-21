@@ -220,6 +220,33 @@ def normalize_posts(raw: list[dict]) -> list[dict]:
     return out
 
 
+def _avatar_url(raw: dict) -> str:
+    """Photo de profil, tous schémas confondus (chaîne vide si absente).
+
+    harvestapi range l'URL dans `pictureUrl` sous forme de dict par taille
+    ({"100x100": …, "400x400": …}) ; apimaestro la met à plat sous basic_info.
+    """
+    bi = raw.get("basic_info") if isinstance(raw.get("basic_info"), dict) else {}
+    for candidate in (
+        bi.get("profile_picture_url"),
+        bi.get("profile_picture"),
+        raw.get("pictureUrl"),
+        raw.get("profilePicture"),
+        raw.get("photo"),
+        raw.get("profilePic"),
+    ):
+        if isinstance(candidate, dict):
+            for size in ("400x400", "200x200", "800x800", "100x100"):
+                if candidate.get(size):
+                    return str(candidate[size])
+            for val in candidate.values():
+                if val:
+                    return str(val)
+        elif candidate:
+            return str(candidate)
+    return ""
+
+
 def normalize_profile(raw: dict | None) -> dict:
     """Normalize the profile-scraper output."""
     if not raw:
@@ -240,6 +267,7 @@ def normalize_profile(raw: dict | None) -> dict:
             "creator_mode": bool(bi.get("is_creator")),
             "influencer": bool(bi.get("is_influencer")),
             "profile_url": bi.get("profile_url") or "",
+            "avatar_url": _avatar_url(raw),
         }
 
     first = _get(raw, "firstName", "first_name", default="") or ""
@@ -255,4 +283,5 @@ def normalize_profile(raw: dict | None) -> dict:
         "creator_mode": bool(_get(raw, "creator", default=False)),
         "influencer": bool(_get(raw, "influencer", default=False)),
         "profile_url": _get(raw, "url", "profileUrl", "linkedinUrl", default=""),
+        "avatar_url": _avatar_url(raw),
     }
