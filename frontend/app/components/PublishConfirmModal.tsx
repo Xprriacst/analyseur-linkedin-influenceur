@@ -2,20 +2,27 @@
 
 import { useState } from "react";
 import { Linkedin, Loader2 } from "lucide-react";
+import CrossNetworkPanels, { type CrossPostsDraft } from "./CrossNetworkPanels";
 
 // Aperçu de publication partagé (ALE-210). Utilisé partout où l'on peut publier
 // un post sur LinkedIn (Générateur, Idée du jour, Mes contenus, Assistant IA) :
 // une vraie modale avec le texte ÉDITABLE + l'aperçu des images jointes, à valider
 // avant l'envoi. Le texte modifié ici est renvoyé au parent via onConfirm.
+//
+// ALE-59 : rangée de logos X/Reddit (vue agence) — un clic adapte le post via
+// l'IA et empile la version sous le texte LinkedIn ; les versions actives sont
+// renvoyées au parent en 2e argument d'onConfirm, qui les publie après le
+// succès LinkedIn (publishCrossNetworks).
 export type PublishConfirmImage = { url: string; filename?: string };
 
 export default function PublishConfirmModal({
   text,
   images = [],
   busy = false,
-  title = "Publier ce post sur LinkedIn ?",
-  note = "Le post sera publié immédiatement sur ton compte LinkedIn. Tu peux ajuster le texte ci-dessous avant de confirmer.",
+  title = "Publier le post",
+  note = "Relis et ajuste chaque version avant de confirmer. La publication est immédiate.",
   confirmLabel = "Confirmer la publication",
+  crossNetworks = true,
   onConfirm,
   onClose,
 }: {
@@ -25,11 +32,15 @@ export default function PublishConfirmModal({
   title?: string;
   note?: string;
   confirmLabel?: string;
-  onConfirm: (text: string) => void;
+  crossNetworks?: boolean;
+  onConfirm: (text: string, cross?: CrossPostsDraft | null) => void;
   onClose: () => void;
 }) {
   const [value, setValue] = useState(text);
+  const [cross, setCross] = useState<CrossPostsDraft | null>(null);
+  const [crossValid, setCrossValid] = useState(true);
   const trimmed = value.trim();
+  const networkCount = 1 + (cross?.x ? 1 : 0) + (cross?.reddit ? 1 : 0);
 
   return (
     <div
@@ -39,9 +50,16 @@ export default function PublishConfirmModal({
       }}
       onClick={() => { if (!busy) onClose(); }}
     >
-      <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }} onClick={(e) => e.stopPropagation()}>
+      <div className="card" style={{ maxWidth: 620, width: "100%", padding: 24, maxHeight: "90vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
         <h3 style={{ marginTop: 0, marginBottom: 8 }}>{title}</h3>
         <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>{note}</p>
+        {crossNetworks && (
+          <CrossNetworkPanels
+            baseText={value}
+            disabled={busy}
+            onChange={(c, valid) => { setCross(c); setCrossValid(valid); }}
+          />
+        )}
         <textarea
           value={value}
           onChange={(e) => setValue(e.target.value)}
@@ -53,7 +71,7 @@ export default function PublishConfirmModal({
         {images.length > 0 && (
           <div style={{ marginBottom: 16 }}>
             <p className="role-picker-hint" style={{ marginBottom: 8 }}>
-              {images.length} image{images.length > 1 ? "s" : ""} {images.length > 1 ? "seront jointes" : "sera jointe"}.
+              {images.length} image{images.length > 1 ? "s" : ""} {images.length > 1 ? "seront jointes" : "sera jointe"} au post LinkedIn.
             </p>
             <div style={{ display: "flex", gap: 8, overflowX: "auto" }}>
               {images.map((image, idx) => (
@@ -73,12 +91,14 @@ export default function PublishConfirmModal({
           </button>
           <button
             className="primary-button"
-            disabled={busy || !trimmed}
-            onClick={() => onConfirm(value)}
+            disabled={busy || !trimmed || !crossValid}
+            onClick={() => onConfirm(value, cross)}
           >
             {busy
               ? <><Loader2 size={14} className="spinning" /> Publication…</>
-              : <><Linkedin size={14} /> {confirmLabel}</>
+              : networkCount > 1
+                ? <>Publier sur {networkCount} réseaux</>
+                : <><Linkedin size={14} /> {confirmLabel}</>
             }
           </button>
         </div>

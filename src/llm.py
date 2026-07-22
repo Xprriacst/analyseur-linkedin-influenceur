@@ -2001,3 +2001,106 @@ def qualify_prospect(
     # Garde-fou de bornage : confiance dans [0, 1].
     result["confiance"] = max(0.0, min(1.0, float(result["confiance"])))
     return result
+
+
+# ── ALE-59 : Adaptation multi-réseaux (X + Reddit) ───────────────────────────
+
+def _crosspost_context(profile: dict | None) -> str:
+    """Contexte métier condensé pour ancrer l'adaptation (best-effort)."""
+    profile = profile or {}
+    parts = []
+    name = str(profile.get("display_name") or "").strip()
+    business = str(profile.get("business_description") or "").strip()
+    if name:
+        parts.append(f"AUTEUR : {name}")
+    if business:
+        parts.append(f"SON ACTIVITÉ : {business[:600]}")
+    return "\n".join(parts)
+
+
+def adapt_post_for_x(post_text: str, profile: dict | None = None) -> list[str]:
+    """Adapte un post LinkedIn pour X : liste de tweets (1 = post simple, >1 = thread).
+
+    La substance (chiffres exacts, idée forte) est conservée, le format est
+    réécrit pour X : dense, direct, sans les conventions LinkedIn (pas de
+    « connectons-nous », pas de pavé). Sortie normalisée par crosspost
+    (tweets vides écartés, > 280 caractères re-découpés).
+    """
+    from src import crosspost
+
+    system = (
+        "Tu adaptes un post LinkedIn en publication X (Twitter), dans la même langue "
+        "que le post d'origine. Règles :\n"
+        f"- Chaque tweet fait AU MAXIMUM {crosspost.X_TWEET_MAX} caractères (espaces et sauts de ligne compris).\n"
+        "- Si l'essentiel tient en un seul tweet percutant sans perdre la substance, renvoie UN seul tweet.\n"
+        "- Sinon, un thread de 2 à 6 tweets : le premier est l'accroche (il doit donner envie de dérouler), "
+        "chaque tweet suivant porte UNE idée, le dernier conclut.\n"
+        "- Garde les chiffres et faits EXACTEMENT tels quels — n'invente rien, n'arrondis pas.\n"
+        "- Style X : dense, direct, sans hashtags (sauf si le post d'origine en a un pertinent), "
+        "sans formules LinkedIn (« Qu'en pensez-vous ? », tags, « connectons-nous »).\n"
+        "- Ne mets AUCUNE numérotation type « 1/5 » (le thread est chaîné automatiquement).\n"
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown."
+    )
+    ctx = _crosspost_context(profile)
+    user = (
+        (f"{ctx}\n\n" if ctx else "")
+        + "POST LINKEDIN D'ORIGINE :\n"
+        + f"{post_text.strip()[:6000]}\n\n"
+        + "Schéma JSON attendu :\n"
+        + '{"tweets": ["premier tweet", "tweet suivant (si thread)"]}'
+    )
+    data = _call(system, user, max_tokens=2000, temperature=0.6)
+    tweets = crosspost.normalize_x_adaptation(data)
+    if not tweets:
+        raise RuntimeError("Le modèle n'a pas produit de version X.")
+    return tweets
+
+
+def adapt_post_for_reddit(post_text: str, profile: dict | None = None) -> dict:
+    """Adapte un post LinkedIn en post Reddit + suggère des subreddits.
+
+    Reddit n'est pas LinkedIn : le ton personal branding (accroches, emojis,
+    CTA) y est downvoté. On réécrit en contribution honnête, première personne,
+    100 % valeur — et on choisit la langue du subreddit visé (les grands
+    subreddits B2B sont anglophones). La bibliothèque curatée du dépôt sert de
+    socle ; le modèle peut proposer hors liste (vérifié ensuite via Zernio).
+    Retourne {"title", "body", "subreddits": [{"name", "reason"}]}.
+    """
+    from src import crosspost
+
+    library = crosspost.load_subreddit_library()
+    library_lines = "\n".join(
+        f"- r/{s.get('name')} — sujets : {', '.join(s.get('topics') or [])} · langue : {s.get('language', 'en')} · "
+        f"tolérance autopromo : {s.get('selfpromo_tolerance', '?')}/5 · {str(s.get('notes') or '')[:120]}"
+        for s in library
+    )
+
+    system = (
+        "Tu adaptes un post LinkedIn en post Reddit. Reddit déteste le ton LinkedIn : "
+        "pas d'accroche putaclic, pas d'emojis, pas de CTA commercial, pas de lien vers son offre, "
+        "pas d'auto-congratulation. Écris une contribution honnête à la première personne, "
+        "concrète, 100 % valeur (données, méthode, leçons), qui invite naturellement à la discussion. Règles :\n"
+        f"- TITRE : {crosspost.REDDIT_TITLE_MAX} caractères max, factuel et spécifique (pas de clickbait) — il est définitif après publication.\n"
+        "- CORPS : markdown simple accepté (listes, gras). Garde les chiffres exacts. Termine par une vraie question ouverte si pertinent.\n"
+        "- SUBREDDITS : propose 2 à 4 subreddits pertinents pour CE post et CE métier, les plus pertinents d'abord. "
+        "Pioche en priorité dans la bibliothèque ci-dessous ; tu peux proposer hors liste si un subreddit du métier est plus pertinent "
+        "(il sera vérifié). Pour chacun, une raison courte en français.\n"
+        "- LANGUE : celle du subreddit visé en priorité (les grands subreddits B2B sont anglophones — adapte le titre ET le corps en anglais si le premier subreddit proposé est anglophone ; garde le français pour un subreddit francophone).\n"
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown autour."
+    )
+    ctx = _crosspost_context(profile)
+    user = (
+        (f"{ctx}\n\n" if ctx else "")
+        + "BIBLIOTHÈQUE DE SUBREDDITS (socle) :\n"
+        + (library_lines or "(vide)")
+        + "\n\nPOST LINKEDIN D'ORIGINE :\n"
+        + f"{post_text.strip()[:6000]}\n\n"
+        + "Schéma JSON attendu :\n"
+        + '{"title": "titre du post Reddit", "body": "corps du post en markdown", '
+        + '"subreddits": [{"name": "marketing", "reason": "pourquoi ce subreddit"}]}'
+    )
+    data = _call(system, user, max_tokens=2800, temperature=0.6)
+    result = crosspost.normalize_reddit_adaptation(data)
+    if not result.get("body") or not result.get("title"):
+        raise RuntimeError("Le modèle n'a pas produit de version Reddit complète.")
+    return result

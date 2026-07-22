@@ -206,7 +206,8 @@ test("LinkedIn › Prospection : liste des leads + panneau de détail (ALE-229)"
     await expect(page.getByText(/Signaux d'intention/i)).toHaveCount(0);
   }
   await expect(page.locator(".error")).toHaveCount(0);
-  // Jumeau grisé « Bientôt » sous Instagram (maquette ALE-226).
+  // ALE-59 : Instagram est dégrisé (l'entête se déplie) ; les entrées grisées
+  // « Bientôt » sont désormais X et Reddit.
   await page.locator(".nav-item", { hasText: "Instagram" }).first().click();
-  await expect(page.locator(".nav-item", { hasText: "Bientôt" })).toBeVisible();
+  await expect(page.locator(".nav-item", { hasText: "Bientôt" })).toHaveCount(2);
 });
