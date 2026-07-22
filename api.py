@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing
-from src import outreach_engine, outreach_autopilot
+from src import outreach_engine, outreach_autopilot, features
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -124,6 +124,30 @@ def require_token(authorization: Optional[str] = Header(default=None)) -> str:
     if not token or not db.get_user(token):
         raise HTTPException(status_code=401, detail="Authentification requise.")
     return token
+
+
+def require_feature(token: str, name: str) -> None:
+    """Refuse l'accès si ce compte n'a pas encore la fonctionnalité (déploiement progressif).
+
+    ⚠️ À poser sur tout endpoint d'une nouveauté en bêta qui **coûte** (crédits, appels
+    Anthropic) ou qui **agit au nom du client** (envois LinkedIn). Masquer le bouton
+    côté navigateur ne protège rien : l'endpoint reste appelable par qui connaît son
+    chemin.
+
+    404 et pas 403, volontairement : pour un compte non concerné, la fonctionnalité
+    n'existe pas — inutile de lui signaler qu'il en existe une qu'il n'a pas."""
+    if not features.has_feature(db.get_user(token), name):
+        raise HTTPException(status_code=404, detail="Fonctionnalité indisponible sur ce compte.")
+
+
+@app.get("/me/features")
+def me_features(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Fonctionnalités ouvertes à ce compte — source de vérité unique pour le front.
+
+    Le front NE recalcule pas ce droit de son côté : la liste des fonctionnalités
+    sorties de bêta (`DEFAULT_FEATURES`) vit côté serveur, et la dupliquer dans le
+    navigateur la ferait diverger dès la première généralisation."""
+    return {"features": sorted(features.features_of(db.get_user(token)))}
 
 
 class AnalyzeRequest(BaseModel):
@@ -2958,8 +2982,12 @@ def _engine_state(token: str, account: dict[str, Any]) -> dict[str, Any]:
     # ligne de compte) pour que l'app affiche exactement ce que le planificateur
     # appliquera : un template vide, par exemple, y retombe sur « invitation seule ».
     settings = outreach_autopilot.settings_of(account)
+    # Déploiement progressif : les comptes qui n'ont pas encore l'autopilote ne
+    # reçoivent tout simplement pas le bloc `automation`, et le front masque la barre
+    # de lui-même (il sait déjà gérer son absence — cas de l'ancienne instance en vol).
+    autopilot_on = features.has_feature(db.get_user(token), "autopilot")
     try:
-        drafts_pending = len(db.list_outreach_drafts(token))
+        drafts_pending = len(db.list_outreach_drafts(token)) if autopilot_on else 0
     except Exception:  # noqa: BLE001 — l'affichage ne doit pas casser sur une lecture
         drafts_pending = 0
     return {
@@ -2998,7 +3026,7 @@ def _engine_state(token: str, account: dict[str, Any]) -> dict[str, Any]:
             "message_template": settings.template,
             "requires_validation": settings.requires_validation,
             "steps": outreach_autopilot.sequence_steps(settings),
-        },
+        } if autopilot_on else None,
     }
 
 
@@ -3155,6 +3183,17 @@ def me_linkedin_outreach_settings(
     _require_outreach_account(token)
     if payload.send_days is not None and not [d for d in payload.send_days if 1 <= d <= 7]:
         raise HTTPException(status_code=422, detail="Choisis au moins un jour d'envoi.")
+
+    # Déploiement progressif : les réglages de cadençage (plafond, fenêtre horaire)
+    # restent ouverts à tous, mais armer l'AUTOPILOTE demande la fonctionnalité. Le
+    # garde est ici, pas seulement sur l'affichage du bouton : cet endpoint est ce qui
+    # ferait réellement partir des invitations au nom du client.
+    touches_autopilot = any(v is not None for v in (
+        payload.auto_prospection_enabled, payload.auto_invite_tier, payload.auto_invite_daily_cap,
+        payload.auto_message_mode, payload.auto_message_template, payload.auto_message_requires_validation,
+    ))
+    if touches_autopilot:
+        require_feature(token, "autopilot")
 
     # ALE-284 — garde-fous de l'autopilote, refusés AVANT écriture plutôt que rattrapés
     # après : un réglage incohérent enregistré, c'est un client persuadé d'avoir armé
@@ -3435,12 +3474,14 @@ def me_outreach_lead_tiers(token: str = Depends(require_token)) -> dict[str, Any
 
     Choisir « uniquement mes leads verts » sans savoir si cela vise 3 personnes ou 300
     n'est pas un choix éclairé : la pop-up annonce le volume réel avant l'engagement."""
+    require_feature(token, "autopilot")
     return {"counts": db.count_leads_by_tier(token)}
 
 
 @app.get("/me/linkedin/outreach/drafts")
 def me_outreach_drafts(token: str = Depends(require_token)) -> dict[str, Any]:
     """Messages rédigés par l'autopilote, en attente de relecture."""
+    require_feature(token, "autopilot")
     return {"items": db.list_outreach_drafts(token)}
 
 
@@ -3454,6 +3495,7 @@ def me_outreach_draft_approve(
     exactement ce que le client vient de relire. Refuser un brouillon se fait par
     `DELETE /me/linkedin/outreach/queue/{id}` — c'est la même opération qu'annuler une
     action en file, et l'autopilote ne le reproposera pas."""
+    require_feature(token, "autopilot")
     _require_outreach_account(token)
     item = db.approve_outreach_draft(token, item_id, body=payload.text)
     if not item:

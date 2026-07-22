@@ -90,15 +90,37 @@ _USER_CACHE_TTL = 60.0
 _USER_CACHE_MAX = 1000
 
 
+def _copy_user(entry: dict) -> dict:
+    """Copie défensive d'une entrée du cache.
+
+    `dict(entry)` ne copierait que le premier niveau : `app_metadata` resterait partagé
+    par référence avec le cache, qui est global au process. Un appelant qui le modifierait
+    (même par accident) altérerait les droits vus par TOUS les appels suivants sur ce
+    jeton — y compris les feature flags."""
+    copied = dict(entry)
+    meta = copied.get("app_metadata")
+    copied["app_metadata"] = dict(meta) if isinstance(meta, dict) else {}
+    return copied
+
+
 def get_user(access_token: str) -> dict | None:
-    """Validate a JWT and return the matching user, or None if invalid."""
+    """Validate a JWT and return the matching user, or None if invalid.
+
+    Inclut `app_metadata` : c'est là que vivent le rôle (`ideas_only`) et les feature
+    flags (`src/features.py`). Écrivable uniquement par la clé service-role — un client
+    ne peut donc pas s'octroyer un droit en modifiant son propre profil.
+
+    ⚠️ Conséquence du cache ci-dessus : poser ou retirer un flag met jusqu'à
+    `_USER_CACHE_TTL` secondes à être pris en compte côté serveur. Acceptable pour un
+    déploiement progressif, à connaître si un test « je ne vois toujours rien » suit
+    de quelques secondes une modification d'`app_metadata`."""
     if not supabase_enabled():
         return None
     now = time.monotonic()
     with _USER_CACHE_LOCK:
         hit = _USER_CACHE.get(access_token)
         if hit and now - hit[0] < _USER_CACHE_TTL:
-            return dict(hit[1])
+            return _copy_user(hit[1])
     try:
         client = create_client(_url(), _anon_key())  # type: ignore[arg-type]
         resp = client.auth.get_user(access_token)
@@ -107,7 +129,12 @@ def get_user(access_token: str) -> dict | None:
     user = getattr(resp, "user", None)
     if not user:
         return None
-    entry = {"id": user.id, "email": getattr(user, "email", None)}
+    raw_meta = getattr(user, "app_metadata", None)
+    entry = {
+        "id": user.id,
+        "email": getattr(user, "email", None),
+        "app_metadata": dict(raw_meta) if isinstance(raw_meta, dict) else {},
+    }
     with _USER_CACHE_LOCK:
         if len(_USER_CACHE) >= _USER_CACHE_MAX:
             for key in [k for k, (ts, _) in _USER_CACHE.items() if now - ts >= _USER_CACHE_TTL]:
@@ -115,7 +142,7 @@ def get_user(access_token: str) -> dict | None:
             if len(_USER_CACHE) >= _USER_CACHE_MAX:
                 _USER_CACHE.clear()
         _USER_CACHE[access_token] = (now, entry)
-    return dict(entry)
+    return _copy_user(entry)
 
 
 def _influencer_row(user_id: str, result: dict, platform: str = "linkedin") -> dict:
@@ -5470,6 +5497,30 @@ def admin_list_leads_awaiting_acceptance(user_id: str, *, limit: int = 100) -> l
 # filtre manquant ferait inviter les leads du client A depuis le compte LinkedIn du
 # client B, sans la moindre erreur visible.
 # --------------------------------------------------------------------------- #
+
+
+def admin_user_app_metadata(user_id: str) -> dict | None:
+    """`app_metadata` de CE compte, lu en service-role (rôle + feature flags).
+
+    Le cron n'a aucun jeton : il ne peut pas passer par `get_user(token)`. Sert au
+    planificateur de l'autopilote à vérifier que le compte a toujours la fonctionnalité
+    — sans ça, retirer le flag à quelqu'un ne couperait pas son autopilote déjà armé.
+
+    Retourne **None** (et pas `{}`) si la lecture échoue : l'appelant doit pouvoir
+    distinguer « ce compte n'a aucun flag » de « je n'ai pas réussi à savoir », et
+    fermer dans le second cas."""
+    if not admin_enabled() or not user_id:
+        return None
+    try:
+        resp = admin_client().auth.admin.get_user_by_id(user_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[features] lecture d'app_metadata échouée ({user_id}) : {exc}", flush=True)
+        return None
+    user = getattr(resp, "user", None)
+    if not user:
+        return None
+    meta = getattr(user, "app_metadata", None)
+    return dict(meta) if isinstance(meta, dict) else {}
 
 
 def admin_get_lead_targeting(user_id: str) -> dict | None:

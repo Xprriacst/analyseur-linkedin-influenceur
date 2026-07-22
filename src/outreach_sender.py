@@ -25,7 +25,7 @@ import datetime
 import logging
 from typing import Any
 
-from src import db, llm, outreach_autopilot as autopilot, outreach_engine as engine, unipile
+from src import db, features, llm, outreach_autopilot as autopilot, outreach_engine as engine, unipile
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -302,6 +302,21 @@ def plan_account(account: dict[str, Any]) -> int:
     settings = autopilot.settings_of(account)
     if not settings.enabled:
         return 0
+
+    # Déploiement progressif : le compte doit TOUJOURS avoir la fonctionnalité. Sans ce
+    # contrôle, retirer le flag à quelqu'un ne couperait pas l'autopilote qu'il a déjà
+    # armé — le flag ne serait qu'un masque d'affichage, pas un interrupteur.
+    #
+    # Fail CLOSED : si on n'arrive pas à lire ses droits, on ne planifie rien à ce
+    # passage. Sauter un tour est sans conséquence (le suivant est dans 10 min) ;
+    # déposer des invitations pour un compte dont on ignore les droits, non.
+    meta = db.admin_user_app_metadata(user_id)
+    if meta is None:
+        logger.warning(f"[{user_id}] droits illisibles — autopilote ignoré à ce passage.")
+        return 0
+    if not features.has_feature({"app_metadata": meta}, "autopilot"):
+        return 0
+
     if engine.freeze_active(_now(), account):
         return 0
 

@@ -47,7 +47,18 @@ const OFF = {
   ],
 };
 
-async function mockProspecting(page: import("@playwright/test").Page, automation: Record<string, unknown>) {
+async function mockProspecting(
+  page: import("@playwright/test").Page,
+  automation: Record<string, unknown>,
+  featureOn = true,
+) {
+  // Déploiement progressif : sans le flag, l'app ne doit rien montrer de l'autopilote.
+  await page.route("**/me/features", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ features: featureOn ? ["autopilot"] : [] }),
+    })
+  );
   await page.route("**/me/linkedin/outreach/status", (route) =>
     route.fulfill({
       contentType: "application/json",
@@ -176,4 +187,18 @@ test("les messages à valider s'affichent et rien ne part sans le feu vert", asy
   // Le texte est éditable avant validation : ce qui part est ce qui est à l'écran.
   await expect(page.getByRole("button", { name: /Valider l'envoi/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /Ne pas envoyer/i })).toBeVisible();
+});
+
+test("un compte sans le flag ne voit rien de l'autopilote", async ({ page }) => {
+  // Même état serveur qu'un compte équipé — seul le flag change. C'est le test qui
+  // vérifie que le déploiement progressif tient : si le bouton apparaissait ici, la
+  // nouveauté serait en fait ouverte à tout le monde.
+  await mockProspecting(page, { ...OFF, enabled: true }, false);
+  await gotoTab(page, "Prospection");
+
+  // La page elle-même s'affiche normalement…
+  await expect(page.getByRole("heading", { name: /^Prospection$/i })).toBeVisible();
+  // …mais rien de l'autopilote.
+  await expect(page.getByRole("button", { name: /autopilote/i })).toHaveCount(0);
+  await expect(page.getByRole("list", { name: /Étapes de ton autopilote/i })).toHaveCount(0);
 });
