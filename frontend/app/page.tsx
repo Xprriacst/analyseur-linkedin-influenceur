@@ -1296,6 +1296,8 @@ function Sidebar({
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedPreferenceLoaded, setCollapsedPreferenceLoaded] = useState(false);
   const billing = useBilling(isAuthed);
+  // ALE-59 : les entrées réseau de la nav dépendent des feature flags du compte.
+  const featureFlags = useFeatures(isAuthed);
   // ALE-246 : ouverture par réseau, découplée du réseau actif → LinkedIn et
   // Instagram peuvent rester déployés en même temps (fin de l'accordéon).
   const [openNets, setOpenNets] = useState<Record<Platform, boolean>>(() => ({
@@ -1379,16 +1381,21 @@ function Sidebar({
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {!restricted && (() => {
         // `soon` : réseau visible mais grisé (pas encore ouvert aux clients).
-        // ALE-59 : Instagram dégrisé (Contenu IG + analyses existent et sont
-        // câblés) ; X et Reddit apparaissent grisés « Bientôt » — leur
-        // PUBLICATION passe déjà par la pop-up multi-réseaux des posts
-        // LinkedIn, c'est l'onglet réseau (analyse/contenu dédiés) qui reste
-        // à construire (ALE-60/76…).
+        // ALE-59 + feature flags : Instagram ne se dégrise (et X/Reddit
+        // n'apparaissent, grisés « Bientôt ») que pour les comptes porteurs du
+        // flag correspondant — déploiement progressif, fail closed pendant le
+        // chargement. La PUBLICATION X/Reddit passe par la pop-up multi-réseaux
+        // (elle aussi gardée par flag) ; l'onglet réseau dédié reste à
+        // construire (ALE-60/76…).
         const networks: { key: Platform | "x" | "reddit"; label: string; icon: React.ReactNode; soon?: boolean }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
-          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
-          { key: "x", label: "X", icon: <XLogo size={14} />, soon: true },
-          { key: "reddit", label: "Reddit", icon: <RedditLogo size={14} />, soon: true },
+          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} />, soon: !featureFlags.has("instagram") },
+          ...(featureFlags.has("x")
+            ? [{ key: "x" as const, label: "X", icon: <XLogo size={14} />, soon: true }]
+            : []),
+          ...(featureFlags.has("reddit")
+            ? [{ key: "reddit" as const, label: "Reddit", icon: <RedditLogo size={14} />, soon: true }]
+            : []),
         ];
         // ALE-257 : « Veille » retirée — l'analyse (profils, classement, tendances,
         // monitoring) vit désormais dans « Contenu » › sous-onglet « Analyses ».
@@ -9509,6 +9516,8 @@ function ProfileView({
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
   const reddit = useReddit(isAuthed);
+  // ALE-59 : la ligne Reddit de Connexions n'existe que pour un compte flaggé.
+  const featureFlags = useFeatures(isAuthed);
   const slack = useSlack(isAuthed);
   const outreach = useLinkedInOutreach(isAuthed);
   const manychat = useManychat(isAuthed);
@@ -9948,7 +9957,7 @@ function ProfileView({
           />
           {twitter.error ? <div className="error" style={{ marginBottom: 12 }}>{twitter.error}</div> : null}
 
-          <SettingRow
+          {featureFlags.has("reddit") && <SettingRow
             icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="#ff4500" style={{ flexShrink: 0 }}><path d="M22 12.06c0-1.22-.99-2.2-2.2-2.2-.6 0-1.13.24-1.53.62-1.5-1.08-3.57-1.78-5.87-1.86l1-4.71 3.27.7a1.58 1.58 0 1 0 .16-.78l-3.65-.78a.4.4 0 0 0-.47.31l-1.12 5.25c-2.34.07-4.44.77-5.96 1.87-.4-.38-.93-.62-1.53-.62-1.21 0-2.2.98-2.2 2.2 0 .9.53 1.66 1.3 2-.03.22-.05.44-.05.67 0 3.39 3.95 6.14 8.82 6.14s8.82-2.75 8.82-6.14c0-.22-.02-.45-.05-.66.77-.35 1.31-1.12 1.31-2.01zM6.7 13.62c0-.87.71-1.58 1.58-1.58s1.58.71 1.58 1.58-.71 1.58-1.58 1.58-1.58-.71-1.58-1.58zm8.85 4.17c-1.08 1.08-3.15 1.16-3.76 1.16s-2.68-.08-3.75-1.16a.41.41 0 0 1 .58-.58c.68.68 2.13.92 3.17.92s2.5-.24 3.18-.92a.41.41 0 1 1 .58.58zm-.28-2.59c-.87 0-1.58-.71-1.58-1.58s.71-1.58 1.58-1.58 1.58.71 1.58 1.58-.71 1.58-1.58 1.58z"/></svg>}
             name="Reddit"
             why="Adapter et publier tes posts sur les subreddits de ton métier"
@@ -9962,8 +9971,8 @@ function ProfileView({
                 </button>
               )
             }
-          />
-          {reddit.error ? <div className="error" style={{ marginBottom: 12 }}>{reddit.error}</div> : null}
+          />}
+          {featureFlags.has("reddit") && reddit.error ? <div className="error" style={{ marginBottom: 12 }}>{reddit.error}</div> : null}
 
           <ManychatConnect
             manychat={manychat}

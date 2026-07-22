@@ -38,7 +38,10 @@ from typing import Any, Iterable
 # contre les fautes de frappe : un flag inconnu posé sur un compte n'ouvrirait rien
 # et personne ne s'en apercevrait avant que le testeur se plaigne de ne rien voir.
 KNOWN_FEATURES: frozenset[str] = frozenset({
-    "autopilot",  # ALE-284 — autopilote de prospection (invitation + 1er message)
+    "autopilot",   # ALE-284 — autopilote de prospection (invitation + 1er message)
+    "instagram",   # ALE-59 — onglet Instagram dégrisé dans la sidebar (Contenu IG)
+    "x",           # ALE-59 — publication X depuis la pop-up multi-réseaux (adaptation IA, threads)
+    "reddit",      # ALE-59 — publication Reddit (connexion, adaptation IA, subreddits)
 })
 
 # Fonctionnalités SORTIES de bêta : ouvertes à tous les comptes, sans rien poser.

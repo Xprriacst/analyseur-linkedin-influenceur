@@ -39,8 +39,13 @@ const REDDIT_ADAPTATION = {
   ],
 };
 
-/** Mocks communs : un post sauvegardé + tous les réseaux connectés. */
-async function mockBase(page: Page, { xConnected = true, redditConnected = true } = {}) {
+/** Mocks communs : un post sauvegardé + tous les réseaux connectés.
+ *  Les feature flags viennent du serveur (déploiement progressif) : par défaut
+ *  on mocke un compte flaggé ; `features: []` simule un compte non concerné. */
+async function mockBase(page: Page, { xConnected = true, redditConnected = true, features = ["instagram", "x", "reddit"] as string[] } = {}) {
+  await page.route("**/me/features", (route) =>
+    route.fulfill({ contentType: "application/json", body: JSON.stringify({ features }) })
+  );
   await page.route("**/me/generated-posts", (route) => {
     if (route.request().method() === "GET") {
       return route.fulfill({ contentType: "application/json", body: JSON.stringify([SAVED_POST]) });
@@ -65,15 +70,17 @@ async function mockBase(page: Page, { xConnected = true, redditConnected = true 
 }
 
 /** Ouvre la pop-up Publier sur le post mocké de Ma bibliothèque. */
-async function openPublishModal(page: Page) {
+async function openPublishModal(page: Page, { expectPanels = true } = {}) {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Ma bibliothèque");
   await page.getByRole("button", { name: /Ouvrir « Post LinkedIn de test ALE-59/ }).click();
   const bar = page.locator(".post-actions-bar").first();
   await bar.getByRole("button", { name: /Publier/ }).click();
   await page.locator(".action-menu").getByRole("menuitem", { name: /Publier maintenant sur LinkedIn/ }).click();
-  // La pop-up de confirmation porte la rangée de logos multi-réseaux.
-  await expect(page.getByTestId("cross-network-panels")).toBeVisible();
+  // La pop-up de confirmation porte la rangée de logos multi-réseaux — pour un
+  // compte flaggé seulement.
+  if (expectPanels) await expect(page.getByTestId("cross-network-panels")).toBeVisible();
+  else await expect(page.getByRole("button", { name: /Confirmer la publication/ })).toBeVisible();
 }
 
 test("publier sur 3 réseaux : adaptation empilée, puis les 3 versions partent au serveur", async ({ page }) => {
@@ -152,6 +159,21 @@ test("programmer : les versions X/Reddit voyagent dans cross_posts avec le post"
   await expect.poll(() => schedulePayload).not.toBeNull();
   expect(schedulePayload.cross_posts?.x?.tweets).toEqual(X_ADAPTATION.tweets);
   expect(schedulePayload.cross_posts?.reddit).toBeUndefined();
+});
+
+test("compte SANS flags : rien de multi-réseaux ne s'affiche (même état serveur)", async ({ page }) => {
+  // Même post, mêmes statuts connectés — seul le flag change. Un compte non
+  // concerné ne doit voir NI la rangée de logos dans la pop-up, NI les entrées
+  // X/Reddit de la sidebar, et Instagram doit rester grisé « Bientôt ».
+  await mockBase(page, { features: [] });
+  await page.goto("/");
+  await expect(page.locator(".nav-item", { hasText: "Instagram" }).first()).toBeDisabled();
+  await expect(page.getByRole("button", { name: "X Bientôt" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Reddit Bientôt" })).toHaveCount(0);
+  await openPublishModal(page, { expectPanels: false });
+  await expect(page.getByTestId("cross-network-panels")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Publier aussi sur X" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Confirmer la publication/ })).toBeVisible();
 });
 
 test("sidebar : X et Reddit grisés « Bientôt », Instagram dégrisé et dépliable", async ({ page }) => {

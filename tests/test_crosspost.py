@@ -192,7 +192,17 @@ class ZernioCrossPostPayloadTest(unittest.TestCase):
 
 
 class SchedulerCrossPublishTest(unittest.TestCase):
-    """Le cron publie les versions X/Reddit et consigne le résultat par réseau."""
+    """Le cron publie les versions X/Reddit et consigne le résultat par réseau.
+
+    Les droits (feature flags) sont mockés « accordés » par défaut — leur
+    absence est testée séparément (fail closed)."""
+
+    def setUp(self):
+        from src import scheduler
+
+        patcher = mock.patch.object(scheduler, "_user_features", return_value={"x", "reddit"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _post(self, **overrides):
         base = {
@@ -254,6 +264,31 @@ class SchedulerCrossPublishTest(unittest.TestCase):
 
         with mock.patch.object(scheduler.zernio, "create_post") as create_post:
             result = scheduler.publish_cross_posts(self._post(zernio_x_account_id=None, zernio_reddit_account_id=None))
+
+        create_post.assert_not_called()
+        self.assertEqual(result["x"]["status"], "failed")
+        self.assertEqual(result["reddit"]["status"], "failed")
+
+    def test_missing_feature_flag_fails_closed_without_publishing(self):
+        # Retirer le flag à un compte doit aussi couper ses versions déjà
+        # programmées — sinon le flag ne serait qu'un masque d'affichage.
+        from src import scheduler
+
+        with mock.patch.object(scheduler, "_user_features", return_value=set()), \
+             mock.patch.object(scheduler.zernio, "create_post") as create_post:
+            result = scheduler.publish_cross_posts(self._post())
+
+        create_post.assert_not_called()
+        self.assertEqual(result["x"]["status"], "failed")
+        self.assertEqual(result["reddit"]["status"], "failed")
+        self.assertIn("non activée", result["x"]["error"])
+
+    def test_unreadable_rights_fail_closed_too(self):
+        from src import scheduler
+
+        with mock.patch.object(scheduler, "_user_features", return_value=None), \
+             mock.patch.object(scheduler.zernio, "create_post") as create_post:
+            result = scheduler.publish_cross_posts(self._post())
 
         create_post.assert_not_called()
         self.assertEqual(result["x"]["status"], "failed")
