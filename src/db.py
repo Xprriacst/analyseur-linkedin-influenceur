@@ -616,6 +616,27 @@ def set_zernio_x_account(access_token: str, account_id: str | None) -> dict | No
     return resp.data[0] if resp.data else None
 
 
+def set_zernio_reddit_account(access_token: str, account_id: str | None) -> dict | None:
+    """Persist (or clear) the connected Reddit account id for this user (ALE-59)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    row = {
+        "user_id": user["id"],
+        "zernio_reddit_account_id": account_id,
+        "zernio_reddit_connected_at": now if account_id else None,
+        "updated_at": now,
+    }
+    resp = (
+        db.table("user_editorial_profiles")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def get_user_ai_context(access_token: str | None) -> dict[str, Any] | None:
     """Compact profile context consumed by LLM prompts.
 
@@ -916,6 +937,8 @@ CREDIT_COSTS: dict[str, int] = {
     "chat": 2,             # par message
     "generate_image": 5,
     "collect_leads": 1,    # par crédit ; le nb débité = nb de commentateurs / N (ALE-239)
+    "adapt_x": 2,          # adaptation IA d'un post pour X (ALE-59)
+    "adapt_reddit": 3,     # adaptation IA d'un post pour Reddit + suggestion subreddits (ALE-59)
 }
 
 
@@ -2681,6 +2704,7 @@ def create_scheduled_post(
     scheduled_at_iso: str,
     media_items: list[dict[str, Any]] | None = None,
     require_slack: bool = True,
+    cross_posts: dict[str, Any] | None = None,
 ) -> dict | None:
     """Store a scheduled LinkedIn post (with optional images).
 
@@ -2702,6 +2726,7 @@ def create_scheduled_post(
             "post_text": post_text,
             "scheduled_at": scheduled_at_iso,
             "media_items": media_items or [],
+            "cross_posts": cross_posts or {},
             "slack_status": "pending" if require_slack else "validated",
         })
         .execute()
@@ -2733,7 +2758,7 @@ def list_scheduled_posts(access_token: str, limit: int = 50) -> list[dict]:
     db = client_for_token(access_token)
     resp = (
         db.table("scheduled_posts")
-        .select("id, post_text, scheduled_at, status, slack_status, slack_message_ts, zernio_post_id, error_message, media_items, created_at")
+        .select("id, post_text, scheduled_at, status, slack_status, slack_message_ts, zernio_post_id, error_message, media_items, cross_posts, created_at")
         .order("scheduled_at", desc=False)
         .limit(max(1, min(limit, 200)))
         .execute()
@@ -3129,7 +3154,7 @@ def get_due_scheduled_posts() -> list[dict]:
     admin = admin_client()
     resp = (
         admin.table("scheduled_posts")
-        .select("id, user_id, post_text, media_items")
+        .select("id, user_id, post_text, media_items, cross_posts")
         .eq("status", "pending")
         .eq("slack_status", "validated")
         .lte("scheduled_at", "now()")
@@ -3142,18 +3167,21 @@ def get_due_scheduled_posts() -> list[dict]:
     user_ids = list({p["user_id"] for p in posts})
     prof = (
         admin.table("user_editorial_profiles")
-        .select("user_id, zernio_account_id")
+        .select("user_id, zernio_account_id, zernio_x_account_id, zernio_reddit_account_id")
         .in_("user_id", user_ids)
         .execute()
     )
-    account_by_user = {r["user_id"]: r.get("zernio_account_id") for r in (prof.data or [])}
+    accounts_by_user = {r["user_id"]: r for r in (prof.data or [])}
     return [
         {
             "id": p["id"],
             "user_id": p["user_id"],
             "post_text": p["post_text"],
             "media_items": p.get("media_items") or [],
-            "zernio_account_id": account_by_user.get(p["user_id"]),
+            "cross_posts": p.get("cross_posts") or {},
+            "zernio_account_id": (accounts_by_user.get(p["user_id"]) or {}).get("zernio_account_id"),
+            "zernio_x_account_id": (accounts_by_user.get(p["user_id"]) or {}).get("zernio_x_account_id"),
+            "zernio_reddit_account_id": (accounts_by_user.get(p["user_id"]) or {}).get("zernio_reddit_account_id"),
         }
         for p in posts
     ]
@@ -3165,8 +3193,12 @@ def update_scheduled_post_status(
     *,
     zernio_post_id: str | None = None,
     error: str | None = None,
+    cross_posts: dict[str, Any] | None = None,
 ) -> None:
-    """Update publication status for a scheduled post (service-role, for cron)."""
+    """Update publication status for a scheduled post (service-role, for cron).
+
+    `cross_posts` (ALE-59) : versions X/Reddit enrichies du résultat de leur
+    publication (status/erreur par réseau), réécrites en bloc."""
     if not admin_enabled():
         return
     admin = admin_client()
@@ -3175,6 +3207,8 @@ def update_scheduled_post_status(
         payload["zernio_post_id"] = zernio_post_id
     if error is not None:
         payload["error_message"] = error[:500]
+    if cross_posts is not None:
+        payload["cross_posts"] = cross_posts
     admin.table("scheduled_posts").update(payload).eq("id", post_id).execute()
 
 

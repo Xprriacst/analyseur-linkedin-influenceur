@@ -11,10 +11,80 @@ from __future__ import annotations
 
 import logging
 
-from src import db, zernio
+from src import crosspost, db, zernio
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def publish_cross_posts(post: dict) -> dict:
+    """Publie les versions X/Reddit stockées avec un post programmé (ALE-59).
+
+    Appelé APRÈS le succès de la publication LinkedIn (si LinkedIn échoue, le
+    post reste `failed` et rien d'autre ne part : un retry ne risque pas de
+    dupliquer les versions annexes). Best-effort réseau par réseau : le résultat
+    (status / erreur / id Zernio) est consigné DANS `cross_posts` — un échec X
+    n'empêche ni Reddit ni le statut `published` du post LinkedIn.
+    """
+    cross = dict(post.get("cross_posts") or {})
+
+    x_version = cross.get("x") if isinstance(cross.get("x"), dict) else None
+    if x_version:
+        entry = dict(x_version)
+        tweets = [t for t in (entry.get("tweets") or []) if isinstance(t, str) and t.strip()]
+        account_id = post.get("zernio_x_account_id")
+        if not account_id:
+            entry.update({"status": "failed", "error": "Compte X non connecté."})
+        elif not tweets:
+            entry.update({"status": "failed", "error": "Version X vide."})
+        else:
+            psd = {"threadItems": [{"content": t} for t in tweets]} if len(tweets) > 1 else None
+            try:
+                result = zernio.create_post(
+                    tweets[0] if len(tweets) == 1 else "\n\n".join(tweets),
+                    account_id,
+                    publish_now=True,
+                    platform="x",
+                    platform_specific_data=psd,
+                )
+                z_post = result.get("post") or result
+                entry.update({"status": "published", "zernio_post_id": z_post.get("_id")})
+            except Exception as exc:
+                logger.error(f"Post {post['id']} : publication X échouée : {exc}")
+                entry.update({"status": "failed", "error": str(exc)[:500]})
+        cross["x"] = entry
+
+    reddit_version = cross.get("reddit") if isinstance(cross.get("reddit"), dict) else None
+    if reddit_version:
+        entry = dict(reddit_version)
+        account_id = post.get("zernio_reddit_account_id")
+        subreddit = crosspost.normalize_subreddit_name(entry.get("subreddit"))
+        if not account_id:
+            entry.update({"status": "failed", "error": "Compte Reddit non connecté."})
+        elif not subreddit or not (entry.get("body") or "").strip() or not (entry.get("title") or "").strip():
+            entry.update({"status": "failed", "error": "Version Reddit incomplète."})
+        else:
+            psd = {"subreddit": subreddit, "title": str(entry["title"]).strip()[:crosspost.REDDIT_TITLE_MAX]}
+            if entry.get("flair_id"):
+                psd["flairId"] = entry["flair_id"]
+            elif entry.get("flair_text"):
+                psd["flairText"] = entry["flair_text"]
+            try:
+                result = zernio.create_post(
+                    str(entry["body"]).strip(),
+                    account_id,
+                    publish_now=True,
+                    platform="reddit",
+                    platform_specific_data=psd,
+                )
+                z_post = result.get("post") or result
+                entry.update({"status": "published", "zernio_post_id": z_post.get("_id")})
+            except Exception as exc:
+                logger.error(f"Post {post['id']} : publication Reddit échouée : {exc}")
+                entry.update({"status": "failed", "error": str(exc)[:500]})
+        cross["reddit"] = entry
+
+    return cross
 
 
 def run() -> None:
@@ -49,8 +119,18 @@ def run() -> None:
                 media_items=media_items,
             )
             z_post = result.get("post") or result
+            # ALE-59 : versions X/Reddit publiées ensemble, après le succès
+            # LinkedIn (résultats par réseau consignés dans cross_posts). Un
+            # imprévu ici ne doit jamais faire passer en `failed` un post déjà
+            # publié sur LinkedIn (aucun retry ne doit pouvoir le dupliquer).
+            cross_results = None
+            if post.get("cross_posts"):
+                try:
+                    cross_results = publish_cross_posts(post)
+                except Exception as cross_exc:
+                    logger.error(f"Post {post_id} : publication multi-réseaux échouée : {cross_exc}")
             db.update_scheduled_post_status(
-                post_id, "published", zernio_post_id=z_post.get("_id")
+                post_id, "published", zernio_post_id=z_post.get("_id"), cross_posts=cross_results
             )
             logger.info(f"Post {post_id} publié (user {user_id}, zernio_id={z_post.get('_id')}).")
         except Exception as exc:
