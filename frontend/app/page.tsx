@@ -57,6 +57,13 @@ import AuthModal, { type AuthMode } from "./components/AuthModal";
 import OnboardingScreen from "./components/Onboarding";
 import PostActionsBar, { type PostAction } from "./components/PostActionsBar";
 import PublishConfirmModal from "./components/PublishConfirmModal";
+// ALE-284 — les types de l'autopilote sont définis avec le composant qui les rend, et
+// importés ici : les redéclarer dans ce fichier les ferait diverger à la première
+// évolution du contrat serveur.
+import AutopilotModal, {
+  AutopilotDrafts, AutopilotSequence,
+  type AutopilotState, type LeadTierCounts,
+} from "./components/AutopilotModal";
 import { authHeaders, supabase } from "./lib/supabase";
 
 const API_URL = "/api";
@@ -2396,6 +2403,10 @@ type OutreachEngine = {
   immediate_left: number;        // soupape « envoyer maintenant » restante sur 24 h
   immediate_cap: number;
   window: { timezone: string; hour_start: number; hour_end: number; days: number[] };
+  drafts_pending?: number;       // messages de l'autopilote en attente de relecture
+  // ALE-284 — état de l'autopilote. Optionnel : absent tant que le backend qui l'expose
+  // n'est pas déployé (ancienne instance Render encore en vol pendant un basculement).
+  automation?: AutopilotState;
 };
 
 type OutreachQueueItem = {
@@ -2403,8 +2414,13 @@ type OutreachQueueItem = {
   lead_id: string;
   action_type: "invite" | "message";
   body?: string | null;
+  status?: string | null;
+  origin?: "manual" | "autopilot" | null;
   not_before: string;
   created_at?: string | null;
+  // Joint côté serveur sur les brouillons : on ne fait jamais relire un message sans
+  // dire à qui il est destiné.
+  leads?: { id: string; name?: string | null; headline?: string | null; profile_url?: string | null; score?: number | null; score_reason?: string | null } | null;
 };
 
 type OutreachStatus = {
@@ -2453,6 +2469,7 @@ function formatAgo(iso?: string | null): string {
 function useLinkedInOutreach(isAuthed: boolean) {
   const [status, setStatus] = useState<OutreachStatus | null>(null);
   const [queue, setQueue] = useState<OutreachQueueItem[]>([]);
+  const [drafts, setDrafts] = useState<OutreachQueueItem[]>([]);  // ALE-284
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -2501,8 +2518,11 @@ function useLinkedInOutreach(isAuthed: boolean) {
     finally { setBusy(false); }
   }
 
-  /** Plafond quotidien + fenêtre d'envoi du moteur (fuseau, heures, jours). */
-  async function saveSettings(patch: Record<string, unknown>) {
+  /** Plafond quotidien, fenêtre d'envoi du moteur, et réglages de l'autopilote.
+   *  Retourne `true` si l'enregistrement a abouti : la pop-up d'autopilote ne doit se
+   *  fermer que dans ce cas, sinon le client repartirait convaincu d'avoir armé une
+   *  séquence que le serveur a refusée. */
+  async function saveSettings(patch: Record<string, unknown>): Promise<boolean> {
     setError(""); setBusy(true);
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/settings`, {
@@ -2513,8 +2533,52 @@ function useLinkedInOutreach(isAuthed: boolean) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Enregistrement impossible");
       setStatus(data);
-    } catch (err: any) { setError(err.message); }
+      return true;
+    } catch (err: any) { setError(err.message); return false; }
     finally { setBusy(false); }
+  }
+
+  // ── ALE-284 — brouillons de l'autopilote (messages en attente de relecture) ──
+
+  const reloadDrafts = useCallback(async () => {
+    if (!isAuthed) { setDrafts([]); return; }
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/drafts`, { headers: await authHeaders() });
+      if (res.ok) { const data = await res.json(); setDrafts(data.items || []); }
+    } catch { /* non bloquant */ }
+  }, [isAuthed]);
+
+  /** Valide un brouillon avec le texte réellement affiché à l'écran : ce qui partira
+   *  est exactement ce que le client vient de relire. */
+  async function approveDraft(itemId: string, text: string): Promise<boolean> {
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/drafts/${itemId}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Validation impossible");
+      setDrafts(data.items || []);
+      void reload();
+      return true;
+    } catch (err: any) { setError(err.message); return false; }
+  }
+
+  /** Refuser un brouillon = l'annuler. L'autopilote ne le reproposera pas : sans ça,
+   *  le « non » du client ne vaudrait rien et le message reviendrait au passage suivant. */
+  async function rejectDraft(itemId: string): Promise<boolean> {
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/queue/${itemId}`, {
+        method: "DELETE", headers: await authHeaders(),
+      });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.detail || "Suppression impossible"); }
+      setDrafts((list) => list.filter((d) => d.id !== itemId));
+      void reload();
+      return true;
+    } catch (err: any) { setError(err.message); return false; }
   }
 
   /** Retire une action de la file, tant qu'elle n'est pas partie. */
@@ -2532,7 +2596,11 @@ function useLinkedInOutreach(isAuthed: boolean) {
     } catch (err: any) { setError(err.message); return false; }
   }
 
-  return { status, queue, busy, error, reload, reloadQueue, connect, disconnect, saveSettings, cancelQueued, setStatus, setQueue };
+  return {
+    status, queue, busy, error, reload, reloadQueue, connect, disconnect, saveSettings,
+    cancelQueued, setStatus, setQueue,
+    drafts, reloadDrafts, approveDraft, rejectDraft,  // ALE-284
+  };
 }
 
 type XStatus = {
@@ -7563,6 +7631,7 @@ function UnipileOutreachConnect({
   const connected = !!st?.connected;
   const q = st?.quota;
   const eng = st?.engine;
+  const auto = eng?.automation;
 
   useEffect(() => { if (q?.daily_cap) setCapDraft(q.daily_cap); }, [q?.daily_cap]);
   useEffect(() => {
@@ -7721,6 +7790,19 @@ function UnipileOutreachConnect({
               dimanche, c&apos;est le signal le plus facile à repérer pour LinkedIn.
             </p>
           </div>
+
+          {/* ALE-284 — l'autopilote se règle depuis l'onglet Prospection (bouton
+              « Autopilote »), pas ici. Deux surfaces pour le même réglage finiraient par
+              se contredire à l'écran — c'est exactement le piège d'état dupliqué déjà
+              rencontré sur ManyChat. On garde seulement le renvoi, pour la découvrabilité. */}
+          {auto && (
+            <p style={{ fontSize: 12.5, color: "var(--muted)", margin: "12px 0 0", paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+              <strong style={{ color: "var(--fg)" }}>Autopilote {auto.enabled ? "actif" : "inactif"}.</strong>{" "}
+              L&apos;envoi automatique des demandes de connexion et des premiers messages se règle
+              depuis l&apos;onglet Prospection, avec le bouton « Autopilote ».
+            </p>
+          )}
+
           <LearnedRulesEditor isAuthed={connected} active={open} channel="linkedin" />
           </>
         )}
@@ -11571,6 +11653,10 @@ function ProspectingView({
   const [composeOpen, setComposeOpen] = useState(false);
   const [messageText, setMessageText] = useState("");
   const [skipReason, setSkipReason] = useState(""); // ALE-243 : raison « ne pas contacter »
+  // ALE-284 — autopilote : pop-up de réglage + volumes annoncés par palier.
+  const [autopilotOpen, setAutopilotOpen] = useState(false);
+  const [tierCounts, setTierCounts] = useState<LeadTierCounts | null>(null);
+  const automation = outreach.status?.engine?.automation;
 
   // Réinitialise le bloc d'envoi quand on change de lead sélectionné.
   useEffect(() => {
@@ -11735,6 +11821,27 @@ function ProspectingView({
     };
   }, [isAuthed]);
 
+  // ALE-284 — volumes par palier (ce que la pop-up annonce avant l'engagement) et
+  // messages en attente de relecture.
+  //
+  // ⚠️ Effet SÉPARÉ, et pas une suite de l'effet ci-dessus : y enchaîner ces deux
+  // lectures les mettrait derrière le chargement du ciblage. Un ciblage lent (réveil à
+  // froid du backend, ~90 s) retarderait alors l'affichage des messages à valider —
+  // autrement dit, du travail qui attend le client serait invisible pendant une minute
+  // et demie sans que rien ne l'indique.
+  useEffect(() => {
+    if (!isAuthed) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/lead-tiers`, { headers: await authHeaders() });
+        if (res.ok) { const data = await res.json(); if (!cancelled) setTierCounts(data.counts || null); }
+      } catch { /* non bloquant */ }
+      if (!cancelled) void outreach.reloadDrafts();
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthed]);
+
   const saveTargeting = async () => {
     if (!targeting) return;
     setSavingTarget(true);
@@ -11891,6 +11998,41 @@ function ProspectingView({
           )}
         </div>
       )}
+
+      {/* ALE-284 — Autopilote : le bouton, et à sa droite le schéma de la séquence
+          réellement active. Le schéma n'est pas décoratif — c'est le rappel permanent
+          de « qu'est-ce que mon autopilote fait, là, maintenant » : les étapes que le
+          client n'a pas voulues y restent visibles, mais grisées. Il vient du serveur,
+          jamais reconstruit ici (voir AutopilotSequence). */}
+      {lnConnected && automation && (
+        <div className="card" style={{ marginBottom: 16, padding: "14px 16px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className={automation.enabled ? "secondary-button" : "primary-button"}
+            onClick={() => setAutopilotOpen(true)}
+            style={{ flexShrink: 0 }}
+          >
+            <Zap size={14} /> {automation.enabled ? "Autopilote actif" : "Activer l'autopilote"}
+          </button>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <AutopilotSequence steps={automation.steps} enabled={automation.enabled} />
+          </div>
+          {!automation.enabled && (
+            <p style={{ margin: 0, fontSize: 12.5, color: "var(--muted)", flexBasis: "100%" }}>
+              Aujourd&apos;hui tu cliques « Inviter » sur chaque lead, puis tu écris à ceux qui acceptent.
+              L&apos;autopilote enchaîne pour toi, à ton rythme de sécurité.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Messages rédigés par l'autopilote et en attente du feu vert du client. Placés
+          AVANT la liste : c'est du travail qui l'attend, pas une information de fond. */}
+      <AutopilotDrafts
+        drafts={outreach.drafts}
+        onApprove={outreach.approveDraft}
+        onReject={outreach.rejectDraft}
+      />
 
       {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
       {loading && leads.length === 0 ? (
@@ -12287,6 +12429,20 @@ function ProspectingView({
             </div>
           </aside>
         </>
+      )}
+
+      {/* ALE-284 — pop-up de réglage de l'autopilote. Montée seulement à l'ouverture :
+          elle initialise ses brouillons depuis l'état serveur, et doit donc repartir de
+          l'état à jour à chaque fois plutôt que d'un état figé au premier rendu. */}
+      {autopilotOpen && automation && (
+        <AutopilotModal
+          state={automation}
+          counts={tierCounts}
+          busy={outreach.busy}
+          error={outreach.error}
+          onSave={outreach.saveSettings}
+          onClose={() => setAutopilotOpen(false)}
+        />
       )}
     </div>
   );

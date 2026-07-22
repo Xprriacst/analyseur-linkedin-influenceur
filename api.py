@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing
-from src import outreach_engine
+from src import outreach_engine, outreach_autopilot
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -2831,6 +2831,21 @@ class UnipileSettingsRequest(BaseModel):
     send_hour_start: int | None = Field(default=None, ge=0, le=23)
     send_hour_end: int | None = Field(default=None, ge=1, le=24)
     send_days: list[int] | None = Field(default=None)  # ISO : 1 = lundi … 7 = dimanche
+    # ALE-284 — autopilote : opt-in explicite, palier de cible, message, relecture.
+    auto_prospection_enabled: bool | None = Field(default=None)
+    # Le client choisit un PALIER de couleur ('green' | 'orange' | 'all'), pas un
+    # nombre : la conversion en seuil de score vit dans `outreach_autopilot`, une seule
+    # fois, pour que la pop-up et le planificateur ne puissent pas diverger.
+    auto_invite_tier: str | None = Field(default=None, max_length=16)
+    auto_invite_daily_cap: int | None = Field(default=None, ge=1, le=50)
+    auto_message_mode: str | None = Field(default=None, max_length=16)
+    auto_message_template: str | None = Field(default=None, max_length=2000)
+    auto_message_requires_validation: bool | None = Field(default=None)
+
+
+class OutreachDraftApproveRequest(BaseModel):
+    # Texte relu/corrigé par le client. Absent = on valide le brouillon tel quel.
+    text: str | None = Field(default=None, max_length=1500)
 
 
 class OutreachInviteRequest(BaseModel):
@@ -2939,8 +2954,17 @@ def _engine_state(token: str, account: dict[str, Any]) -> dict[str, Any]:
         immediate_used = outreach_engine.IMMEDIATE_DAILY_CAP  # fail closed : soupape fermée
     start, end = outreach_engine.send_hours(account)
     frozen_until = outreach_engine.freeze_until(account)
+    # Les réglages sont relus par le module de l'autopilote (et pas à la main depuis la
+    # ligne de compte) pour que l'app affiche exactement ce que le planificateur
+    # appliquera : un template vide, par exemple, y retombe sur « invitation seule ».
+    settings = outreach_autopilot.settings_of(account)
+    try:
+        drafts_pending = len(db.list_outreach_drafts(token))
+    except Exception:  # noqa: BLE001 — l'affichage ne doit pas casser sur une lecture
+        drafts_pending = 0
     return {
         "pending": pending,
+        "drafts_pending": drafts_pending,
         "last_run_at": account.get("last_run_at"),
         "last_run_error": account.get("last_run_error"),
         "stalled": outreach_engine.is_stalled(now, account.get("last_run_at"), pending),
@@ -2958,6 +2982,22 @@ def _engine_state(token: str, account: dict[str, Any]) -> dict[str, Any]:
             "hour_start": start,
             "hour_end": end,
             "days": list(outreach_engine.send_days(account)),
+        },
+        # ALE-284 — état de l'autopilote. `steps` est calculé par le MÊME module que le
+        # planificateur (`outreach_autopilot.sequence_steps`) : le schéma de séquence
+        # affiché à côté du bouton décrit donc littéralement ce que le cron fera. Un
+        # schéma reconstruit à part dans le frontend finirait par mentir — et un client
+        # qui croit relire ses messages alors qu'ils partent seuls, c'est le pire bug
+        # possible de cette fonctionnalité.
+        "automation": {
+            "enabled": settings.enabled,
+            "tier": settings.tier,
+            "invite_min_score": settings.min_score,
+            "invite_daily_cap": settings.daily_invite_cap,
+            "message_mode": settings.message_mode,
+            "message_template": settings.template,
+            "requires_validation": settings.requires_validation,
+            "steps": outreach_autopilot.sequence_steps(settings),
         },
     }
 
@@ -3006,15 +3046,12 @@ def _require_owned_chat(account: dict[str, Any], chat_id: str) -> None:
 
 
 def _lead_message_context(lead: dict[str, Any]) -> dict[str, Any]:
-    signals = lead.get("signals") or []
-    last = signals[-1] if signals else {}
-    return {
-        "name": lead.get("name"),
-        "headline": lead.get("headline"),
-        "comment_text": lead.get("comment_text"),
-        "trigger_keyword": last.get("trigger_keyword"),
-        "author": last.get("author"),
-    }
+    """Contexte de rédaction du premier message.
+
+    Délégué à `outreach_autopilot` : l'aperçu demandé à la main depuis le panneau du
+    lead et le message rédigé par l'autopilote doivent partir du MÊME contexte, sinon
+    ce que le client relit n'est pas ce que l'autopilote enverra."""
+    return outreach_autopilot.message_context(lead)
 
 
 @app.get("/me/linkedin/outreach/status")
@@ -3118,6 +3155,23 @@ def me_linkedin_outreach_settings(
     _require_outreach_account(token)
     if payload.send_days is not None and not [d for d in payload.send_days if 1 <= d <= 7]:
         raise HTTPException(status_code=422, detail="Choisis au moins un jour d'envoi.")
+
+    # ALE-284 — garde-fous de l'autopilote, refusés AVANT écriture plutôt que rattrapés
+    # après : un réglage incohérent enregistré, c'est un client persuadé d'avoir armé
+    # une séquence qui, en réalité, n'enverra jamais rien.
+    if payload.auto_invite_tier is not None and payload.auto_invite_tier not in outreach_autopilot.TIER_MIN_SCORE:
+        raise HTTPException(status_code=422, detail="Choisis à qui l'autopilote écrit (leads verts, verts et orange, ou tous).")
+    if payload.auto_message_mode is not None and payload.auto_message_mode not in outreach_autopilot.MESSAGE_MODES:
+        raise HTTPException(status_code=422, detail="Mode de message inconnu.")
+    if payload.auto_message_mode == outreach_autopilot.MESSAGE_MODE_TEMPLATE:
+        # Le template est le texte qui partira tel quel : vide, il ne produirait que des
+        # messages vides que le moteur rejetterait un par un, en silence.
+        template = payload.auto_message_template if payload.auto_message_template is not None else (
+            (db.get_linkedin_outreach_account(token) or {}).get("auto_message_template")
+        )
+        if not outreach_autopilot.template_is_usable(template or ""):
+            raise HTTPException(status_code=422, detail="Écris le texte de ton template avant de l'activer.")
+
     db.upsert_linkedin_outreach_account(
         token,
         daily_cap=payload.daily_cap,
@@ -3126,6 +3180,15 @@ def me_linkedin_outreach_settings(
         send_hour_start=payload.send_hour_start,
         send_hour_end=payload.send_hour_end,
         send_days=payload.send_days,
+        auto_prospection_enabled=payload.auto_prospection_enabled,
+        auto_invite_min_score=(
+            outreach_autopilot.min_score_for_tier(payload.auto_invite_tier)
+            if payload.auto_invite_tier is not None else None
+        ),
+        auto_invite_daily_cap=payload.auto_invite_daily_cap,
+        auto_message_mode=payload.auto_message_mode,
+        auto_message_template=payload.auto_message_template,
+        auto_message_requires_validation=payload.auto_message_requires_validation,
     )
     return _unipile_outreach_status(token)
 
@@ -3361,6 +3424,44 @@ def me_outreach_queue_cancel(item_id: str, token: str = Depends(require_token)) 
     if not item:
         raise HTTPException(status_code=404, detail="Action introuvable ou déjà envoyée.")
     return {"item": item, "items": db.list_outreach_queue(token)}
+
+
+# ── ALE-284 — Autopilote : cible annoncée et brouillons à relire ──────────────
+
+
+@app.get("/me/linkedin/outreach/lead-tiers")
+def me_outreach_lead_tiers(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Combien de leads chaque palier représente (pop-up d'autopilote).
+
+    Choisir « uniquement mes leads verts » sans savoir si cela vise 3 personnes ou 300
+    n'est pas un choix éclairé : la pop-up annonce le volume réel avant l'engagement."""
+    return {"counts": db.count_leads_by_tier(token)}
+
+
+@app.get("/me/linkedin/outreach/drafts")
+def me_outreach_drafts(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Messages rédigés par l'autopilote, en attente de relecture."""
+    return {"items": db.list_outreach_drafts(token)}
+
+
+@app.post("/me/linkedin/outreach/drafts/{item_id}/approve")
+def me_outreach_draft_approve(
+    item_id: str, payload: OutreachDraftApproveRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Valide un brouillon : il entre dans la file d'envoi (et pas avant).
+
+    Le texte corrigé à l'écran est enregistré AVEC l'action : ce qui partira est
+    exactement ce que le client vient de relire. Refuser un brouillon se fait par
+    `DELETE /me/linkedin/outreach/queue/{id}` — c'est la même opération qu'annuler une
+    action en file, et l'autopilote ne le reproposera pas."""
+    _require_outreach_account(token)
+    item = db.approve_outreach_draft(token, item_id, body=payload.text)
+    if not item:
+        # Volontairement indistinct : brouillon inconnu, déjà validé ou déjà refusé.
+        # Le filtre `status = 'draft'` rend un rejeu (double-clic, onglet resté ouvert)
+        # inopérant — il ne peut pas ressusciter un message que le client a refusé.
+        raise HTTPException(status_code=404, detail="Brouillon introuvable ou déjà traité.")
+    return {"item": item, "items": db.list_outreach_drafts(token), "engine": _engine_state(token, _require_outreach_account(token))}
 
 
 @app.get("/me/linkedin/outreach/chats")
