@@ -1331,17 +1331,25 @@ function Sidebar({
         </button>
       </div>
 
-      {/* Vue client (compte ideas_only) : navigation réduite à la seule page « idées de posts ». */}
+      {/* Vue client (compte ideas_only) : navigation réduite à « idées de posts » + Agent IA. */}
       {restricted && (
         <section className="sidebar-section sidebar-nav-tree">
           <div className="nav-list">
             <button
-              className={`nav-item active${collapsed ? " nav-item-collapsed" : ""}`}
+              className={`nav-item ${view !== "assistant" ? "active" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
               title={collapsed ? "Mes idées de posts" : undefined}
               onClick={() => onNavigate("content")}
             >
               <Sparkles size={14} />
               {!collapsed && <span>Mes idées de posts</span>}
+            </button>
+            <button
+              className={`nav-item ${view === "assistant" ? "active" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
+              title={collapsed ? "Agent IA" : undefined}
+              onClick={() => onNavigate("assistant")}
+            >
+              <MessageSquare size={14} />
+              {!collapsed && <span>Agent IA</span>}
             </button>
           </div>
         </section>
