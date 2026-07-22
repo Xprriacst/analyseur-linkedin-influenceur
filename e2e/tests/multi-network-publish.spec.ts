@@ -154,6 +154,22 @@ test("programmer : les versions X/Reddit voyagent dans cross_posts avec le post"
   expect(schedulePayload.cross_posts?.reddit).toBeUndefined();
 });
 
+test("sidebar : X et Reddit grisés « Bientôt », Instagram dégrisé et dépliable", async ({ page }) => {
+  await mockBase(page);
+  await page.goto("/");
+  // X et Reddit : entêtes visibles mais inertes (la publication passe par la
+  // pop-up multi-réseaux ; l'onglet réseau dédié reste à construire).
+  await expect(page.getByRole("button", { name: "X Bientôt" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Reddit Bientôt" })).toBeDisabled();
+  // Instagram n'est plus grisé : son entête se déplie et révèle son sous-onglet
+  // Contenu (en plus de celui de LinkedIn, ouvert par défaut).
+  const contenu = page.locator(".nav-item-sub", { hasText: "Contenu" });
+  const before = await contenu.count();
+  await page.locator(".nav-item", { hasText: "Instagram" }).first().click();
+  await expect(contenu).toHaveCount(before + 1);
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
 test("compte X non connecté : le logo n'active rien et renvoie vers Connexions", async ({ page }) => {
   await mockBase(page, { xConnected: false });
   let adaptCalled = false;

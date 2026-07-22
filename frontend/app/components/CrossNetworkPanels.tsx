@@ -115,13 +115,13 @@ export async function publishCrossNetworks(cross: CrossPostsDraft | null | undef
   return { published, errors };
 }
 
-const XLogo = ({ size = 19, color }: { size?: number; color?: string }) => (
+export const XLogo = ({ size = 19, color }: { size?: number; color?: string }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
     <path fill={color ?? "currentColor"} d="M18.24 2.25h3.31l-7.23 8.26L22.83 21.75h-6.66l-5.22-6.82-5.97 6.82H1.66l7.73-8.84L1.17 2.25h6.83l4.71 6.23 5.53-6.23zm-1.16 17.52h1.83L7.08 4.13H5.12l11.96 15.64z" />
   </svg>
 );
 
-const RedditLogo = ({ size = 19, color }: { size?: number; color?: string }) => (
+export const RedditLogo = ({ size = 19, color }: { size?: number; color?: string }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
     <path fill={color ?? "currentColor"} d="M22 12.06c0-1.22-.99-2.2-2.2-2.2-.6 0-1.13.24-1.53.62-1.5-1.08-3.57-1.78-5.87-1.86l1-4.71 3.27.7a1.58 1.58 0 1 0 .16-.78l-3.65-.78a.4.4 0 0 0-.47.31l-1.12 5.25c-2.34.07-4.44.77-5.96 1.87-.4-.38-.93-.62-1.53-.62-1.21 0-2.2.98-2.2 2.2 0 .9.53 1.66 1.3 2-.03.22-.05.44-.05.67 0 3.39 3.95 6.14 8.82 6.14s8.82-2.75 8.82-6.14c0-.22-.02-.45-.05-.66.77-.35 1.31-1.12 1.31-2.01zM6.7 13.62c0-.87.71-1.58 1.58-1.58s1.58.71 1.58 1.58-.71 1.58-1.58 1.58-1.58-.71-1.58-1.58zm8.85 4.17c-1.08 1.08-3.15 1.16-3.76 1.16s-2.68-.08-3.75-1.16a.41.41 0 0 1 .58-.58c.68.68 2.13.92 3.17.92s2.5-.24 3.18-.92a.41.41 0 1 1 .58.58zm-.28-2.59c-.87 0-1.58-.71-1.58-1.58s.71-1.58 1.58-1.58 1.58.71 1.58 1.58-.71 1.58-1.58 1.58z" />
   </svg>

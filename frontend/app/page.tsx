@@ -59,7 +59,7 @@ import PostActionsBar, { type PostAction } from "./components/PostActionsBar";
 import PublishConfirmModal from "./components/PublishConfirmModal";
 // ALE-59 — publication multi-réseaux : panneaux X/Reddit partagés entre la
 // pop-up Publier et la modale Programmer, + helper de publication post-LinkedIn.
-import CrossNetworkPanels, { publishCrossNetworks, type CrossPostsDraft } from "./components/CrossNetworkPanels";
+import CrossNetworkPanels, { publishCrossNetworks, XLogo, RedditLogo, type CrossPostsDraft } from "./components/CrossNetworkPanels";
 // ALE-284 — les types de l'autopilote sont définis avec le composant qui les rend, et
 // importés ici : les redéclarer dans ce fichier les ferait diverger à la première
 // évolution du contrat serveur.
@@ -233,6 +233,16 @@ type SavedPost = {
   slack_status?: string | null;
   media_items?: SavedPostMediaItem[] | null;
 };
+// ALE-59 : version X/Reddit stockée avec un post programmé ; après le passage
+// du cron, l'entrée porte aussi le résultat (status / error par réseau).
+type ScheduledCrossEntry = {
+  status?: string;
+  error?: string | null;
+  tweets?: string[];
+  subreddit?: string;
+  title?: string;
+  body?: string;
+};
 type ScheduledPost = {
   id: string;
   post_text: string;
@@ -241,6 +251,7 @@ type ScheduledPost = {
   slack_status?: string | null;
   slack_message_ts?: string | null;
   media_items?: ScheduledPostMediaItem[] | null;
+  cross_posts?: { x?: ScheduledCrossEntry | null; reddit?: ScheduledCrossEntry | null } | null;
   error_message?: string | null;
   created_at?: string;
 };
@@ -1368,9 +1379,16 @@ function Sidebar({
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {!restricted && (() => {
         // `soon` : réseau visible mais grisé (pas encore ouvert aux clients).
-        const networks: { key: Platform; label: string; icon: React.ReactNode; soon?: boolean }[] = [
+        // ALE-59 : Instagram dégrisé (Contenu IG + analyses existent et sont
+        // câblés) ; X et Reddit apparaissent grisés « Bientôt » — leur
+        // PUBLICATION passe déjà par la pop-up multi-réseaux des posts
+        // LinkedIn, c'est l'onglet réseau (analyse/contenu dédiés) qui reste
+        // à construire (ALE-60/76…).
+        const networks: { key: Platform | "x" | "reddit"; label: string; icon: React.ReactNode; soon?: boolean }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
-          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} />, soon: true },
+          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} /> },
+          { key: "x", label: "X", icon: <XLogo size={14} />, soon: true },
+          { key: "reddit", label: "Reddit", icon: <RedditLogo size={14} />, soon: true },
         ];
         // ALE-257 : « Veille » retirée — l'analyse (profils, classement, tendances,
         // monitoring) vit désormais dans « Contenu » › sous-onglet « Analyses ».
@@ -1400,22 +1418,24 @@ function Sidebar({
                   );
                 }
                 // ALE-246 : ouverture indépendante par réseau (plus d'accordéon).
-                const expanded = openNets[net.key];
-                const isActiveNet = platform === net.key;
+                // Seuls les réseaux non `soon` arrivent ici → clé Platform sûre.
+                const netKey = net.key as Platform;
+                const expanded = openNets[netKey];
+                const isActiveNet = platform === netKey;
                 return (
                   <React.Fragment key={net.key}>
                     <button
                       className={`nav-item ${expanded ? "nav-item-open" : ""}${isActiveNet ? " nav-item-active-net" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
                       title={collapsed ? net.label : undefined}
                       aria-expanded={expanded}
-                      onClick={() => setOpenNets((o) => ({ ...o, [net.key]: !o[net.key] }))}
+                      onClick={() => setOpenNets((o) => ({ ...o, [netKey]: !o[netKey] }))}
                     >
                       {net.icon}
                       {!collapsed && <span>{net.label}</span>}
                     </button>
                     {expanded && subTabs.map((tab) => {
                       const locked = !!tab.premium && !isAuthed;
-                      const badge = jobBadges[net.key];
+                      const badge = jobBadges[netKey];
                       // ALE-257 : la progression des séries s'affiche sur « Contenu »
                       // (la Veille n'a plus d'entrée de nav dédiée).
                       const showBadge = tab.key === "content" && badge;
@@ -1429,7 +1449,7 @@ function Sidebar({
                               requireAuth("Crée un compte gratuit pour débloquer le générateur de contenu.");
                               return;
                             }
-                            onPlatformChange(net.key);
+                            onPlatformChange(netKey);
                             onNavigate(tab.key);
                           }}
                         >
@@ -1445,8 +1465,8 @@ function Sidebar({
                         </button>
                       );
                     })}
-                    {/* ALE-229 : Prospection — sous LinkedIn (Instagram est grisé en amont) */}
-                    {expanded && net.key === "linkedin" && (
+                    {/* ALE-229 : Prospection — sous LinkedIn uniquement */}
+                    {expanded && netKey === "linkedin" && (
                       <button
                         className={`nav-item nav-item-sub ${isActiveNet && view === "prospecting" ? "active" : ""} ${!isAuthed ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
                         title={collapsed ? "Prospection" : undefined}
@@ -6992,7 +7012,7 @@ function LibraryView({
             icon={<Clock3 size={18} />}
             title="Posts programmés"
             count={scheduledPosts.length}
-            desc="Ce qui partira sur LinkedIn automatiquement, aux créneaux que tu as choisis."
+            desc="Ce qui partira automatiquement, aux créneaux que tu as choisis — avec ses versions X et Reddit si tu les as activées en programmant."
           />
           {scheduledPosts.length === 0 ? (
             <div className="lib-empty">
@@ -7013,6 +7033,17 @@ function LibraryView({
                         <>
                           <span className={`lib-tag ${st.cls}`}>{st.label}</span>
                           {schedImages(p).length > 0 && <span className="lib-tag">image</span>}
+                          {/* ALE-59 : versions multi-réseaux programmées avec le post */}
+                          {p.cross_posts?.x && (
+                            <span className={`lib-tag${p.cross_posts.x.status === "published" ? " ok" : ""}`}>
+                              X{p.cross_posts.x.status === "published" ? " ✓" : p.cross_posts.x.status === "failed" ? " — échec" : ""}
+                            </span>
+                          )}
+                          {p.cross_posts?.reddit && (
+                            <span className={`lib-tag${p.cross_posts.reddit.status === "published" ? " ok" : ""}`}>
+                              Reddit{p.cross_posts.reddit.status === "published" ? " ✓" : p.cross_posts.reddit.status === "failed" ? " — échec" : ""}
+                            </span>
+                          )}
                         </>
                       }
                       meta={new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
@@ -7057,6 +7088,43 @@ function LibraryView({
                             />
                           ))}
                         </div>
+                      </div>
+                    )}
+                    {/* ALE-59 : versions X/Reddit stockées avec le post — elles partent au même créneau. */}
+                    {(p.cross_posts?.x || p.cross_posts?.reddit) && (
+                      <div style={{ margin: "0 0 14px", display: "grid", gap: 10 }}>
+                        {p.cross_posts?.x && (
+                          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px" }}>
+                            <p style={{ display: "flex", alignItems: "center", gap: 6, margin: "0 0 6px", fontSize: 12.5, fontWeight: 600 }}>
+                              <XLogo size={13} /> Version X
+                              {(p.cross_posts.x.tweets?.length ?? 0) > 1 ? ` — thread de ${p.cross_posts.x.tweets!.length}` : ""}
+                              {p.cross_posts.x.status === "published" ? " · publiée ✓" : p.cross_posts.x.status === "failed" ? " · échec" : ""}
+                            </p>
+                            <p style={{ whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)", margin: 0 }}>
+                              {(p.cross_posts.x.tweets || []).join("\n\n")}
+                            </p>
+                            {p.cross_posts.x.status === "failed" && p.cross_posts.x.error && (
+                              <p style={{ margin: "6px 0 0", fontSize: 12.5, color: "var(--danger)" }}>{p.cross_posts.x.error}</p>
+                            )}
+                          </div>
+                        )}
+                        {p.cross_posts?.reddit && (
+                          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px" }}>
+                            <p style={{ display: "flex", alignItems: "center", gap: 6, margin: "0 0 6px", fontSize: 12.5, fontWeight: 600 }}>
+                              <RedditLogo size={13} color="#ff4500" /> Version Reddit — r/{p.cross_posts.reddit.subreddit}
+                              {p.cross_posts.reddit.status === "published" ? " · publiée ✓" : p.cross_posts.reddit.status === "failed" ? " · échec" : ""}
+                            </p>
+                            {p.cross_posts.reddit.title && (
+                              <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 600 }}>{p.cross_posts.reddit.title}</p>
+                            )}
+                            <p style={{ whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)", margin: 0 }}>
+                              {p.cross_posts.reddit.body || ""}
+                            </p>
+                            {p.cross_posts.reddit.status === "failed" && p.cross_posts.reddit.error && (
+                              <p style={{ margin: "6px 0 0", fontSize: 12.5, color: "var(--danger)" }}>{p.cross_posts.reddit.error}</p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                     {p.status === "failed" && p.error_message && (
