@@ -879,7 +879,7 @@ def me_x_connect(
         raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
     try:
         profile_id = _ensure_zernio_profile(token)
-        auth_url = zernio.get_connect_url(profile_id, redirect_url=payload.redirect_url, platform="x")
+        auth_url = zernio.get_connect_url(profile_id, redirect_url=payload.redirect_url, platform=zernio.PLATFORM_X)
     except zernio.ZernioError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"auth_url": auth_url}
@@ -895,7 +895,7 @@ def me_x_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
     if not profile_id:
         return _x_status(token)
     try:
-        account_id = zernio.find_account_id(profile_id, platform="x")
+        account_id = zernio.find_account_id(profile_id, platform=zernio.PLATFORM_X)
     except zernio.ZernioError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     db.set_zernio_x_account(token, account_id)
@@ -939,7 +939,7 @@ def me_x_publish(
             account_id,
             publish_now=True,
             is_draft=payload.draft,
-            platform="x",
+            platform=zernio.PLATFORM_X,
             platform_specific_data=platform_specific_data,
         )
     except zernio.ZernioError as exc:

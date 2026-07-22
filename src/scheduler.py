@@ -64,7 +64,7 @@ def publish_cross_posts(post: dict) -> dict:
                     tweets[0] if len(tweets) == 1 else "\n\n".join(tweets),
                     account_id,
                     publish_now=True,
-                    platform="x",
+                    platform=zernio.PLATFORM_X,
                     platform_specific_data=psd,
                 )
                 z_post = result.get("post") or result
