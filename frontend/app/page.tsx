@@ -2465,6 +2465,42 @@ function formatAgo(iso?: string | null): string {
   return `il y a ${Math.round(hours / 24)} j`;
 }
 
+/** Feature flags — déploiement progressif d'une nouveauté (agence d'abord, puis tous).
+ *
+ *  ⚠️ La liste vient du SERVEUR (`GET /me/features`) et n'est jamais recalculée ici.
+ *  Le droit a deux sources — les fonctionnalités sorties de bêta (constante serveur) et
+ *  celles posées sur le compte — et dupliquer la première dans le navigateur la ferait
+ *  diverger dès la première généralisation.
+ *
+ *  Fail CLOSED pendant le chargement : tant qu'on ne sait pas, on n'affiche pas. Mieux
+ *  vaut une nouveauté qui apparaît une demi-seconde plus tard qu'une nouveauté en bêta
+ *  qui clignote sous les yeux de tous les comptes. */
+function useFeatures(isAuthed: boolean) {
+  const [features, setFeatures] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    if (!isAuthed) { setFeatures(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/features`, { headers: await authHeaders() });
+        if (res.ok) { const data = await res.json(); if (!cancelled) setFeatures(data.features || []); }
+        else if (!cancelled) setFeatures([]);
+      } catch {
+        // Backend injoignable : on reste fermé plutôt que d'ouvrir par défaut.
+        if (!cancelled) setFeatures([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthed]);
+
+  return {
+    features,
+    loading: features === null,
+    has: (name: string) => (features || []).includes(name),
+  };
+}
+
 /** Statut de connexion Unipile (compte LinkedIn de prospection) + quotas + file d'envoi. */
 function useLinkedInOutreach(isAuthed: boolean) {
   const [status, setStatus] = useState<OutreachStatus | null>(null);
@@ -11656,7 +11692,11 @@ function ProspectingView({
   // ALE-284 — autopilote : pop-up de réglage + volumes annoncés par palier.
   const [autopilotOpen, setAutopilotOpen] = useState(false);
   const [tierCounts, setTierCounts] = useState<LeadTierCounts | null>(null);
-  const automation = outreach.status?.engine?.automation;
+  // Déploiement progressif : l'autopilote n'est visible que pour les comptes qui l'ont.
+  // Le serveur garde AUSSI ses endpoints — masquer un bouton ne protège rien.
+  const featureFlags = useFeatures(isAuthed);
+  const hasAutopilot = featureFlags.has("autopilot");
+  const automation = hasAutopilot ? outreach.status?.engine?.automation : undefined;
 
   // Réinitialise le bloc d'envoi quand on change de lead sélectionné.
   useEffect(() => {
@@ -11830,7 +11870,7 @@ function ProspectingView({
   // autrement dit, du travail qui attend le client serait invisible pendant une minute
   // et demie sans que rien ne l'indique.
   useEffect(() => {
-    if (!isAuthed) return;
+    if (!isAuthed || !hasAutopilot) return;
     let cancelled = false;
     (async () => {
       try {
@@ -11840,7 +11880,7 @@ function ProspectingView({
       if (!cancelled) void outreach.reloadDrafts();
     })();
     return () => { cancelled = true; };
-  }, [isAuthed]);
+  }, [isAuthed, hasAutopilot]);
 
   const saveTargeting = async () => {
     if (!targeting) return;
