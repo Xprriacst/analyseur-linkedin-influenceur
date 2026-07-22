@@ -13,6 +13,7 @@ import os
 import base64
 import binascii
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,6 +23,8 @@ BASE_URL = "https://zernio.com/api/v1"
 PLATFORM = "linkedin"  # default / legacy constant
 MAX_LINKEDIN_IMAGES = 20
 MAX_LINKEDIN_IMAGE_BYTES = 8 * 1024 * 1024
+MEDIA_READY_RETRIES = 5
+MEDIA_READY_DELAY_S = 0.6
 IMAGE_CONTENT_TYPES = {
     "image/jpeg": "jpg",
     "image/jpg": "jpg",
@@ -101,6 +104,32 @@ def _decode_data_url(data_url: str) -> tuple[str, bytes]:
     return content_type, data
 
 
+def _wait_media_ready(public_url: str) -> None:
+    """Poll the freshly-uploaded media URL until it is actually readable.
+
+    Le PUT sur l'URL présignée répond en 2xx dès que Zernio a accepté le
+    fichier, mais son stockage peut mettre un court instant à le rendre lisible
+    (propagation) — un POST /posts trop rapide échoue alors avec "Some media
+    files failed to upload" malgré un upload réussi. Best-effort : on ne fait
+    jamais échouer l'upload sur ce contrôle, on donne juste un peu de temps
+    avant l'appel à create_post.
+    """
+    for attempt in range(MEDIA_READY_RETRIES):
+        req = urllib.request.Request(public_url, method="HEAD")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                status = getattr(resp, "status", 200)
+                if 200 <= status < 300:
+                    return
+        except urllib.error.HTTPError as exc:
+            if 200 <= exc.code < 300:
+                return
+        except Exception:
+            pass
+        if attempt < MEDIA_READY_RETRIES - 1:
+            time.sleep(MEDIA_READY_DELAY_S)
+
+
 def upload_media_bytes(filename: str, content_type: str, data: bytes) -> str:
     """Upload media bytes to Zernio storage and return the public URL."""
     presign = _request(
@@ -124,6 +153,7 @@ def upload_media_bytes(filename: str, content_type: str, data: bytes) -> str:
         raise ZernioError(f"Upload média Zernio échoué ({exc.code}) : {detail}") from exc
     except urllib.error.URLError as exc:
         raise ZernioError(f"Upload média Zernio injoignable : {exc.reason}") from exc
+    _wait_media_ready(public_url)
     return public_url
 
 
@@ -260,4 +290,12 @@ def create_post(
         body["isDraft"] = True
     else:
         body["publishNow"] = publish_now
-    return _request("POST", "/posts", body=body)
+    try:
+        return _request("POST", "/posts", body=body)
+    except ZernioError as exc:
+        if media_items and "failed to upload" in str(exc).lower():
+            # Filet de sécurité si _wait_media_ready n'a pas suffi : Zernio a
+            # eu besoin d'un peu plus de temps pour rendre le média lisible.
+            time.sleep(MEDIA_READY_DELAY_S * MEDIA_READY_RETRIES)
+            return _request("POST", "/posts", body=body)
+        raise
