@@ -189,6 +189,9 @@ test("sidebar : X et Reddit grisés « Bientôt », Instagram dégrisé et dépl
   const before = await contenu.count();
   await page.locator(".nav-item", { hasText: "Instagram" }).first().click();
   await expect(contenu).toHaveCount(before + 1);
+  // Sous Instagram déplié : la Prospection IG n'existe pas encore — teaser
+  // grisé « Bientôt », inerte.
+  await expect(page.getByRole("button", { name: "Prospection Bientôt" })).toBeDisabled();
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
