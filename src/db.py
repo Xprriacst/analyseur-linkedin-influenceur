@@ -4850,6 +4850,12 @@ def upsert_linkedin_outreach_account(
     send_hour_start: int | None = None,
     send_hour_end: int | None = None,
     send_days: list[int] | None = None,
+    auto_prospection_enabled: bool | None = None,
+    auto_invite_min_score: int | None = None,
+    auto_invite_daily_cap: int | None = None,
+    auto_message_mode: str | None = None,
+    auto_message_template: str | None = None,
+    auto_message_requires_validation: bool | None = None,
 ) -> dict | None:
     """Crée/met à jour le compte Unipile + la config de cadençage (RLS scope, upsert).
 
@@ -4888,6 +4894,26 @@ def upsert_linkedin_outreach_account(
     if send_days is not None:
         days = sorted({int(d) for d in send_days if 1 <= int(d) <= 7})
         row["send_days"] = days or [1, 2, 3, 4, 5]
+    # ALE-284 — réglages de l'autopilote (opt-in, palier de score, message, relecture).
+    # ⚠️ Chacune de ces colonnes doit figurer dans le `grant update (…)` de la migration
+    # 0052 : la 0048 a révoqué l'UPDATE global, et une colonne oubliée fait échouer tout
+    # l'upsert — pas seulement son écriture (Postgres exige UPDATE sur CHAQUE colonne
+    # du payload).
+    if auto_prospection_enabled is not None:
+        row["auto_prospection_enabled"] = bool(auto_prospection_enabled)
+    if auto_invite_min_score is not None:
+        row["auto_invite_min_score"] = max(0, min(100, int(auto_invite_min_score)))
+    if auto_invite_daily_cap is not None:
+        row["auto_invite_daily_cap"] = max(1, min(50, int(auto_invite_daily_cap)))
+    if auto_message_mode is not None:
+        # La base a un CHECK sur ces trois valeurs : on ne lui envoie jamais autre chose,
+        # sinon c'est tout l'upsert (donc le réglage entier) qui partirait en erreur.
+        mode = str(auto_message_mode).strip().lower()
+        row["auto_message_mode"] = mode if mode in ("none", "ai", "template") else "none"
+    if auto_message_template is not None:
+        row["auto_message_template"] = str(auto_message_template).strip()[:2000] or None
+    if auto_message_requires_validation is not None:
+        row["auto_message_requires_validation"] = bool(auto_message_requires_validation)
     resp = (
         db.table("linkedin_outreach_accounts")
         .upsert(row, on_conflict="user_id")
@@ -5106,7 +5132,10 @@ def update_lead_outreach(access_token: str, lead_id: str, fields: dict[str, Any]
 # --------------------------------------------------------------------------- #
 
 
-_QUEUE_COLS = "id, user_id, lead_id, action_type, body, status, not_before, sent_at, error, created_at"
+# ⚠️ Toute colonne absente de cette projection est lue `None` par le moteur et par
+# l'app, SANS la moindre erreur — c'est exactement ainsi que `template_id` a été ignoré
+# pendant toute la vie d'ALE-216. Ajouter une colonne à la file ⇒ l'ajouter ici.
+_QUEUE_COLS = "id, user_id, lead_id, action_type, body, status, origin, not_before, sent_at, error, created_at"
 
 
 def enqueue_outreach_action(
@@ -5170,9 +5199,62 @@ def list_outreach_queue(access_token: str, *, status: str = "pending") -> list[d
     return resp.data or []
 
 
+def list_outreach_drafts(access_token: str) -> list[dict]:
+    """Brouillons de l'autopilote en attente de relecture (RLS scope), avec leur lead.
+
+    Le lead est joint ici plutôt que relu un par un côté API : la liste s'affiche en
+    une requête, et surtout on ne peut pas afficher un brouillon sans savoir à qui il
+    est destiné — ce serait demander au client de valider un message à l'aveugle."""
+    if not supabase_enabled():
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("linkedin_outreach_queue")
+        .select(f"{_QUEUE_COLS}, leads(id, name, headline, profile_url, score, score_reason)")
+        .eq("status", "draft")
+        .order("created_at")
+        .limit(100)
+        .execute()
+    )
+    return resp.data or []
+
+
+def count_leads_by_tier(access_token: str) -> dict[str, int]:
+    """Répartition des leads du client par palier de score (RLS scope).
+
+    Sert à la pop-up d'autopilote : « vert seulement » doit annoncer combien de
+    personnes cela représente vraiment. Un choix de ciblage fait à l'aveugle, sur un
+    stock inconnu, n'est pas un choix éclairé.
+
+    Les leads écartés à la main (`skip`) sont exclus du décompte : l'autopilote ne les
+    contactera jamais, les compter gonflerait le chiffre annoncé au client."""
+    from src import outreach_autopilot as autopilot  # import local : évite un cycle db ↔ autopilot
+
+    counts = {"green": 0, "orange": 0, "red": 0, "unscored": 0}
+    if not supabase_enabled():
+        return counts
+    db = client_for_token(access_token)
+    resp = (
+        db.table("leads")
+        .select("score, contact_status, outreach_status")
+        .neq("contact_status", "skip")
+        .eq("outreach_status", "none")
+        .limit(5000)
+        .execute()
+    )
+    for row in resp.data or []:
+        tier = autopilot.tier_of(row.get("score"))
+        counts["unscored" if tier is None else tier] += 1
+    return counts
+
+
 def cancel_outreach_queue_item(access_token: str, item_id: str) -> dict | None:
     """Retire une action de la file tant qu'elle n'est pas partie (RLS scope).
-    Le filtre sur `status = 'pending'` évite d'« annuler » une action déjà envoyée."""
+
+    Le filtre sur le statut évite d'« annuler » une action déjà envoyée. `draft` est
+    inclus (ALE-284) : refuser un brouillon proposé par l'autopilote, c'est la même
+    opération qu'annuler une action en file — et un brouillon refusé ne doit pas
+    revenir (le planificateur ne repropose jamais un lead déjà passé par la file)."""
     if not supabase_enabled() or not item_id:
         return None
     db = client_for_token(access_token)
@@ -5180,7 +5262,35 @@ def cancel_outreach_queue_item(access_token: str, item_id: str) -> dict | None:
         db.table("linkedin_outreach_queue")
         .update({"status": "canceled", "updated_at": "now()"})
         .eq("id", item_id)
-        .eq("status", "pending")
+        .in_("status", ["pending", "draft"])
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def approve_outreach_draft(access_token: str, item_id: str, *, body: str | None = None) -> dict | None:
+    """Valide un brouillon de l'autopilote : il passe de `draft` à `pending` (RLS scope).
+
+    C'est le SEUL chemin par lequel un message relu entre dans la file d'envoi. Le
+    filtre `status = 'draft'` est le garde-fou : il rend l'opération inopérante sur une
+    action déjà envoyée, déjà en file ou annulée — un rejeu de la requête (double-clic,
+    onglet resté ouvert) ne peut donc pas ressusciter un message refusé.
+
+    `body` permet au client d'envoyer le texte qu'il a corrigé à l'écran. On garde la
+    règle d'architecture d'ALE-174 : le texte définitif entre dans la file AVEC
+    l'action, il n'est jamais (re)généré au moment de l'envoi."""
+    if not supabase_enabled() or not item_id:
+        return None
+    db = client_for_token(access_token)
+    patch: dict[str, Any] = {"status": "pending", "updated_at": "now()"}
+    text = (body or "").strip()
+    if text:
+        patch["body"] = text[:1500]
+    resp = (
+        db.table("linkedin_outreach_queue")
+        .update(patch)
+        .eq("id", item_id)
+        .eq("status", "draft")
         .execute()
     )
     return resp.data[0] if resp.data else None
@@ -5350,6 +5460,144 @@ def admin_list_leads_awaiting_acceptance(user_id: str, *, limit: int = 100) -> l
         .execute()
     )
     return resp.data or []
+
+
+# --------------------------------------------------------------------------- #
+# ALE-284 — Autopilote : les accès du planificateur (service-role).
+#
+# Même règle que toute la famille `admin_` : `user_id` en premier paramètre, jamais
+# de défaut, et filtré explicitement sur CHAQUE requête. Ici l'enjeu est direct — un
+# filtre manquant ferait inviter les leads du client A depuis le compte LinkedIn du
+# client B, sans la moindre erreur visible.
+# --------------------------------------------------------------------------- #
+
+
+def admin_get_lead_targeting(user_id: str) -> dict | None:
+    """Ciblage ICP de CE client (service-role).
+
+    Le cron n'a aucun jeton : il ne peut pas passer par `get_lead_targeting(token)`,
+    qui s'appuie sur la RLS. Sans ce ciblage, l'IA écrirait un message hors sujet —
+    le planificateur préfère alors ne rien proposer du tout."""
+    if not admin_enabled() or not user_id:
+        return None
+    resp = (
+        admin_client()
+        .table("lead_targeting")
+        .select("user_id, ideal_client, offer, interest_keywords, score_threshold, first_message_instructions")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def admin_list_leads_for_autopilot(user_id: str, *, limit: int = 400) -> list[dict]:
+    """Leads de CE client que l'autopilote peut avoir à traiter (service-role).
+
+    On ne remonte que les états utiles au planificateur : `none` (candidat à une
+    invitation) et `connected` (candidat à un premier message). Les leads déjà invités
+    ou déjà contactés ne le concernent pas — les premiers sont entre les mains de la
+    détection d'acceptation, les seconds sont terminés."""
+    if not admin_enabled() or not user_id:
+        return []
+    resp = (
+        admin_client()
+        .table("leads")
+        .select(
+            "id, user_id, name, headline, profile_url, comment_text, signals, "
+            "score, score_reason, outreach_status, contact_status, provider_id, "
+            "created_at, outreach_updated_at"
+        )
+        .eq("user_id", user_id)
+        .in_("outreach_status", ["none", "connected"])
+        .neq("contact_status", "skip")
+        .order("score", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def admin_queue_lead_ids(user_id: str, action_type: str) -> set[str]:
+    """Leads de CE client ayant DÉJÀ une action de ce type en file (service-role).
+
+    Tous statuts confondus, volontairement — y compris `canceled` et `failed`. C'est
+    ce qui garantit que l'autopilote ne propose qu'UNE fois : sans ça, un brouillon
+    refusé ou une invitation annulée par le client reviendrait au passage suivant, en
+    boucle, et le « non » du client ne vaudrait rien."""
+    if not admin_enabled() or not user_id:
+        return set()
+    resp = (
+        admin_client()
+        .table("linkedin_outreach_queue")
+        .select("lead_id")
+        .eq("user_id", user_id)
+        .eq("action_type", action_type)
+        .limit(5000)
+        .execute()
+    )
+    return {str(r["lead_id"]) for r in (resp.data or []) if r.get("lead_id")}
+
+
+def admin_count_auto_invites_today(user_id: str) -> int:
+    """Invitations déposées par l'autopilote pour CE client sur 24 h glissantes.
+
+    Compte les DÉPÔTS en file, pas les envois : c'est le robinet qu'on veut borner.
+    Les envois, eux, sont déjà bornés par le warm-up et les plafonds durs d'ALE-174 —
+    les deux limites se cumulent, elles ne se remplacent pas."""
+    if not admin_enabled() or not user_id:
+        return 0
+    since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)).isoformat()
+    resp = (
+        admin_client()
+        .table("linkedin_outreach_queue")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("action_type", "invite")
+        .eq("origin", "autopilot")
+        .gte("created_at", since)
+        .execute()
+    )
+    return len(resp.data or [])
+
+
+def admin_enqueue_outreach_action(
+    user_id: str,
+    *,
+    lead_id: str,
+    action_type: str,
+    body: str | None = None,
+    status: str = "pending",
+    not_before: str | None = None,
+) -> dict | None:
+    """Dépose une action de l'autopilote dans la file (service-role).
+
+    `status` vaut `pending` (part au prochain créneau du moteur) ou `draft` (attend la
+    relecture du client — le moteur ne lit pas ce statut, l'action est donc
+    structurellement inenvoyable tant qu'elle n'est pas approuvée).
+
+    Les index uniques partiels sur (lead_id, action_type) — un pour `pending`, un pour
+    `draft` — interdisent d'empiler deux fois la même action : deux passages du cron
+    qui se chevaucheraient ne peuvent pas créer de doublon. Une collision n'est donc
+    pas une erreur, c'est le résultat attendu, et on renvoie None sans crier."""
+    if not admin_enabled() or not user_id or not lead_id:
+        return None
+    row: dict[str, Any] = {
+        "user_id": user_id,
+        "lead_id": lead_id,
+        "action_type": action_type,
+        "status": status,
+        "origin": "autopilot",
+    }
+    if body:
+        row["body"] = body
+    if not_before:
+        row["not_before"] = not_before
+    try:
+        resp = admin_client().table("linkedin_outreach_queue").insert(row).execute()
+        return resp.data[0] if resp.data else None
+    except Exception:  # noqa: BLE001 — collision d'unicité = action déjà en file
+        return None
 
 
 def admin_mark_lead_checked(user_id: str, lead_id: str) -> None:

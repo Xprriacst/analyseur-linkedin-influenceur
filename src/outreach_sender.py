@@ -25,7 +25,7 @@ import datetime
 import logging
 from typing import Any
 
-from src import db, outreach_engine as engine, unipile
+from src import db, llm, outreach_autopilot as autopilot, outreach_engine as engine, unipile
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -202,6 +202,115 @@ def check_acceptances(account: dict[str, Any]) -> int:
     return accepted
 
 
+# ── ALE-284 — Autopilote : dépose les actions, n'en envoie jamais ─────────────
+#
+# Le planificateur tourne AVANT le dépilage, et ne fait qu'écrire dans la file
+# d'ALE-174. Toute la protection du compte (plage horaire, warm-up, délai aléatoire,
+# plafonds, gel) reste donc l'affaire du moteur : l'autopilote ne peut pas la
+# contourner, même en cas de bug, parce qu'il n'a aucun accès à Unipile.
+
+
+def _plan_invites(account: dict[str, Any], settings: autopilot.AutopilotSettings, leads: list[dict[str, Any]]) -> int:
+    """Dépose les invitations automatiques du passage. Retourne le nombre déposé."""
+    user_id = account["user_id"]
+    remaining = settings.daily_invite_cap - db.admin_count_auto_invites_today(user_id)
+    if remaining <= 0:
+        return 0
+
+    picked = autopilot.pick_invites(
+        leads, settings,
+        known_lead_ids=db.admin_queue_lead_ids(user_id, "invite"),
+        remaining_cap=remaining,
+    )
+    queued = 0
+    for lead in picked:
+        # Garde-fou multi-client : le lead vient d'une lecture service-role, on revérifie
+        # qu'il appartient bien au compte pour lequel on planifie (voir en-tête du module).
+        engine.assert_same_owner(account.get("user_id"), lead.get("user_id"), context=f"auto-invite lead {lead.get('id')}")
+        if db.admin_enqueue_outreach_action(user_id, lead_id=lead["id"], action_type="invite"):
+            queued += 1
+    if queued:
+        logger.info(f"[{user_id}] autopilote : {queued} invitation(s) déposée(s) en file.")
+    return queued
+
+
+def _compose_message(settings: autopilot.AutopilotSettings, targeting: dict[str, Any] | None, lead: dict[str, Any]) -> str | None:
+    """Texte du premier message d'un lead, selon le mode choisi. None si impossible.
+
+    ⚠️ Le texte est rédigé MAINTENANT, au dépôt en file — jamais au moment de l'envoi.
+    C'est la règle posée par ALE-174 : ce qui part est exactement ce qui a été déposé
+    (et, si le client a demandé une relecture, exactement ce qu'il a relu). Générer à
+    l'envoi rendrait la relecture mensongère."""
+    if settings.message_mode == autopilot.MESSAGE_MODE_TEMPLATE:
+        return autopilot.render_template(settings.template, lead) or None
+    if settings.message_mode == autopilot.MESSAGE_MODE_AI:
+        if not targeting:
+            # Sans ciblage ICP, l'IA écrirait un message hors sujet. On préfère ne rien
+            # proposer : un lead sans message reste contactable à la main.
+            return None
+        try:
+            return (llm.generate_first_message(targeting, autopilot.message_context(lead)) or "").strip() or None
+        except Exception as exc:  # noqa: BLE001 — un lead en échec n'arrête pas les autres
+            logger.error(f"[autopilote] rédaction IA échouée (lead {lead.get('id')}) : {exc}")
+            return None
+    return None
+
+
+def _plan_messages(account: dict[str, Any], settings: autopilot.AutopilotSettings, leads: list[dict[str, Any]]) -> int:
+    """Dépose les premiers messages des leads devenus « en relation ».
+
+    C'est le chaînon qui manquait : depuis la détection automatique d'acceptation
+    (0051), un lead pouvait passer « en relation » sans que rien n'enchaîne — il
+    attendait un clic humain qui ne venait pas."""
+    user_id = account["user_id"]
+    picked = autopilot.pick_messages(leads, settings, known_lead_ids=db.admin_queue_lead_ids(user_id, "message"))
+    if not picked:
+        return 0
+
+    targeting = db.admin_get_lead_targeting(user_id) if settings.message_mode == autopilot.MESSAGE_MODE_AI else None
+    status = autopilot.message_queue_status(settings)
+    now = _now()
+    queued = 0
+    for lead in picked:
+        engine.assert_same_owner(account.get("user_id"), lead.get("user_id"), context=f"auto-message lead {lead.get('id')}")
+        body = _compose_message(settings, targeting, lead)
+        if not body:
+            continue
+        # Un brouillon attend le client : lui poser un délai n'aurait pas de sens (il
+        # ne partira qu'après validation). Le délai ne s'applique qu'aux envois directs.
+        not_before = None if status == "draft" else (now + autopilot.pick_message_delay()).isoformat()
+        if db.admin_enqueue_outreach_action(
+            user_id, lead_id=lead["id"], action_type="message",
+            body=body, status=status, not_before=not_before,
+        ):
+            queued += 1
+    if queued:
+        label = "brouillon(s) à valider" if status == "draft" else "message(s) déposé(s) en file"
+        logger.info(f"[{user_id}] autopilote : {queued} {label}.")
+    return queued
+
+
+def plan_account(account: dict[str, Any]) -> int:
+    """Un passage de l'autopilote sur un compte. Retourne le nombre d'actions déposées.
+
+    Sort immédiatement si l'opt-in est absent — c'est la garantie qu'un client qui n'a
+    jamais ouvert la pop-up ne verra jamais rien partir en son nom. Sort aussi pendant
+    un gel : le compte est déjà en difficulté, ce n'est pas le moment de remplir sa file."""
+    user_id = account.get("user_id")
+    if not user_id:
+        return 0
+    settings = autopilot.settings_of(account)
+    if not settings.enabled:
+        return 0
+    if engine.freeze_active(_now(), account):
+        return 0
+
+    leads = db.admin_list_leads_for_autopilot(user_id)
+    if not leads:
+        return 0
+    return _plan_invites(account, settings, leads) + _plan_messages(account, settings, leads)
+
+
 def process_account(account: dict[str, Any]) -> int:
     """Un passage du moteur sur un compte. Retourne le nombre d'actions envoyées.
 
@@ -271,12 +380,18 @@ def run() -> None:
 
     total = 0
     accepted = 0
+    planned = 0
     for account in accounts:
         user_id = account.get("user_id")
         try:
-            # La détection d'acceptation est indépendante de la file d'envoi : un lead
-            # peut attendre son acceptation sans qu'aucune action ne soit en file.
+            # L'ordre des trois étapes n'est pas indifférent :
+            # 1. détection d'acceptation — indépendante de la file (un lead peut attendre
+            #    son acceptation sans qu'aucune action ne soit en file) ;
+            # 2. autopilote — planifie APRÈS, pour qu'une acceptation vue à ce passage
+            #    puisse enchaîner sur son premier message dès le même passage ;
+            # 3. dépilage — envoie ensuite, dans les limites du moteur.
             accepted += check_acceptances(account)
+            planned += plan_account(account)
             total += process_account(account)
         except engine.OwnershipError as exc:
             # Ne devrait jamais arriver. Si ça arrive, on n'envoie rien et on hurle.
@@ -286,7 +401,10 @@ def run() -> None:
             logger.error(f"[{user_id}] passage en échec : {exc}")
             db.admin_record_engine_run(user_id, sent=0, error=str(exc))
 
-    logger.info(f"Moteur d'envoi : {total} action(s) envoyée(s), {accepted} acceptation(s) détectée(s).")
+    logger.info(
+        f"Moteur d'envoi : {total} action(s) envoyée(s), {accepted} acceptation(s) détectée(s), "
+        f"{planned} action(s) déposée(s) par l'autopilote."
+    )
 
 
 if __name__ == "__main__":
