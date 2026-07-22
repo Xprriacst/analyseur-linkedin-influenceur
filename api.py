@@ -17,7 +17,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing
-from src import outreach_engine, outreach_autopilot
+from src import outreach_engine, outreach_autopilot, features
+from src import crosspost
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -25,6 +26,7 @@ from src.jobs import start_job_thread, start_generation_job_thread, start_image_
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
 from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures
+from src.llm import adapt_post_for_x, adapt_post_for_reddit
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
@@ -124,6 +126,30 @@ def require_token(authorization: Optional[str] = Header(default=None)) -> str:
     if not token or not db.get_user(token):
         raise HTTPException(status_code=401, detail="Authentification requise.")
     return token
+
+
+def require_feature(token: str, name: str) -> None:
+    """Refuse l'accès si ce compte n'a pas encore la fonctionnalité (déploiement progressif).
+
+    ⚠️ À poser sur tout endpoint d'une nouveauté en bêta qui **coûte** (crédits, appels
+    Anthropic) ou qui **agit au nom du client** (envois LinkedIn). Masquer le bouton
+    côté navigateur ne protège rien : l'endpoint reste appelable par qui connaît son
+    chemin.
+
+    404 et pas 403, volontairement : pour un compte non concerné, la fonctionnalité
+    n'existe pas — inutile de lui signaler qu'il en existe une qu'il n'a pas."""
+    if not features.has_feature(db.get_user(token), name):
+        raise HTTPException(status_code=404, detail="Fonctionnalité indisponible sur ce compte.")
+
+
+@app.get("/me/features")
+def me_features(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Fonctionnalités ouvertes à ce compte — source de vérité unique pour le front.
+
+    Le front NE recalcule pas ce droit de son côté : la liste des fonctionnalités
+    sorties de bêta (`DEFAULT_FEATURES`) vit côté serveur, et la dupliquer dans le
+    navigateur la ferait diverger dès la première généralisation."""
+    return {"features": sorted(features.features_of(db.get_user(token)))}
 
 
 class AnalyzeRequest(BaseModel):
@@ -626,6 +652,24 @@ def me_linkedin_publish(
 
 # ── ALE-96 : Planification LinkedIn ──────────────────────────────────────────
 
+class CrossPostXPayload(BaseModel):
+    tweets: list[str] = Field(..., min_length=1, max_length=10)
+
+
+class CrossPostRedditPayload(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    subreddit: str = Field(..., min_length=2, max_length=30)
+    body: str = Field(..., min_length=1, max_length=40000)
+    flair_id: str | None = Field(default=None, max_length=200)
+    flair_text: str | None = Field(default=None, max_length=200)
+
+
+class CrossPostsPayload(BaseModel):
+    """ALE-59 : versions adaptées X/Reddit stockées avec le post programmé."""
+    x: CrossPostXPayload | None = None
+    reddit: CrossPostRedditPayload | None = None
+
+
 class LinkedInScheduleRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=8000)
     scheduled_at: str = Field(..., description="ISO 8601 datetime (ex. 2026-06-22T09:00:00+02:00)")
@@ -633,6 +677,8 @@ class LinkedInScheduleRequest(BaseModel):
     # ALE-137 : True = passer par une validation Slack avant publication ;
     # False = programmation directe (publiée à l'échéance sans validation).
     validate_via_slack: bool = True
+    # ALE-59 : versions X/Reddit publiées ensemble au créneau par le cron.
+    cross_posts: CrossPostsPayload | None = None
 
 
 class LinkedInScheduledPostUpdateRequest(BaseModel):
@@ -640,6 +686,39 @@ class LinkedInScheduledPostUpdateRequest(BaseModel):
     scheduled_at: str | None = Field(None, description="ISO 8601 datetime (ex. 2026-06-22T09:00:00+02:00)")
     # None = ne pas toucher aux images ; [] = tout retirer.
     images: list[LinkedInImageRequest] | None = Field(default=None, max_length=zernio.MAX_LINKEDIN_IMAGES)
+
+
+def _cross_posts_payload_dict(cross: CrossPostsPayload | None) -> dict[str, Any]:
+    """Valide et normalise les versions X/Reddit d'un post programmé (ALE-59)."""
+    if cross is None:
+        return {}
+    result: dict[str, Any] = {}
+    if cross.x is not None:
+        tweets = [t.strip() for t in cross.x.tweets if isinstance(t, str) and t.strip()]
+        if not tweets:
+            raise HTTPException(status_code=400, detail="Version X vide.")
+        for idx, tweet in enumerate(tweets, start=1):
+            if len(tweet) > crosspost.X_TWEET_MAX:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Le tweet {idx} fait {len(tweet)} caractères (maximum {crosspost.X_TWEET_MAX}).",
+                )
+        result["x"] = {"tweets": tweets}
+    if cross.reddit is not None:
+        subreddit = crosspost.normalize_subreddit_name(cross.reddit.subreddit)
+        if not subreddit:
+            raise HTTPException(status_code=400, detail="Nom de subreddit invalide.")
+        reddit_entry: dict[str, Any] = {
+            "subreddit": subreddit,
+            "title": cross.reddit.title.strip()[:crosspost.REDDIT_TITLE_MAX],
+            "body": cross.reddit.body.strip(),
+        }
+        if cross.reddit.flair_id:
+            reddit_entry["flair_id"] = cross.reddit.flair_id
+        elif cross.reddit.flair_text:
+            reddit_entry["flair_text"] = cross.reddit.flair_text
+        result["reddit"] = reddit_entry
+    return result
 
 
 def _validate_future_scheduled_at(scheduled_at: str) -> None:
@@ -675,6 +754,14 @@ def me_linkedin_schedule(
     except zernio.ZernioError as exc:
         raise HTTPException(status_code=502, detail=f"Impossible de préparer les images du post : {exc}") from exc
 
+    cross_posts = _cross_posts_payload_dict(payload.cross_posts)
+    # Déploiement progressif : n'exige la feature que si le payload embarque la
+    # version correspondante (le cadençage LinkedIn reste ouvert à tous).
+    if "x" in cross_posts:
+        require_feature(token, "x")
+    if "reddit" in cross_posts:
+        require_feature(token, "reddit")
+
     # ALE-137 — Option A : programmation directe, publiée à l'échéance sans
     # validation Slack (le post naît `validated` pour que le cron le publie).
     if not payload.validate_via_slack:
@@ -684,6 +771,7 @@ def me_linkedin_schedule(
             payload.scheduled_at,
             media_items=media_items,
             require_slack=False,
+            cross_posts=cross_posts,
         )
         if row is None:
             raise HTTPException(status_code=500, detail="Impossible d'enregistrer le post planifié.")
@@ -698,6 +786,7 @@ def me_linkedin_schedule(
         payload.scheduled_at,
         media_items=media_items,
         require_slack=payload.validate_via_slack,
+        cross_posts=cross_posts,
     )
     if row is None:
         raise HTTPException(status_code=500, detail="Impossible d'enregistrer le post planifié.")
@@ -757,6 +846,10 @@ class XConnectRequest(BaseModel):
 class XPublishRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=8000)
     draft: bool = False
+    # ALE-59 : version adaptée par l'IA. 1 tweet = post simple ; plusieurs =
+    # thread (chaîné automatiquement par Zernio via threadItems). Absent =
+    # comportement historique (le content part tel quel).
+    tweets: list[str] | None = Field(default=None, max_length=crosspost.X_THREAD_MAX_ITEMS)
 
 
 def _x_status(token: str) -> dict[str, Any]:
@@ -821,14 +914,273 @@ def me_x_publish(
     account_id = profile.get("zernio_x_account_id")
     if not account_id:
         raise HTTPException(status_code=400, detail="Aucun compte X connecté. Connecte-le d'abord dans l'onglet Profil.")
+    tweets = [t.strip() for t in (payload.tweets or []) if isinstance(t, str) and t.strip()]
+    if tweets:
+        # Nouvelle capacité (version adaptée / thread) : en bêta — l'envoi X
+        # historique (content seul) reste ouvert à tous les comptes.
+        require_feature(token, "x")
+    for idx, tweet in enumerate(tweets, start=1):
+        if len(tweet) > crosspost.X_TWEET_MAX:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Le tweet {idx} fait {len(tweet)} caractères (maximum {crosspost.X_TWEET_MAX}).",
+            )
+    platform_specific_data = None
+    content = payload.content.strip()
+    if len(tweets) > 1:
+        # Thread : Zernio chaîne les threadItems ; le content de tête ne sert
+        # qu'à l'affichage dans son dashboard (doc Zernio), on y met le texte complet.
+        platform_specific_data = {"threadItems": [{"content": t} for t in tweets]}
+    elif tweets:
+        content = tweets[0]
     try:
         result = zernio.create_post(
-            payload.content.strip(), account_id, publish_now=True, is_draft=payload.draft, platform="x"
+            content,
+            account_id,
+            publish_now=True,
+            is_draft=payload.draft,
+            platform="x",
+            platform_specific_data=platform_specific_data,
         )
     except zernio.ZernioError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     post = result.get("post") or result
-    return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft}
+    return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft, "thread_len": len(tweets) or 1}
+
+
+# ── ALE-59 : Publication multi-réseaux — Reddit via Zernio + adaptation IA ────
+
+class RedditConnectRequest(BaseModel):
+    redirect_url: str | None = None
+
+
+class RedditPublishRequest(BaseModel):
+    body: str = Field(..., min_length=1, max_length=40000)
+    title: str = Field(..., min_length=1, max_length=crosspost.REDDIT_TITLE_MAX)
+    subreddit: str = Field(..., min_length=2, max_length=30)
+    flair_id: str | None = Field(default=None, max_length=200)
+    flair_text: str | None = Field(default=None, max_length=200)
+
+
+class AdaptPostRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=8000)
+
+
+def _reddit_status(token: str) -> dict[str, Any]:
+    profile = db.get_editorial_profile(token) or {}
+    return {
+        "configured": zernio.enabled(),
+        "connected": bool(profile.get("zernio_reddit_account_id")),
+        "account_id": profile.get("zernio_reddit_account_id"),
+        "profile_id": profile.get("zernio_profile_id"),
+        "connected_at": profile.get("zernio_reddit_connected_at"),
+    }
+
+
+@app.get("/me/reddit/status")
+def me_reddit_status(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Whether the user has a Reddit account connected through Zernio."""
+    require_feature(token, "reddit")
+    return _reddit_status(token)
+
+
+@app.post("/me/reddit/connect")
+def me_reddit_connect(
+    payload: RedditConnectRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Return a Reddit OAuth URL the user opens to authorize publishing."""
+    require_feature(token, "reddit")
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    try:
+        profile_id = _ensure_zernio_profile(token)
+        auth_url = zernio.get_connect_url(profile_id, redirect_url=payload.redirect_url, platform="reddit")
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"auth_url": auth_url}
+
+
+@app.post("/me/reddit/refresh")
+def me_reddit_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Re-read the connected Reddit account from Zernio (call after OAuth return)."""
+    require_feature(token, "reddit")
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    profile_id = profile.get("zernio_profile_id")
+    if not profile_id:
+        return _reddit_status(token)
+    try:
+        account_id = zernio.find_account_id(profile_id, platform="reddit")
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.set_zernio_reddit_account(token, account_id)
+    return _reddit_status(token)
+
+
+def _subreddit_check(name: str, account_id: str | None) -> dict[str, Any]:
+    """Vérification « Reddit confirme » (existence, taille) — best-effort.
+
+    Zernio indisponible ou en erreur → exists=None (inconnu, non bloquant) :
+    la vérification est un éclairage, jamais un point de panne du parcours."""
+    info: dict[str, Any] = {"exists": None, "subscribers": None, "nsfw": None, "title": None}
+    if not zernio.enabled():
+        return info
+    try:
+        data = zernio.validate_subreddit(name, account_id=account_id)
+    except Exception:
+        return info
+    if not isinstance(data, dict):
+        return info
+    info["exists"] = bool(data.get("exists"))
+    sub = data.get("subreddit") if isinstance(data.get("subreddit"), dict) else {}
+    info["subscribers"] = sub.get("subscribers")
+    info["nsfw"] = sub.get("isNSFW")
+    info["title"] = sub.get("title")
+    return info
+
+
+@app.get("/me/reddit/subreddit-info")
+def me_reddit_subreddit_info(
+    name: str,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Métadonnées d'un subreddit : bibliothèque + vérification en direct (gratuit)."""
+    require_feature(token, "reddit")
+    normalized = crosspost.normalize_subreddit_name(name)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Nom de subreddit invalide.")
+    profile = db.get_editorial_profile(token) or {}
+    check = _subreddit_check(normalized, profile.get("zernio_reddit_account_id"))
+    return {"name": normalized, **crosspost.suggestion_metadata(normalized), **check}
+
+
+@app.get("/me/reddit/flairs")
+def me_reddit_flairs(
+    subreddit: str,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Flairs disponibles d'un subreddit (certains l'exigent). Best-effort."""
+    require_feature(token, "reddit")
+    normalized = crosspost.normalize_subreddit_name(subreddit)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Nom de subreddit invalide.")
+    profile = db.get_editorial_profile(token) or {}
+    account_id = profile.get("zernio_reddit_account_id")
+    if not zernio.enabled() or not account_id:
+        return {"flairs": []}
+    try:
+        flairs = zernio.list_reddit_flairs(account_id, normalized)
+    except Exception:
+        flairs = []
+    return {"flairs": flairs}
+
+
+@app.post("/me/reddit/publish")
+def me_reddit_publish(
+    payload: RedditPublishRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Publish a text post immediately on the user's connected Reddit account."""
+    require_feature(token, "reddit")
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    account_id = profile.get("zernio_reddit_account_id")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="Aucun compte Reddit connecté. Connecte-le d'abord dans Mon profil → Connexions.")
+    subreddit = crosspost.normalize_subreddit_name(payload.subreddit)
+    if not subreddit:
+        raise HTTPException(status_code=400, detail="Nom de subreddit invalide.")
+    # « Reddit confirme » : refus net si le subreddit n'existe pas (faute de
+    # frappe, suggestion IA hors liste erronée) — un échec de vérification
+    # (réseau) ne bloque pas, Zernio renverra sa propre erreur le cas échéant.
+    check = _subreddit_check(subreddit, account_id)
+    if check.get("exists") is False:
+        raise HTTPException(status_code=400, detail=f"Le subreddit r/{subreddit} n'existe pas (ou est privé/banni).")
+    platform_specific_data: dict[str, Any] = {
+        "subreddit": subreddit,
+        "title": payload.title.strip()[:crosspost.REDDIT_TITLE_MAX],
+    }
+    if payload.flair_id:
+        platform_specific_data["flairId"] = payload.flair_id
+    elif payload.flair_text:
+        platform_specific_data["flairText"] = payload.flair_text
+    try:
+        result = zernio.create_post(
+            payload.body.strip(),
+            account_id,
+            publish_now=True,
+            platform="reddit",
+            platform_specific_data=platform_specific_data,
+        )
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    post = result.get("post") or result
+    return {"ok": True, "post_id": post.get("_id"), "post": post, "subreddit": subreddit}
+
+
+@app.post("/me/publish/adapt/x")
+def me_adapt_post_x(
+    payload: AdaptPostRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Adapte un post LinkedIn pour X (IA). Débit remboursé si l'adaptation échoue."""
+    require_feature(token, "x")
+    profile = db.get_editorial_profile(token) or {}
+    ok, balance = db.debit_credits(token, "adapt_x", 1)
+    if not ok:
+        cost = db.CREDIT_COSTS["adapt_x"]
+        raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Adaptation X = {cost} crédit(s).")
+    try:
+        tweets = adapt_post_for_x(payload.content, profile)
+    except Exception as exc:
+        user = db.get_user(token) or {}
+        db.refund_credits_admin(user.get("id"), "adapt_x", 1, "adaptation X échouée")
+        raise HTTPException(status_code=502, detail=f"Adaptation X impossible : {exc}") from exc
+    return {"tweets": tweets, "text": "\n\n".join(tweets), "credits_balance": balance}
+
+
+@app.post("/me/publish/adapt/reddit")
+def me_adapt_post_reddit(
+    payload: AdaptPostRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Adapte un post LinkedIn pour Reddit + suggère des subreddits vérifiés.
+
+    L'adaptation (titre + corps + choix de subreddits) est débitée ; la
+    vérification des suggestions (existence, taille) est gratuite."""
+    require_feature(token, "reddit")
+    profile = db.get_editorial_profile(token) or {}
+    ok, balance = db.debit_credits(token, "adapt_reddit", 1)
+    if not ok:
+        cost = db.CREDIT_COSTS["adapt_reddit"]
+        raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Adaptation Reddit = {cost} crédit(s).")
+    try:
+        adapted = adapt_post_for_reddit(payload.content, profile)
+    except Exception as exc:
+        user = db.get_user(token) or {}
+        db.refund_credits_admin(user.get("id"), "adapt_reddit", 1, "adaptation Reddit échouée")
+        raise HTTPException(status_code=502, detail=f"Adaptation Reddit impossible : {exc}") from exc
+
+    account_id = profile.get("zernio_reddit_account_id")
+    suggestions = []
+    for item in adapted.get("subreddits", []):
+        name = item.get("name") or ""
+        meta = crosspost.suggestion_metadata(name)
+        check = _subreddit_check(name, account_id)
+        # Une suggestion IA hors bibliothèque dont Reddit dit qu'elle n'existe
+        # pas est écartée d'office (c'est tout l'objet de la vérification).
+        if check.get("exists") is False and not meta.get("in_library"):
+            continue
+        suggestions.append({"name": name, "reason": item.get("reason") or "", **meta, **check})
+    return {
+        "title": adapted.get("title") or "",
+        "body": adapted.get("body") or "",
+        "suggestions": suggestions,
+        "credits_balance": balance,
+    }
 
 
 @app.patch("/me/linkedin/scheduled/{post_id}")
@@ -2958,8 +3310,12 @@ def _engine_state(token: str, account: dict[str, Any]) -> dict[str, Any]:
     # ligne de compte) pour que l'app affiche exactement ce que le planificateur
     # appliquera : un template vide, par exemple, y retombe sur « invitation seule ».
     settings = outreach_autopilot.settings_of(account)
+    # Déploiement progressif : les comptes qui n'ont pas encore l'autopilote ne
+    # reçoivent tout simplement pas le bloc `automation`, et le front masque la barre
+    # de lui-même (il sait déjà gérer son absence — cas de l'ancienne instance en vol).
+    autopilot_on = features.has_feature(db.get_user(token), "autopilot")
     try:
-        drafts_pending = len(db.list_outreach_drafts(token))
+        drafts_pending = len(db.list_outreach_drafts(token)) if autopilot_on else 0
     except Exception:  # noqa: BLE001 — l'affichage ne doit pas casser sur une lecture
         drafts_pending = 0
     return {
@@ -2998,7 +3354,7 @@ def _engine_state(token: str, account: dict[str, Any]) -> dict[str, Any]:
             "message_template": settings.template,
             "requires_validation": settings.requires_validation,
             "steps": outreach_autopilot.sequence_steps(settings),
-        },
+        } if autopilot_on else None,
     }
 
 
@@ -3155,6 +3511,17 @@ def me_linkedin_outreach_settings(
     _require_outreach_account(token)
     if payload.send_days is not None and not [d for d in payload.send_days if 1 <= d <= 7]:
         raise HTTPException(status_code=422, detail="Choisis au moins un jour d'envoi.")
+
+    # Déploiement progressif : les réglages de cadençage (plafond, fenêtre horaire)
+    # restent ouverts à tous, mais armer l'AUTOPILOTE demande la fonctionnalité. Le
+    # garde est ici, pas seulement sur l'affichage du bouton : cet endpoint est ce qui
+    # ferait réellement partir des invitations au nom du client.
+    touches_autopilot = any(v is not None for v in (
+        payload.auto_prospection_enabled, payload.auto_invite_tier, payload.auto_invite_daily_cap,
+        payload.auto_message_mode, payload.auto_message_template, payload.auto_message_requires_validation,
+    ))
+    if touches_autopilot:
+        require_feature(token, "autopilot")
 
     # ALE-284 — garde-fous de l'autopilote, refusés AVANT écriture plutôt que rattrapés
     # après : un réglage incohérent enregistré, c'est un client persuadé d'avoir armé
@@ -3435,12 +3802,14 @@ def me_outreach_lead_tiers(token: str = Depends(require_token)) -> dict[str, Any
 
     Choisir « uniquement mes leads verts » sans savoir si cela vise 3 personnes ou 300
     n'est pas un choix éclairé : la pop-up annonce le volume réel avant l'engagement."""
+    require_feature(token, "autopilot")
     return {"counts": db.count_leads_by_tier(token)}
 
 
 @app.get("/me/linkedin/outreach/drafts")
 def me_outreach_drafts(token: str = Depends(require_token)) -> dict[str, Any]:
     """Messages rédigés par l'autopilote, en attente de relecture."""
+    require_feature(token, "autopilot")
     return {"items": db.list_outreach_drafts(token)}
 
 
@@ -3454,6 +3823,7 @@ def me_outreach_draft_approve(
     exactement ce que le client vient de relire. Refuser un brouillon se fait par
     `DELETE /me/linkedin/outreach/queue/{id}` — c'est la même opération qu'annuler une
     action en file, et l'autopilote ne le reproposera pas."""
+    require_feature(token, "autopilot")
     _require_outreach_account(token)
     item = db.approve_outreach_draft(token, item_id, body=payload.text)
     if not item:

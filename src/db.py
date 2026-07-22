@@ -90,15 +90,37 @@ _USER_CACHE_TTL = 60.0
 _USER_CACHE_MAX = 1000
 
 
+def _copy_user(entry: dict) -> dict:
+    """Copie défensive d'une entrée du cache.
+
+    `dict(entry)` ne copierait que le premier niveau : `app_metadata` resterait partagé
+    par référence avec le cache, qui est global au process. Un appelant qui le modifierait
+    (même par accident) altérerait les droits vus par TOUS les appels suivants sur ce
+    jeton — y compris les feature flags."""
+    copied = dict(entry)
+    meta = copied.get("app_metadata")
+    copied["app_metadata"] = dict(meta) if isinstance(meta, dict) else {}
+    return copied
+
+
 def get_user(access_token: str) -> dict | None:
-    """Validate a JWT and return the matching user, or None if invalid."""
+    """Validate a JWT and return the matching user, or None if invalid.
+
+    Inclut `app_metadata` : c'est là que vivent le rôle (`ideas_only`) et les feature
+    flags (`src/features.py`). Écrivable uniquement par la clé service-role — un client
+    ne peut donc pas s'octroyer un droit en modifiant son propre profil.
+
+    ⚠️ Conséquence du cache ci-dessus : poser ou retirer un flag met jusqu'à
+    `_USER_CACHE_TTL` secondes à être pris en compte côté serveur. Acceptable pour un
+    déploiement progressif, à connaître si un test « je ne vois toujours rien » suit
+    de quelques secondes une modification d'`app_metadata`."""
     if not supabase_enabled():
         return None
     now = time.monotonic()
     with _USER_CACHE_LOCK:
         hit = _USER_CACHE.get(access_token)
         if hit and now - hit[0] < _USER_CACHE_TTL:
-            return dict(hit[1])
+            return _copy_user(hit[1])
     try:
         client = create_client(_url(), _anon_key())  # type: ignore[arg-type]
         resp = client.auth.get_user(access_token)
@@ -107,7 +129,12 @@ def get_user(access_token: str) -> dict | None:
     user = getattr(resp, "user", None)
     if not user:
         return None
-    entry = {"id": user.id, "email": getattr(user, "email", None)}
+    raw_meta = getattr(user, "app_metadata", None)
+    entry = {
+        "id": user.id,
+        "email": getattr(user, "email", None),
+        "app_metadata": dict(raw_meta) if isinstance(raw_meta, dict) else {},
+    }
     with _USER_CACHE_LOCK:
         if len(_USER_CACHE) >= _USER_CACHE_MAX:
             for key in [k for k, (ts, _) in _USER_CACHE.items() if now - ts >= _USER_CACHE_TTL]:
@@ -115,7 +142,7 @@ def get_user(access_token: str) -> dict | None:
             if len(_USER_CACHE) >= _USER_CACHE_MAX:
                 _USER_CACHE.clear()
         _USER_CACHE[access_token] = (now, entry)
-    return dict(entry)
+    return _copy_user(entry)
 
 
 def _influencer_row(user_id: str, result: dict, platform: str = "linkedin") -> dict:
@@ -589,6 +616,27 @@ def set_zernio_x_account(access_token: str, account_id: str | None) -> dict | No
     return resp.data[0] if resp.data else None
 
 
+def set_zernio_reddit_account(access_token: str, account_id: str | None) -> dict | None:
+    """Persist (or clear) the connected Reddit account id for this user (ALE-59)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    row = {
+        "user_id": user["id"],
+        "zernio_reddit_account_id": account_id,
+        "zernio_reddit_connected_at": now if account_id else None,
+        "updated_at": now,
+    }
+    resp = (
+        db.table("user_editorial_profiles")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def get_user_ai_context(access_token: str | None) -> dict[str, Any] | None:
     """Compact profile context consumed by LLM prompts.
 
@@ -889,6 +937,8 @@ CREDIT_COSTS: dict[str, int] = {
     "chat": 2,             # par message
     "generate_image": 5,
     "collect_leads": 1,    # par crédit ; le nb débité = nb de commentateurs / N (ALE-239)
+    "adapt_x": 2,          # adaptation IA d'un post pour X (ALE-59)
+    "adapt_reddit": 3,     # adaptation IA d'un post pour Reddit + suggestion subreddits (ALE-59)
 }
 
 
@@ -2654,6 +2704,7 @@ def create_scheduled_post(
     scheduled_at_iso: str,
     media_items: list[dict[str, Any]] | None = None,
     require_slack: bool = True,
+    cross_posts: dict[str, Any] | None = None,
 ) -> dict | None:
     """Store a scheduled LinkedIn post (with optional images).
 
@@ -2675,6 +2726,7 @@ def create_scheduled_post(
             "post_text": post_text,
             "scheduled_at": scheduled_at_iso,
             "media_items": media_items or [],
+            "cross_posts": cross_posts or {},
             "slack_status": "pending" if require_slack else "validated",
         })
         .execute()
@@ -2706,7 +2758,7 @@ def list_scheduled_posts(access_token: str, limit: int = 50) -> list[dict]:
     db = client_for_token(access_token)
     resp = (
         db.table("scheduled_posts")
-        .select("id, post_text, scheduled_at, status, slack_status, slack_message_ts, zernio_post_id, error_message, media_items, created_at")
+        .select("id, post_text, scheduled_at, status, slack_status, slack_message_ts, zernio_post_id, error_message, media_items, cross_posts, created_at")
         .order("scheduled_at", desc=False)
         .limit(max(1, min(limit, 200)))
         .execute()
@@ -3102,7 +3154,7 @@ def get_due_scheduled_posts() -> list[dict]:
     admin = admin_client()
     resp = (
         admin.table("scheduled_posts")
-        .select("id, user_id, post_text, media_items")
+        .select("id, user_id, post_text, media_items, cross_posts")
         .eq("status", "pending")
         .eq("slack_status", "validated")
         .lte("scheduled_at", "now()")
@@ -3115,18 +3167,21 @@ def get_due_scheduled_posts() -> list[dict]:
     user_ids = list({p["user_id"] for p in posts})
     prof = (
         admin.table("user_editorial_profiles")
-        .select("user_id, zernio_account_id")
+        .select("user_id, zernio_account_id, zernio_x_account_id, zernio_reddit_account_id")
         .in_("user_id", user_ids)
         .execute()
     )
-    account_by_user = {r["user_id"]: r.get("zernio_account_id") for r in (prof.data or [])}
+    accounts_by_user = {r["user_id"]: r for r in (prof.data or [])}
     return [
         {
             "id": p["id"],
             "user_id": p["user_id"],
             "post_text": p["post_text"],
             "media_items": p.get("media_items") or [],
-            "zernio_account_id": account_by_user.get(p["user_id"]),
+            "cross_posts": p.get("cross_posts") or {},
+            "zernio_account_id": (accounts_by_user.get(p["user_id"]) or {}).get("zernio_account_id"),
+            "zernio_x_account_id": (accounts_by_user.get(p["user_id"]) or {}).get("zernio_x_account_id"),
+            "zernio_reddit_account_id": (accounts_by_user.get(p["user_id"]) or {}).get("zernio_reddit_account_id"),
         }
         for p in posts
     ]
@@ -3138,8 +3193,12 @@ def update_scheduled_post_status(
     *,
     zernio_post_id: str | None = None,
     error: str | None = None,
+    cross_posts: dict[str, Any] | None = None,
 ) -> None:
-    """Update publication status for a scheduled post (service-role, for cron)."""
+    """Update publication status for a scheduled post (service-role, for cron).
+
+    `cross_posts` (ALE-59) : versions X/Reddit enrichies du résultat de leur
+    publication (status/erreur par réseau), réécrites en bloc."""
     if not admin_enabled():
         return
     admin = admin_client()
@@ -3148,6 +3207,8 @@ def update_scheduled_post_status(
         payload["zernio_post_id"] = zernio_post_id
     if error is not None:
         payload["error_message"] = error[:500]
+    if cross_posts is not None:
+        payload["cross_posts"] = cross_posts
     admin.table("scheduled_posts").update(payload).eq("id", post_id).execute()
 
 
@@ -5470,6 +5531,30 @@ def admin_list_leads_awaiting_acceptance(user_id: str, *, limit: int = 100) -> l
 # filtre manquant ferait inviter les leads du client A depuis le compte LinkedIn du
 # client B, sans la moindre erreur visible.
 # --------------------------------------------------------------------------- #
+
+
+def admin_user_app_metadata(user_id: str) -> dict | None:
+    """`app_metadata` de CE compte, lu en service-role (rôle + feature flags).
+
+    Le cron n'a aucun jeton : il ne peut pas passer par `get_user(token)`. Sert au
+    planificateur de l'autopilote à vérifier que le compte a toujours la fonctionnalité
+    — sans ça, retirer le flag à quelqu'un ne couperait pas son autopilote déjà armé.
+
+    Retourne **None** (et pas `{}`) si la lecture échoue : l'appelant doit pouvoir
+    distinguer « ce compte n'a aucun flag » de « je n'ai pas réussi à savoir », et
+    fermer dans le second cas."""
+    if not admin_enabled() or not user_id:
+        return None
+    try:
+        resp = admin_client().auth.admin.get_user_by_id(user_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[features] lecture d'app_metadata échouée ({user_id}) : {exc}", flush=True)
+        return None
+    user = getattr(resp, "user", None)
+    if not user:
+        return None
+    meta = getattr(user, "app_metadata", None)
+    return dict(meta) if isinstance(meta, dict) else {}
 
 
 def admin_get_lead_targeting(user_id: str) -> dict | None:

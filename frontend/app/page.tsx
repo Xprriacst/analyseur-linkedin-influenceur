@@ -57,6 +57,9 @@ import AuthModal, { type AuthMode } from "./components/AuthModal";
 import OnboardingScreen from "./components/Onboarding";
 import PostActionsBar, { type PostAction } from "./components/PostActionsBar";
 import PublishConfirmModal from "./components/PublishConfirmModal";
+// ALE-59 — publication multi-réseaux : panneaux X/Reddit partagés entre la
+// pop-up Publier et la modale Programmer, + helper de publication post-LinkedIn.
+import CrossNetworkPanels, { publishCrossNetworks, XLogo, RedditLogo, type CrossPostsDraft } from "./components/CrossNetworkPanels";
 // ALE-284 — les types de l'autopilote sont définis avec le composant qui les rend, et
 // importés ici : les redéclarer dans ce fichier les ferait diverger à la première
 // évolution du contrat serveur.
@@ -230,6 +233,16 @@ type SavedPost = {
   slack_status?: string | null;
   media_items?: SavedPostMediaItem[] | null;
 };
+// ALE-59 : version X/Reddit stockée avec un post programmé ; après le passage
+// du cron, l'entrée porte aussi le résultat (status / error par réseau).
+type ScheduledCrossEntry = {
+  status?: string;
+  error?: string | null;
+  tweets?: string[];
+  subreddit?: string;
+  title?: string;
+  body?: string;
+};
 type ScheduledPost = {
   id: string;
   post_text: string;
@@ -238,6 +251,7 @@ type ScheduledPost = {
   slack_status?: string | null;
   slack_message_ts?: string | null;
   media_items?: ScheduledPostMediaItem[] | null;
+  cross_posts?: { x?: ScheduledCrossEntry | null; reddit?: ScheduledCrossEntry | null } | null;
   error_message?: string | null;
   created_at?: string;
 };
@@ -1282,6 +1296,8 @@ function Sidebar({
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedPreferenceLoaded, setCollapsedPreferenceLoaded] = useState(false);
   const billing = useBilling(isAuthed);
+  // ALE-59 : les entrées réseau de la nav dépendent des feature flags du compte.
+  const featureFlags = useFeatures(isAuthed);
   // ALE-246 : ouverture par réseau, découplée du réseau actif → LinkedIn et
   // Instagram peuvent rester déployés en même temps (fin de l'accordéon).
   const [openNets, setOpenNets] = useState<Record<Platform, boolean>>(() => ({
@@ -1365,9 +1381,21 @@ function Sidebar({
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {!restricted && (() => {
         // `soon` : réseau visible mais grisé (pas encore ouvert aux clients).
-        const networks: { key: Platform; label: string; icon: React.ReactNode; soon?: boolean }[] = [
+        // ALE-59 + feature flags : Instagram ne se dégrise (et X/Reddit
+        // n'apparaissent, grisés « Bientôt ») que pour les comptes porteurs du
+        // flag correspondant — déploiement progressif, fail closed pendant le
+        // chargement. La PUBLICATION X/Reddit passe par la pop-up multi-réseaux
+        // (elle aussi gardée par flag) ; l'onglet réseau dédié reste à
+        // construire (ALE-60/76…).
+        const networks: { key: Platform | "x" | "reddit"; label: string; icon: React.ReactNode; soon?: boolean }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
-          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} />, soon: true },
+          { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} />, soon: !featureFlags.has("instagram") },
+          ...(featureFlags.has("x")
+            ? [{ key: "x" as const, label: "X", icon: <XLogo size={14} />, soon: true }]
+            : []),
+          ...(featureFlags.has("reddit")
+            ? [{ key: "reddit" as const, label: "Reddit", icon: <RedditLogo size={14} />, soon: true }]
+            : []),
         ];
         // ALE-257 : « Veille » retirée — l'analyse (profils, classement, tendances,
         // monitoring) vit désormais dans « Contenu » › sous-onglet « Analyses ».
@@ -1397,22 +1425,24 @@ function Sidebar({
                   );
                 }
                 // ALE-246 : ouverture indépendante par réseau (plus d'accordéon).
-                const expanded = openNets[net.key];
-                const isActiveNet = platform === net.key;
+                // Seuls les réseaux non `soon` arrivent ici → clé Platform sûre.
+                const netKey = net.key as Platform;
+                const expanded = openNets[netKey];
+                const isActiveNet = platform === netKey;
                 return (
                   <React.Fragment key={net.key}>
                     <button
                       className={`nav-item ${expanded ? "nav-item-open" : ""}${isActiveNet ? " nav-item-active-net" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
                       title={collapsed ? net.label : undefined}
                       aria-expanded={expanded}
-                      onClick={() => setOpenNets((o) => ({ ...o, [net.key]: !o[net.key] }))}
+                      onClick={() => setOpenNets((o) => ({ ...o, [netKey]: !o[netKey] }))}
                     >
                       {net.icon}
                       {!collapsed && <span>{net.label}</span>}
                     </button>
                     {expanded && subTabs.map((tab) => {
                       const locked = !!tab.premium && !isAuthed;
-                      const badge = jobBadges[net.key];
+                      const badge = jobBadges[netKey];
                       // ALE-257 : la progression des séries s'affiche sur « Contenu »
                       // (la Veille n'a plus d'entrée de nav dédiée).
                       const showBadge = tab.key === "content" && badge;
@@ -1426,7 +1456,7 @@ function Sidebar({
                               requireAuth("Crée un compte gratuit pour débloquer le générateur de contenu.");
                               return;
                             }
-                            onPlatformChange(net.key);
+                            onPlatformChange(netKey);
                             onNavigate(tab.key);
                           }}
                         >
@@ -1442,8 +1472,8 @@ function Sidebar({
                         </button>
                       );
                     })}
-                    {/* ALE-229 : Prospection — sous LinkedIn (Instagram est grisé en amont) */}
-                    {expanded && net.key === "linkedin" && (
+                    {/* ALE-229 : Prospection — sous LinkedIn uniquement */}
+                    {expanded && netKey === "linkedin" && (
                       <button
                         className={`nav-item nav-item-sub ${isActiveNet && view === "prospecting" ? "active" : ""} ${!isAuthed ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
                         title={collapsed ? "Prospection" : undefined}
@@ -2465,6 +2495,42 @@ function formatAgo(iso?: string | null): string {
   return `il y a ${Math.round(hours / 24)} j`;
 }
 
+/** Feature flags — déploiement progressif d'une nouveauté (agence d'abord, puis tous).
+ *
+ *  ⚠️ La liste vient du SERVEUR (`GET /me/features`) et n'est jamais recalculée ici.
+ *  Le droit a deux sources — les fonctionnalités sorties de bêta (constante serveur) et
+ *  celles posées sur le compte — et dupliquer la première dans le navigateur la ferait
+ *  diverger dès la première généralisation.
+ *
+ *  Fail CLOSED pendant le chargement : tant qu'on ne sait pas, on n'affiche pas. Mieux
+ *  vaut une nouveauté qui apparaît une demi-seconde plus tard qu'une nouveauté en bêta
+ *  qui clignote sous les yeux de tous les comptes. */
+function useFeatures(isAuthed: boolean) {
+  const [features, setFeatures] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    if (!isAuthed) { setFeatures(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/features`, { headers: await authHeaders() });
+        if (res.ok) { const data = await res.json(); if (!cancelled) setFeatures(data.features || []); }
+        else if (!cancelled) setFeatures([]);
+      } catch {
+        // Backend injoignable : on reste fermé plutôt que d'ouvrir par défaut.
+        if (!cancelled) setFeatures([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthed]);
+
+  return {
+    features,
+    loading: features === null,
+    has: (name: string) => (features || []).includes(name),
+  };
+}
+
 /** Statut de connexion Unipile (compte LinkedIn de prospection) + quotas + file d'envoi. */
 function useLinkedInOutreach(isAuthed: boolean) {
   const [status, setStatus] = useState<OutreachStatus | null>(null);
@@ -2648,6 +2714,44 @@ function useTwitter(isAuthed: boolean) {
   return { status, busy, error, connect };
 }
 
+// ALE-59 — connexion Reddit via Zernio (même flux OAuth que LinkedIn/X).
+function useReddit(isAuthed: boolean) {
+  const [status, setStatus] = useState<XStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) { setStatus(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/reddit/status`, { headers: await authHeaders() });
+        if (res.ok) setStatus(await res.json());
+      } catch { /* ignore */ }
+    })();
+  }, [isAuthed]);
+
+  async function connect() {
+    setError("");
+    setBusy(true);
+    try {
+      const redirect = `${window.location.origin}${window.location.pathname}?reddit=connected`;
+      const res = await fetch(`${DIRECT_API_URL}/me/reddit/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ redirect_url: redirect }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion Reddit impossible");
+      window.location.href = data.auth_url;
+    } catch (err: any) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  return { status, busy, error, connect };
+}
+
 type SlackStatus = {
   connected: boolean;
   configured: boolean;
@@ -2791,6 +2895,10 @@ function SchedulePostModal({
   const [scheduling, setScheduling] = useState(false);
   const [error, setError] = useState("");
   const ideasAccount = useIdeasAccount();
+  // ALE-59 : versions X/Reddit stockées avec le post programmé, publiées
+  // ensemble au créneau par le cron. Le composant se masque seul en vue client.
+  const [cross, setCross] = useState<CrossPostsDraft | null>(null);
+  const [crossValid, setCrossValid] = useState(true);
 
   async function doSchedule(validateViaSlack: boolean) {
     setError("");
@@ -2810,6 +2918,7 @@ function SchedulePostModal({
             ...(image.url.startsWith("data:") ? { data_url: image.url } : { url: image.url }),
             filename: image.filename,
           })),
+          ...(cross ? { cross_posts: cross } : {}),
         }),
       });
       const data = await res.json();
@@ -2860,6 +2969,11 @@ function SchedulePostModal({
             </div>
           </div>
         )}
+        <CrossNetworkPanels
+          baseText={text}
+          disabled={scheduling}
+          onChange={(c, valid) => { setCross(c); setCrossValid(valid); }}
+        />
         <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
           Date et heure de publication
         </label>
@@ -2877,7 +2991,7 @@ function SchedulePostModal({
           {slackCanUse(slackStatus) ? (
             <button
               className="secondary-button"
-              disabled={scheduling || !scheduleDate}
+              disabled={scheduling || !scheduleDate || !crossValid}
               title="Envoyer une demande de validation Slack avant publication"
               onClick={() => doSchedule(true)}
             >
@@ -2886,15 +3000,19 @@ function SchedulePostModal({
           ) : ideasAccount ? (
             <button
               className="secondary-button"
-              disabled={scheduling || !scheduleDate}
+              disabled={scheduling || !scheduleDate || !crossValid}
               title="Le client validera ce post dans son espace"
               onClick={() => doSchedule(true)}
             >
               {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Soumettre pour validation
             </button>
           ) : null}
-          <button className="primary-button" disabled={scheduling || !scheduleDate} onClick={() => doSchedule(false)}>
-            {scheduling ? <><Loader2 size={14} className="spinning" /> Planification…</> : <><Clock3 size={14} /> Programmer sur LinkedIn</>}
+          <button className="primary-button" disabled={scheduling || !scheduleDate || !crossValid} onClick={() => doSchedule(false)}>
+            {scheduling
+              ? <><Loader2 size={14} className="spinning" /> Planification…</>
+              : cross
+                ? <><Clock3 size={14} /> Programmer sur {1 + (cross.x ? 1 : 0) + (cross.reddit ? 1 : 0)} réseaux</>
+                : <><Clock3 size={14} /> Programmer sur LinkedIn</>}
           </button>
         </div>
       </div>
@@ -4479,7 +4597,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     void doPublish(key, edited[key] ?? "", true);
   }
 
-  async function doPublish(key: string, text: string, draft: boolean = false) {
+  async function doPublish(key: string, text: string, draft: boolean = false, cross?: CrossPostsDraft | null) {
     setPublishError("");
     setPublished(null);
     setDrafted(null);
@@ -4494,6 +4612,11 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon impossible" : "Publication impossible"));
       if (draft) setDrafted(key); else setPublished(key);
+      // ALE-59 : les versions X/Reddit ne partent qu'APRÈS le succès LinkedIn.
+      if (!draft && cross) {
+        const summary = await publishCrossNetworks(cross);
+        if (summary.errors.length) setPublishError(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+      }
     } catch (err: any) {
       setPublishError(err.message);
     } finally {
@@ -4929,10 +5052,10 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
           images={(images[confirmPublish] || []).map((im) => ({ url: im.url, filename: im.filename }))}
           busy={publishing !== null}
           onClose={() => setConfirmPublish(null)}
-          onConfirm={(t) => {
+          onConfirm={(t, cross) => {
             const key = confirmPublish;
             setEdited((prev) => ({ ...prev, [key]: t }));
-            void doPublish(key, t);
+            void doPublish(key, t, false, cross);
           }}
         />
       )}
@@ -5581,7 +5704,7 @@ function DailyIdeasView({
     }
   }
 
-  async function publishPost(it: DailyIdea, overrideText?: string) {
+  async function publishPost(it: DailyIdea, overrideText?: string, cross?: CrossPostsDraft | null) {
     setConfirmPublishId(null);
     if (!linkedin.status?.connected) {
       setPostError("Connecte ton compte LinkedIn dans l'onglet Profil.");
@@ -5603,6 +5726,10 @@ function DailyIdeasView({
       if (!res.ok) throw new Error(data.detail || "Publication impossible");
       setPublishedId(it.id);
       setTimeout(() => setPublishedId((s) => (s === it.id ? null : s)), 3000);
+      if (cross) {
+        const summary = await publishCrossNetworks(cross);
+        if (summary.errors.length) setPostError(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+      }
     } catch (err: any) {
       setPostError(err.message);
     } finally {
@@ -5969,7 +6096,7 @@ function DailyIdeasView({
                           images={ideaImagePayload(it).map((im) => ({ url: im.url }))}
                           busy={publishingId === it.id}
                           onClose={() => setConfirmPublishId(null)}
-                          onConfirm={(t) => { setEditedPost((prev) => ({ ...prev, [it.id]: t })); publishPost(it, t); }}
+                          onConfirm={(t, cross) => { setEditedPost((prev) => ({ ...prev, [it.id]: t })); publishPost(it, t, cross); }}
                         />
                       )}
                       {scheduleModalIdea?.id === it.id && (
@@ -6296,7 +6423,7 @@ function LibraryView({
   // Génération d'image IA : pop-up de validation du prompt sur un post sauvegardé.
   const [imageModalSaved, setImageModalSaved] = useState<SavedPost | null>(null);
 
-  async function publishSavedPost(p: SavedPost, overrideText?: string) {
+  async function publishSavedPost(p: SavedPost, overrideText?: string, cross?: CrossPostsDraft | null) {
     setConfirmPublishPostId(null);
     if (!linkedin.status?.connected) {
       setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
@@ -6316,6 +6443,10 @@ function LibraryView({
       setPublishedPost(p.id);
       setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, slack_status: "published" } : pp));
       setTimeout(() => setPublishedPost((s) => s === p.id ? null : s), 3000);
+      if (cross) {
+        const summary = await publishCrossNetworks(cross);
+        if (summary.errors.length) setPublishError(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+      }
     } catch (err: any) {
       setPublishError(err.message);
     } finally {
@@ -6777,7 +6908,7 @@ function LibraryView({
                     images={savedPostImagePayload(p).map((im) => ({ url: im.url, filename: im.filename }))}
                     busy={publishingPost === p.id}
                     onClose={() => setConfirmPublishPostId(null)}
-                    onConfirm={(t) => { setEditedPosts((prev) => ({ ...prev, [p.id]: t })); publishSavedPost(p, t); }}
+                    onConfirm={(t, cross) => { setEditedPosts((prev) => ({ ...prev, [p.id]: t })); publishSavedPost(p, t, cross); }}
                   />
                 )}
                 {activeImageJobForSavedPost(p.id) && (
@@ -6888,7 +7019,7 @@ function LibraryView({
             icon={<Clock3 size={18} />}
             title="Posts programmés"
             count={scheduledPosts.length}
-            desc="Ce qui partira sur LinkedIn automatiquement, aux créneaux que tu as choisis."
+            desc="Ce qui partira automatiquement, aux créneaux que tu as choisis — avec ses versions X et Reddit si tu les as activées en programmant."
           />
           {scheduledPosts.length === 0 ? (
             <div className="lib-empty">
@@ -6909,6 +7040,17 @@ function LibraryView({
                         <>
                           <span className={`lib-tag ${st.cls}`}>{st.label}</span>
                           {schedImages(p).length > 0 && <span className="lib-tag">image</span>}
+                          {/* ALE-59 : versions multi-réseaux programmées avec le post */}
+                          {p.cross_posts?.x && (
+                            <span className={`lib-tag${p.cross_posts.x.status === "published" ? " ok" : ""}`}>
+                              X{p.cross_posts.x.status === "published" ? " ✓" : p.cross_posts.x.status === "failed" ? " — échec" : ""}
+                            </span>
+                          )}
+                          {p.cross_posts?.reddit && (
+                            <span className={`lib-tag${p.cross_posts.reddit.status === "published" ? " ok" : ""}`}>
+                              Reddit{p.cross_posts.reddit.status === "published" ? " ✓" : p.cross_posts.reddit.status === "failed" ? " — échec" : ""}
+                            </span>
+                          )}
                         </>
                       }
                       meta={new Date(p.scheduled_at).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })}
@@ -6953,6 +7095,43 @@ function LibraryView({
                             />
                           ))}
                         </div>
+                      </div>
+                    )}
+                    {/* ALE-59 : versions X/Reddit stockées avec le post — elles partent au même créneau. */}
+                    {(p.cross_posts?.x || p.cross_posts?.reddit) && (
+                      <div style={{ margin: "0 0 14px", display: "grid", gap: 10 }}>
+                        {p.cross_posts?.x && (
+                          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px" }}>
+                            <p style={{ display: "flex", alignItems: "center", gap: 6, margin: "0 0 6px", fontSize: 12.5, fontWeight: 600 }}>
+                              <XLogo size={13} /> Version X
+                              {(p.cross_posts.x.tweets?.length ?? 0) > 1 ? ` — thread de ${p.cross_posts.x.tweets!.length}` : ""}
+                              {p.cross_posts.x.status === "published" ? " · publiée ✓" : p.cross_posts.x.status === "failed" ? " · échec" : ""}
+                            </p>
+                            <p style={{ whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)", margin: 0 }}>
+                              {(p.cross_posts.x.tweets || []).join("\n\n")}
+                            </p>
+                            {p.cross_posts.x.status === "failed" && p.cross_posts.x.error && (
+                              <p style={{ margin: "6px 0 0", fontSize: 12.5, color: "var(--danger)" }}>{p.cross_posts.x.error}</p>
+                            )}
+                          </div>
+                        )}
+                        {p.cross_posts?.reddit && (
+                          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px" }}>
+                            <p style={{ display: "flex", alignItems: "center", gap: 6, margin: "0 0 6px", fontSize: 12.5, fontWeight: 600 }}>
+                              <RedditLogo size={13} color="#ff4500" /> Version Reddit — r/{p.cross_posts.reddit.subreddit}
+                              {p.cross_posts.reddit.status === "published" ? " · publiée ✓" : p.cross_posts.reddit.status === "failed" ? " · échec" : ""}
+                            </p>
+                            {p.cross_posts.reddit.title && (
+                              <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 600 }}>{p.cross_posts.reddit.title}</p>
+                            )}
+                            <p style={{ whiteSpace: "pre-wrap", fontSize: 13, color: "var(--muted)", margin: 0 }}>
+                              {p.cross_posts.reddit.body || ""}
+                            </p>
+                            {p.cross_posts.reddit.status === "failed" && p.cross_posts.reddit.error && (
+                              <p style={{ margin: "6px 0 0", fontSize: 12.5, color: "var(--danger)" }}>{p.cross_posts.reddit.error}</p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                     {p.status === "failed" && p.error_message && (
@@ -7129,7 +7308,7 @@ function AssistantMessageActions({
     } catch { setErr("Copie impossible."); }
   }
 
-  async function publishLinkedIn(overrideText?: string) {
+  async function publishLinkedIn(overrideText?: string, cross?: CrossPostsDraft | null) {
     setConfirmPub(false);
     if (overrideText !== undefined) setEditedText(overrideText);
     if (!linkedin.status?.connected) { setErr("Connecte d'abord ton compte LinkedIn dans l'onglet Profil."); return; }
@@ -7148,6 +7327,10 @@ function AssistantMessageActions({
       if (!res.ok) throw new Error(data.detail || "Publication impossible.");
       setPublished(true);
       setTimeout(() => setPublished(false), 3000);
+      if (cross) {
+        const summary = await publishCrossNetworks(cross);
+        if (summary.errors.length) setErr(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+      }
     } catch (e: any) { setErr(e.message); } finally { setPublishing(false); }
   }
 
@@ -7333,7 +7516,7 @@ function AssistantMessageActions({
           images={images.map((im) => ({ url: im.url, filename: im.filename }))}
           busy={publishing}
           onClose={() => setConfirmPub(false)}
-          onConfirm={(t) => publishLinkedIn(t)}
+          onConfirm={(t, cross) => publishLinkedIn(t, cross)}
         />
       )}
       {scheduleOpen && (
@@ -9332,6 +9515,9 @@ function ProfileView({
   const [draftInfo, setDraftInfo] = useState("");
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
+  const reddit = useReddit(isAuthed);
+  // ALE-59 : la ligne Reddit de Connexions n'existe que pour un compte flaggé.
+  const featureFlags = useFeatures(isAuthed);
   const slack = useSlack(isAuthed);
   const outreach = useLinkedInOutreach(isAuthed);
   const manychat = useManychat(isAuthed);
@@ -9770,6 +9956,23 @@ function ProfileView({
             }
           />
           {twitter.error ? <div className="error" style={{ marginBottom: 12 }}>{twitter.error}</div> : null}
+
+          {featureFlags.has("reddit") && <SettingRow
+            icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="#ff4500" style={{ flexShrink: 0 }}><path d="M22 12.06c0-1.22-.99-2.2-2.2-2.2-.6 0-1.13.24-1.53.62-1.5-1.08-3.57-1.78-5.87-1.86l1-4.71 3.27.7a1.58 1.58 0 1 0 .16-.78l-3.65-.78a.4.4 0 0 0-.47.31l-1.12 5.25c-2.34.07-4.44.77-5.96 1.87-.4-.38-.93-.62-1.53-.62-1.21 0-2.2.98-2.2 2.2 0 .9.53 1.66 1.3 2-.03.22-.05.44-.05.67 0 3.39 3.95 6.14 8.82 6.14s8.82-2.75 8.82-6.14c0-.22-.02-.45-.05-.66.77-.35 1.31-1.12 1.31-2.01zM6.7 13.62c0-.87.71-1.58 1.58-1.58s1.58.71 1.58 1.58-.71 1.58-1.58 1.58-1.58-.71-1.58-1.58zm8.85 4.17c-1.08 1.08-3.15 1.16-3.76 1.16s-2.68-.08-3.75-1.16a.41.41 0 0 1 .58-.58c.68.68 2.13.92 3.17.92s2.5-.24 3.18-.92a.41.41 0 1 1 .58.58zm-.28-2.59c-.87 0-1.58-.71-1.58-1.58s.71-1.58 1.58-1.58 1.58.71 1.58 1.58-.71 1.58-1.58 1.58z"/></svg>}
+            name="Reddit"
+            why="Adapter et publier tes posts sur les subreddits de ton métier"
+            right={
+              reddit.status?.connected ? (
+                <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+              ) : (
+                <button className="primary-button" onClick={reddit.connect} disabled={reddit.busy}>
+                  {reddit.busy ? <Loader2 size={14} className="spinning" /> : null}
+                  {reddit.busy ? "Redirection…" : "Connecter"}
+                </button>
+              )
+            }
+          />}
+          {featureFlags.has("reddit") && reddit.error ? <div className="error" style={{ marginBottom: 12 }}>{reddit.error}</div> : null}
 
           <ManychatConnect
             manychat={manychat}
@@ -11656,7 +11859,11 @@ function ProspectingView({
   // ALE-284 — autopilote : pop-up de réglage + volumes annoncés par palier.
   const [autopilotOpen, setAutopilotOpen] = useState(false);
   const [tierCounts, setTierCounts] = useState<LeadTierCounts | null>(null);
-  const automation = outreach.status?.engine?.automation;
+  // Déploiement progressif : l'autopilote n'est visible que pour les comptes qui l'ont.
+  // Le serveur garde AUSSI ses endpoints — masquer un bouton ne protège rien.
+  const featureFlags = useFeatures(isAuthed);
+  const hasAutopilot = featureFlags.has("autopilot");
+  const automation = hasAutopilot ? outreach.status?.engine?.automation : undefined;
 
   // Réinitialise le bloc d'envoi quand on change de lead sélectionné.
   useEffect(() => {
@@ -11830,7 +12037,7 @@ function ProspectingView({
   // autrement dit, du travail qui attend le client serait invisible pendant une minute
   // et demie sans que rien ne l'indique.
   useEffect(() => {
-    if (!isAuthed) return;
+    if (!isAuthed || !hasAutopilot) return;
     let cancelled = false;
     (async () => {
       try {
@@ -11840,7 +12047,7 @@ function ProspectingView({
       if (!cancelled) void outreach.reloadDrafts();
     })();
     return () => { cancelled = true; };
-  }, [isAuthed]);
+  }, [isAuthed, hasAutopilot]);
 
   const saveTargeting = async () => {
     if (!targeting) return;
@@ -13206,6 +13413,22 @@ export default function Home() {
         await fetch(`${DIRECT_API_URL}/me/x/refresh`, { method: "POST", headers: await authHeaders() });
       } catch { /* ignore */ }
       params.delete("x");
+      const qs = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+      setView("profile");
+    })();
+  }, [isAuthed]);
+
+  // Retour du flux OAuth Reddit (Zernio) : même logique que LinkedIn/X (ALE-59).
+  useEffect(() => {
+    if (!isAuthed) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("reddit") !== "connected") return;
+    (async () => {
+      try {
+        await fetch(`${DIRECT_API_URL}/me/reddit/refresh`, { method: "POST", headers: await authHeaders() });
+      } catch { /* ignore */ }
+      params.delete("reddit");
       const qs = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
       setView("profile");

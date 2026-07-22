@@ -270,6 +270,37 @@ def find_linkedin_account_id(profile_id: str) -> str | None:
     return find_account_id(profile_id, "linkedin")
 
 
+# ── ALE-59 : Reddit — vérification de subreddit + flairs ─────────────────────
+
+def validate_subreddit(name: str, account_id: str | None = None) -> dict[str, Any]:
+    """Vérifie l'existence d'un subreddit via Zernio (« l'IA propose, Reddit confirme »).
+
+    Renvoie {"exists": bool, "subreddit": {...}} (title, subscribers, isNSFW,
+    type…). Avec `account_id`, Zernio interroge l'API Reddit OAuth du compte
+    connecté (fiable) ; sinon il retombe sur l'API JSON publique de Reddit.
+    """
+    params: dict[str, Any] = {"name": name.strip().removeprefix("r/")}
+    if account_id:
+        params["accountId"] = account_id
+    return _request("GET", "/tools/validate/subreddit", params=params)
+
+
+def list_reddit_flairs(account_id: str, subreddit: str) -> list[dict[str, Any]]:
+    """Liste les flairs disponibles d'un subreddit (certains l'exigent)."""
+    data = _request(
+        "GET",
+        f"/accounts/{account_id}/reddit-flairs",
+        params={"subreddit": subreddit.strip().removeprefix("r/")},
+    )
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        flairs = data.get("flairs") or data.get("data")
+        if isinstance(flairs, list):
+            return flairs
+    return []
+
+
 def create_post(
     content: str,
     account_id: str,
@@ -278,11 +309,20 @@ def create_post(
     is_draft: bool = False,
     media_items: list[dict[str, Any]] | None = None,
     platform: str = PLATFORM,
+    platform_specific_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Publish or save as draft a post on the given account."""
+    """Publish or save as draft a post on the given account.
+
+    `platform_specific_data` (ALE-59) porte les options propres au réseau, dans
+    l'entrée du tableau `platforms` (schéma OpenAPI Zernio) : `threadItems` pour
+    un thread X, `{subreddit, title, flairId…}` pour Reddit.
+    """
+    platform_entry: dict[str, Any] = {"platform": platform, "accountId": account_id}
+    if platform_specific_data:
+        platform_entry["platformSpecificData"] = platform_specific_data
     body: dict[str, Any] = {
         "content": content,
-        "platforms": [{"platform": platform, "accountId": account_id}],
+        "platforms": [platform_entry],
     }
     if media_items:
         body["mediaItems"] = media_items
