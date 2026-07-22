@@ -166,11 +166,17 @@ class ZernioCrossPostPayloadTest(unittest.TestCase):
 
     def test_x_thread_items(self):
         captured = self._capture_body(
-            platform="x",
+            platform=zernio.PLATFORM_X,
             platform_specific_data={"threadItems": [{"content": "t1"}, {"content": "t2"}]},
         )
         entry = captured["body"]["platforms"][0]
         self.assertEqual(len(entry["platformSpecificData"]["threadItems"]), 2)
+
+    def test_x_platform_slug_is_twitter(self):
+        # L'API Zernio n'accepte que "twitter" pour X : "x" → 400 "Platform not
+        # supported" sur /connect et "invalid_field_value" sur /posts (vérifié en
+        # direct contre leur API le 2026-07-22).
+        self.assertEqual(zernio.PLATFORM_X, "twitter")
 
     def test_no_platform_specific_data_keeps_legacy_payload(self):
         captured = self._capture_body(platform="linkedin")
@@ -235,7 +241,8 @@ class SchedulerCrossPublishTest(unittest.TestCase):
 
         self.assertEqual(result["x"]["status"], "published")
         self.assertEqual(result["reddit"]["status"], "published")
-        x_call = next(c for c in calls if c["platform"] == "x")
+        # Slug Zernio pour X = "twitter" ("x" est rejeté par leur API)
+        x_call = next(c for c in calls if c["platform"] == zernio.PLATFORM_X)
         self.assertEqual(
             [t["content"] for t in x_call["platform_specific_data"]["threadItems"]],
             ["tweet un", "tweet deux"],
@@ -248,7 +255,7 @@ class SchedulerCrossPublishTest(unittest.TestCase):
         from src import scheduler
 
         def fake_create_post(content, account_id, **kwargs):
-            if kwargs.get("platform") == "x":
+            if kwargs.get("platform") == zernio.PLATFORM_X:
                 raise zernio.ZernioError("X en panne")
             return {"post": {"_id": "z-ok"}}
 
