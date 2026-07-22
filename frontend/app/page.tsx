@@ -1491,6 +1491,24 @@ function Sidebar({
                         {!isAuthed ? <Lock size={12} className="lock-ico" /> : null}
                       </button>
                     )}
+                    {/* Prospection Instagram : pas encore construite — teaser
+                        grisé « Bientôt », même présentation que les réseaux à
+                        venir. Visible seulement si Instagram est déplié (donc
+                        comptes porteurs du flag `instagram`). */}
+                    {expanded && netKey === "instagram" && (
+                      <button
+                        className={`nav-item nav-item-sub locked${collapsed ? " nav-item-collapsed" : ""}`}
+                        title="La prospection Instagram arrive bientôt"
+                        disabled
+                        style={{ cursor: "default", opacity: 0.55 }}
+                      >
+                        <Target size={14} />
+                        {!collapsed && <span>Prospection</span>}
+                        {!collapsed && (
+                          <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 600, color: "var(--muted)", border: "1px solid var(--border)", borderRadius: 99, padding: "1px 7px" }}>Bientôt</span>
+                        )}
+                      </button>
+                    )}
                   </React.Fragment>
                 );
               })}
