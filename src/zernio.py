@@ -21,6 +21,9 @@ from typing import Any
 
 BASE_URL = "https://zernio.com/api/v1"
 PLATFORM = "linkedin"  # default / legacy constant
+# Slug Zernio pour X : leur API n'accepte que "twitter" — "x" est rejeté en 400
+# ("Platform not supported" sur /connect, "invalid_field_value" sur /posts).
+PLATFORM_X = "twitter"
 MAX_LINKEDIN_IMAGES = 20
 MAX_LINKEDIN_IMAGE_BYTES = 8 * 1024 * 1024
 MEDIA_READY_RETRIES = 5

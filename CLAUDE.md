@@ -82,6 +82,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-22 #5 (RELEASE PROD : multi-réseaux X + Reddit derrière feature flags — PRs #350 + #351 + #352 → release #353)
+- **Release `dev → main` PR #353** (delta énuméré avant merge : uniquement le socle feature flags #350, le multi-réseaux ALE-59 #351 et ses flags #352 — l'autopilote #348/0052 était déjà sur `main`, vérifié en base). **Effet réel : pour les ~12 comptes prod non flaggés, RIEN ne change** (Instagram reste grisé, aucun logo X/Reddit, endpoints 404) ; pour les 3 comptes agence (Alex ×2, Tom — flags posés en base prod avant la release), Instagram est dégrisé et la pop-up multi-réseaux + connexion Reddit sont actives.
+- **Séquençage tenu** : migration **0053 appliquée et vérifiée sur la base prod AVANT le merge** (et 0052 vérifiée déjà présente — le check explicite des migrations « à appliquer » des entrées récentes a été fait, règle de release respectée). Aucune env var nouvelle, aucun cron à créer.
+- **Vérifié post-deploy** : `/health` prod tout vert · `/me/reddit/status` prod → **401 stable 3/3 à 5 s d'intervalle** (parade ancienne instance en vol) · bundle Netlify prod (370 Ko, non vide) contient la nouvelle pop-up (`cross-network-panels`, libellés Reddit). Côté dev : `/me/features` du compte de test renvoie bien les 4 flags (testé avec un vrai jeton).
+- **Reste à faire** : test manuel d'Alex (dev ou prod, son compte est flaggé) — connexion Reddit réelle via Zernio + première publication réelle X thread + Reddit (l'API Zernio Reddit n'a jamais été jouée avec un vrai compte connecté) ; l'export Readyt (117 subreddits) à fournir pour remplacer la base curatée de 36 ; généralisation le jour venu = déplacer les noms dans `DEFAULT_FEATURES`.
+
 ### 2026-07-22 #4 (dev : feature flags `instagram` / `x` / `reddit` — le multi-réseaux ouvert à l'agence seulement)
 - **Demande d'Alex** après la livraison ALE-59 : mettre Instagram (dégrisé), X et Reddit derrière des feature flags — sans ça, la prochaine release ouvrait tout d'un coup aux 15 comptes prod (dont un externe actif). Même système que l'autopilote (`src/features.py`, `app_metadata.features`, jamais `user_metadata`).
 - **3 nouveaux noms au catalogue** `KNOWN_FEATURES` : `instagram` (onglet sidebar dégrisé), `x` (pop-up multi-réseaux côté X : adaptation IA + threads), `reddit` (connexion + adaptation + publication Reddit).
