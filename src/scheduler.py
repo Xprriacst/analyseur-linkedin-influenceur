@@ -11,10 +11,22 @@ from __future__ import annotations
 
 import logging
 
-from src import crosspost, db, zernio
+from src import crosspost, db, features, zernio
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _user_features(user_id: str) -> set[str] | None:
+    """Droits du compte, lus en service-role (le cron n'a pas de jeton).
+
+    None = droits illisibles → l'appelant ferme (fail closed, même règle que le
+    planificateur de l'autopilote) : on ne publie pas au nom d'un compte dont on
+    ignore les droits."""
+    meta = db.admin_user_app_metadata(user_id)
+    if meta is None:
+        return None
+    return features.features_of({"app_metadata": meta})
 
 
 def publish_cross_posts(post: dict) -> dict:
@@ -28,12 +40,20 @@ def publish_cross_posts(post: dict) -> dict:
     """
     cross = dict(post.get("cross_posts") or {})
 
+    # Déploiement progressif (fail closed) : sans ce contrôle, retirer le flag à
+    # un compte ne couperait pas les versions X/Reddit qu'il a déjà programmées —
+    # le flag ne serait qu'un masque d'affichage. Droits illisibles ⇒ on ne
+    # publie pas non plus (consigné, pas silencieux).
+    feats = _user_features(post.get("user_id") or "")
+
     x_version = cross.get("x") if isinstance(cross.get("x"), dict) else None
     if x_version:
         entry = dict(x_version)
         tweets = [t for t in (entry.get("tweets") or []) if isinstance(t, str) and t.strip()]
         account_id = post.get("zernio_x_account_id")
-        if not account_id:
+        if feats is None or "x" not in feats:
+            entry.update({"status": "failed", "error": "Fonctionnalité non activée sur ce compte (ou droits illisibles)."})
+        elif not account_id:
             entry.update({"status": "failed", "error": "Compte X non connecté."})
         elif not tweets:
             entry.update({"status": "failed", "error": "Version X vide."})
@@ -59,7 +79,9 @@ def publish_cross_posts(post: dict) -> dict:
         entry = dict(reddit_version)
         account_id = post.get("zernio_reddit_account_id")
         subreddit = crosspost.normalize_subreddit_name(entry.get("subreddit"))
-        if not account_id:
+        if feats is None or "reddit" not in feats:
+            entry.update({"status": "failed", "error": "Fonctionnalité non activée sur ce compte (ou droits illisibles)."})
+        elif not account_id:
             entry.update({"status": "failed", "error": "Compte Reddit non connecté."})
         elif not subreddit or not (entry.get("body") or "").strip() or not (entry.get("title") or "").strip():
             entry.update({"status": "failed", "error": "Version Reddit incomplète."})

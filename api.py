@@ -755,6 +755,12 @@ def me_linkedin_schedule(
         raise HTTPException(status_code=502, detail=f"Impossible de préparer les images du post : {exc}") from exc
 
     cross_posts = _cross_posts_payload_dict(payload.cross_posts)
+    # Déploiement progressif : n'exige la feature que si le payload embarque la
+    # version correspondante (le cadençage LinkedIn reste ouvert à tous).
+    if "x" in cross_posts:
+        require_feature(token, "x")
+    if "reddit" in cross_posts:
+        require_feature(token, "reddit")
 
     # ALE-137 — Option A : programmation directe, publiée à l'échéance sans
     # validation Slack (le post naît `validated` pour que le cron le publie).
@@ -909,6 +915,10 @@ def me_x_publish(
     if not account_id:
         raise HTTPException(status_code=400, detail="Aucun compte X connecté. Connecte-le d'abord dans l'onglet Profil.")
     tweets = [t.strip() for t in (payload.tweets or []) if isinstance(t, str) and t.strip()]
+    if tweets:
+        # Nouvelle capacité (version adaptée / thread) : en bêta — l'envoi X
+        # historique (content seul) reste ouvert à tous les comptes.
+        require_feature(token, "x")
     for idx, tweet in enumerate(tweets, start=1):
         if len(tweet) > crosspost.X_TWEET_MAX:
             raise HTTPException(
@@ -970,6 +980,7 @@ def _reddit_status(token: str) -> dict[str, Any]:
 @app.get("/me/reddit/status")
 def me_reddit_status(token: str = Depends(require_token)) -> dict[str, Any]:
     """Whether the user has a Reddit account connected through Zernio."""
+    require_feature(token, "reddit")
     return _reddit_status(token)
 
 
@@ -979,6 +990,7 @@ def me_reddit_connect(
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
     """Return a Reddit OAuth URL the user opens to authorize publishing."""
+    require_feature(token, "reddit")
     if not zernio.enabled():
         raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
     try:
@@ -992,6 +1004,7 @@ def me_reddit_connect(
 @app.post("/me/reddit/refresh")
 def me_reddit_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
     """Re-read the connected Reddit account from Zernio (call after OAuth return)."""
+    require_feature(token, "reddit")
     if not zernio.enabled():
         raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
     profile = db.get_editorial_profile(token) or {}
@@ -1034,6 +1047,7 @@ def me_reddit_subreddit_info(
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
     """Métadonnées d'un subreddit : bibliothèque + vérification en direct (gratuit)."""
+    require_feature(token, "reddit")
     normalized = crosspost.normalize_subreddit_name(name)
     if not normalized:
         raise HTTPException(status_code=400, detail="Nom de subreddit invalide.")
@@ -1048,6 +1062,7 @@ def me_reddit_flairs(
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
     """Flairs disponibles d'un subreddit (certains l'exigent). Best-effort."""
+    require_feature(token, "reddit")
     normalized = crosspost.normalize_subreddit_name(subreddit)
     if not normalized:
         raise HTTPException(status_code=400, detail="Nom de subreddit invalide.")
@@ -1068,6 +1083,7 @@ def me_reddit_publish(
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
     """Publish a text post immediately on the user's connected Reddit account."""
+    require_feature(token, "reddit")
     if not zernio.enabled():
         raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
     profile = db.get_editorial_profile(token) or {}
@@ -1111,6 +1127,7 @@ def me_adapt_post_x(
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
     """Adapte un post LinkedIn pour X (IA). Débit remboursé si l'adaptation échoue."""
+    require_feature(token, "x")
     profile = db.get_editorial_profile(token) or {}
     ok, balance = db.debit_credits(token, "adapt_x", 1)
     if not ok:
@@ -1134,6 +1151,7 @@ def me_adapt_post_reddit(
 
     L'adaptation (titre + corps + choix de subreddits) est débitée ; la
     vérification des suggestions (existence, taille) est gratuite."""
+    require_feature(token, "reddit")
     profile = db.get_editorial_profile(token) or {}
     ok, balance = db.debit_credits(token, "adapt_reddit", 1)
     if not ok:

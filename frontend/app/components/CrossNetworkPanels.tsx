@@ -183,6 +183,10 @@ export default function CrossNetworkPanels({
   onChange: (cross: CrossPostsDraft | null, valid: boolean) => void;
 }) {
   const [agency, setAgency] = useState(false);
+  // Feature flags (déploiement progressif) : la liste vient du SERVEUR
+  // (/me/features), fail closed pendant le chargement — sans flag, la rangée
+  // de logos n'existe pas pour ce compte.
+  const [feats, setFeats] = useState<string[] | null>(null);
   const [xStatus, setXStatus] = useState<NetStatus>(null);
   const [redditStatus, setRedditStatus] = useState<NetStatus>(null);
   const [hint, setHint] = useState("");
@@ -214,6 +218,10 @@ export default function CrossNetworkPanels({
       setAgency(role !== "ideas_only");
       if (role !== "ideas_only") {
         authHeaders().then((headers) => {
+          fetch(`${DIRECT_API_URL}/me/features`, { headers })
+            .then((r) => (r.ok ? r.json() : { features: [] }))
+            .then((d) => { if (alive) setFeats(Array.isArray(d?.features) ? d.features : []); })
+            .catch(() => { if (alive) setFeats([]); });
           fetch(`${DIRECT_API_URL}/me/x/status`, { headers }).then((r) => (r.ok ? r.json() : null)).then((s) => { if (alive) setXStatus(s); }).catch(() => {});
           fetch(`${DIRECT_API_URL}/me/reddit/status`, { headers }).then((r) => (r.ok ? r.json() : null)).then((s) => { if (alive) setRedditStatus(s); }).catch(() => {});
         });
@@ -340,8 +348,11 @@ export default function CrossNetworkPanels({
     if (!redditAdapted && !redditLoading) void adaptReddit();
   }
 
-  // Rien à proposer : vue client, ou aucun réseau connectable (Zernio absent).
-  if (!agency) return null;
+  // Rien à proposer : vue client, ou compte sans aucun des deux flags
+  // (déploiement progressif — fail closed tant que les droits ne sont pas lus).
+  const hasX = (feats || []).includes("x");
+  const hasReddit = (feats || []).includes("reddit");
+  if (!agency || (!hasX && !hasReddit)) return null;
   const activeCount = 1 + (xActive ? 1 : 0) + (redditActive ? 1 : 0);
 
   const netButtonStyle = (pressed: boolean, color: string): React.CSSProperties => ({
@@ -361,31 +372,36 @@ export default function CrossNetworkPanels({
           <svg width={19} height={19} viewBox="0 0 24 24" aria-hidden="true"><path fill="#0a66c2" d="M4.98 3.5C4.98 4.88 3.87 6 2.5 6S0 4.88 0 3.5 1.12 1 2.5 1s2.48 1.12 2.48 2.5zM.22 8.1h4.56V23H.22V8.1zM8.34 8.1h4.37v2.03h.06c.61-1.15 2.1-2.37 4.32-2.37 4.62 0 5.47 3.04 5.47 7v8.24h-4.55v-7.3c0-1.74-.03-3.98-2.43-3.98-2.43 0-2.8 1.9-2.8 3.86V23H8.34V8.1z" /></svg>
         </span>
         {/* Logos inactifs tant que le statut de connexion n'est pas chargé : un
-            clic trop tôt afficherait à tort « connecte ton compte ». */}
-        <button
-          type="button"
-          aria-pressed={xActive}
-          aria-label="Publier aussi sur X"
-          disabled={disabled || xStatus === null}
-          onClick={toggleX}
-          style={netButtonStyle(xActive, "#1b1b23")}
-          onMouseEnter={(e) => { if (!xActive) e.currentTarget.style.color = "#1b1b23"; }}
-          onMouseLeave={(e) => { if (!xActive) e.currentTarget.style.color = "#b9b9c4"; }}
-        >
-          <XLogo />
-        </button>
-        <button
-          type="button"
-          aria-pressed={redditActive}
-          aria-label="Publier aussi sur Reddit"
-          disabled={disabled || redditStatus === null}
-          onClick={toggleReddit}
-          style={netButtonStyle(redditActive, "#ff4500")}
-          onMouseEnter={(e) => { if (!redditActive) e.currentTarget.style.color = "#ff4500"; }}
-          onMouseLeave={(e) => { if (!redditActive) e.currentTarget.style.color = "#b9b9c4"; }}
-        >
-          <RedditLogo />
-        </button>
+            clic trop tôt afficherait à tort « connecte ton compte ». Chaque
+            logo n'existe que pour un compte porteur du flag correspondant. */}
+        {hasX && (
+          <button
+            type="button"
+            aria-pressed={xActive}
+            aria-label="Publier aussi sur X"
+            disabled={disabled || xStatus === null}
+            onClick={toggleX}
+            style={netButtonStyle(xActive, "#1b1b23")}
+            onMouseEnter={(e) => { if (!xActive) e.currentTarget.style.color = "#1b1b23"; }}
+            onMouseLeave={(e) => { if (!xActive) e.currentTarget.style.color = "#b9b9c4"; }}
+          >
+            <XLogo />
+          </button>
+        )}
+        {hasReddit && (
+          <button
+            type="button"
+            aria-pressed={redditActive}
+            aria-label="Publier aussi sur Reddit"
+            disabled={disabled || redditStatus === null}
+            onClick={toggleReddit}
+            style={netButtonStyle(redditActive, "#ff4500")}
+            onMouseEnter={(e) => { if (!redditActive) e.currentTarget.style.color = "#ff4500"; }}
+            onMouseLeave={(e) => { if (!redditActive) e.currentTarget.style.color = "#b9b9c4"; }}
+          >
+            <RedditLogo />
+          </button>
+        )}
         <span style={{ fontSize: 12, color: "var(--muted)" }}>
           {activeCount === 1
             ? "LinkedIn seul — clique un logo pour adapter le post à un autre réseau"
