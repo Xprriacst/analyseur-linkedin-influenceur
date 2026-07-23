@@ -12793,7 +12793,6 @@ function ProspectingView({
                   const oStatus = selected.outreach_status || "none";
                   const pendingInvite = queuedInvite(selected);
                   const pendingMessage = queuedMessage(selected);
-                  const immediateLeft = eng?.immediate_left ?? 0;
                   return (
                     <>
                       {q && (
@@ -12821,21 +12820,11 @@ function ProspectingView({
                             onClick={() => inviteLead(selected)}
                           >
                             {outreachBusy ? <Loader2 size={14} className="spinning" /> : <UserRound size={14} />}
-                            Mettre l&apos;invitation en file
+                            Envoyer l&apos;invitation
                           </button>
-                          <button
-                            className="secondary-button"
-                            disabled={outreachBusy || !q?.can_invite || immediateLeft <= 0}
-                            title={
-                              immediateLeft <= 0
-                                ? "Soupape épuisée pour aujourd'hui — mets l'invitation en file."
-                                : !q?.can_invite ? (q?.invite_blocked_reason || "") : "Envoi immédiat, hors file"
-                            }
-                            onClick={() => inviteLead(selected, true)}
-                            style={{ fontSize: 12 }}
-                          >
-                            <Zap size={13} /> Envoyer maintenant ({immediateLeft} restant{immediateLeft > 1 ? "s" : ""})
-                          </button>
+                          <p style={{ margin: 0, fontSize: 11.5, color: "var(--muted)" }}>
+                            📮 L&apos;invitation entre en file d&apos;attente et part automatiquement dans ta plage horaire, à un rythme humain.
+                          </p>
                           {!q?.can_invite && q?.invite_blocked_reason && (
                             <p style={{ margin: 0, fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{q.invite_blocked_reason}</p>
                           )}
@@ -12868,10 +12857,10 @@ function ProspectingView({
                           <div style={{ fontSize: 13, color: "var(--success)" }}>✓ En relation — prêt pour le premier message.</div>
                           {!composeOpen ? (
                             <button
-                              className="primary-button"
+                              className="secondary-button"
                               onClick={() => { setComposeOpen(true); if (!messageText) generateMessage(selected); }}
                             >
-                              <Send size={14} /> Rédiger le premier message
+                              <Pencil size={14} /> Rédiger le premier message
                             </button>
                           ) : (
                             <div style={{ display: "grid", gap: 8 }}>
@@ -12894,22 +12883,12 @@ function ProspectingView({
                                   onClick={() => sendFirstMessage(selected)}
                                   style={{ fontSize: 12 }}
                                 >
-                                  {outreachBusy ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} Mettre en file
-                                </button>
-                                <button
-                                  className="secondary-button"
-                                  disabled={outreachBusy || genBusy || !messageText.trim() || !q?.can_message || immediateLeft <= 0}
-                                  title={
-                                    immediateLeft <= 0
-                                      ? "Soupape épuisée pour aujourd'hui — mets le message en file."
-                                      : !q?.can_message ? (q?.message_blocked_reason || "") : "Envoi immédiat, hors file"
-                                  }
-                                  onClick={() => sendFirstMessage(selected, true)}
-                                  style={{ fontSize: 12 }}
-                                >
-                                  <Zap size={13} /> Envoyer maintenant
+                                  {outreachBusy ? <Loader2 size={13} className="spinning" /> : <Send size={13} />} Envoyer
                                 </button>
                               </div>
+                              <p style={{ margin: 0, fontSize: 11.5, color: "var(--muted)" }}>
+                                📮 Le message entre en file d&apos;attente et part automatiquement dans ta plage horaire, à un rythme humain.
+                              </p>
                               {!q?.can_message && q?.message_blocked_reason && (
                                 <p style={{ margin: 0, fontSize: 11.5, color: "var(--warning, #b8860b)" }}>{q.message_blocked_reason}</p>
                               )}
