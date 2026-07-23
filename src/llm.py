@@ -2069,10 +2069,15 @@ def adapt_post_for_reddit(post_text: str, profile: dict | None = None) -> dict:
     from src import crosspost
 
     library = crosspost.load_subreddit_library()
+    # Trié par score GEO décroissant : les subreddits les plus cités par les
+    # assistants IA (le cœur de la valeur de cette bibliothèque) sont présentés
+    # en tête pour orienter le choix du modèle.
+    library_sorted = sorted(library, key=lambda s: s.get("geo_score") or 0, reverse=True)
     library_lines = "\n".join(
         f"- r/{s.get('name')} — sujets : {', '.join(s.get('topics') or [])} · langue : {s.get('language', 'en')} · "
-        f"tolérance autopromo : {s.get('selfpromo_tolerance', '?')}/5 · {str(s.get('notes') or '')[:120]}"
-        for s in library
+        f"GEO {s.get('geo_score', '?')}/5 (citabilité IA) · tolérance autopromo : {s.get('selfpromo_tolerance', '?')}/5 · "
+        f"{str(s.get('notes') or '')[:120]}"
+        for s in library_sorted
     )
 
     system = (
@@ -2083,7 +2088,8 @@ def adapt_post_for_reddit(post_text: str, profile: dict | None = None) -> dict:
         f"- TITRE : {crosspost.REDDIT_TITLE_MAX} caractères max, factuel et spécifique (pas de clickbait) — il est définitif après publication.\n"
         "- CORPS : markdown simple accepté (listes, gras). Garde les chiffres exacts. Termine par une vraie question ouverte si pertinent.\n"
         "- SUBREDDITS : propose 2 à 4 subreddits pertinents pour CE post et CE métier, les plus pertinents d'abord. "
-        "Pioche en priorité dans la bibliothèque ci-dessous ; tu peux proposer hors liste si un subreddit du métier est plus pertinent "
+        "Pioche en priorité dans la bibliothèque ci-dessous ; à pertinence égale, préfère un subreddit avec un score GEO élevé "
+        "(il a plus de chances d'être cité par les assistants IA). Tu peux proposer hors liste si un subreddit du métier est plus pertinent "
         "(il sera vérifié). Pour chacun, une raison courte en français.\n"
         "- LANGUE : celle du subreddit visé en priorité (les grands subreddits B2B sont anglophones — adapte le titre ET le corps en anglais si le premier subreddit proposé est anglophone ; garde le français pour un subreddit francophone).\n"
         "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown autour."

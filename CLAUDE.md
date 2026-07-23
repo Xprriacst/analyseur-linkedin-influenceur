@@ -82,6 +82,13 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-23 (dev : bibliothèque Reddit = les 117 subreddits Readyt + score GEO exploité, ALE-59)
+- **Alex a fourni l'export Readyt** (« 117 subreddits pour SaaS B2B, acquisition + GEO ») qui manquait depuis la livraison ALE-59 (la base n'était qu'une **curation manuelle de 36** en attendant). `data/subreddits_b2b.json` **remplacé** par les 117, même schéma + un champ **`geo_score` (1-5)** = citabilité par les assistants IA (le vrai différenciateur de cette liste).
+- ⚠️ **Piège de nom corrigé** : Readyt listait `r/ArtificialIntelligence` (22 caractères) — **impossible sur Reddit** (max 21) ; remappé sur `r/artificial` (le sub généraliste IA réel). Vérifié par script : 117 entrées, **aucun nom > 21 car.**, zéro doublon, tous champs présents et bornés. `r/Make` (Make.com) laissé avec un ⚠️ dans ses notes (r/Make est ambigu côté Reddit — la vérification « Reddit confirme » tranchera à la publication).
+- **`geo_score` exploité, pas juste stocké** : (1) le prompt Reddit (`llm.adapt_post_for_reddit`) présente la bibliothèque **triée par GEO décroissant** et demande au modèle, à pertinence égale, de préférer un sub à haut GEO ; (2) `crosspost.suggestion_metadata` le remonte au front ; (3) badge **« Bien cité par les IA »** (chip du mockup) sur les suggestions `geo_score ≥ 4`.
+- **Tests** : 177 unitaires verts (+6 : la lib charge 117 entrées bien formées, geo remonté dans les métadonnées) ; spec e2e `multi-network-publish` **6 verts** (+ assertion du badge GEO). Aucune migration, aucune env var. Frontend + data + prompt.
+- ⚠️ **Trouvé en démarrant** : une modif non commitée de `page.tsx` (bouton « Programmer » réordonné dans le menu + scroll de la modale) traînait dans le working tree — **pas de cette session** (autre session/Cursor). Mise de côté via `git stash` (`stash@{0}` « WIP page.tsx (autre session) ») pour ne pas l'embarquer ; à récupérer ou jeter selon ce qu'elle vaut.
+
 ### 2026-07-23 (dev : photos de soi → génération d'image à identité)
 - **Demande d'Alex** : certains posts qui marchent bien sont juste une photo de l'utilisateur — pouvoir uploader des photos de soi dans le profil et laisser l'IA générer des photos de lui dans différents contextes.
 - **Mon profil › Mes photos** : upload jusqu'à **5 photos** (JPG/PNG/WebP, 8 Mo max), stockées en URL publique via Zernio (même patron que les images de posts). Suppression unitaire.

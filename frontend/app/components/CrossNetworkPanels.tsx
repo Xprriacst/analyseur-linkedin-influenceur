@@ -33,6 +33,7 @@ type SubredditSuggestion = {
   in_library?: boolean;
   selfpromo_tolerance?: number | null;
   min_karma_advised?: number | null;
+  geo_score?: number | null;
   notes?: string | null;
   exists?: boolean | null;
   subscribers?: number | null;
@@ -150,6 +151,7 @@ function SubredditChips({ s }: { s: SubredditSuggestion }) {
         </Chip>
       )}
       {s.exists === false && <Chip tone="warn">⚠ Introuvable sur Reddit</Chip>}
+      {typeof s.geo_score === "number" && s.geo_score >= 4 && <Chip tone="ok">Bien cité par les IA</Chip>}
       {tolerance !== null && tolerance <= 2 && <Chip tone="warn">⚠ Autopromo mal vue — reste 100 % valeur</Chip>}
       {tolerance !== null && tolerance >= 4 && <Chip tone="ok">Autopromo tolérée si transparente</Chip>}
       {typeof s.min_karma_advised === "number" && <Chip>Karma min. conseillé : {s.min_karma_advised}</Chip>}
