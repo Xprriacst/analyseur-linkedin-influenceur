@@ -185,6 +185,7 @@ def suggestion_metadata(name: str) -> dict[str, Any]:
         "in_library": bool(entry),
         "selfpromo_tolerance": entry.get("selfpromo_tolerance"),
         "min_karma_advised": entry.get("min_karma_advised"),
+        "geo_score": entry.get("geo_score"),
         "notes": entry.get("notes"),
         "language": entry.get("language"),
     }

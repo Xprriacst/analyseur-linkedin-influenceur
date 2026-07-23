@@ -32,7 +32,7 @@ const REDDIT_ADAPTATION = {
   suggestions: [
     {
       name: "marketing", reason: "cœur de cible", in_library: true,
-      selfpromo_tolerance: 1, min_karma_advised: 200,
+      selfpromo_tolerance: 1, min_karma_advised: 200, geo_score: 5,
       notes: "Autopromo bannie.", exists: true, subscribers: 1500000,
     },
     { name: "B2BMarketing", reason: "niche B2B", in_library: true, selfpromo_tolerance: 2, min_karma_advised: 100, exists: true, subscribers: 90000 },
@@ -116,6 +116,8 @@ test("publier sur 3 réseaux : adaptation empilée, puis les 3 versions partent 
   await expect(redditPanel.getByLabel("Subreddit")).toHaveValue("marketing");
   await expect(redditPanel.getByText(/Autopromo mal vue/)).toBeVisible();
   await expect(redditPanel.getByText(/Karma min\. conseillé : 200/)).toBeVisible();
+  // Score GEO (export Readyt) → badge « Bien cité par les IA » sur les subs à haut GEO.
+  await expect(redditPanel.getByText(/Bien cité par les IA/)).toBeVisible();
 
   // Le bouton dit ce qu'il va faire, et le fait.
   await page.getByRole("button", { name: "Publier sur 3 réseaux" }).click();

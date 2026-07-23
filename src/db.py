@@ -81,6 +81,35 @@ def admin_client() -> "Client":
     return create_client(_url(), _service_key())  # type: ignore[arg-type]
 
 
+def log_onboarding_preview_event(
+    input_kind: str | None,
+    linkedin_url: str | None,
+    website_url: str | None,
+    used_apify: bool,
+    preview_ok: bool,
+    ip_hash: str | None,
+) -> None:
+    """Journalise une analyse lancée depuis la landing (parcours anonyme).
+
+    Best-effort : le visiteur n'a pas de session, on écrit donc en service-role
+    (table `onboarding_preview_events`, sans RLS policy = inaccessible côté client).
+    Un échec de log ne doit JAMAIS bloquer la preview → toute exception est avalée.
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return
+    try:
+        admin_client().table("onboarding_preview_events").insert({
+            "input_kind": input_kind,
+            "linkedin_url": linkedin_url or None,
+            "website_url": website_url or None,
+            "used_apify": bool(used_apify),
+            "preview_ok": bool(preview_ok),
+            "ip_hash": ip_hash,
+        }).execute()
+    except Exception:
+        pass
+
+
 # Successful validations are cached in-process: virtually every db helper
 # re-validates the same token, and each validation is a network round-trip to
 # Supabase Auth. Trade-off: a revoked token stays accepted at most TTL seconds.
@@ -1737,8 +1766,13 @@ def reconcile_stale_generation_jobs(access_token: str, jobs: list[dict]) -> list
 # pas de remboursement à gérer (contrairement aux séries d'analyse).
 
 _IMAGE_JOB_COLS = (
-    "id,status,post_text,prompt,reference_template_id,target_key,result,error,created_at,updated_at"
+    "id,status,post_text,prompt,reference_template_id,reference_self_photo_ids,"
+    "target_key,result,error,created_at,updated_at"
 )
+
+# Photos de soi (0054) : plafond par compte + max transmis à GPT Image 2 par génération.
+SELF_PHOTOS_CAP = 5
+SELF_PHOTOS_PER_GEN = 3
 
 
 def create_image_job(
@@ -1747,6 +1781,7 @@ def create_image_job(
     prompt: str | None,
     reference_template_id: str | None,
     target_key: str,
+    reference_self_photo_ids: list[str] | None = None,
 ) -> dict | None:
     """Crée un job de génération d'image `queued`. Retourne la ligne créée."""
     user = get_user(access_token)
@@ -1759,6 +1794,7 @@ def create_image_job(
         "post_text": post_text,
         "prompt": prompt or None,
         "target_key": target_key,
+        "reference_self_photo_ids": list(reference_self_photo_ids or [])[:SELF_PHOTOS_PER_GEN],
     }
     if reference_template_id:
         row["reference_template_id"] = reference_template_id
@@ -1860,6 +1896,105 @@ def reconcile_stale_image_jobs(access_token: str, jobs: list[dict]) -> list[dict
         job["status"] = "error"
         job["error"] = "Génération d'image interrompue (délai dépassé)."
     return jobs
+
+
+# ── Photos de soi (génération d'image à identité) ─────────────────────────── #
+
+def list_self_photos(access_token: str, limit: int = 20) -> list[dict]:
+    """Liste les photos de soi de l'utilisateur (plus récentes d'abord)."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_self_photos")
+        .select("id,image_url,filename,created_at")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_self_photos_by_ids(access_token: str, photo_ids: list[str]) -> list[dict]:
+    """Récupère des photos de soi appartenant à l'utilisateur (ordre = ids demandés)."""
+    if not supabase_enabled() or not photo_ids:
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    # Dédoublonne en conservant l'ordre, plafonne au max transmis à l'API image.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for pid in photo_ids:
+        pid = str(pid or "").strip()
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        ordered.append(pid)
+        if len(ordered) >= SELF_PHOTOS_PER_GEN:
+            break
+    if not ordered:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_self_photos")
+        .select("id,image_url,filename,created_at")
+        .eq("user_id", user["id"])
+        .in_("id", ordered)
+        .execute()
+    )
+    by_id = {row["id"]: row for row in (resp.data or [])}
+    return [by_id[pid] for pid in ordered if pid in by_id]
+
+
+def create_self_photo(
+    access_token: str,
+    image_url: str,
+    filename: str | None = None,
+) -> dict | None:
+    """Ajoute une photo de soi (après upload Zernio). Respecte SELF_PHOTOS_CAP."""
+    if not supabase_enabled():
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    url = (image_url or "").strip()
+    if not url:
+        return None
+    existing = list_self_photos(access_token, limit=SELF_PHOTOS_CAP + 1)
+    if len(existing) >= SELF_PHOTOS_CAP:
+        raise ValueError(f"Limite atteinte : {SELF_PHOTOS_CAP} photos maximum.")
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "image_url": url[:2000],
+    }
+    if filename:
+        row["filename"] = str(filename)[:200]
+    resp = db.table("user_self_photos").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def delete_self_photo(access_token: str, photo_id: str) -> bool:
+    """Supprime une photo de soi appartenant à l'utilisateur."""
+    if not supabase_enabled() or not photo_id:
+        return False
+    user = get_user(access_token)
+    if not user:
+        return False
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_self_photos")
+        .delete()
+        .eq("id", photo_id)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+    return bool(resp.data)
 
 
 def get_analysis(access_token: str, analysis_id: str) -> dict | None:
