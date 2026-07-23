@@ -82,6 +82,13 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-23 (dev : photos de soi → génération d'image à identité)
+- **Demande d'Alex** : certains posts qui marchent bien sont juste une photo de l'utilisateur — pouvoir uploader des photos de soi dans le profil et laisser l'IA générer des photos de lui dans différents contextes.
+- **Mon profil › Mes photos** : upload jusqu'à **5 photos** (JPG/PNG/WebP, 8 Mo max), stockées en URL publique via Zernio (même patron que les images de posts). Suppression unitaire.
+- **Pop-up « Générer une image IA »** : nouvelle section **« Me mettre dans l'image »** — sélection jusqu'à **3 photos** ; l'IA (GPT Image 2 `images.edit` multi-références) conserve le visage et place la personne dans le contexte du post. Mutuellement exclusif avec la référence style bibliothèque (les deux modes se brouillent). Prompt adapté (mode `identity`) + préfixe d'identité côté serveur.
+- **Migration 0054** (idempotente) : table `user_self_photos` + colonne `reference_self_photo_ids` sur `image_generation_jobs`. ⚠️ **À appliquer sur dev puis prod avant release.** Endpoints `GET/POST/DELETE /me/self-photos`. Coût inchangé : 5 crédits à la génération réussie (pas à l'upload).
+- **Tests** : `tests/test_self_photos.py` (préfixe d'identité, multi-références → `images.edit`).
+
 ### 2026-07-22 #5 (RELEASE PROD : multi-réseaux X + Reddit derrière feature flags — PRs #350 + #351 + #352 → release #353)
 - **Release `dev → main` PR #353** (delta énuméré avant merge : uniquement le socle feature flags #350, le multi-réseaux ALE-59 #351 et ses flags #352 — l'autopilote #348/0052 était déjà sur `main`, vérifié en base). **Effet réel : pour les ~12 comptes prod non flaggés, RIEN ne change** (Instagram reste grisé, aucun logo X/Reddit, endpoints 404) ; pour les 3 comptes agence (Alex ×2, Tom — flags posés en base prod avant la release), Instagram est dégrisé et la pop-up multi-réseaux + connexion Reddit sont actives.
 - **Séquençage tenu** : migration **0053 appliquée et vérifiée sur la base prod AVANT le merge** (et 0052 vérifiée déjà présente — le check explicite des migrations « à appliquer » des entrées récentes a été fait, règle de release respectée). Aucune env var nouvelle, aucun cron à créer.

@@ -332,11 +332,18 @@ def start_generation_job_thread(access_token: str, job_id: str) -> None:
 IMAGE_JOB_TIMEOUT_S = 300
 
 
-def _generate_post_image_guarded(post_text, prompt, reference_image):
+def _generate_post_image_guarded(post_text, prompt, reference_image=None, reference_images=None, identity=False):
     """Exécute `generate_post_image` avec un timeout dur (thread jetable abandonné si figé)."""
     from src.image_gen import generate_post_image
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    fut = ex.submit(generate_post_image, post_text, prompt=prompt, reference_image=reference_image)
+    fut = ex.submit(
+        generate_post_image,
+        post_text,
+        prompt=prompt,
+        reference_image=reference_image,
+        reference_images=reference_images,
+        identity=identity,
+    )
     try:
         return fut.result(timeout=IMAGE_JOB_TIMEOUT_S)
     finally:
@@ -361,15 +368,51 @@ def process_image_job(access_token: str, job_id: str) -> None:
     db.update_image_job(access_token, job_id, status="running")
     try:
         reference_image = None
-        template_id = job.get("reference_template_id")
-        if template_id:
-            template = db.get_post_template(access_token, template_id)
-            image_url = (template or {}).get("image_url")
-            if not image_url:
-                raise ImageGenError("Image de référence introuvable.")
-            reference_image = fetch_reference_image(image_url)
+        reference_images = None
+        identity = False
 
-        result = _generate_post_image_guarded(job.get("post_text") or "", job.get("prompt"), reference_image)
+        # Photos de soi (identité) prioritaires sur la référence style bibliothèque :
+        # les deux modes ne se combinent pas — mélanger style + visage brouille le modèle.
+        raw_ids = job.get("reference_self_photo_ids") or []
+        if isinstance(raw_ids, str):
+            # Défensif : PostgREST peut parfois renvoyer du JSON stringifié.
+            try:
+                import json as _json
+                raw_ids = _json.loads(raw_ids)
+            except Exception:
+                raw_ids = []
+        photo_ids = [str(x) for x in raw_ids if x] if isinstance(raw_ids, list) else []
+        if photo_ids:
+            photos = db.get_self_photos_by_ids(access_token, photo_ids)
+            if not photos:
+                raise ImageGenError("Photos de référence introuvables.")
+            reference_images = []
+            for i, photo in enumerate(photos):
+                url = (photo or {}).get("image_url")
+                if not url:
+                    continue
+                reference_images.append(
+                    fetch_reference_image(url, filename_stem=f"self-{i + 1}")
+                )
+            if not reference_images:
+                raise ImageGenError("Photos de référence introuvables.")
+            identity = True
+        else:
+            template_id = job.get("reference_template_id")
+            if template_id:
+                template = db.get_post_template(access_token, template_id)
+                image_url = (template or {}).get("image_url")
+                if not image_url:
+                    raise ImageGenError("Image de référence introuvable.")
+                reference_image = fetch_reference_image(image_url)
+
+        result = _generate_post_image_guarded(
+            job.get("post_text") or "",
+            job.get("prompt"),
+            reference_image=reference_image,
+            reference_images=reference_images,
+            identity=identity,
+        )
 
         # Annulé pendant le calcul ? On respecte l'annulation (jamais de débit).
         if db.get_image_job_status(access_token, job_id) == "cancelled":

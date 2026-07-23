@@ -253,6 +253,61 @@ def update_me_profile(
     return profile
 
 
+class SelfPhotoUploadRequest(BaseModel):
+    """Upload d'une photo de soi (data URL base64) pour la génération d'image à identité."""
+    data_url: str = Field(..., min_length=32, max_length=12_000_000)
+    filename: Optional[str] = Field(default=None, max_length=200)
+
+
+@app.get("/me/self-photos")
+def me_self_photos(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """Photos de soi uploadées (pour génération d'image à identité)."""
+    return db.list_self_photos(token)
+
+
+@app.post("/me/self-photos")
+def create_me_self_photo(
+    payload: SelfPhotoUploadRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Upload une photo de soi (via Zernio) et l'enregistre dans le profil.
+
+    Plafond : `SELF_PHOTOS_CAP` photos par compte. Même coût média Zernio que
+    les images jointes aux posts — pas de débit de crédits à l'upload.
+    """
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="Upload média non configuré (ZERNIO_API_KEY manquant).")
+    data_url = (payload.data_url or "").strip()
+    if not data_url.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="Image invalide : data URL image attendue.")
+    try:
+        media_items = zernio.prepare_image_media_items([
+            {"data_url": data_url, "filename": payload.filename or "self-photo.png"},
+        ])
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not media_items:
+        raise HTTPException(status_code=400, detail="Upload de la photo impossible.")
+    image_url = media_items[0].get("url")
+    if not image_url:
+        raise HTTPException(status_code=500, detail="URL publique de la photo manquante.")
+    try:
+        photo = db.create_self_photo(token, image_url, filename=payload.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not photo:
+        raise HTTPException(status_code=500, detail="Enregistrement de la photo impossible.")
+    return photo
+
+
+@app.delete("/me/self-photos/{photo_id}")
+def delete_me_self_photo(photo_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Supprime une photo de soi du profil."""
+    if not db.delete_self_photo(token, photo_id):
+        raise HTTPException(status_code=404, detail="Photo introuvable.")
+    return {"ok": True, "id": photo_id}
+
+
 def _clean_html_text(html: str) -> str:
     """Extract a compact text summary from public HTML without adding dependencies."""
     import html as html_lib
@@ -1624,6 +1679,10 @@ class GenerateImageRequest(BaseModel):
     prompt: Optional[str] = Field(default=None, max_length=4000)
     # Image de la banque de templates choisie comme référence visuelle (ALE-221).
     reference_template_id: Optional[str] = Field(default=None, max_length=100)
+    # Photos de soi (identité) — mutuellement exclusif avec reference_template_id.
+    reference_self_photo_ids: list[str] = Field(default_factory=list, max_length=db.SELF_PHOTOS_PER_GEN)
+    # Prépare un prompt « place-moi dans le contexte » (étape /generate-image/prompt).
+    identity: bool = Field(default=False)
     # Identifiant opaque (fourni par le frontend) du bloc de post auquel l'image
     # doit se rattacher — requis pour /generate-image/jobs (ALE-261), ignoré par
     # /generate-image/prompt.
@@ -4658,10 +4717,12 @@ def generate_image_prompt(payload: GenerateImageRequest, token: Optional[str] = 
 
     Étape 1 du flux : le prompt est affiché dans une pop-up, l'utilisateur peut
     l'ajuster puis valider (l'image n'est générée — et débitée — qu'à l'étape 2).
+    `identity=True` : prompt orienté « place cette personne dans un contexte »
+    (utilisé quand des photos de soi sont sélectionnées).
     """
     try:
         from src.image_gen import build_image_prompt
-        return {"prompt": build_image_prompt(payload.post_text)}
+        return {"prompt": build_image_prompt(payload.post_text, identity=bool(payload.identity))}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -4692,14 +4753,30 @@ def create_image_job(payload: GenerateImageRequest, token: str = Depends(require
     if info.get("enabled") and info.get("balance", 0) < cost:
         raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {info.get('balance', 0)}). Génération d'image = {cost} crédit(s).")
 
-    # Vérif immédiate (feedback rapide) ; le thread revérifie avant de
-    # télécharger l'image (course possible entre la création et le traitement).
-    if payload.reference_template_id:
-        template = db.get_post_template(token, payload.reference_template_id)
+    self_photo_ids = [str(x).strip() for x in (payload.reference_self_photo_ids or []) if str(x).strip()]
+    self_photo_ids = self_photo_ids[: db.SELF_PHOTOS_PER_GEN]
+    # Photos de soi et référence style bibliothèque sont mutuellement exclusives.
+    template_id = None if self_photo_ids else payload.reference_template_id
+
+    if self_photo_ids:
+        photos = db.get_self_photos_by_ids(token, self_photo_ids)
+        if len(photos) != len(self_photo_ids):
+            raise HTTPException(status_code=404, detail="Une ou plusieurs photos de référence sont introuvables.")
+    elif template_id:
+        # Vérif immédiate (feedback rapide) ; le thread revérifie avant de
+        # télécharger l'image (course possible entre la création et le traitement).
+        template = db.get_post_template(token, template_id)
         if not template or not template.get("image_url"):
             raise HTTPException(status_code=404, detail="Template introuvable ou sans image de référence.")
 
-    job = db.create_image_job(token, payload.post_text, payload.prompt, payload.reference_template_id, payload.target_key)
+    job = db.create_image_job(
+        token,
+        payload.post_text,
+        payload.prompt,
+        template_id,
+        payload.target_key,
+        reference_self_photo_ids=self_photo_ids or None,
+    )
     if not job:
         raise HTTPException(status_code=500, detail="Création du job d'image impossible.")
     start_image_job_thread(token, job["id"])
