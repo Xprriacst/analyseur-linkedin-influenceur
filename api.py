@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import secrets
 import sys
 import threading
@@ -487,6 +488,14 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _client_ip_hash(request: Request) -> str | None:
+    """Hash tronqué de l'IP — dédoublonne les visiteurs sans stocker d'IP en clair."""
+    ip = _client_ip(request)
+    if not ip or ip == "unknown":
+        return None
+    return hashlib.sha256(ip.encode()).hexdigest()[:16]
+
+
 def _rate_limit_onboarding_draft(request: Request) -> None:
     ip = _client_ip(request)
     now = time.time()
@@ -559,6 +568,18 @@ def draft_onboarding_profile(payload: EditorialProfileDraftRequest, request: Req
         preview = draft_onboarding_preview(seed)
     except Exception:
         preview = None
+
+    # Suivi des analyses landing (best-effort, jamais bloquant) : ces previews sont
+    # anonymes et sinon impossibles à compter. Cf. migration 0055.
+    _input_kind = "linkedin" if linkedin_url else ("website" if website_url else "description")
+    db.log_onboarding_preview_event(
+        input_kind=_input_kind,
+        linkedin_url=linkedin_url or None,
+        website_url=website_url or None,
+        used_apify=bool(linkedin_apify_seed),
+        preview_ok=bool(preview),
+        ip_hash=_client_ip_hash(request),
+    )
 
     return {
         "profile": profile,

@@ -81,6 +81,35 @@ def admin_client() -> "Client":
     return create_client(_url(), _service_key())  # type: ignore[arg-type]
 
 
+def log_onboarding_preview_event(
+    input_kind: str | None,
+    linkedin_url: str | None,
+    website_url: str | None,
+    used_apify: bool,
+    preview_ok: bool,
+    ip_hash: str | None,
+) -> None:
+    """Journalise une analyse lancée depuis la landing (parcours anonyme).
+
+    Best-effort : le visiteur n'a pas de session, on écrit donc en service-role
+    (table `onboarding_preview_events`, sans RLS policy = inaccessible côté client).
+    Un échec de log ne doit JAMAIS bloquer la preview → toute exception est avalée.
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return
+    try:
+        admin_client().table("onboarding_preview_events").insert({
+            "input_kind": input_kind,
+            "linkedin_url": linkedin_url or None,
+            "website_url": website_url or None,
+            "used_apify": bool(used_apify),
+            "preview_ok": bool(preview_ok),
+            "ip_hash": ip_hash,
+        }).execute()
+    except Exception:
+        pass
+
+
 # Successful validations are cached in-process: virtually every db helper
 # re-validates the same token, and each validation is a network round-trip to
 # Supabase Auth. Trade-off: a revoked token stays accepted at most TTL seconds.
