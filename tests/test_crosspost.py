@@ -30,12 +30,27 @@ class SubredditNameTest(unittest.TestCase):
 class SubredditLibraryTest(unittest.TestCase):
     def test_library_loads_and_entries_are_wellformed(self):
         library = crosspost.load_subreddit_library()
-        self.assertGreater(len(library), 10)
+        # Export Readyt = 117 subreddits curés (base réelle, pas l'ancienne
+        # curation manuelle de 36).
+        self.assertGreater(len(library), 100)
+        names_seen: set[str] = set()
         for entry in library:
-            # Chaque entrée doit avoir un nom valide (sans préfixe r/) : c'est
-            # ce que le prompt injecte et ce que library_entry compare.
+            # Chaque entrée doit avoir un nom valide (sans préfixe r/, ≤ 21 car.
+            # comme l'exige Reddit) : c'est ce que le prompt injecte et ce que
+            # library_entry compare. Un nom qui ne normalise pas vers lui-même
+            # serait silencieusement écarté.
             self.assertEqual(crosspost.normalize_subreddit_name(entry["name"]), entry["name"])
+            self.assertNotIn(entry["name"].lower(), names_seen, f"doublon : {entry['name']}")
+            names_seen.add(entry["name"].lower())
             self.assertIn(entry.get("selfpromo_tolerance"), (1, 2, 3, 4, 5))
+            self.assertIn(entry.get("geo_score"), (1, 2, 3, 4, 5))
+
+    def test_geo_score_is_surfaced_in_metadata(self):
+        # Le score GEO (citabilité IA) doit remonter au front pour le badge
+        # « Bien cité par les IA » et servir au tri des suggestions.
+        meta = crosspost.suggestion_metadata("SaaS")
+        self.assertTrue(meta["in_library"])
+        self.assertIn(meta["geo_score"], (1, 2, 3, 4, 5))
 
     def test_library_entry_lookup_is_prefix_and_case_insensitive(self):
         entry = crosspost.library_entry("r/MARKETING")
