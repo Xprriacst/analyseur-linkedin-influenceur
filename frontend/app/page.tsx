@@ -2966,7 +2966,7 @@ function SchedulePostModal({
       position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
       display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
     }}>
-      <div className="card" style={{ maxWidth: 520, width: "100%", padding: 24 }}>
+      <div className="card" style={{ maxWidth: 520, width: "100%", padding: 24, maxHeight: "90vh", overflowY: "auto" }}>
         <h3 style={{ marginTop: 0, marginBottom: 8 }}>Programmer ce post</h3>
         <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
           {slackCanUse(slackStatus)
@@ -5195,7 +5195,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
 
       {confirmX !== null && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24, maxHeight: "90vh", overflowY: "auto" }}>
             <h3 style={{ marginTop: 0, marginBottom: 8 }}>Publier ce post sur X ?</h3>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
               Le post sera publié <strong>immédiatement</strong> sur ton compte X (Twitter).
@@ -7300,7 +7300,7 @@ function LibraryView({
 
       {editingSchedule !== null && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+          <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24, maxHeight: "90vh", overflowY: "auto" }}>
             <h3 style={{ marginTop: 0, marginBottom: 8 }}>Modifier le post programmé</h3>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
               Tant que le post est en attente, tu peux corriger son texte et sa date de publication.
