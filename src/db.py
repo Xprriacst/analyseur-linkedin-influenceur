@@ -3141,8 +3141,24 @@ def update_scheduled_post_text_admin(post_id: str, user_id: str, text: str) -> d
     return resp.data[0] if resp.data else None
 
 
+# Plafond de rejeux automatiques d'un post programmé en échec. Au-delà, le
+# client doit cliquer « Réessayer » (remet le compteur à 0) ou reprogrammer.
+SCHEDULED_PUBLISH_MAX_ATTEMPTS = 3
+# Fenêtre : on ne rejoue pas un échec vieux de plus d'une semaine (évite de
+# ressusciter des posts abandonnés).
+SCHEDULED_FAILED_RETRY_WINDOW = datetime.timedelta(days=7)
+# Backoff entre deux tentatives auto (le cron tourne toutes les 5 min).
+SCHEDULED_FAILED_RETRY_BACKOFF = datetime.timedelta(minutes=30)
+
+
 def get_due_scheduled_posts() -> list[dict]:
-    """Return pending posts whose scheduled_at <= now() (service-role, for cron).
+    """Return posts ready to publish (service-role, for cron).
+
+    Inclut :
+    - les `pending` + `slack_status=validated` arrivés à échéance ;
+    - les `failed` encore dans la fenêtre de retry (compteur < plafond,
+      backoff respecté) — sans ça un échec Zernio ponctuel (média pas encore
+      lisible, glitch réseau…) laissait le post mort à jamais.
 
     Two-step query: PostgREST ne peut pas embarquer `user_editorial_profiles`
     directement (pas de FK entre `scheduled_posts` et `user_editorial_profiles`,
@@ -3152,18 +3168,54 @@ def get_due_scheduled_posts() -> list[dict]:
     if not admin_enabled():
         return []
     admin = admin_client()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    now_iso = now.isoformat()
     resp = (
         admin.table("scheduled_posts")
-        .select("id, user_id, post_text, media_items, cross_posts")
+        .select("id, user_id, post_text, media_items, cross_posts, status, publish_attempts, updated_at")
         .eq("status", "pending")
         .eq("slack_status", "validated")
-        .lte("scheduled_at", "now()")
+        .lte("scheduled_at", now_iso)
         .limit(100)
         .execute()
     )
-    posts = resp.data or []
+    posts = list(resp.data or [])
+
+    # Rejeux des échecs récents (plafond + backoff + fenêtre).
+    window_start = (now - SCHEDULED_FAILED_RETRY_WINDOW).isoformat()
+    backoff_before = (now - SCHEDULED_FAILED_RETRY_BACKOFF).isoformat()
+    try:
+        failed_resp = (
+            admin.table("scheduled_posts")
+            .select("id, user_id, post_text, media_items, cross_posts, status, publish_attempts, updated_at")
+            .eq("status", "failed")
+            .eq("slack_status", "validated")
+            .is_("zernio_post_id", "null")
+            .lte("scheduled_at", now_iso)
+            .gte("scheduled_at", window_start)
+            .lt("publish_attempts", SCHEDULED_PUBLISH_MAX_ATTEMPTS)
+            .lte("updated_at", backoff_before)
+            .limit(50)
+            .execute()
+        )
+        posts.extend(failed_resp.data or [])
+    except Exception:
+        # Colonne `publish_attempts` absente (migration 0054 pas encore appliquée)
+        # → on ignore les retries auto, les pending continuent de partir.
+        pass
+
     if not posts:
         return []
+    # Dédupliquer si un id apparaît deux fois (ne devrait pas arriver).
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for p in posts:
+        if p["id"] in seen:
+            continue
+        seen.add(p["id"])
+        unique.append(p)
+    posts = unique
+
     user_ids = list({p["user_id"] for p in posts})
     prof = (
         admin.table("user_editorial_profiles")
@@ -3179,12 +3231,81 @@ def get_due_scheduled_posts() -> list[dict]:
             "post_text": p["post_text"],
             "media_items": p.get("media_items") or [],
             "cross_posts": p.get("cross_posts") or {},
+            "status": p.get("status") or "pending",
+            "publish_attempts": int(p.get("publish_attempts") or 0),
             "zernio_account_id": (accounts_by_user.get(p["user_id"]) or {}).get("zernio_account_id"),
             "zernio_x_account_id": (accounts_by_user.get(p["user_id"]) or {}).get("zernio_x_account_id"),
             "zernio_reddit_account_id": (accounts_by_user.get(p["user_id"]) or {}).get("zernio_reddit_account_id"),
         }
         for p in posts
     ]
+
+
+def bump_scheduled_publish_attempt(post_id: str) -> None:
+    """Incrémente publish_attempts et repasse en pending juste avant l'essai.
+
+    Remet `status=pending` pour qu'un crash mid-flight ne laisse pas un
+    `failed` « frais » (le backoff bloquerait le prochain tick). Best-effort :
+    si la colonne n'existe pas encore, on ignore.
+    """
+    if not admin_enabled():
+        return
+    try:
+        admin = admin_client()
+        row = (
+            admin.table("scheduled_posts")
+            .select("publish_attempts")
+            .eq("id", post_id)
+            .limit(1)
+            .execute()
+        )
+        current = int((row.data[0].get("publish_attempts") if row.data else 0) or 0)
+        admin.table("scheduled_posts").update({
+            "publish_attempts": current + 1,
+            "status": "pending",
+            "error_message": None,
+            "updated_at": "now()",
+        }).eq("id", post_id).execute()
+    except Exception:
+        pass
+
+
+def reset_failed_scheduled_post(access_token: str, post_id: str) -> dict | None:
+    """Remet un post `failed` en `pending` et raz le compteur (JWT, RLS).
+
+    Le client peut alors laisser le cron rejouer, ou l'appelant publie tout de
+    suite. Refuse les posts déjà publiés / annulés.
+    """
+    if not supabase_enabled():
+        return None
+    db = client_for_token(access_token)
+    payload: dict[str, Any] = {
+        "status": "pending",
+        "error_message": None,
+        "publish_attempts": 0,
+        "updated_at": "now()",
+    }
+    try:
+        resp = (
+            db.table("scheduled_posts")
+            .update(payload)
+            .eq("id", post_id)
+            .eq("status", "failed")
+            .is_("zernio_post_id", "null")
+            .execute()
+        )
+    except Exception:
+        # Migration 0054 pas encore appliquée → raz sans le compteur.
+        payload.pop("publish_attempts", None)
+        resp = (
+            db.table("scheduled_posts")
+            .update(payload)
+            .eq("id", post_id)
+            .eq("status", "failed")
+            .is_("zernio_post_id", "null")
+            .execute()
+        )
+    return resp.data[0] if resp.data else None
 
 
 def update_scheduled_post_status(

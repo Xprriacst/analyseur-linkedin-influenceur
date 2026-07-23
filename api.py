@@ -1233,6 +1233,67 @@ def me_linkedin_scheduled_validate(
     return {"ok": True, "scheduled_post": updated}
 
 
+@app.post("/me/linkedin/scheduled/{post_id}/retry")
+def me_linkedin_scheduled_retry(
+    post_id: str,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Réessaie la publication d'un post programmé en échec.
+
+    Remet le post en `pending` (compteur raz) puis publie immédiatement si
+    l'échéance est passée et LinkedIn est connecté — sinon le cron s'en charge
+    au prochain tick. Sans ça un échec Zernio ponctuel laissait le post mort.
+    """
+    from src import scheduler as sched
+
+    if not zernio.enabled():
+        raise HTTPException(status_code=503, detail="Publication LinkedIn non configurée.")
+
+    user = db.get_user(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentification requise.")
+
+    reset = db.reset_failed_scheduled_post(token, post_id)
+    if not reset:
+        raise HTTPException(
+            status_code=404,
+            detail="Post introuvable, déjà publié, ou pas en échec.",
+        )
+
+    account_id = db.get_zernio_account_for_user(user["id"])
+    # Comptes X/Reddit (best-effort) pour les cross_posts éventuels.
+    x_account = None
+    reddit_account = None
+    try:
+        profile = db.get_editorial_profile(token) or {}
+        x_account = profile.get("zernio_x_account_id")
+        reddit_account = profile.get("zernio_reddit_account_id")
+    except Exception:
+        pass
+
+    post_payload = {
+        "id": reset["id"],
+        "user_id": user["id"],
+        "post_text": reset.get("post_text") or "",
+        "media_items": reset.get("media_items") or [],
+        "cross_posts": reset.get("cross_posts") or {},
+        "zernio_account_id": account_id,
+        "zernio_x_account_id": x_account,
+        "zernio_reddit_account_id": reddit_account,
+    }
+    result = sched.publish_one(post_payload)
+    if not result.get("ok"):
+        # Le statut `failed` + error_message sont déjà posés par publish_one.
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("error") or "Publication échouée.",
+        )
+    # Recharger la ligne pour renvoyer l'état à jour au front.
+    refreshed = db.get_scheduled_post_for_user(post_id, user["id"]) or reset
+    return {"ok": True, "scheduled_post": refreshed, "zernio_post_id": result.get("zernio_post_id")}
+
+
+
 @app.post("/me/linkedin/scheduled/{post_id}/reject")
 def me_linkedin_scheduled_reject(
     post_id: str,

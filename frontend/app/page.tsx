@@ -6362,6 +6362,7 @@ function LibraryView({
   const [publishError, setPublishError] = useState("");
   const [scheduledPosts, setScheduledPosts] = useState<ScheduledPost[]>([]);
   const [cancellingPost, setCancellingPost] = useState<string | null>(null);
+  const [retryingPost, setRetryingPost] = useState<string | null>(null);
   const [editingSchedule, setEditingSchedule] = useState<ScheduledPost | null>(null);
   const [editScheduleText, setEditScheduleText] = useState("");
   const [editScheduleDate, setEditScheduleDate] = useState("");
@@ -6390,6 +6391,37 @@ function LibraryView({
       if (res.ok) setScheduledPosts((prev) => prev.map((p) => p.id === postId ? { ...p, status: "cancelled" } : p));
     } catch (_) {} finally {
       setCancellingPost(null);
+    }
+  }
+
+  async function retryScheduled(postId: string) {
+    setRetryingPost(postId);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${postId}/retry`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.scheduled_post) {
+        setScheduledPosts((prev) =>
+          prev.map((p) => (p.id === postId ? { ...p, ...data.scheduled_post } : p)),
+        );
+        setExpandedSchedId(null);
+      } else if (!res.ok) {
+        // L'échec a déjà été consignié en base : on rafraîchit pour afficher le nouveau message.
+        const listRes = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled`, {
+          headers: await authHeaders(),
+        });
+        if (listRes.ok) {
+          const list = await listRes.json();
+          setScheduledPosts(list);
+        }
+        alert(typeof data.detail === "string" ? data.detail : "Publication échouée. Réessaie dans un instant.");
+      }
+    } catch (_) {
+      alert("Impossible de contacter le serveur. Réessaie dans un instant.");
+    } finally {
+      setRetryingPost(null);
     }
   }
 
@@ -7154,6 +7186,19 @@ function LibraryView({
                     )}
                     {p.status === "failed" && p.error_message && (
                       <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--danger)" }}>{p.error_message}</p>
+                    )}
+                    {p.status === "failed" && (
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+                        <button
+                          className="primary-button"
+                          style={{ fontSize: 13 }}
+                          disabled={retryingPost === p.id}
+                          onClick={() => { retryScheduled(p.id); }}
+                        >
+                          {retryingPost === p.id ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+                          Réessayer la publication
+                        </button>
+                      </div>
                     )}
                     {p.status === "pending" && (
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: 16 }}>
