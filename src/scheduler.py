@@ -109,6 +109,55 @@ def publish_cross_posts(post: dict) -> dict:
     return cross
 
 
+def publish_one(post: dict) -> dict:
+    """Publie un post programmé sur LinkedIn (+ cross-posts éventuels).
+
+    Retourne `{"ok": True, "zernio_post_id": …}` ou `{"ok": False, "error": …}`.
+    Met à jour le statut en base. Utilisé par le cron et par le retry manuel.
+    """
+    post_id = post["id"]
+    user_id = post["user_id"]
+    account_id = post.get("zernio_account_id")
+
+    db.bump_scheduled_publish_attempt(post_id)
+
+    if not account_id:
+        err = "Compte LinkedIn non connecté (zernio_account_id manquant)."
+        logger.warning(f"Post {post_id} (user {user_id}) : {err}")
+        db.update_scheduled_post_status(post_id, "failed", error=err)
+        return {"ok": False, "error": err}
+
+    try:
+        media_items = zernio.prepare_image_media_items(post.get("media_items") or [])
+        result = zernio.create_post(
+            post["post_text"],
+            account_id,
+            publish_now=True,
+            media_items=media_items,
+        )
+        z_post = result.get("post") or result
+        # ALE-59 : versions X/Reddit publiées ensemble, après le succès
+        # LinkedIn (résultats par réseau consignés dans cross_posts). Un
+        # imprévu ici ne doit jamais faire passer en `failed` un post déjà
+        # publié sur LinkedIn (aucun retry ne doit pouvoir le dupliquer).
+        cross_results = None
+        if post.get("cross_posts"):
+            try:
+                cross_results = publish_cross_posts(post)
+            except Exception as cross_exc:
+                logger.error(f"Post {post_id} : publication multi-réseaux échouée : {cross_exc}")
+        z_id = z_post.get("_id")
+        db.update_scheduled_post_status(
+            post_id, "published", zernio_post_id=z_id, cross_posts=cross_results
+        )
+        logger.info(f"Post {post_id} publié (user {user_id}, zernio_id={z_id}).")
+        return {"ok": True, "zernio_post_id": z_id}
+    except Exception as exc:
+        logger.error(f"Erreur publication post {post_id} : {exc}")
+        db.update_scheduled_post_status(post_id, "failed", error=str(exc))
+        return {"ok": False, "error": str(exc)}
+
+
 def run() -> None:
     if not db.admin_enabled():
         logger.warning("SUPABASE_SERVICE_ROLE_KEY absent — scheduler ignoré.")
@@ -118,46 +167,10 @@ def run() -> None:
         return
 
     due = db.get_due_scheduled_posts()
-    logger.info(f"Scheduler : {len(due)} post(s) validé(s) sur Slack à publier.")
+    logger.info(f"Scheduler : {len(due)} post(s) à publier (pending dus + retries).")
 
     for post in due:
-        post_id = post["id"]
-        user_id = post["user_id"]
-        account_id = post.get("zernio_account_id")
-
-        if not account_id:
-            logger.warning(f"Post {post_id} (user {user_id}) : compte LinkedIn non connecté.")
-            db.update_scheduled_post_status(
-                post_id, "failed", error="Compte LinkedIn non connecté (zernio_account_id manquant)."
-            )
-            continue
-
-        try:
-            media_items = zernio.prepare_image_media_items(post.get("media_items") or [])
-            result = zernio.create_post(
-                post["post_text"],
-                account_id,
-                publish_now=True,
-                media_items=media_items,
-            )
-            z_post = result.get("post") or result
-            # ALE-59 : versions X/Reddit publiées ensemble, après le succès
-            # LinkedIn (résultats par réseau consignés dans cross_posts). Un
-            # imprévu ici ne doit jamais faire passer en `failed` un post déjà
-            # publié sur LinkedIn (aucun retry ne doit pouvoir le dupliquer).
-            cross_results = None
-            if post.get("cross_posts"):
-                try:
-                    cross_results = publish_cross_posts(post)
-                except Exception as cross_exc:
-                    logger.error(f"Post {post_id} : publication multi-réseaux échouée : {cross_exc}")
-            db.update_scheduled_post_status(
-                post_id, "published", zernio_post_id=z_post.get("_id"), cross_posts=cross_results
-            )
-            logger.info(f"Post {post_id} publié (user {user_id}, zernio_id={z_post.get('_id')}).")
-        except Exception as exc:
-            logger.error(f"Erreur publication post {post_id} : {exc}")
-            db.update_scheduled_post_status(post_id, "failed", error=str(exc))
+        publish_one(post)
 
 
 if __name__ == "__main__":

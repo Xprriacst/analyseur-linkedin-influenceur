@@ -82,6 +82,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-23 (dev : retry des posts programmés en échec — post Tom du 22/07)
+- **Constat** : le cron `analyseur-linkedin-scheduler` **tourne** (sonde live : post QA dû → `failed` « LinkedIn non connecté » en < 5 min). Un post `failed` n'était **jamais rejoué** — un glitch Zernio ponctuel (ex. média pas encore lisible, confondu avec le cas Tom d'ALE-261/PR #346) laissait le créneau mort. Les 3 posts auto-validés de Tom (20/07 16:00, **22/07 10:00**, 24/07 16:00 UTC) tombent dans ce trou dès qu'un essai échoue.
+- **Fix** : migration **0054** (`publish_attempts`) · le cron reprend les `failed` récents (fenêtre 7 j, backoff 30 min, plafond 3 essais) · bouton **« Réessayer la publication »** dans Ma bibliothèque (publie tout de suite) · `publish_one` partagé cron/endpoint.
+- **Déblocage immédiat Tom (sans attendre la release)** : en SQL prod, lire `error_message` puis `update scheduled_posts set status='pending', error_message=null where …` — le cron existant repart au tick suivant. ⚠️ **À appliquer sur prod avant la release** : migration 0054.
+- **Bloquant pour ce run** : MCP Supabase/Render non authentifiés en cloud agent → pas pu lire la ligne de Tom ni les logs cron du 22/07 10:00. Filtre `now()` vérifié OK en PostgREST.
+
 ### 2026-07-22 #5 (RELEASE PROD : multi-réseaux X + Reddit derrière feature flags — PRs #350 + #351 + #352 → release #353)
 - **Release `dev → main` PR #353** (delta énuméré avant merge : uniquement le socle feature flags #350, le multi-réseaux ALE-59 #351 et ses flags #352 — l'autopilote #348/0052 était déjà sur `main`, vérifié en base). **Effet réel : pour les ~12 comptes prod non flaggés, RIEN ne change** (Instagram reste grisé, aucun logo X/Reddit, endpoints 404) ; pour les 3 comptes agence (Alex ×2, Tom — flags posés en base prod avant la release), Instagram est dégrisé et la pop-up multi-réseaux + connexion Reddit sont actives.
 - **Séquençage tenu** : migration **0053 appliquée et vérifiée sur la base prod AVANT le merge** (et 0052 vérifiée déjà présente — le check explicite des migrations « à appliquer » des entrées récentes a été fait, règle de release respectée). Aucune env var nouvelle, aucun cron à créer.
