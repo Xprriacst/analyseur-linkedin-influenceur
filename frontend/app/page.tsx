@@ -48,6 +48,7 @@ import {
   TrendingUp,
   UserRound,
   Users,
+  Camera,
   X,
   XCircle,
   Zap,
@@ -528,12 +529,23 @@ type ImageJob = {
   post_text: string;
   prompt: string | null;
   reference_template_id: string | null;
+  reference_self_photo_ids?: string[] | null;
   target_key: string;
   result: { image_data?: string; prompt_used?: string; credits?: number | null } | null;
   error: string | null;
   created_at: string;
   updated_at: string;
 };
+
+type SelfPhoto = {
+  id: string;
+  image_url: string;
+  filename?: string | null;
+  created_at?: string;
+};
+
+const SELF_PHOTOS_CAP = 5;
+const SELF_PHOTOS_PER_GEN = 3;
 
 function imageJobIsActive(j: ImageJob): boolean {
   return j.status === "queued" || j.status === "running";
@@ -3066,6 +3078,9 @@ function ImageGenModal({
   // fetch local à la pop-up plutôt qu'un prop threadé depuis les 4 écrans appelants.
   const [templates, setTemplates] = useState<PostTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  // Photos de soi (identité) — mutuellement exclusives avec la référence style.
+  const [selfPhotos, setSelfPhotos] = useState<SelfPhoto[]>([]);
+  const [selectedSelfIds, setSelectedSelfIds] = useState<string[]>([]);
   // Le job qu'on suit dans cette pop-up : celui qu'on vient de créer, ou — si la
   // pop-up est rouverte pendant qu'un job pour ce post tourne encore — celui déjà
   // en cours. Un job déjà terminé pour ce post n'est PAS repris : rouvrir propose
@@ -3078,15 +3093,20 @@ function ImageGenModal({
   const active = !!job && imageJobIsActive(job);
   const done = job?.status === "done";
   const notifiedCreditsRef = useRef<string | null>(null);
+  const identityMode = selectedSelfIds.length > 0;
 
   useEffect(() => {
     let cancelled = false;
-    authHeaders().then((h) =>
+    authHeaders().then((h) => {
       fetch(`${DIRECT_API_URL}/me/post-templates`, { headers: h })
         .then((r) => (r.ok ? r.json() : []))
         .then((data) => { if (!cancelled) setTemplates(Array.isArray(data) ? data : []); })
-        .catch(() => {})
-    );
+        .catch(() => {});
+      fetch(`${DIRECT_API_URL}/me/self-photos`, { headers: h })
+        .then((r) => (r.ok ? r.json() : []))
+        .then((data) => { if (!cancelled) setSelfPhotos(Array.isArray(data) ? data : []); })
+        .catch(() => {});
+    });
     return () => { cancelled = true; };
   }, []);
   const templatesWithImage = templates.filter((t) => !!t.image_url);
@@ -3105,14 +3125,16 @@ function ImageGenModal({
     setPrompt((p) => (p.trim() ? `${p.trimEnd()}\n\n${toInsert}` : toInsert));
   }
 
-  useEffect(() => {
+  function loadPrompt(identity: boolean) {
+    setLoadingPrompt(true);
+    setError("");
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch(`${DIRECT_API_URL}/generate-image/prompt`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-          body: JSON.stringify({ post_text: postText }),
+          body: JSON.stringify({ post_text: postText, identity }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || "Préparation du prompt impossible.");
@@ -3124,8 +3146,40 @@ function ImageGenModal({
       }
     })();
     return () => { cancelled = true; };
+  }
+
+  useEffect(() => {
+    return loadPrompt(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function toggleSelfPhoto(id: string) {
+    setSelectedSelfIds((prev) => {
+      const on = prev.includes(id);
+      if (on) return prev.filter((x) => x !== id);
+      if (prev.length >= SELF_PHOTOS_PER_GEN) return prev;
+      return [...prev, id];
+    });
+  }
+
+  // Passage illustration ↔ identité : on régénère le prompt adapté et on retire
+  // la référence style (les deux modes se brouillent).
+  const identityModePrev = useRef(false);
+  useEffect(() => {
+    if (identityMode === identityModePrev.current) return;
+    identityModePrev.current = identityMode;
+    if (identityMode) setSelectedTemplateId("");
+    loadPrompt(identityMode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identityMode]);
+
+  function selectTemplate(id: string) {
+    const next = selectedTemplateId === id ? "" : id;
+    setSelectedTemplateId(next);
+    if (next && selectedSelfIds.length) {
+      setSelectedSelfIds([]);
+    }
+  }
 
   // Rafraîchit le solde affiché une seule fois par job terminé (l'attache de
   // l'image au post, elle, est faite par l'écran appelant — pas ici — pour
@@ -3147,7 +3201,8 @@ function ImageGenModal({
         body: JSON.stringify({
           post_text: postText,
           prompt: prompt.trim() || undefined,
-          reference_template_id: selectedTemplateId || undefined,
+          reference_template_id: identityMode ? undefined : (selectedTemplateId || undefined),
+          reference_self_photo_ids: identityMode ? selectedSelfIds : undefined,
           target_key: targetKey,
         }),
       });
@@ -3167,7 +3222,7 @@ function ImageGenModal({
       position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1000,
       display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
     }}>
-      <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24 }}>
+      <div className="card" style={{ maxWidth: 560, width: "100%", padding: 24, maxHeight: "92vh", overflowY: "auto" }}>
         <h3 style={{ marginTop: 0, marginBottom: 2, display: "flex", alignItems: "center", gap: 8 }}>
           <ImageIcon size={16} /> {done ? "Image générée" : job?.status === "error" ? "Échec de la génération" : "Générer une image IA"}
         </h3>
@@ -3220,7 +3275,73 @@ function ImageGenModal({
               générer l&apos;image (5 crédits). L&apos;image sera jointe au post — tu peux fermer
               cette fenêtre pendant la génération (2 à 3 min), elle continue en arrière-plan.
             </p>
-            {templatesWithImage.length > 0 && (
+
+            {/* Photos de soi : place la personne dans le contexte du post */}
+            <div style={{ marginBottom: 14 }}>
+              <p style={{ fontSize: 12, margin: "0 0 2px", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                <Camera size={13} /> Me mettre dans l&apos;image
+              </p>
+              <p style={{ fontSize: 11, color: "var(--muted)", margin: "0 0 8px", lineHeight: 1.45 }}>
+                Sélectionne jusqu&apos;à {SELF_PHOTOS_PER_GEN} photo{SELF_PHOTOS_PER_GEN > 1 ? "s" : ""} de toi :
+                l&apos;IA conserve ton visage et te place dans le contexte du post.
+                {selfPhotos.length === 0 && (
+                  <> Ajoute-en d&apos;abord dans <strong>Mon profil</strong>.</>
+                )}
+              </p>
+              {selfPhotos.length > 0 ? (
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {selfPhotos.map((p) => {
+                    const selected = selectedSelfIds.includes(p.id);
+                    const dimmed = identityMode && !selected;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        aria-pressed={selected}
+                        aria-label={p.filename || "Photo de moi"}
+                        title={selected ? "Retirer" : "Utiliser comme référence d'identité"}
+                        onClick={() => toggleSelfPhoto(p.id)}
+                        style={{
+                          width: 72, padding: 4, borderRadius: 10, flex: "0 0 auto", cursor: "pointer",
+                          border: `2px solid ${selected ? "var(--primary)" : "var(--border)"}`,
+                          background: selected
+                            ? "color-mix(in srgb, var(--primary) 7%, var(--surface))"
+                            : "var(--surface)",
+                          boxShadow: selected
+                            ? "0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent)"
+                            : "none",
+                          opacity: dimmed ? 0.5 : 1,
+                          filter: dimmed ? "grayscale(0.5)" : "none",
+                        }}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={p.image_url}
+                          alt=""
+                          style={{ width: "100%", height: 64, objectFit: "cover", borderRadius: 6, display: "block" }}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>
+                  Aucune photo pour l&apos;instant.
+                </p>
+              )}
+              {identityMode && (
+                <div style={{
+                  marginTop: 10, padding: "9px 11px", borderRadius: 8, fontSize: 12, lineHeight: 1.45,
+                  border: "1px solid color-mix(in srgb, var(--primary) 28%, transparent)",
+                  background: "color-mix(in srgb, var(--primary) 7%, var(--surface))",
+                }}>
+                  <strong>{selectedSelfIds.length} photo{selectedSelfIds.length > 1 ? "s" : ""} sélectionnée{selectedSelfIds.length > 1 ? "s" : ""}</strong>
+                  {" — "}l&apos;IA te placera dans le contexte du post en conservant ton apparence.
+                </div>
+              )}
+            </div>
+
+            {templatesWithImage.length > 0 && !identityMode && (
               <div style={{ marginBottom: 14 }}>
                 <p style={{ fontSize: 12, margin: "0 0 2px", fontWeight: 600 }}>
                   Image de référence (optionnel)
@@ -3240,14 +3361,10 @@ function ImageGenModal({
                         key={t.id}
                         type="button"
                         aria-pressed={selected}
-                        // Nom accessible stable (le libellé sous la vignette bascule sur
-                        // « ✓ Sélectionnée », et l'alt de l'image le dupliquerait sinon).
                         aria-label={title}
                         title={selected ? `${title} — cliquer pour retirer` : `S'inspirer de « ${title} »`}
-                        onClick={() => setSelectedTemplateId(selected ? "" : t.id)}
+                        onClick={() => selectTemplate(t.id)}
                         style={{
-                          // Bordure toujours 2px (couleur seule qui change) : sinon la vignette
-                          // change de taille à la sélection au lieu de s'entourer d'un liseré.
                           width: 92, padding: 5, borderRadius: 10, flex: "0 0 auto", cursor: "pointer",
                           border: `2px solid ${selected ? "var(--primary)" : "var(--border)"}`,
                           background: selected
@@ -3351,8 +3468,6 @@ function ImageGenModal({
                   <button
                     type="button"
                     className="secondary-button"
-                    // preventDefault sur mousedown : sans ça, le clic effacerait la
-                    // sélection dans le bloc de post avant qu'on puisse la lire.
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={insertPostText}
                     style={{ fontSize: 12 }}
@@ -3371,7 +3486,7 @@ function ImageGenModal({
               <button className="primary-button" disabled={loadingPrompt || launching || !prompt.trim()} onClick={generate}>
                 {launching
                   ? <><Loader2 size={13} className="spinning" /> Lancement…</>
-                  : <><Sparkles size={13} /> Générer l&apos;image</>}
+                  : <><Sparkles size={13} /> {identityMode ? "Me générer dans l'image" : "Générer l'image"}</>}
               </button>
             </div>
           </>
@@ -9516,6 +9631,176 @@ const EMPTY_EDITORIAL_PROFILE: EditorialProfile = {
   extra_context: "",
 };
 
+function SelfPhotosCard() {
+  const [photos, setPhotos] = useState<SelfPhoto[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  async function reload() {
+    setLoading(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/self-photos`, { headers: await authHeaders() });
+      const data = await res.json().catch(() => []);
+      if (res.ok) setPhotos(Array.isArray(data) ? data : []);
+    } catch { /* silencieux */ }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { void reload(); }, []);
+
+  async function uploadFiles(files: FileList | null) {
+    if (!files?.length) return;
+    setError("");
+    const imageFiles = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    if (!imageFiles.length) {
+      setError("Seuls les fichiers image (JPG, PNG, WebP) sont acceptés.");
+      return;
+    }
+    let currentCount = photos.length;
+    if (currentCount >= SELF_PHOTOS_CAP) {
+      setError(`Limite atteinte : ${SELF_PHOTOS_CAP} photos maximum.`);
+      return;
+    }
+    setUploading(true);
+    try {
+      for (const file of imageFiles) {
+        if (currentCount >= SELF_PHOTOS_CAP) {
+          setError(`Limite atteinte : ${SELF_PHOTOS_CAP} photos maximum.`);
+          break;
+        }
+        if (file.size > 8 * 1024 * 1024) {
+          setError(`${file.name} dépasse 8 Mo.`);
+          continue;
+        }
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+          reader.onerror = () => reject(new Error(`Lecture impossible pour ${file.name}.`));
+          reader.readAsDataURL(file);
+        });
+        if (!dataUrl) continue;
+        const res = await fetch(`${DIRECT_API_URL}/me/self-photos`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ data_url: dataUrl, filename: file.name }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || "Upload impossible.");
+        currentCount += 1;
+        setPhotos((prev) => [data as SelfPhoto, ...prev].slice(0, SELF_PHOTOS_CAP));
+      }
+    } catch (err: any) {
+      setError(err.message || "Upload impossible.");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  async function removePhoto(id: string) {
+    setError("");
+    const prev = photos;
+    setPhotos((p) => p.filter((x) => x.id !== id));
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/self-photos/${id}`, {
+        method: "DELETE",
+        headers: await authHeaders(),
+      });
+      if (!res.ok) {
+        setPhotos(prev);
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Suppression impossible.");
+      }
+    } catch (err: any) {
+      setError(err.message || "Suppression impossible.");
+    }
+  }
+
+  return (
+    <section className="card">
+      <div className="section-header" style={{ marginBottom: 10 }}>
+        <div>
+          <h3 style={{ margin: "0 0 4px", display: "flex", alignItems: "center", gap: 8 }}>
+            <Camera size={16} /> Mes photos
+          </h3>
+          <p className="section-desc" style={{ margin: 0 }}>
+            Uploade des photos de toi clairement visibles. L&apos;IA pourra ensuite te placer
+            dans différents contextes quand tu génères une image pour un post
+            (jusqu&apos;à {SELF_PHOTOS_CAP} photos).
+          </p>
+        </div>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={uploading || photos.length >= SELF_PHOTOS_CAP}
+          onClick={() => fileRef.current?.click()}
+          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+        >
+          {uploading ? <Loader2 size={14} className="spinning" /> : <ImagePlus size={14} />}
+          {uploading ? "Upload…" : "Ajouter"}
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          multiple
+          hidden
+          onChange={(e) => void uploadFiles(e.target.files)}
+        />
+      </div>
+      {error ? <div className="error" style={{ marginBottom: 10, fontSize: 13 }}>{error}</div> : null}
+      {loading ? (
+        <div style={{ display: "flex", gap: 10 }}>
+          <Sk h={88} w={88} r={10} />
+          <Sk h={88} w={88} r={10} />
+        </div>
+      ) : photos.length === 0 ? (
+        <p style={{ fontSize: 13, color: "var(--muted)", margin: 0 }}>
+          Aucune photo pour l&apos;instant. Ajoute-en pour pouvoir te mettre dans les images de tes posts.
+        </p>
+      ) : (
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          {photos.map((p) => (
+            <div key={p.id} style={{ position: "relative", width: 96 }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={p.image_url}
+                alt={p.filename || "Photo de moi"}
+                style={{
+                  width: 96, height: 96, objectFit: "cover", borderRadius: 10,
+                  border: "1px solid var(--border)", display: "block",
+                }}
+              />
+              <button
+                type="button"
+                className="ghost-button"
+                title="Supprimer"
+                aria-label="Supprimer cette photo"
+                onClick={() => void removePhoto(p.id)}
+                style={{
+                  position: "absolute", top: -8, right: -8, width: 28, height: 28,
+                  borderRadius: "50%", padding: 0, display: "flex", alignItems: "center",
+                  justifyContent: "center", background: "var(--surface)",
+                  border: "1px solid var(--border)", boxShadow: "0 1px 3px rgba(0,0,0,0.12)",
+                }}
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {!loading && (
+        <p style={{ fontSize: 11, color: "var(--muted)", margin: "10px 0 0" }}>
+          {photos.length}/{SELF_PHOTOS_CAP} photo{photos.length > 1 ? "s" : ""} — visage bien visible, lumière naturelle de préférence.
+        </p>
+      )}
+    </section>
+  );
+}
+
 function ProfileView({
   isAuthed,
   requireAuth,
@@ -10189,6 +10474,8 @@ function ProfileView({
               </button>
             </div>
           </section>
+
+          <SelfPhotosCard />
 
           {/* Le tiroir « Détails du profil éditorial » a disparu : il n'existait que
               parce que la page portait aussi les connexions et les automatisations.
