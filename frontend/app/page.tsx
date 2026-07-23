@@ -4979,16 +4979,6 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                             title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
                             onClick: () => publishPost(key),
                           },
-                          {
-                            key: "schedule",
-                            icon: <Clock3 size={14} />,
-                            label: scheduled[key] ? "Programmé ✓" : "Programmer…",
-                            disabled: publishing === key || !!scheduled[key],
-                            title: linkedin.status?.connected
-                              ? "Programmer : publication directe à une date, ou validation Slack au préalable"
-                              : "Connecte ton compte LinkedIn dans l'onglet Profil",
-                            onClick: () => openScheduleModal(line),
-                          },
                           ...buildSlackPostAction({
                             status: slack.status,
                             sent: slackSent[key],
@@ -5009,6 +4999,16 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                                 },
                               } satisfies PostAction]
                             : []),
+                          {
+                            key: "schedule",
+                            icon: <Clock3 size={14} />,
+                            label: scheduled[key] ? "Programmé ✓" : "Programmer…",
+                            disabled: publishing === key || !!scheduled[key],
+                            title: linkedin.status?.connected
+                              ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+                              : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                            onClick: () => openScheduleModal(line),
+                          },
                         ]}
                         moreActions={[
                           ...(variant.id
@@ -6150,15 +6150,6 @@ function DailyIdeasView({
                             title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
                             onClick: () => setConfirmPublishId(it.id),
                           },
-                          {
-                            key: "schedule",
-                            icon: <Clock3 size={14} />,
-                            label: scheduledId === it.id ? "Programmé ✓" : "Programmer…",
-                            title: linkedin.status?.connected
-                              ? "Programmer : publication directe à une date, ou validation Slack au préalable"
-                              : "Connecte ton compte LinkedIn dans l'onglet Profil",
-                            onClick: () => openSchedule(it),
-                          },
                           ...(twitter.status?.connected
                             ? [{
                                 key: "x",
@@ -6168,6 +6159,15 @@ function DailyIdeasView({
                                 onClick: () => setConfirmXId(it.id),
                               } satisfies PostAction]
                             : []),
+                          {
+                            key: "schedule",
+                            icon: <Clock3 size={14} />,
+                            label: scheduledId === it.id ? "Programmé ✓" : "Programmer…",
+                            title: linkedin.status?.connected
+                              ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+                              : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                            onClick: () => openSchedule(it),
+                          },
                         ]}
                         moreActions={[
                           {
@@ -6953,16 +6953,6 @@ function LibraryView({
                       title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
                       onClick: () => setConfirmPublishPostId(p.id),
                     },
-                    {
-                      key: "schedule",
-                      icon: <Clock3 size={14} />,
-                      label: scheduledPostIds[p.id] ? "Programmé ✓" : "Programmer…",
-                      disabled: !!scheduledPostIds[p.id],
-                      title: linkedin.status?.connected
-                        ? "Programmer : publication directe à une date, ou validation Slack au préalable"
-                        : "Connecte ton compte LinkedIn dans l'onglet Profil",
-                      onClick: () => openSchedulePost(p),
-                    },
                     ...buildSlackPostAction({
                       status: slack.status,
                       sent: slackSent[p.id] || p.slack_status === "pending",
@@ -6988,6 +6978,16 @@ function LibraryView({
                           onClick: () => setConfirmXPostId(p.id),
                         } satisfies PostAction]
                       : []),
+                    {
+                      key: "schedule",
+                      icon: <Clock3 size={14} />,
+                      label: scheduledPostIds[p.id] ? "Programmé ✓" : "Programmer…",
+                      disabled: !!scheduledPostIds[p.id],
+                      title: linkedin.status?.connected
+                        ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+                        : "Connecte ton compte LinkedIn dans l'onglet Profil",
+                      onClick: () => openSchedulePost(p),
+                    },
                   ]}
                   moreActions={[
                     {
@@ -7537,16 +7537,6 @@ function AssistantMessageActions({
             title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
             onClick: () => setConfirmPub(true),
           },
-          {
-            key: "schedule",
-            icon: <Clock3 size={14} />,
-            label: scheduled ? "Programmé ✓" : "Programmer…",
-            disabled: scheduled,
-            title: linkedin.status?.connected
-              ? "Programmer : publication directe à une date, ou validation Slack au préalable"
-              : "Connecte ton compte LinkedIn dans l'onglet Profil",
-            onClick: openSchedule,
-          },
           ...buildSlackPostAction({
             status: slack.status,
             sent: slackSent,
@@ -7562,6 +7552,16 @@ function AssistantMessageActions({
                 onClick: () => setConfirmX(true),
               } satisfies PostAction]
             : []),
+          {
+            key: "schedule",
+            icon: <Clock3 size={14} />,
+            label: scheduled ? "Programmé ✓" : "Programmer…",
+            disabled: scheduled,
+            title: linkedin.status?.connected
+              ? "Programmer : publication directe à une date, ou validation Slack au préalable"
+              : "Connecte ton compte LinkedIn dans l'onglet Profil",
+            onClick: openSchedule,
+          },
         ]}
         moreActions={[
           {
