@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import secrets
 import sys
 import threading
@@ -487,6 +488,14 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _client_ip_hash(request: Request) -> str | None:
+    """Hash tronqué de l'IP — dédoublonne les visiteurs sans stocker d'IP en clair."""
+    ip = _client_ip(request)
+    if not ip or ip == "unknown":
+        return None
+    return hashlib.sha256(ip.encode()).hexdigest()[:16]
+
+
 def _rate_limit_onboarding_draft(request: Request) -> None:
     ip = _client_ip(request)
     now = time.time()
@@ -559,6 +568,18 @@ def draft_onboarding_profile(payload: EditorialProfileDraftRequest, request: Req
         preview = draft_onboarding_preview(seed)
     except Exception:
         preview = None
+
+    # Suivi des analyses landing (best-effort, jamais bloquant) : ces previews sont
+    # anonymes et sinon impossibles à compter. Cf. migration 0055.
+    _input_kind = "linkedin" if linkedin_url else ("website" if website_url else "description")
+    db.log_onboarding_preview_event(
+        input_kind=_input_kind,
+        linkedin_url=linkedin_url or None,
+        website_url=website_url or None,
+        used_apify=bool(linkedin_apify_seed),
+        preview_ok=bool(preview),
+        ip_hash=_client_ip_hash(request),
+    )
 
     return {
         "profile": profile,
@@ -3902,15 +3923,13 @@ def me_linkedin_outreach_chats(token: str = Depends(require_token)) -> dict[str,
     except unipile.UnipileError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     normalized = [unipile.normalize_chat(c) for c in chats]
-    # Nommer les conversations avec le nom du lead : Unipile ne renvoie pas
-    # toujours le participant dans la liste des chats (→ fallback « Conversation
-    # LinkedIn »). `outreach_chat_id` relie la conversation à son lead scrapé, qui
-    # a un vrai nom. On préfère ce nom quand il existe.
-    lead_names = db.get_outreach_chat_lead_names(token)
-    for chat in normalized:
-        lead_name = lead_names.get(chat.get("id"))
-        if lead_name:
-            chat["name"] = lead_name
+    # Nommer les conversations : Unipile ne renvoie pas toujours le participant dans
+    # la liste des chats. Priorité : (1) nom réel fourni par Unipile s'il existe ;
+    # sinon (2) nom du lead retrouvé par son identifiant LinkedIn `attendee_provider_id`
+    # (source fiable — chaque lead contacté a un `provider_id`) ; sinon (3) par
+    # `outreach_chat_id` (rare, rétro-compat) ; sinon (4) fallback générique.
+    by_chat, by_provider = db.get_outreach_lead_name_maps(token)
+    unipile.apply_lead_names(normalized, by_provider, by_chat)
     return {"chats": normalized}
 
 

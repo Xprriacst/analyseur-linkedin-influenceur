@@ -335,22 +335,56 @@ def send_message(chat_id: str, text: str) -> dict[str, Any]:
 
 
 def normalize_chat(chat: dict[str, Any]) -> dict[str, Any]:
-    """Réduit un chat Unipile à ce dont l'Inbox a besoin."""
+    """Réduit un chat Unipile à ce dont l'Inbox a besoin.
+
+    ⚠️ Le nom du participant vit dans `attendee_name` (schéma Unipile), PAS `name` —
+    lire `name`/`display_name` (l'ancienne version) ratait le participant même quand
+    Unipile l'embarquait. `attendee_provider_id` sert à nommer la conversation avec le
+    nom du lead correspondant côté endpoint (Unipile n'embarque pas toujours l'attendee
+    dans la liste des chats). Ici, `name` peut rester None : la résolution finale (nom
+    du lead, sinon fallback générique) est faite par l'endpoint qui a accès à la base.
+    """
     attendee = None
     attendees = chat.get("attendees")
     if isinstance(attendees, list) and attendees:
         attendee = attendees[0] if isinstance(attendees[0], dict) else None
+    # Identifiant LinkedIn du participant (format `ACoAA…`), même clé que `leads.provider_id`.
+    attendee_provider_id = _pick(chat, "attendee_provider_id") or (
+        _pick(attendee, "attendee_provider_id", "provider_id") if attendee else None
+    )
+    # Nom réel quand Unipile l'a fourni (chat de groupe → `name`/`subject` ; 1-to-1 →
+    # `attendee_name`). Sinon None → l'endpoint nommera par le lead.
     name = (
         _pick(chat, "name", "subject")
-        or (_pick(attendee, "name", "display_name") if attendee else None)
-        or "Conversation LinkedIn"
+        or (_pick(attendee, "attendee_name", "name", "display_name") if attendee else None)
+        or None
     )
     return {
         "id": _pick(chat, "id", "chat_id"),
         "name": name,
+        "attendee_provider_id": attendee_provider_id,
         "last_message_at": _pick(chat, "timestamp", "last_message_at", "updated_at"),
-        "provider_url": _pick(attendee, "profile_url") if attendee else None,
+        "provider_url": _pick(attendee, "attendee_profile_url", "profile_url") if attendee else None,
     }
+
+
+def apply_lead_names(
+    chats: list[dict[str, Any]],
+    by_provider: dict[str, str],
+    by_chat: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Nomme chaque conversation (mutation en place) quand Unipile n'a pas fourni de
+    nom réel. Priorité : nom Unipile existant > nom du lead par `attendee_provider_id`
+    (fiable) > nom du lead par `outreach_chat_id` (rétro-compat) > fallback générique.
+    """
+    for chat in chats:
+        if not chat.get("name"):
+            chat["name"] = (
+                by_provider.get(chat.get("attendee_provider_id"))
+                or by_chat.get(chat.get("id"))
+                or "Conversation LinkedIn"
+            )
+    return chats
 
 
 def normalize_message(message: dict[str, Any]) -> dict[str, Any]:
