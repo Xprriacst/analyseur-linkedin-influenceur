@@ -5238,21 +5238,35 @@ def outreach_counts(access_token: str) -> dict[str, int]:
     }
 
 
-def get_outreach_chat_lead_names(access_token: str) -> dict[str, str]:
-    """Map `outreach_chat_id` -> nom du lead, pour nommer les conversations
-    LinkedIn de l'Inbox : Unipile ne renvoie pas toujours le nom du participant
-    dans la liste des chats, alors que le lead scrapé, lui, a un nom."""
+def get_outreach_lead_name_maps(access_token: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Deux maps pour nommer les conversations LinkedIn de l'Inbox avec le nom du
+    lead : Unipile ne renvoie pas toujours le nom du participant dans la liste des
+    chats, alors que le lead scrapé, lui, a un nom.
+
+    Retourne `(par_chat_id, par_provider_id)` :
+    - `par_provider_id` (clé = identifiant LinkedIn `ACoAA…` du lead) est la source
+      fiable : chaque lead invité/contacté a un `provider_id`, et chaque conversation
+      Unipile porte l'`attendee_provider_id` du participant.
+    - `par_chat_id` (clé = `outreach_chat_id`) ne couvre que les leads dont NOUS avons
+      envoyé le 1ᵉʳ message via le flux tracé — rare. Gardé en secours / rétro-compat.
+    """
     if not supabase_enabled():
-        return {}
+        return {}, {}
     db = client_for_token(access_token)
-    resp = db.table("leads").select("name, outreach_chat_id").execute()
-    out: dict[str, str] = {}
+    resp = db.table("leads").select("name, outreach_chat_id, provider_id").execute()
+    by_chat: dict[str, str] = {}
+    by_provider: dict[str, str] = {}
     for row in resp.data or []:
-        cid = row.get("outreach_chat_id")
         name = (row.get("name") or "").strip()
-        if cid and name:
-            out[cid] = name
-    return out
+        if not name:
+            continue
+        cid = row.get("outreach_chat_id")
+        pid = row.get("provider_id")
+        if cid:
+            by_chat[cid] = name
+        if pid:
+            by_provider[pid] = name
+    return by_chat, by_provider
 
 
 def get_lead(access_token: str, lead_id: str) -> dict | None:
