@@ -1898,6 +1898,136 @@ def reconcile_stale_image_jobs(access_token: str, jobs: list[dict]) -> list[dict
     return jobs
 
 
+# ── Collecte de commentateurs en tâche de fond (ALE-240) ──────────────────── #
+
+_LEAD_JOB_COLS = (
+    "id,source_id,post_url,max_comments,status,result,error,created_at,updated_at"
+)
+
+# Fenêtre de réconciliation propre aux collectes : plus large que les jobs
+# d'image (15 min) car un gros volume met plusieurs minutes à scraper côté Apify
+# et n'émet pas de heartbeat pendant le run. Doit rester > au timeout de l'actor
+# (`lead_finder`, 1500 s) sinon un run légitime encore en cours serait faussement
+# soldé « délai dépassé ».
+LEAD_JOB_STALE_MINUTES = 40
+
+
+def create_lead_collection_job(
+    access_token: str, source_id: str, post_url: str, max_comments: int
+) -> dict | None:
+    """Crée un job de collecte `queued`. Retourne la ligne créée."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "status": "queued",
+        "source_id": source_id,
+        "post_url": post_url,
+        "max_comments": int(max_comments),
+    }
+    resp = db.table("lead_collection_jobs").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def get_lead_collection_job(access_token: str, job_id: str) -> dict | None:
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("lead_collection_jobs")
+        .select(_LEAD_JOB_COLS)
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0] if r.data else None
+
+
+def list_lead_collection_jobs(access_token: str, limit: int = 30) -> list[dict]:
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    r = (
+        db.table("lead_collection_jobs")
+        .select(_LEAD_JOB_COLS)
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return reconcile_stale_lead_collection_jobs(access_token, r.data or [])
+
+
+def get_lead_collection_job_status(access_token: str, job_id: str) -> str | None:
+    """Statut seul (lecture légère, pour la vérif d'annulation du thread)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("lead_collection_jobs")
+        .select("status")
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0]["status"] if r.data else None
+
+
+def update_lead_collection_job(access_token: str, job_id: str, **fields: Any) -> None:
+    db = client_for_token(access_token)
+    fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db.table("lead_collection_jobs").update(fields).eq("id", job_id).execute()
+
+
+def cancel_lead_collection_job(access_token: str, job_id: str) -> dict | None:
+    """Annule un job de collecte encore `queued`/`running`.
+
+    Jamais de remboursement ici : le débit n'intervient qu'à la complétion
+    réussie (cf. `src.jobs.process_lead_collection_job`), donc un job annulé
+    n'a jamais été débité.
+    """
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    (
+        db.table("lead_collection_jobs")
+        .update({"status": "cancelled", "updated_at": now})
+        .eq("id", job_id)
+        .in_("status", ["queued", "running"])
+        .execute()
+    )
+    return get_lead_collection_job(access_token, job_id)
+
+
+def reconcile_stale_lead_collection_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
+    """Solde les jobs de collecte orphelins (thread mort/figé) — appelé au listing.
+
+    Même logique que `reconcile_stale_image_jobs`, avec sa propre fenêtre
+    (`LEAD_JOB_STALE_MINUTES`). Idempotent.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(minutes=LEAD_JOB_STALE_MINUTES)
+    for job in jobs:
+        if job.get("status") not in ("queued", "running"):
+            continue
+        job_ts = _parse_ts(job.get("updated_at"))
+        if job_ts is None or job_ts > cutoff:
+            continue
+        update_lead_collection_job(
+            access_token, job["id"], status="error",
+            error="Collecte interrompue (délai dépassé).",
+        )
+        job["status"] = "error"
+        job["error"] = "Collecte interrompue (délai dépassé)."
+    return jobs
+
+
 # ── Photos de soi (génération d'image à identité) ─────────────────────────── #
 
 def list_self_photos(access_token: str, limit: int = 20) -> list[dict]:
@@ -4666,6 +4796,7 @@ def add_lead_source(
     post_text: str | None = None,
     is_lead_magnet: bool = False,
     trigger_keyword: str | None = None,
+    total_comments: int | None = None,
     origin: str = "manual",
 ) -> dict | None:
     """Crée une source de prospection (RLS scope)."""
@@ -4687,6 +4818,8 @@ def add_lead_source(
         row["post_text"] = post_text[:6000]
     if trigger_keyword:
         row["trigger_keyword"] = trigger_keyword
+    if total_comments is not None:
+        row["total_comments"] = total_comments
     resp = db.table("lead_sources").insert(row).execute()
     return resp.data[0] if resp.data else None
 

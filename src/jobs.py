@@ -439,3 +439,65 @@ def start_image_job_thread(access_token: str, job_id: str) -> None:
         target=process_image_job, args=(access_token, job_id), daemon=True
     )
     thread.start()
+
+
+# Garde-fou : durée max d'une collecte. Aligné sur le timeout de l'actor Apify
+# (`lead_finder`, 1500 s) et < LEAD_JOB_STALE_MINUTES pour qu'un run figé libère
+# le thread avant d'être soldé « orphelin ».
+LEAD_COLLECT_TIMEOUT_S = 1500
+
+
+def _collect_and_persist_guarded(access_token: str, source: dict, max_comments: int):
+    """Exécute la collecte avec un timeout dur (thread jetable abandonné si figé)."""
+    from src.lead_finder import collect_and_persist
+
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(collect_and_persist, access_token, source, max_comments)
+    try:
+        return fut.result(timeout=LEAD_COLLECT_TIMEOUT_S)
+    finally:
+        ex.shutdown(wait=False)
+
+
+def process_lead_collection_job(access_token: str, job_id: str) -> None:
+    """Collecte les commentateurs d'un post en arrière-plan (ALE-240).
+
+    Idempotent quant à l'annulation : si le job a été annulé avant/pendant le
+    scrape, on n'écrit jamais `done` par-dessus. Le débit n'a lieu qu'à la
+    complétion réussie (dans `collect_and_persist`) — un job annulé/en échec
+    n'est jamais débité.
+    """
+    job = db.get_lead_collection_job(access_token, job_id)
+    if not job:
+        return
+    if db.get_lead_collection_job_status(access_token, job_id) == "cancelled":
+        return
+
+    db.update_lead_collection_job(access_token, job_id, status="running")
+    try:
+        source = db.get_lead_source(access_token, job["source_id"])
+        if not source:
+            raise RuntimeError("Source de prospection introuvable.")
+
+        result = _collect_and_persist_guarded(
+            access_token, source, int(job.get("max_comments") or 0)
+        )
+
+        # Annulé pendant le scrape ? On respecte l'annulation (jamais de `done`).
+        if db.get_lead_collection_job_status(access_token, job_id) == "cancelled":
+            return
+        db.update_lead_collection_job(access_token, job_id, status="done", result=result)
+    except Exception as exc:  # noqa: BLE001 — on isole l'échec d'un job
+        if db.get_lead_collection_job_status(access_token, job_id) == "cancelled":
+            return
+        db.update_lead_collection_job(
+            access_token, job_id, status="error", error=str(exc)[:500]
+        )
+
+
+def start_lead_collection_job_thread(access_token: str, job_id: str) -> None:
+    """Lance une collecte de commentateurs dans un thread de fond (non bloquant)."""
+    thread = threading.Thread(
+        target=process_lead_collection_job, args=(access_token, job_id), daemon=True
+    )
+    thread.start()
