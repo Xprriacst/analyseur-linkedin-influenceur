@@ -58,6 +58,7 @@ import AuthModal, { type AuthMode } from "./components/AuthModal";
 import OnboardingScreen from "./components/Onboarding";
 import PostActionsBar, { type PostAction } from "./components/PostActionsBar";
 import PublishConfirmModal from "./components/PublishConfirmModal";
+import ZoomableImage from "./components/ZoomableImage";
 // ALE-59 — publication multi-réseaux : panneaux X/Reddit partagés entre la
 // pop-up Publier et la modale Programmer, + helper de publication post-LinkedIn.
 import CrossNetworkPanels, { publishCrossNetworks, XLogo, RedditLogo, type CrossPostsDraft } from "./components/CrossNetworkPanels";
@@ -4971,14 +4972,8 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                         publishBusy={publishing === key && published !== key}
                         publishLabel={published === key ? "Publié ✓" : publishing === key ? "Publication…" : "Publier"}
                         publishActions={[
-                          {
-                            key: "linkedin",
-                            icon: <Linkedin size={14} />,
-                            label: published === key ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
-                            disabled: publishing === key,
-                            title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
-                            onClick: () => publishPost(key),
-                          },
+                          // Publication LinkedIn immédiate retirée du menu (l'option
+                          // reviendra) — la programmation est le chemin de publication.
                           ...buildSlackPostAction({
                             status: slack.status,
                             sent: slackSent[key],
@@ -5095,10 +5090,10 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                           <p className="role-picker-hint" style={{ marginBottom: 8 }}>
                             {(images[key] || []).length} image{(images[key] || []).length > 1 ? "s" : ""} jointe{(images[key] || []).length > 1 ? "s" : ""} au post LinkedIn.
                           </p>
-                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10, maxWidth: 640 }}>
                             {(images[key] || []).map((image, imageIndex) => (
                               <div key={image.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
-                                <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                                <ZoomableImage src={image.url} alt={`Image jointe ${imageIndex + 1}`} />
                                 <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                                   <a
                                     href={image.url}
@@ -6142,14 +6137,8 @@ function DailyIdeasView({
                         publishBusy={publishingId === it.id}
                         publishLabel={publishedId === it.id ? "Publié ✓" : publishingId === it.id ? "Publication…" : "Publier"}
                         publishActions={[
-                          {
-                            key: "linkedin",
-                            icon: <Linkedin size={14} />,
-                            label: publishedId === it.id ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
-                            disabled: publishingId === it.id,
-                            title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
-                            onClick: () => setConfirmPublishId(it.id),
-                          },
+                          // Publication LinkedIn immédiate retirée du menu (l'option
+                          // reviendra) — la programmation est le chemin de publication.
                           ...(twitter.status?.connected
                             ? [{
                                 key: "x",
@@ -6202,11 +6191,10 @@ function DailyIdeasView({
                         </p>
                       )}
                       {(ideaImages[it.id] || []).length > 0 && (
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640, marginTop: 12 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10, maxWidth: 640, marginTop: 12 }}>
                           {(ideaImages[it.id] || []).map((u, n) => (
                             <div key={n} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img src={u} alt={`Image IA ${n + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                              <ZoomableImage src={u} alt={`Image IA ${n + 1}`} />
                               <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                                 <a href={u} download={`image-ia-${n + 1}.png`} className="secondary-button" style={{ minHeight: 28, padding: "0 8px", fontSize: 12, textDecoration: "none" }}>
                                   <Download size={12} /> Télécharger
@@ -6945,14 +6933,8 @@ function LibraryView({
                   publishBusy={publishingPost === p.id}
                   publishLabel={publishedPost === p.id ? "Publié ✓" : publishingPost === p.id ? "Publication…" : "Publier"}
                   publishActions={[
-                    {
-                      key: "linkedin",
-                      icon: <Linkedin size={14} />,
-                      label: publishedPost === p.id ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
-                      disabled: publishingPost === p.id,
-                      title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
-                      onClick: () => setConfirmPublishPostId(p.id),
-                    },
+                    // Publication LinkedIn immédiate retirée du menu (l'option
+                    // reviendra) — la programmation est le chemin de publication.
                     ...buildSlackPostAction({
                       status: slack.status,
                       sent: slackSent[p.id] || p.slack_status === "pending",
@@ -7102,10 +7084,10 @@ function LibraryView({
                     <p className="role-picker-hint" style={{ marginBottom: 8 }}>
                       {(p.media_items || []).length} image{(p.media_items || []).length > 1 ? "s" : ""} jointe{(p.media_items || []).length > 1 ? "s" : ""} au post LinkedIn.
                     </p>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10, maxWidth: 640 }}>
                       {(p.media_items || []).map((image, imageIndex) => (
                         <div key={image.url} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
-                          <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                          <ZoomableImage src={image.url} alt={`Image jointe ${imageIndex + 1}`} />
                           <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                             <a
                               href={image.url}
@@ -7529,14 +7511,8 @@ function AssistantMessageActions({
         publishBusy={publishing}
         publishLabel={published ? "Publié ✓" : publishing ? "Publication…" : "Publier"}
         publishActions={[
-          {
-            key: "linkedin",
-            icon: <Linkedin size={14} />,
-            label: published ? "Publié sur LinkedIn ✓" : "Publier maintenant sur LinkedIn",
-            disabled: publishing,
-            title: linkedin.status?.connected ? "Publier maintenant sur LinkedIn" : "Connecte ton compte LinkedIn dans l'onglet Profil",
-            onClick: () => setConfirmPub(true),
-          },
+          // Publication LinkedIn immédiate retirée du menu (l'option
+          // reviendra) — la programmation est le chemin de publication.
           ...buildSlackPostAction({
             status: slack.status,
             sent: slackSent,
@@ -7697,11 +7673,10 @@ function AssistantMessageActions({
           <p className="role-picker-hint" style={{ marginBottom: 8 }}>
             {images.length} image{images.length > 1 ? "s" : ""} jointe{images.length > 1 ? "s" : ""} au post LinkedIn.
           </p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, maxWidth: 640 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10, maxWidth: 640 }}>
             {images.map((image, imageIndex) => (
               <div key={image.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={image.url} alt={`Image jointe ${imageIndex + 1}`} style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 6, display: "block" }} />
+                <ZoomableImage src={image.url} alt={`Image jointe ${imageIndex + 1}`} />
                 <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                   <a
                     href={image.url}

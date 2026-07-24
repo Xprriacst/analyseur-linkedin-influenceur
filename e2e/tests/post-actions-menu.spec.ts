@@ -2,8 +2,9 @@ import { test, expect, Page } from "@playwright/test";
 import { gotoTab, gotoSubTab } from "./helpers";
 
 // ALE-185 : barre d'actions unifiée sur les cartes de post — bouton « Publier ▴ »
-// (menu vers le haut : LinkedIn / Programmer / Slack / X selon les réseaux
-// connectés) + bouton « ⋯ » (actions secondaires). LECTURE SEULE : on ouvre les
+// (menu vers le haut : Programmer / Slack / X selon les réseaux connectés — la
+// publication LinkedIn immédiate est retirée du menu, elle reviendra) + bouton
+// « ⋯ » (actions secondaires). LECTURE SEULE : on ouvre les
 // menus et on referme (Escape), sans jamais cliquer une action de publication.
 
 test.beforeEach(async ({ page }) => {
@@ -15,11 +16,12 @@ async function checkActionsBar(page: Page, { expectDelete }: { expectDelete: boo
   const bar = page.locator(".post-actions-bar").first();
   await expect(bar).toBeVisible();
 
-  // Menu principal « Publier » : publier maintenant + programmer, ouvert vers le haut.
+  // Menu principal « Publier » : programmer, ouvert vers le haut. La publication
+  // LinkedIn immédiate est retirée du menu — l'assertion verrouille l'absence.
   await bar.getByRole("button", { name: /Publier/ }).click();
   const menu = page.locator(".action-menu");
   await expect(menu).toBeVisible();
-  await expect(menu.getByRole("menuitem", { name: /Publier maintenant sur LinkedIn|Publié sur LinkedIn/ })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /Publier maintenant sur LinkedIn/ })).toHaveCount(0);
   await expect(menu.getByRole("menuitem", { name: /Programmer|Programmé/ })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
@@ -116,6 +118,11 @@ test("Agent IA : menu Publier + ⋯ sous une réponse (conversation mockée), av
   );
   await menu.locator('input[type="file"]').setInputFiles({ name: "test-ale-188.png", mimeType: "image/png", buffer: onePxPng });
   await expect(page.getByText(/1 image jointe au post LinkedIn/)).toBeVisible();
+  // La vignette s'agrandit au clic (aperçu plein écran), Échap referme.
+  await page.getByRole("button", { name: /Agrandir : Image jointe 1/ }).click();
+  await expect(page.locator(".img-zoom-overlay")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".img-zoom-overlay")).toHaveCount(0);
   await page.getByRole("button", { name: /Retirer/ }).click();
   await expect(page.getByText(/image jointe au post LinkedIn/)).toHaveCount(0);
 });
