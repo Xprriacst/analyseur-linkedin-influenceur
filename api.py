@@ -24,7 +24,7 @@ from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread, start_lead_collection_job_thread
-from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters, lead_collect_credit_cost
+from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters, lead_collect_credit_cost, effective_max_comments
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
 from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures
 from src.llm import adapt_post_for_x, adapt_post_for_reddit
@@ -2973,7 +2973,10 @@ def _create_lead_collection_job(token: str, source: dict, max_comments: int | No
     """
     if not os.environ.get("APIFY_TOKEN"):
         raise HTTPException(status_code=503, detail="Scraping non configuré (APIFY_TOKEN manquant).")
-    requested = max_comments or LEAD_COMMENTS_DEFAULT
+    # ALE-240 : le choix du volume (>100) est réservé aux comptes flaggés `lead_volume`.
+    # Sans le flag, on plafonne au défaut côté serveur (le gating n'est pas cosmétique).
+    allow_volume = features.has_feature(db.get_user(token), "lead_volume")
+    requested = effective_max_comments(max_comments, allow_volume)
     worst_case = lead_collect_credit_cost(requested)
     try:
         info = db.get_user_credits(token)

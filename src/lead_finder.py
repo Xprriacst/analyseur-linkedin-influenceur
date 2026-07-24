@@ -131,6 +131,20 @@ def lead_collect_credit_cost(n_commenters: int) -> int:
     return max(1, (n + LEAD_COMMENTERS_PER_CREDIT - 1) // LEAD_COMMENTERS_PER_CREDIT)
 
 
+def effective_max_comments(requested: int | None, allow_volume: bool) -> int:
+    """Volume effectif d'une collecte (ALE-240).
+
+    Le choix du volume (curseur >100) est en bêta, réservé aux comptes portant le
+    flag `lead_volume`. Sans le flag, on plafonne au défaut (100) — le gating n'est
+    PAS que cosmétique : un compte non concerné qui appellerait l'endpoint avec un
+    gros `max_comments` reste borné côté serveur.
+    """
+    n = int(requested or DEFAULT_MAX_ITEMS)
+    if not allow_volume:
+        n = min(n, DEFAULT_MAX_ITEMS)
+    return max(1, n)
+
+
 def _score_leads_for_source(access_token: str, source: dict, counts: dict) -> None:
     """Note (ICP) les leads fraîchement touchés par une collecte, si un ciblage
     est configuré. Best-effort : un échec de scoring ne casse pas la collecte."""

@@ -21,6 +21,22 @@ class CreditCostTest(unittest.TestCase):
         self.assertEqual(lead_finder.lead_collect_credit_cost(-5), 0)
 
 
+class EffectiveMaxCommentsTest(unittest.TestCase):
+    def test_flagged_account_honors_volume(self):
+        self.assertEqual(lead_finder.effective_max_comments(2000, True), 2000)
+        self.assertEqual(lead_finder.effective_max_comments(50, True), 50)
+
+    def test_unflagged_account_clamped_to_default(self):
+        # Sans le flag, un gros volume est ramené au défaut, même par appel direct.
+        self.assertEqual(lead_finder.effective_max_comments(2000, False), lead_finder.DEFAULT_MAX_ITEMS)
+        # En-dessous du défaut, on respecte la demande.
+        self.assertEqual(lead_finder.effective_max_comments(30, False), 30)
+
+    def test_none_falls_back_to_default(self):
+        self.assertEqual(lead_finder.effective_max_comments(None, True), lead_finder.DEFAULT_MAX_ITEMS)
+        self.assertEqual(lead_finder.effective_max_comments(None, False), lead_finder.DEFAULT_MAX_ITEMS)
+
+
 class CommenterNormalizeTest(unittest.TestCase):
     def test_maps_actor_fields(self):
         lead = lead_finder._commenter_from_item({

@@ -11658,12 +11658,14 @@ function LeadCollectControl({
   source,
   job,
   busy,
+  canChooseVolume,
   onCollect,
   onCancel,
 }: {
   source: LibraryLeadSource;
   job: LeadCollectionJob | null;
   busy: boolean;
+  canChooseVolume: boolean;
   onCollect: (count: number) => void;
   onCancel: () => void;
 }) {
@@ -11687,6 +11689,27 @@ function LeadCollectControl({
         </div>
         <button className="secondary-button" style={{ fontSize: 12.5, marginTop: 10, color: "var(--danger)" }} onClick={onCancel}>
           Annuler la collecte
+        </button>
+      </div>
+    );
+  }
+
+  // Comptes sans le flag `lead_volume` (ALE-240) : bouton simple, volume par défaut
+  // (le serveur plafonne de toute façon). Le curseur reste réservé à l'agence.
+  if (!canChooseVolume) {
+    return (
+      <div style={{ marginBottom: 14 }}>
+        <button
+          className="secondary-button"
+          style={{ fontSize: 13 }}
+          onClick={() => onCollect(100)}
+          disabled={busy}
+          title="Récupère les personnes qui ont commenté ce post — elles deviennent des leads dans l'onglet Prospection"
+        >
+          {busy ? <Loader2 size={14} className="spinning" /> : <Users size={14} />}{" "}
+          {source.collected_at
+            ? `Mettre à jour les commentateurs (${source.comments_count ?? 0})`
+            : "Récupérer les commentateurs"}
         </button>
       </div>
     );
@@ -11770,6 +11793,8 @@ function MyLibraryView({
   const [collectMsg, setCollectMsg] = useState("");
   // ALE-240 : la collecte tourne en tâche de fond ; on suit le job par polling.
   const [collectJob, setCollectJob] = useState<LeadCollectionJob | null>(null);
+  // ALE-240 : le curseur de volume (>100) est en bêta agence, derrière un flag.
+  const { has: hasFeature } = useFeatures(isAuthed);
 
   async function load() {
     if (!isAuthed) return;
@@ -12144,6 +12169,7 @@ function MyLibraryView({
                 source={leadSource}
                 job={collectJob && collectJob.source_id === leadSource.id ? collectJob : null}
                 busy={collectingId === leadSource.id}
+                canChooseVolume={hasFeature("lead_volume")}
                 onCollect={(count) => collectCommenters(leadSource, count)}
                 onCancel={cancelCollect}
               />
