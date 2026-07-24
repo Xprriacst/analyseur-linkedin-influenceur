@@ -23,8 +23,12 @@ from src.usage import track_apify
 COMMENTS_ACTOR = "harvestapi/linkedin-post-comments"
 
 # Garde-fous coût : on borne le nombre de commentaires scrappés par collecte
-# pour éviter une facture Apify surprise sur un post à des milliers de commentaires.
-MAX_ITEMS_CAP = 500
+# pour éviter une facture Apify surprise sur un post à des dizaines de milliers
+# de commentaires. Depuis ALE-240, l'utilisateur choisit le volume au curseur
+# (avec le coût en crédits affiché) et la collecte tourne en tâche de fond — le
+# vrai garde-fou est donc le pré-check du solde, pas ce plafond. On le garde haut
+# comme filet anti-emballement (post viral à 50k commentaires).
+MAX_ITEMS_CAP = 5000
 DEFAULT_MAX_ITEMS = 100
 
 # Pré-filtre gratuit pour la veille : un CTA lead-magnet mentionne toujours le
@@ -88,7 +92,9 @@ def fetch_post_commenters(
         "scrapeReplies": False,
         "profileScraperMode": "short",
     }
-    run = _call_actor(actor, run_input, timeout_secs=240)
+    # Timeout large : la collecte tourne en tâche de fond (ALE-240) et un gros
+    # volume (milliers de commentaires) prend plusieurs minutes côté Apify.
+    run = _call_actor(actor, run_input, timeout_secs=1500)
     items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
     track_apify(actor, len(items), cached=False)
 
@@ -109,3 +115,99 @@ def fetch_post_commenters(
 
     leads.sort(key=lambda l: l.get("reaction_count") or 0, reverse=True)
     return leads
+
+
+# Facturation de la collecte (ALE-239) : l'appel Apify est payant (~0,002 $/
+# commentaire). On débite proportionnellement au volume RÉELLEMENT récupéré. Au
+# calibrage actuel (~0,006 $/crédit) 3 commentateurs ≈ 1 crédit couvre le coût.
+LEAD_COMMENTERS_PER_CREDIT = 3
+
+
+def lead_collect_credit_cost(n_commenters: int) -> int:
+    """Crédits à débiter pour une collecte, proportionnels au volume (min 1)."""
+    n = max(0, int(n_commenters))
+    if n == 0:
+        return 0
+    return max(1, (n + LEAD_COMMENTERS_PER_CREDIT - 1) // LEAD_COMMENTERS_PER_CREDIT)
+
+
+def _score_leads_for_source(access_token: str, source: dict, counts: dict) -> None:
+    """Note (ICP) les leads fraîchement touchés par une collecte, si un ciblage
+    est configuré. Best-effort : un échec de scoring ne casse pas la collecte."""
+    from src import db
+    from src.llm import score_leads
+
+    ids_by_url = (counts or {}).get("ids_by_url") or {}
+    if not ids_by_url:
+        return
+    targeting = db.get_lead_targeting(access_token)
+    if not targeting:
+        return  # pas de ciblage → on n'invente pas de score (tous les leads restent visibles)
+    try:
+        leads = db.list_leads_for_scoring(access_token)
+        by_id = {l["id"]: l for l in leads}
+        to_score = [by_id[lid] for lid in ids_by_url.values() if lid in by_id]
+        lead_inputs = [
+            {
+                "headline": l.get("headline"),
+                "comment_text": l.get("comment_text"),
+                "trigger_keyword": (source or {}).get("trigger_keyword"),
+                "author": (source or {}).get("author"),
+            }
+            for l in to_score
+        ]
+        scores = score_leads(targeting, lead_inputs, source_post_text=(source or {}).get("post_text"))
+        scored = [
+            {"id": l["id"], "score": s.get("score"), "reason": s.get("reason")}
+            for l, s in zip(to_score, scores)
+        ]
+        db.update_lead_scores(access_token, scored)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[leads] scoring à l'ingestion échoué : {exc}", flush=True)
+
+
+def collect_and_persist(
+    access_token: str, source: dict, max_comments: int
+) -> dict[str, Any]:
+    """Scrape les commentateurs d'une source, persiste les leads dédupliqués,
+    les note (ICP) et met à jour la source. Débite les crédits proportionnellement
+    au volume RÉELLEMENT récupéré (jamais plus que demandé).
+
+    Ne fait PAS le pré-check du solde : il est fait à la création du job (le débit
+    réel est toujours <= au pire cas pré-vérifié, donc il ne peut pas échouer
+    après avoir payé le scrape). Zéro commentateur récupéré = zéro débit.
+
+    Retourne {comments_count, leads, credits}. Lève sur échec réseau/actor.
+    """
+    from datetime import datetime, timezone
+    from src import db
+
+    commenters = fetch_post_commenters(source["post_url"], max_items=max_comments)
+    credits_balance: int | None = None
+    if commenters:
+        # ok toujours True : le pré-check garantit solde >= coût du pire cas >= coût réel.
+        _ok, credits_balance = db.debit_credits(
+            access_token, "collect_leads", lead_collect_credit_cost(len(commenters))
+        )
+    counts = db.save_leads(access_token, source, commenters)
+    _score_leads_for_source(access_token, source, counts)
+    db.update_lead_source(
+        access_token,
+        source["id"],
+        {
+            "comments_count": len(commenters),
+            "collected_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    print(
+        f"[leads] source {source['id']} ({source['post_url']}): "
+        f"{len(commenters)} commentaire(s) récupéré(s), leads {counts}",
+        flush=True,
+    )
+    # `counts` porte `ids_by_url` (interne au scoring) — on ne l'expose pas au job.
+    public_counts = {k: v for k, v in (counts or {}).items() if k != "ids_by_url"}
+    return {
+        "comments_count": len(commenters),
+        "leads": public_counts,
+        "credits": credits_balance,
+    }

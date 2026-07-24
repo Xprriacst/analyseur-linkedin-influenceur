@@ -11626,13 +11626,121 @@ type LibraryLeadSource = {
   trigger_keyword?: string | null;
   collected_at?: string | null;
   comments_count?: number | null;
+  total_comments?: number | null;
 };
+
+// ALE-240 : un job de collecte de commentateurs en tâche de fond.
+type LeadCollectionJob = {
+  id: string;
+  source_id: string;
+  status: "queued" | "running" | "done" | "error" | "cancelled";
+  max_comments: number;
+  result: { comments_count?: number; leads?: { inserted?: number; updated?: number }; credits?: number | null } | null;
+  error: string | null;
+};
+
+// Plafond dur (miroir du backend) + calibrage crédits (LEAD_COMMENTERS_PER_CREDIT).
+const LEAD_COLLECT_MAX = 5000;
+const LEAD_COMMENTERS_PER_CREDIT = 3;
+const leadCollectCreditCost = (n: number) =>
+  n <= 0 ? 0 : Math.max(1, Math.ceil(n / LEAD_COMMENTERS_PER_CREDIT));
 
 function libraryEntryTitle(t: PostTemplate): string {
   if (t.structure_label) return t.structure_label;
   if (t.source_author) return t.source_author;
   const text = (t.post_text || "").trim();
   return text.length > 60 ? `${text.slice(0, 60)}…` : text || "Entrée";
+}
+
+// ALE-240 : curseur de choix du volume de commentateurs à récupérer, avec le
+// coût en crédits affiché en direct. La collecte tourne en tâche de fond.
+function LeadCollectControl({
+  source,
+  job,
+  busy,
+  onCollect,
+  onCancel,
+}: {
+  source: LibraryLeadSource;
+  job: LeadCollectionJob | null;
+  busy: boolean;
+  onCollect: (count: number) => void;
+  onCancel: () => void;
+}) {
+  const total = source.total_comments ?? null;
+  // Borne haute : le vrai total du post s'il est connu, sinon le plafond dur.
+  const max = total && total > 0 ? Math.min(total, LEAD_COLLECT_MAX) : LEAD_COLLECT_MAX;
+  const min = Math.min(10, max);
+  // Défaut : tout le post s'il est petit, sinon un point de départ raisonnable.
+  const [count, setCount] = useState<number>(() =>
+    total && total > 0 ? Math.min(total, 250) : 100
+  );
+  const clamped = Math.max(min, Math.min(count, max));
+  const active = job && (job.status === "queued" || job.status === "running");
+
+  if (active) {
+    return (
+      <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px", marginBottom: 14, background: "var(--surface-low)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+          <Loader2 size={15} className="spinning" />
+          <span>Collecte de ~{job!.max_comments} commentateurs en cours… Ça peut prendre quelques minutes ; tu peux fermer cette fenêtre, les leads arriveront dans l’onglet Prospection.</span>
+        </div>
+        <button className="secondary-button" style={{ fontSize: 12.5, marginTop: 10, color: "var(--danger)" }} onClick={onCancel}>
+          Annuler la collecte
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px", marginBottom: 14, background: "var(--surface-low)" }}>
+      <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 600 }}>
+        <Users size={14} style={{ verticalAlign: "-2px" }} /> Récupérer les commentateurs
+      </p>
+      <p style={{ margin: "0 0 10px", fontSize: 12.5, color: "var(--muted)" }}>
+        {total && total > 0
+          ? <>Ce post a <strong>{total}</strong> commentaire{total > 1 ? "s" : ""}.</>
+          : <>Nombre total de commentaires inconnu pour ce post.</>}
+        {source.collected_at ? <> Déjà récupérés : {source.comments_count ?? 0} (relancer n’ajoute que les nouveaux).</> : null}
+      </p>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={10}
+          value={clamped}
+          onChange={(e) => setCount(Number(e.target.value))}
+          style={{ flex: 1, minWidth: 160 }}
+          disabled={busy}
+        />
+        <input
+          type="number"
+          min={min}
+          max={max}
+          value={clamped}
+          onChange={(e) => setCount(Math.max(min, Math.min(max, Number(e.target.value) || min)))}
+          style={{ width: 90, padding: "4px 8px", fontSize: 13 }}
+          disabled={busy}
+        />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12.5, color: "var(--muted)" }}>
+          ≈ <strong>{leadCollectCreditCost(clamped)}</strong> crédit{leadCollectCreditCost(clamped) > 1 ? "s" : ""}
+        </span>
+        <button
+          className="secondary-button"
+          style={{ fontSize: 13 }}
+          onClick={() => onCollect(clamped)}
+          disabled={busy}
+          title="Récupère les personnes qui ont commenté ce post — elles deviennent des leads dans l'onglet Prospection"
+        >
+          {busy ? <Loader2 size={14} className="spinning" /> : <Users size={14} />}{" "}
+          Récupérer {clamped} commentateur{clamped > 1 ? "s" : ""}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function MyLibraryView({
@@ -11660,6 +11768,8 @@ function MyLibraryView({
   const [leadSources, setLeadSources] = useState<Record<string, LibraryLeadSource>>({});
   const [collectingId, setCollectingId] = useState<string | null>(null);
   const [collectMsg, setCollectMsg] = useState("");
+  // ALE-240 : la collecte tourne en tâche de fond ; on suit le job par polling.
+  const [collectJob, setCollectJob] = useState<LeadCollectionJob | null>(null);
 
   async function load() {
     if (!isAuthed) return;
@@ -11689,7 +11799,10 @@ function MyLibraryView({
     } catch { /* pastilles indisponibles, tant pis */ }
   }
 
-  async function collectCommenters(source: LibraryLeadSource) {
+  // Lance la collecte en tâche de fond (ALE-240) : le POST renvoie un job, la
+  // collecte réelle (scrape + persistance + débit) se fait côté serveur. On suit
+  // le job par polling ci-dessous ; l'utilisateur choisit le volume au curseur.
+  async function collectCommenters(source: LibraryLeadSource, maxComments: number) {
     if (collectingId) return;
     setCollectingId(source.id);
     setError("");
@@ -11698,25 +11811,73 @@ function MyLibraryView({
       const res = await fetch(`${DIRECT_API_URL}/me/lead-sources/${source.id}/collect`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ max_comments: maxComments }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Collecte impossible");
-      setLeadSources((prev) => ({ ...prev, [source.post_url]: { ...source, ...data.source } }));
-      const counts = data.leads || {};
-      const fresh = counts.inserted ?? 0;
-      const enriched = counts.updated ?? 0;
-      setCollectMsg(
-        `${data.comments_count} commentaire(s) analysé(s) — ${fresh} nouveau(x) lead(s)` +
-          (enriched ? `, ${enriched} enrichi(s)` : "") +
-          ". Retrouve-les dans l'onglet Prospection."
-      );
+      setCollectJob(data as LeadCollectionJob);
     } catch (err: any) {
       setError(err.message || "Collecte impossible");
-    } finally {
       setCollectingId(null);
     }
   }
+
+  async function cancelCollect() {
+    if (!collectJob) return;
+    try {
+      await fetch(`${DIRECT_API_URL}/me/lead-collection-jobs/${collectJob.id}/cancel`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+    } catch { /* le polling constatera l'arrêt de toute façon */ }
+    setCollectJob(null);
+    setCollectingId(null);
+  }
+
+  // Polling non-chevauchant du job de collecte (patron ALE-271) : ne relance le
+  // prochain tick qu'après la réponse du précédent. S'arrête au statut terminal.
+  useEffect(() => {
+    if (!collectJob || (collectJob.status !== "queued" && collectJob.status !== "running")) return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/lead-collection-jobs/${collectJob.id}`, {
+          headers: await authHeaders(),
+        });
+        if (res.ok) {
+          const job = (await res.json()) as LeadCollectionJob;
+          if (stop) return;
+          if (job.status === "done") {
+            const counts = job.result?.leads || {};
+            const fresh = counts.inserted ?? 0;
+            const enriched = counts.updated ?? 0;
+            setCollectMsg(
+              `${job.result?.comments_count ?? 0} commentaire(s) analysé(s) — ${fresh} nouveau(x) lead(s)` +
+                (enriched ? `, ${enriched} enrichi(s)` : "") +
+                ". Retrouve-les dans l'onglet Prospection."
+            );
+            setCollectJob(null);
+            setCollectingId(null);
+            void load();
+            return;
+          }
+          if (job.status === "error" || job.status === "cancelled") {
+            if (job.status === "error") setError(job.error || "Collecte échouée.");
+            setCollectJob(null);
+            setCollectingId(null);
+            void load();
+            return;
+          }
+          setCollectJob(job);
+        }
+      } catch { /* réseau : on retentera au prochain tick */ }
+      if (!stop) timer = setTimeout(poll, 3000);
+    };
+    timer = setTimeout(poll, 3000);
+    return () => { stop = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collectJob?.id, collectJob?.status]);
 
   useEffect(() => {
     if (isAuthed) void load();
@@ -11978,25 +12139,20 @@ function MyLibraryView({
                 <ImageIcon size={13} style={{ verticalAlign: "-2px" }} /> Image : {t.image_note}
               </p>
             )}
+            {leadSource && (
+              <LeadCollectControl
+                source={leadSource}
+                job={collectJob && collectJob.source_id === leadSource.id ? collectJob : null}
+                busy={collectingId === leadSource.id}
+                onCollect={(count) => collectCommenters(leadSource, count)}
+                onCancel={cancelCollect}
+              />
+            )}
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", borderTop: "1px solid var(--border)", paddingTop: 16, marginTop: 4 }}>
               {link && (
                 <a href={link} target="_blank" rel="noreferrer" className="secondary-button" style={{ fontSize: 13, textDecoration: "none" }}>
                   <Link2 size={14} /> Voir le post
                 </a>
-              )}
-              {leadSource && (
-                <button
-                  className="secondary-button"
-                  style={{ fontSize: 13 }}
-                  title="Récupère les personnes qui ont commenté ce post — elles deviennent des leads dans l'onglet Prospection"
-                  onClick={() => collectCommenters(leadSource)}
-                  disabled={collectingId === leadSource.id}
-                >
-                  {collectingId === leadSource.id ? <Loader2 size={14} className="spinning" /> : <Users size={14} />}{" "}
-                  {leadSource.collected_at
-                    ? `Mettre à jour les commentateurs (${leadSource.comments_count ?? 0})`
-                    : "Récupérer les commentateurs"}
-                </button>
               )}
               <button
                 className="secondary-button"
