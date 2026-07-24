@@ -1,20 +1,21 @@
 import { test, expect, Page } from "@playwright/test";
 import { gotoTab, gotoSubTab } from "./helpers";
 
-// ALE-59 : pop-up de publication multi-réseaux (X + Reddit).
+// ALE-59 : publication multi-réseaux (X + Reddit). Depuis le retrait de
+// « Publier maintenant sur LinkedIn » du menu Publier (2026-07-24), la rangée
+// de logos multi-réseaux ne vit plus que dans la modale « Programmer… ».
 //
-// Tout le backend est MOCKÉ (statuts, adaptation IA, publications) : zéro coût,
+// Tout le backend est MOCKÉ (statuts, adaptation IA, programmation) : zéro coût,
 // rien ne part nulle part. Ce que ce spec verrouille, c'est le CÂBLAGE :
 //
 //  1. cliquer un logo appelle l'adaptation IA et empile la version ÉDITABLE
 //     sous le post LinkedIn (pas d'onglets) ;
-//  2. à la confirmation, les versions X et Reddit partent au serveur avec les
-//     bons champs (tweets[], subreddit/title/body) — une version perdue en
-//     route publierait LinkedIn seul en silence, l'inverse exact de la promesse
-//     du bouton « Publier sur 3 réseaux » ;
-//  3. la même mécanique dans Programmer stocke les versions avec le post
-//     (cross_posts dans le payload de /me/linkedin/schedule) ;
-//  4. compte non connecté à X → le logo n'active rien et explique quoi faire.
+//  2. à la confirmation, les versions X et Reddit voyagent avec le post
+//     (cross_posts dans le payload de /me/linkedin/schedule) avec les bons
+//     champs (tweets[], subreddit/title/body) — une version perdue en route
+//     publierait LinkedIn seul en silence, l'inverse exact de la promesse du
+//     bouton « Programmer sur 3 réseaux » ;
+//  3. compte non connecté à X → le logo n'active rien et explique quoi faire.
 
 const SAVED_POST = {
   id: "e2e-ale-59",
@@ -69,39 +70,35 @@ async function mockBase(page: Page, { xConnected = true, redditConnected = true,
   );
 }
 
-/** Ouvre la pop-up Publier sur le post mocké de Ma bibliothèque. */
-async function openPublishModal(page: Page, { expectPanels = true } = {}) {
+/** Ouvre la modale Programmer sur le post mocké de Ma bibliothèque — c'est elle
+ *  qui porte la rangée de logos multi-réseaux (pour un compte flaggé seulement). */
+async function openScheduleModal(page: Page, { expectPanels = true } = {}) {
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Ma bibliothèque");
   await page.getByRole("button", { name: /Ouvrir « Post LinkedIn de test ALE-59/ }).click();
   const bar = page.locator(".post-actions-bar").first();
   await bar.getByRole("button", { name: /Publier/ }).click();
-  await page.locator(".action-menu").getByRole("menuitem", { name: /Publier maintenant sur LinkedIn/ }).click();
-  // La pop-up de confirmation porte la rangée de logos multi-réseaux — pour un
-  // compte flaggé seulement.
+  // La publication LinkedIn immédiate est retirée du menu (elle reviendra).
+  await expect(page.locator(".action-menu").getByRole("menuitem", { name: /Publier maintenant sur LinkedIn/ })).toHaveCount(0);
+  await page.locator(".action-menu").getByRole("menuitem", { name: /Programmer/ }).click();
   if (expectPanels) await expect(page.getByTestId("cross-network-panels")).toBeVisible();
-  else await expect(page.getByRole("button", { name: /Confirmer la publication/ })).toBeVisible();
+  else await expect(page.getByRole("button", { name: /Programmer sur LinkedIn/ })).toBeVisible();
 }
 
-test("publier sur 3 réseaux : adaptation empilée, puis les 3 versions partent au serveur", async ({ page }) => {
+test("programmer sur 3 réseaux : adaptation empilée, puis les versions X/Reddit voyagent dans cross_posts", async ({ page }) => {
   await mockBase(page);
 
-  const published: Record<string, unknown> = {};
-  await page.route("**/me/linkedin/publish", (route) => {
-    published.linkedin = route.request().postDataJSON();
-    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, post_id: "z-li" }) });
-  });
-  await page.route("**/me/x/publish", (route) => {
-    published.x = route.request().postDataJSON();
-    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, post_id: "z-x" }) });
-  });
-  await page.route("**/me/reddit/publish", (route) => {
-    published.reddit = route.request().postDataJSON();
-    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, post_id: "z-rd" }) });
+  let schedulePayload: any = null;
+  await page.route("**/me/linkedin/schedule", (route) => {
+    schedulePayload = route.request().postDataJSON();
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, scheduled_post: { id: "sp-3" } }),
+    });
   });
 
   await page.goto("/");
-  await openPublishModal(page);
+  await openScheduleModal(page);
 
   // Activer X : la version adaptée apparaît, empilée, éditable, avec compteur.
   await page.getByRole("button", { name: "Publier aussi sur X" }).click();
@@ -119,17 +116,15 @@ test("publier sur 3 réseaux : adaptation empilée, puis les 3 versions partent 
   // Score GEO (export Readyt) → badge « Bien cité par les IA » sur les subs à haut GEO.
   await expect(redditPanel.getByText(/Bien cité par les IA/)).toBeVisible();
 
-  // Le bouton dit ce qu'il va faire, et le fait.
-  await page.getByRole("button", { name: "Publier sur 3 réseaux" }).click();
-  await expect.poll(() => Object.keys(published).sort()).toEqual(["linkedin", "reddit", "x"]);
-
-  const xPayload = published.x as { tweets: string[] };
-  expect(xPayload.tweets).toEqual(X_ADAPTATION.tweets);
-  const redditPayload = published.reddit as { subreddit: string; title: string; body: string };
-  expect(redditPayload.subreddit).toBe("marketing");
-  expect(redditPayload.title).toBe(REDDIT_ADAPTATION.title);
-  expect(redditPayload.body).toBe(REDDIT_ADAPTATION.body);
-  // Aucune erreur affichée après la triple publication.
+  // Le bouton dit ce qu'il va faire, et le fait : les deux versions voyagent
+  // avec le post programmé.
+  await page.getByRole("button", { name: "Programmer sur 3 réseaux" }).click();
+  await expect.poll(() => schedulePayload).not.toBeNull();
+  expect(schedulePayload.cross_posts?.x?.tweets).toEqual(X_ADAPTATION.tweets);
+  expect(schedulePayload.cross_posts?.reddit?.subreddit).toBe("marketing");
+  expect(schedulePayload.cross_posts?.reddit?.title).toBe(REDDIT_ADAPTATION.title);
+  expect(schedulePayload.cross_posts?.reddit?.body).toBe(REDDIT_ADAPTATION.body);
+  // Aucune erreur affichée après la programmation.
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
@@ -172,10 +167,10 @@ test("compte SANS flags : rien de multi-réseaux ne s'affiche (même état serve
   await expect(page.locator(".nav-item", { hasText: "Instagram" }).first()).toBeDisabled();
   await expect(page.getByRole("button", { name: "X Bientôt" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Reddit Bientôt" })).toHaveCount(0);
-  await openPublishModal(page, { expectPanels: false });
+  await openScheduleModal(page, { expectPanels: false });
   await expect(page.getByTestId("cross-network-panels")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Publier aussi sur X" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /Confirmer la publication/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Programmer sur LinkedIn/ })).toBeVisible();
 });
 
 test("sidebar : X et Reddit grisés « Bientôt », Instagram dégrisé et dépliable", async ({ page }) => {
@@ -206,11 +201,11 @@ test("compte X non connecté : le logo n'active rien et renvoie vers Connexions"
   });
 
   await page.goto("/");
-  await openPublishModal(page);
+  await openScheduleModal(page);
   await page.getByRole("button", { name: "Publier aussi sur X" }).click();
   await expect(page.getByText(/Connecte ton compte X dans Mon profil/)).toBeVisible();
   await expect(page.getByTestId("x-panel")).toHaveCount(0);
   expect(adaptCalled).toBe(false);
   // Le bouton de confirmation reste « LinkedIn seul ».
-  await expect(page.getByRole("button", { name: /Confirmer la publication/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Programmer sur LinkedIn/ })).toBeVisible();
 });

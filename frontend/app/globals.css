@@ -2783,3 +2783,22 @@ tr.tr-top3 .tr-rank { color: var(--primary); }
   background: rgba(70,72,212,0.06); border: 1px solid var(--border); border-radius: 4px;
   padding: 1px 5px; color: var(--muted);
 }
+
+/* ── Aperçu d'image agrandi (clic sur une vignette jointe/générée d'un post).
+   z-index 1100 : au-dessus des pop-up de confirmation (z-index 1000) pour que
+   l'agrandissement reste utilisable depuis n'importe quel contexte. ── */
+.img-zoom-thumb { display: block; width: 100%; padding: 0; border: none; background: none; cursor: zoom-in; }
+.img-zoom-overlay {
+  position: fixed; inset: 0; z-index: 1100; background: rgba(10, 10, 25, 0.78);
+  display: flex; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out;
+}
+.img-zoom-full {
+  max-width: min(1100px, 94vw); max-height: 88vh; object-fit: contain;
+  border-radius: 10px; box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.8); cursor: default;
+}
+.img-zoom-close {
+  position: absolute; top: 16px; right: 16px; width: 36px; height: 36px; border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25); background: rgba(0, 0, 0, 0.35); color: #fff;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.img-zoom-close:hover { background: rgba(0, 0, 0, 0.55); }
