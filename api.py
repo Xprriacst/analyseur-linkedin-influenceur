@@ -23,8 +23,8 @@ from src import crosspost
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
-from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread
-from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters
+from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread, start_lead_collection_job_thread
+from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters, lead_collect_credit_cost, effective_max_comments
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
 from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures
 from src.llm import adapt_post_for_x, adapt_post_for_reddit
@@ -2946,11 +2946,11 @@ def add_me_post_template_from_post(payload: TemplateFromPostRequest, token: str 
 
 class LeadSourceRequest(BaseModel):
     url: str = Field(..., max_length=2000)
-    max_comments: int | None = Field(default=None, ge=1, le=500)
+    max_comments: int | None = Field(default=None, ge=1, le=5000)
 
 
 class LeadCollectRequest(BaseModel):
-    max_comments: int | None = Field(default=None, ge=1, le=500)
+    max_comments: int | None = Field(default=None, ge=1, le=5000)
 
 
 class LeadTargetingRequest(BaseModel):
@@ -2961,112 +2961,40 @@ class LeadTargetingRequest(BaseModel):
     first_message_instructions: str | None = Field(default=None, max_length=4000)
 
 
-def _score_leads_for_source(token: str, source: dict, counts: dict) -> None:
-    """Note (ICP) les leads fraîchement touchés par une collecte, si un ciblage
-    est configuré. Best-effort : un échec de scoring ne casse pas la collecte."""
-    ids_by_url = (counts or {}).get("ids_by_url") or {}
-    if not ids_by_url:
-        return
-    targeting = db.get_lead_targeting(token)
-    if not targeting:
-        return  # pas de ciblage → on n'invente pas de score (tous les leads restent visibles)
-    try:
-        leads = db.list_leads_for_scoring(token)
-        by_id = {l["id"]: l for l in leads}
-        to_score = [by_id[lid] for lid in ids_by_url.values() if lid in by_id]
-        lead_inputs = [
-            {
-                "headline": l.get("headline"),
-                "comment_text": l.get("comment_text"),
-                "trigger_keyword": (source or {}).get("trigger_keyword"),
-                "author": (source or {}).get("author"),
-            }
-            for l in to_score
-        ]
-        scores = score_leads(targeting, lead_inputs, source_post_text=(source or {}).get("post_text"))
-        scored = [
-            {"id": l["id"], "score": s.get("score"), "reason": s.get("reason")}
-            for l, s in zip(to_score, scores)
-        ]
-        db.update_lead_scores(token, scored)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[leads] scoring à l'ingestion échoué : {exc}", flush=True)
+def _create_lead_collection_job(token: str, source: dict, max_comments: int | None) -> dict[str, Any]:
+    """Lance une collecte de commentateurs en tâche de fond (ALE-240).
 
+    La collecte elle-même (scrape Apify + persistance + scoring + débit) tourne
+    dans un thread de fond (`src.jobs.process_lead_collection_job`) car un gros
+    volume prend plusieurs minutes — au-delà du budget d'une requête HTTP.
 
-# Facturation de la collecte de commentateurs (ALE-239). L'appel Apify est
-# payant (~0,002 $/commentaire) mais n'était débité d'aucun crédit → fuite de
-# coût. On débite proportionnellement au volume RÉELLEMENT récupéré. Constante
-# ajustable : au calibrage actuel (~0,006 $/crédit) 3 commentateurs ≈ 1 crédit
-# couvre à peu près le coût Apify. La monter réduit la marge, la baisser la creuse.
-LEAD_COMMENTERS_PER_CREDIT = 3
-
-
-def _lead_collect_credit_cost(n_commenters: int) -> int:
-    """Crédits à débiter pour une collecte, proportionnels au volume (min 1)."""
-    n = max(0, int(n_commenters))
-    if n == 0:
-        return 0
-    return max(1, (n + LEAD_COMMENTERS_PER_CREDIT - 1) // LEAD_COMMENTERS_PER_CREDIT)
-
-
-def _collect_lead_source(token: str, source: dict, max_comments: int | None) -> dict[str, Any]:
-    """Scrape les commentateurs d'une source et les persiste en leads dédupliqués.
-
-    Facturation (ALE-239) : pré-check fail-closed du solde AVANT l'appel Apify
-    payant (on ne scrape pas si le solde ne couvre pas le pire cas = le volume
-    demandé), puis débit proportionnel au volume RÉELLEMENT récupéré (toujours
-    <= demandé, donc le débit ne peut pas échouer après avoir payé le scrape).
-    Zéro commentateur récupéré = zéro débit.
+    Pré-check fail-closed du solde AVANT de créer le job (on ne lance pas une
+    collecte qu'on ne saurait pas facturer) : le pire cas = le volume demandé.
     """
     if not os.environ.get("APIFY_TOKEN"):
         raise HTTPException(status_code=503, detail="Scraping non configuré (APIFY_TOKEN manquant).")
-    requested = max_comments or LEAD_COMMENTS_DEFAULT
-    if token:
-        worst_case = _lead_collect_credit_cost(requested)
-        info = db.get_user_credits(token)
-        if info.get("enabled") and info.get("balance", 0) < worst_case:
-            raise HTTPException(
-                status_code=402,
-                detail=(
-                    f"Crédits insuffisants (solde : {info.get('balance', 0)}). "
-                    f"Cette collecte peut coûter jusqu'à {worst_case} crédit(s)."
-                ),
-            )
+    # ALE-240 : le choix du volume (>100) est réservé aux comptes flaggés `lead_volume`.
+    # Sans le flag, on plafonne au défaut côté serveur (le gating n'est pas cosmétique).
+    allow_volume = features.has_feature(db.get_user(token), "lead_volume")
+    requested = effective_max_comments(max_comments, allow_volume)
+    worst_case = lead_collect_credit_cost(requested)
     try:
-        commenters = fetch_post_commenters(source["post_url"], max_items=requested)
-    except Exception as exc:  # noqa: BLE001 — erreur actor/réseau remontée telle quelle
-        raise HTTPException(status_code=502, detail=f"Collecte des commentaires échouée : {exc}")
-    credits_balance: int | None = None
-    if token and commenters:
-        # ok toujours True ici : le pré-check garantit solde >= coût du pire cas >= coût réel.
-        _ok, credits_balance = db.debit_credits(
-            token, "collect_leads", _lead_collect_credit_cost(len(commenters))
+        info = db.get_user_credits(token)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Vérification du solde impossible, réessaie dans un instant ({exc}).")
+    if info.get("enabled") and info.get("balance", 0) < worst_case:
+        raise HTTPException(
+            status_code=402,
+            detail=(
+                f"Crédits insuffisants (solde : {info.get('balance', 0)}). "
+                f"Cette collecte peut coûter jusqu'à {worst_case} crédit(s)."
+            ),
         )
-    counts = db.save_leads(token, source, commenters)
-    # Scoring ICP (ALE-228) : note les leads fraîchement touchés contre le ciblage.
-    _score_leads_for_source(token, source, counts)
-    updated = db.update_lead_source(
-        token,
-        source["id"],
-        {
-            "comments_count": len(commenters),
-            "collected_at": datetime.now(timezone.utc).isoformat(),
-        },
-    )
-    # Journalisation coût (garde-fou ALE-227) : volume récupéré à chaque collecte.
-    print(
-        f"[leads] source {source['id']} ({source['post_url']}): "
-        f"{len(commenters)} commentaire(s) récupéré(s), leads {counts}",
-        flush=True,
-    )
-    return {
-        "source": updated or source,
-        "comments_count": len(commenters),
-        "leads": counts,
-        "credits": credits_balance,
-    }
-
-
+    job = db.create_lead_collection_job(token, source["id"], source["post_url"], requested)
+    if not job:
+        raise HTTPException(status_code=500, detail="Création du job de collecte impossible.")
+    start_lead_collection_job_thread(token, job["id"])
+    return job
 @app.get("/me/lead-sources")
 def me_lead_sources(token: str = Depends(require_token)) -> dict[str, Any]:
     """Posts sources de prospection de l'utilisateur."""
@@ -3116,13 +3044,15 @@ def add_me_lead_source(payload: LeadSourceRequest, token: str = Depends(require_
         post_text=detail["text"],
         is_lead_magnet=verdict["is_lead_magnet"],
         trigger_keyword=verdict["trigger_keyword"],
+        total_comments=detail.get("total_comments"),
     )
     if not source:
         raise HTTPException(status_code=400, detail="Impossible d'enregistrer la source.")
 
-    if not verdict["is_lead_magnet"]:
-        return {"source": source, "leads": {"inserted": 0, "updated": 0, "skipped": 0}}
-    return _collect_lead_source(token, source, payload.max_comments)
+    # ALE-240 : on n'auto-collecte plus à l'import. On renvoie la source avec le
+    # total de commentaires du post ; l'utilisateur choisit ensuite le volume au
+    # curseur (coût en crédits affiché) et lance la collecte en tâche de fond.
+    return {"source": source, "leads": {"inserted": 0, "updated": 0, "skipped": 0}}
 
 
 @app.post("/me/lead-sources/{source_id}/collect")
@@ -3131,11 +3061,39 @@ def collect_me_lead_source(
     payload: LeadCollectRequest | None = None,
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
-    """(Re)collecte explicite des commentateurs d'une source (seul chemin de relance)."""
+    """Lance une (re)collecte des commentateurs d'une source en tâche de fond.
+
+    Renvoie le job créé (ALE-240) ; le frontend suit sa progression par polling
+    et rafraîchit les leads quand il termine.
+    """
     source = db.get_lead_source(token, source_id)
     if not source:
         raise HTTPException(status_code=404, detail="Source introuvable.")
-    return _collect_lead_source(token, source, payload.max_comments if payload else None)
+    return _create_lead_collection_job(token, source, payload.max_comments if payload else None)
+
+
+@app.get("/me/lead-collection-jobs")
+def list_lead_collection_jobs(token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """Jobs de collecte de l'utilisateur (plus récents d'abord)."""
+    return db.list_lead_collection_jobs(token)
+
+
+@app.get("/me/lead-collection-jobs/{job_id}")
+def get_lead_collection_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Récupère un job de collecte (pour le polling du frontend)."""
+    job = db.get_lead_collection_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job de collecte introuvable.")
+    return job
+
+
+@app.post("/me/lead-collection-jobs/{job_id}/cancel")
+def cancel_lead_collection_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Annule un job de collecte encore en attente/en cours."""
+    job = db.cancel_lead_collection_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job de collecte introuvable.")
+    return job
 
 
 @app.delete("/me/lead-sources/{source_id}")

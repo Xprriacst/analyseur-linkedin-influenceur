@@ -99,11 +99,21 @@ def fetch_post_detail(post_url: str) -> dict[str, Any] | None:
         image_url = next(
             (m["url"] for m in extract_media(media_source) if m.get("type") == "image"), None
         )
+        # Total de commentaires du post (apimaestro range l'engagement dans
+        # `stats`) : sert à borner le curseur de collecte (ALE-240) sur le vrai
+        # total. Best-effort — None si l'actor ne le renvoie pas.
+        stats = item.get("stats") or {}
+        raw_comments = stats.get("comments")
+        try:
+            total_comments = int(raw_comments) if raw_comments is not None else None
+        except (TypeError, ValueError):
+            total_comments = None
         return {
             "text": text,
             "author": (author or "").strip() or None,
             "url": post.get("url") or post_url,
             "image_url": image_url,
+            "total_comments": total_comments,
         }
     return None
 
