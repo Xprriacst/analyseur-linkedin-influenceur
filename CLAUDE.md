@@ -82,6 +82,11 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-24 #3 (RELEASE PROD : menu Publier sans publication immédiate + aperçu agrandi — PR #368 → release #369)
+- **Release `dev → main` PR #369** mergée ~13:03 UTC sur demande d'Alex (« vasy pousse sur main »), quelques minutes après le merge de #368 sur dev. Delta énuméré avant merge : **uniquement #368** (+ changelog #367, docs). Aucune migration, aucune env var, aucun cron, aucun changement backend.
+- **Vérifié post-deploy** : CSS prod contient `img-zoom-overlay` · bundle JS prod (377 Ko, non vide — garde anti-fichier-vide appliquée) contient `img-zoom-thumb` et **zéro occurrence** de « Publier maintenant sur LinkedIn » (chaîne ASCII, pas de piège d'accents) · `/health` prod tout vert.
+- **Reste à faire** : test visuel d'Alex en prod (menu Publier sans l'entrée LinkedIn ; clic sur une vignette d'image → aperçu plein écran).
+
 ### 2026-07-24 #2 (dev : menu Publier sans publication LinkedIn immédiate + aperçu agrandi des images)
 - **Demande d'Alex (captures d'écran)** : (1) retirer « Publier maintenant sur LinkedIn » du menu Publier — la programmation couvre le besoin, l'option sera réintroduite plus tard ; (2) pouvoir voir un aperçu plus grand des images générées/jointes d'un post.
 - **Menu Publier** : l'entrée LinkedIn immédiate est retirée des **4 surfaces** (Générateur, Idée du jour, Ma bibliothèque, Agent IA). Restent : « Publier sur X » (si connecté), Slack (si actif) et « Programmer… ». ⚠️ **Conséquence à connaître** : la pop-up de confirmation avec la rangée multi-réseaux X/Reddit (ALE-59) n'est plus atteignable en publication immédiate — la mécanique multi-réseaux reste disponible via « Programmer… » (même composant `CrossNetworkPanels`). Le code de la publication immédiate (modales `PublishConfirmModal`, `publishPost`…) reste en place, dormant, pour le retour de l'option.
