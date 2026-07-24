@@ -4,8 +4,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { ChevronUp, Loader2, MoreHorizontal } from "lucide-react";
 
 // Barre d'actions unifiée des cartes de post (ALE-185) : un bouton principal
-// « Publier ▴ » (Publier maintenant / Programmer / Slack / X selon les réseaux
-// connectés) + un bouton « ⋯ » pour les actions secondaires. Les menus
+// « Publier ▴ » (Programmer / Slack / X selon les réseaux connectés — la
+// publication LinkedIn immédiate est retirée du menu, elle reviendra) + un
+// bouton « ⋯ » pour les actions secondaires. Les menus
 // s'ouvrent vers le haut (style Cursor). Composant partagé par le Générateur,
 // Mes contenus et Idée du jour — chaque section fournit ses actions.
 
