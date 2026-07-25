@@ -82,6 +82,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-25 (dev : Inbox LinkedIn — `{{full_name}}` affiché à la place du vrai nom)
+- **Bug (retour Alex)** : dans l'Inbox LinkedIn, certaines conversations affichaient littéralement `{{full_name}}` au lieu du nom du contact.
+- **Cause** : Unipile/LinkedIn renvoie parfois le gabarit non substitué (`{{full_name}}`, `{{first_name}}`…) dans le champ `name` du chat. Notre code le traitait comme un vrai nom (chaîne non vide) → (1) on n'allait jamais chercher `attendee_name`, (2) le rattrapage par nom de lead (`apply_lead_names`) était court-circuité.
+- **Fix** : `usable_display_name` rejette les placeholders `{{…}}` ; `normalize_chat` continue alors vers `attendee_name` ; `apply_lead_names` remplace aussi un placeholder par le nom du lead (ou « Conversation LinkedIn »). Suite du correctif #363 / release #367.
+- **Tests** : `tests/test_inbox_chat_naming.py` (+9 cas placeholder). Backend seul, aucune migration, aucune env var.
+
 ### 2026-07-24 #4 (dev : Prospection — curseur du nombre de commentateurs + collecte en tâche de fond, ALE-240)
 - **Demande d'Alex** : « je veux récupérer TOUS ceux qui ont commenté "CLAUDE"/"LINKEDIN", on est bloqués à 100 ». Constat : le backend acceptait déjà `max_comments` jusqu'à 500 mais le front envoyait toujours `{}` → 100 en dur ; et l'actor `harvestapi/linkedin-post-comments` **ne sait pas paginer** (que `maxItems`, pas d'offset) → la seule façon d'avoir plus = un run à `maxItems` plus grand. Aucun scraper ne filtre par mot-clé côté source (structurel) : le `trigger_keyword` sert au marquage, pas au filtrage — tous les commentateurs deviennent des leads.
 - **Ce qui change pour le client** : dans Ma bibliothèque, sur un post lead-magnet, un **curseur** (10 → total du post, plafond 5000) avec le **coût en crédits affiché en direct** (« ≈ 84 crédits ») et le **nombre total de commentaires du post** (« Ce post a 842 commentaires »). Relancer n'ajoute que les nouveaux (dédup par profil). L'import n'auto-collecte plus (c'était le « on ne choisit pas » d'ALE-240) — on montre le total, l'utilisateur choisit.
