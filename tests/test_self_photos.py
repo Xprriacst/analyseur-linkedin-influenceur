@@ -5,7 +5,7 @@ import io
 import unittest
 from unittest.mock import MagicMock, patch
 
-from openai import BadRequestError
+from openai import BadRequestError, InternalServerError
 
 from src.image_gen import (
     ImageGenError,
@@ -15,6 +15,20 @@ from src.image_gen import (
     resolve_image_prompt,
     with_identity_prefix,
 )
+
+
+def _openai_http_error(status: int, message: str, *, exc_cls=None):
+    import httpx
+
+    if exc_cls is None:
+        exc_cls = InternalServerError if status >= 500 else BadRequestError
+    req = httpx.Request("POST", "https://api.openai.com/v1/images/edits")
+    resp = httpx.Response(status, request=req, json={"error": message})
+    return exc_cls(
+        message=f"Error code: {status} - {{'error': '{message}'}}",
+        response=resp,
+        body={"error": message},
+    )
 
 
 class IdentityPromptTest(unittest.TestCase):
@@ -115,20 +129,10 @@ class GenerateWithSelfPhotosTest(unittest.TestCase):
     @patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=False)
     @patch("src.image_gen.OpenAI")
     def test_openai_no_valid_description_becomes_friendly_error(self, openai_cls):
-        import httpx
-
         client = MagicMock()
         openai_cls.return_value = client
-        req = httpx.Request("POST", "https://api.openai.com/v1/images/edits")
-        resp = httpx.Response(
-            400,
-            request=req,
-            json={"error": {"message": "No valid description provided."}},
-        )
-        client.images.edit.side_effect = BadRequestError(
-            message="Error code: 400 - {'error': {'message': 'No valid description provided.'}}",
-            response=resp,
-            body={"error": {"message": "No valid description provided."}},
+        client.images.edit.side_effect = _openai_http_error(
+            400, "No valid description provided.", exc_cls=BadRequestError
         )
         with self.assertRaises(ImageGenError) as ctx:
             generate_post_image(
@@ -138,6 +142,36 @@ class GenerateWithSelfPhotosTest(unittest.TestCase):
                 identity=True,
             )
         self.assertIn("aucune description valide", str(ctx.exception).lower())
+
+    @patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=False)
+    @patch("src.image_gen.time.sleep", return_value=None)
+    @patch("src.image_gen.OpenAI")
+    def test_retries_on_too_many_concurrent_then_succeeds(self, openai_cls, _sleep):
+        client = MagicMock()
+        openai_cls.return_value = client
+        busy = _openai_http_error(503, "Too many concurrent requests")
+        client.images.generate.side_effect = [
+            busy,
+            busy,
+            MagicMock(data=[MagicMock(b64_json="okimg")]),
+        ]
+        result = generate_post_image("un post assez long", prompt="Bureau lumineux")
+        self.assertTrue(result["image_data"].endswith("okimg"))
+        self.assertEqual(client.images.generate.call_count, 3)
+        self.assertEqual(_sleep.call_count, 2)
+
+    @patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=False)
+    @patch("src.image_gen.time.sleep", return_value=None)
+    @patch("src.image_gen.OpenAI")
+    def test_concurrent_exhausted_becomes_friendly_error(self, openai_cls, _sleep):
+        client = MagicMock()
+        openai_cls.return_value = client
+        busy = _openai_http_error(503, "Too many concurrent requests")
+        client.images.generate.side_effect = busy
+        with self.assertRaises(ImageGenError) as ctx:
+            generate_post_image("un post assez long", prompt="Bureau lumineux")
+        self.assertIn("saturé", str(ctx.exception).lower())
+        self.assertEqual(client.images.generate.call_count, 4)
 
 
 if __name__ == "__main__":

@@ -3,11 +3,20 @@ from __future__ import annotations
 
 import io
 import os
+import random
+import threading
+import time
 
 from anthropic import Anthropic
-from openai import BadRequestError, OpenAI
+from openai import APIStatusError, BadRequestError, OpenAI, RateLimitError
 
 from src.net_guard import guarded_download
+
+# GPT Image 2 borne le nombre d'appels simultanés par org (« Too many concurrent
+# requests », 503). On sérialise dans le process + on réessaie avec backoff.
+_IMAGE_API_LOCK = threading.Lock()
+_IMAGE_API_MAX_ATTEMPTS = 4  # 1 essai + 3 retries
+_IMAGE_API_BASE_BACKOFF_S = 10.0
 
 # Images de référence acceptées (banque de templates ALE-221, photos de soi 0054).
 _REFERENCE_IMAGE_EXTS = {"png", "jpg", "jpeg", "webp"}
@@ -206,10 +215,33 @@ def resolve_image_prompt(
     return text
 
 
+def _is_transient_openai_error(exc: BaseException) -> bool:
+    """503 concurrent / 429 rate-limit — réessayables ; le reste non."""
+    raw = str(exc).lower()
+    if "too many concurrent" in raw:
+        return True
+    if isinstance(exc, RateLimitError):
+        return True
+    if isinstance(exc, APIStatusError) and getattr(exc, "status_code", None) in (429, 503):
+        return True
+    return False
+
+
 def _friendly_openai_error(exc: Exception) -> ImageGenError:
-    """Traduit les 400 OpenAI cryptiques en message actionnable."""
+    """Traduit les erreurs OpenAI cryptiques en message actionnable."""
     raw = str(exc)
     low = raw.lower()
+    if "too many concurrent" in low or (
+        isinstance(exc, APIStatusError) and getattr(exc, "status_code", None) == 503
+    ):
+        return ImageGenError(
+            "OpenAI est saturé (trop de générations d'images en parallèle). "
+            "Réessaie dans une minute."
+        )
+    if isinstance(exc, RateLimitError) or "rate limit" in low:
+        return ImageGenError(
+            "Limite de débit OpenAI atteinte. Réessaie dans une minute."
+        )
     if "no valid description" in low or "valid description provided" in low:
         return ImageGenError(
             "OpenAI a refusé le prompt (« aucune description valide »). "
@@ -222,6 +254,58 @@ def _friendly_openai_error(exc: Exception) -> ImageGenError:
             "Réessaie avec une photo JPG/PNG/WebP claire."
         )
     return ImageGenError(f"Génération d'image refusée : {raw[:400]}")
+
+
+def _call_openai_image_api(
+    client: OpenAI,
+    *,
+    prompt: str,
+    images: list[tuple[str, bytes, str]],
+):
+    """Appel OpenAI images.edit/generate avec verrou process + retries 503/429.
+
+    Les BytesIO sont recréés à chaque tentative (le SDK les consomme).
+    Le verrou est gardé pendant l'attente de retry pour ne pas empiler
+    d'autres appels pendant qu'on décharge la file concurrente OpenAI.
+    """
+    last_exc: Exception | None = None
+    with _IMAGE_API_LOCK:
+        for attempt in range(_IMAGE_API_MAX_ATTEMPTS):
+            openai_files = [to_openai_image_file(img) for img in images]
+            try:
+                # Les modèles gpt-image-* renvoient toujours du b64_json
+                # et n'acceptent pas quality="standard" (low/medium/high/auto).
+                if openai_files:
+                    return client.images.edit(
+                        model="gpt-image-2",
+                        image=openai_files,
+                        prompt=prompt,
+                        size="1024x1024",
+                        quality="high",
+                        output_format="png",
+                        n=1,
+                    )
+                return client.images.generate(
+                    model="gpt-image-2",
+                    prompt=prompt,
+                    size="1024x1024",
+                    quality="high",
+                    n=1,
+                )
+            except BadRequestError as exc:
+                raise _friendly_openai_error(exc) from exc
+            except (RateLimitError, APIStatusError) as exc:
+                last_exc = exc
+                if not _is_transient_openai_error(exc) or attempt + 1 >= _IMAGE_API_MAX_ATTEMPTS:
+                    raise _friendly_openai_error(exc) from exc
+                delay = _IMAGE_API_BASE_BACKOFF_S * (2 ** attempt) + random.uniform(0, 3)
+                print(
+                    f"[image-gen] OpenAI saturé ({exc}), "
+                    f"retry {attempt + 1}/{_IMAGE_API_MAX_ATTEMPTS - 1} dans {delay:.0f}s",
+                    flush=True,
+                )
+                time.sleep(delay)
+    raise _friendly_openai_error(last_exc or RuntimeError("Échec OpenAI image"))
 
 
 def generate_post_image(
@@ -253,32 +337,8 @@ def generate_post_image(
     elif reference_image:
         images.append(reference_image)
 
-    openai_files = [to_openai_image_file(img) for img in images]
-
     client = OpenAI(api_key=api_key)
-    # Les modèles gpt-image-* renvoient toujours du b64_json (pas de response_format)
-    # et n'acceptent pas quality="standard" (valeurs : low/medium/high/auto).
-    try:
-        if openai_files:
-            response = client.images.edit(
-                model="gpt-image-2",
-                image=openai_files,
-                prompt=prompt,
-                size="1024x1024",
-                quality="high",
-                output_format="png",
-                n=1,
-            )
-        else:
-            response = client.images.generate(
-                model="gpt-image-2",
-                prompt=prompt,
-                size="1024x1024",
-                quality="high",
-                n=1,
-            )
-    except BadRequestError as exc:
-        raise _friendly_openai_error(exc) from exc
+    response = _call_openai_image_api(client, prompt=prompt, images=images)
     b64 = response.data[0].b64_json
     return {
         "image_data": f"data:image/png;base64,{b64}",
