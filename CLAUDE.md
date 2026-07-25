@@ -82,6 +82,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-07-25 (RELEASE PROD : fix Inbox `{{full_name}}` + retry image OpenAI 503 — #372 + #373 → release #375)
+- **Release `dev → main` PR #375** mergée ~10:54 UTC sur demande d'Alex (« pousse sur main uniquement pour les super user »). Delta énuméré avant merge : **uniquement #373** (Inbox placeholder) + **#372** (retry 503 image). Aucune migration, aucune env var, aucun cron.
+- **Features bêta inchangées** : `DEFAULT_FEATURES` reste vide — `autopilot` / `instagram` / `x` / `reddit` / `lead_volume` restent réservés aux comptes agence flaggés (Alexandre ×2 + Tom). Les deux correctifs sont globaux (bugfixes).
+- **Vérifié post-deploy** : `/health` prod tout vert · `/me/linkedin/outreach/chats`, `/generate-image/jobs`, `/me/features` → **401 stable 3/3**.
+- **Reste à faire** : test rapide Alex/Tom en prod (Inbox sans `{{full_name}}` ; image si 503 concurrent → retry / message clair).
+
 ### 2026-07-25 (dev : Inbox LinkedIn — `{{full_name}}` affiché à la place du vrai nom)
 - **Bug (retour Alex)** : dans l'Inbox LinkedIn, certaines conversations affichaient littéralement `{{full_name}}` au lieu du nom du contact.
 - **Cause** : Unipile/LinkedIn renvoie parfois le gabarit non substitué (`{{full_name}}`, `{{first_name}}`…) dans le champ `name` du chat. Notre code le traitait comme un vrai nom (chaîne non vide) → (1) on n'allait jamais chercher `attendee_name`, (2) le rattrapage par nom de lead (`apply_lead_names`) était court-circuité.
