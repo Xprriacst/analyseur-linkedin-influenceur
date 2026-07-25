@@ -1,18 +1,39 @@
 """Nommage des conversations LinkedIn de l'Inbox (correctif « Conversation LinkedIn »).
 
-Deux causes du bug, verrouillées ici :
+Trois causes du bug, verrouillées ici :
   1. `normalize_chat` lisait le mauvais champ (`name`/`display_name`) alors qu'Unipile
      range le nom du participant dans `attendee_name` → même quand Unipile embarque le
      participant, le nom était perdu.
   2. Le rattrapage par le nom du lead ne se faisait que par `outreach_chat_id` (renseigné
      pour ~0 lead). On nomme désormais d'abord par `attendee_provider_id` (l'identifiant
      LinkedIn, présent sur chaque conversation ET sur chaque lead contacté).
+  3. Unipile pose parfois le gabarit littéral `{{full_name}}` dans `name` — un non-vide
+     qui bloquait le rattrapage et s'affichait tel quel dans l'Inbox.
 """
 from __future__ import annotations
 
 import unittest
 
 from src import unipile
+
+
+class UsableDisplayNameTest(unittest.TestCase):
+    def test_real_name(self):
+        self.assertEqual(unipile.usable_display_name(" Benjamin GREGOIRE "), "Benjamin GREGOIRE")
+
+    def test_rejects_full_name_placeholder(self):
+        self.assertIsNone(unipile.usable_display_name("{{full_name}}"))
+
+    def test_rejects_first_name_placeholder(self):
+        self.assertIsNone(unipile.usable_display_name("{{first_name}}"))
+
+    def test_rejects_placeholder_with_spaces(self):
+        self.assertIsNone(unipile.usable_display_name("  {{ full_name }}  "))
+
+    def test_rejects_empty(self):
+        self.assertIsNone(unipile.usable_display_name(""))
+        self.assertIsNone(unipile.usable_display_name(None))
+        self.assertIsNone(unipile.usable_display_name(123))
 
 
 class NormalizeChatTest(unittest.TestCase):
@@ -50,6 +71,29 @@ class NormalizeChatTest(unittest.TestCase):
         self.assertIsNone(out["name"])
         self.assertIsNone(out["attendee_provider_id"])
 
+    def test_placeholder_chat_name_falls_through_to_attendee_name(self):
+        # Cas produit : Unipile met `{{full_name}}` en titre, le vrai nom est dans l'attendee.
+        chat = {
+            "id": "chatPH",
+            "name": "{{full_name}}",
+            "attendees": [
+                {
+                    "attendee_name": "Camille Dupont",
+                    "attendee_provider_id": "ACoAA_cam",
+                }
+            ],
+        }
+        out = unipile.normalize_chat(chat)
+        self.assertEqual(out["name"], "Camille Dupont")
+        self.assertEqual(out["attendee_provider_id"], "ACoAA_cam")
+
+    def test_placeholder_alone_yields_no_name(self):
+        out = unipile.normalize_chat(
+            {"id": "chatPH2", "name": "{{full_name}}", "attendee_provider_id": "ACoAA_x"}
+        )
+        self.assertIsNone(out["name"])
+        self.assertEqual(out["attendee_provider_id"], "ACoAA_x")
+
 
 class ApplyLeadNamesTest(unittest.TestCase):
     def test_names_by_provider_id_when_unipile_has_no_name(self):
@@ -73,6 +117,17 @@ class ApplyLeadNamesTest(unittest.TestCase):
         chats = [{"id": "c1", "name": "Vrai Nom Unipile", "attendee_provider_id": "ACoAA_ben"}]
         unipile.apply_lead_names(chats, by_provider={"ACoAA_ben": "Nom Lead"}, by_chat={})
         self.assertEqual(chats[0]["name"], "Vrai Nom Unipile")
+
+    def test_placeholder_is_replaced_by_lead_name(self):
+        # Sans ce correctif, `{{full_name}}` (truthy) bloquait le rattrapage.
+        chats = [{"id": "c1", "name": "{{full_name}}", "attendee_provider_id": "ACoAA_ben"}]
+        unipile.apply_lead_names(chats, by_provider={"ACoAA_ben": "Benjamin GREGOIRE"}, by_chat={})
+        self.assertEqual(chats[0]["name"], "Benjamin GREGOIRE")
+
+    def test_placeholder_falls_back_to_generic_when_no_lead(self):
+        chats = [{"id": "c1", "name": "{{full_name}}", "attendee_provider_id": None}]
+        unipile.apply_lead_names(chats, by_provider={}, by_chat={})
+        self.assertEqual(chats[0]["name"], "Conversation LinkedIn")
 
     def test_generic_fallback_when_nothing_matches(self):
         chats = [{"id": "c1", "name": None, "attendee_provider_id": None}]

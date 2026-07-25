@@ -4,7 +4,21 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.image_gen import with_identity_prefix, generate_post_image
+from openai import InternalServerError
+
+from src.image_gen import ImageGenError, with_identity_prefix, generate_post_image
+
+
+def _openai_http_error(status: int, message: str):
+    import httpx
+
+    req = httpx.Request("POST", "https://api.openai.com/v1/images/generations")
+    resp = httpx.Response(status, request=req, json={"error": message})
+    return InternalServerError(
+        message=f"Error code: {status} - {{'error': '{message}'}}",
+        response=resp,
+        body={"error": message},
+    )
 
 
 class IdentityPromptTest(unittest.TestCase):
@@ -57,6 +71,36 @@ class GenerateWithSelfPhotosTest(unittest.TestCase):
         ref = ("ref.png", b"bytes", "image/png")
         generate_post_image("texte assez long pour le post", prompt="style", reference_image=ref)
         self.assertEqual(list(client.images.edit.call_args.kwargs["image"]), [ref])
+
+    @patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=False)
+    @patch("src.image_gen.time.sleep", return_value=None)
+    @patch("src.image_gen.OpenAI")
+    def test_retries_on_too_many_concurrent_then_succeeds(self, openai_cls, _sleep):
+        client = MagicMock()
+        openai_cls.return_value = client
+        busy = _openai_http_error(503, "Too many concurrent requests")
+        client.images.generate.side_effect = [
+            busy,
+            busy,
+            MagicMock(data=[MagicMock(b64_json="okimg")]),
+        ]
+        result = generate_post_image("un post assez long", prompt="Bureau lumineux")
+        self.assertTrue(result["image_data"].endswith("okimg"))
+        self.assertEqual(client.images.generate.call_count, 3)
+        self.assertEqual(_sleep.call_count, 2)
+
+    @patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=False)
+    @patch("src.image_gen.time.sleep", return_value=None)
+    @patch("src.image_gen.OpenAI")
+    def test_concurrent_exhausted_becomes_friendly_error(self, openai_cls, _sleep):
+        client = MagicMock()
+        openai_cls.return_value = client
+        busy = _openai_http_error(503, "Too many concurrent requests")
+        client.images.generate.side_effect = busy
+        with self.assertRaises(ImageGenError) as ctx:
+            generate_post_image("un post assez long", prompt="Bureau lumineux")
+        self.assertIn("saturé", str(ctx.exception).lower())
+        self.assertEqual(client.images.generate.call_count, 4)
 
 
 if __name__ == "__main__":

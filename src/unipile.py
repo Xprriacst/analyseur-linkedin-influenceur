@@ -105,6 +105,35 @@ def _pick(obj: dict | None, *keys: str) -> Any:
     return None
 
 
+# LinkedIn/Unipile renvoie parfois le gabarit non substitué comme titre de chat
+# (`{{full_name}}`, `{{first_name}}`…). Ce n'est PAS un nom affichable : le garder
+# bloquerait le rattrapage par `attendee_name` / nom du lead.
+_PLACEHOLDER_NAME_RE = re.compile(r"\{\{\s*[^{}]+\s*\}\}")
+
+
+def usable_display_name(value: Any) -> str | None:
+    """Nom affichable, ou None si vide / placeholder type `{{full_name}}`."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if _PLACEHOLDER_NAME_RE.search(text):
+        return None
+    return text
+
+
+def _pick_display_name(obj: dict | None, *keys: str) -> str | None:
+    """Comme `_pick`, mais ignore les placeholders Unipile/LinkedIn."""
+    if not isinstance(obj, dict):
+        return None
+    for key in keys:
+        name = usable_display_name(obj.get(key))
+        if name:
+            return name
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Connexion d'un compte (Hosted Auth Wizard)
 # --------------------------------------------------------------------------- #
@@ -343,6 +372,10 @@ def normalize_chat(chat: dict[str, Any]) -> dict[str, Any]:
     nom du lead correspondant côté endpoint (Unipile n'embarque pas toujours l'attendee
     dans la liste des chats). Ici, `name` peut rester None : la résolution finale (nom
     du lead, sinon fallback générique) est faite par l'endpoint qui a accès à la base.
+
+    ⚠️ Unipile pose parfois le gabarit littéral `{{full_name}}` dans `name`/`subject`
+    (titre LinkedIn non substitué). Ce n'est pas un nom : on l'ignore pour laisser
+    `attendee_name` ou le rattrapage par lead prendre le relais.
     """
     attendee = None
     attendees = chat.get("attendees")
@@ -353,11 +386,10 @@ def normalize_chat(chat: dict[str, Any]) -> dict[str, Any]:
         _pick(attendee, "attendee_provider_id", "provider_id") if attendee else None
     )
     # Nom réel quand Unipile l'a fourni (chat de groupe → `name`/`subject` ; 1-to-1 →
-    # `attendee_name`). Sinon None → l'endpoint nommera par le lead.
-    name = (
-        _pick(chat, "name", "subject")
-        or (_pick(attendee, "attendee_name", "name", "display_name") if attendee else None)
-        or None
+    # `attendee_name`). Les placeholders `{{…}}` sont rejetés. Sinon None → l'endpoint
+    # nommera par le lead.
+    name = _pick_display_name(chat, "name", "subject") or (
+        _pick_display_name(attendee, "attendee_name", "name", "display_name") if attendee else None
     )
     return {
         "id": _pick(chat, "id", "chat_id"),
@@ -376,12 +408,15 @@ def apply_lead_names(
     """Nomme chaque conversation (mutation en place) quand Unipile n'a pas fourni de
     nom réel. Priorité : nom Unipile existant > nom du lead par `attendee_provider_id`
     (fiable) > nom du lead par `outreach_chat_id` (rétro-compat) > fallback générique.
+
+    Un placeholder (`{{full_name}}`) compte comme « pas de nom » — sans ça, le
+    rattrapage par lead ne tournerait jamais sur ces conversations.
     """
     for chat in chats:
-        if not chat.get("name"):
+        if usable_display_name(chat.get("name")) is None:
             chat["name"] = (
-                by_provider.get(chat.get("attendee_provider_id"))
-                or by_chat.get(chat.get("id"))
+                usable_display_name(by_provider.get(chat.get("attendee_provider_id")))
+                or usable_display_name(by_chat.get(chat.get("id")))
                 or "Conversation LinkedIn"
             )
     return chats
