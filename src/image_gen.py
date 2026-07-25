@@ -1,22 +1,15 @@
 """Image generation for LinkedIn posts using GPT Image 2."""
 from __future__ import annotations
 
-import io
 import os
 import random
 import threading
 import time
 
 from anthropic import Anthropic
-from openai import APIStatusError, BadRequestError, OpenAI, RateLimitError
+from openai import APIStatusError, OpenAI, RateLimitError
 
 from src.net_guard import guarded_download
-
-# GPT Image 2 borne le nombre d'appels simultanés par org (« Too many concurrent
-# requests », 503). On sérialise dans le process + on réessaie avec backoff.
-_IMAGE_API_LOCK = threading.Lock()
-_IMAGE_API_MAX_ATTEMPTS = 4  # 1 essai + 3 retries
-_IMAGE_API_BASE_BACKOFF_S = 10.0
 
 # Images de référence acceptées (banque de templates ALE-221, photos de soi 0054).
 _REFERENCE_IMAGE_EXTS = {"png", "jpg", "jpeg", "webp"}
@@ -25,12 +18,6 @@ _REFERENCE_IMAGE_CONTENT_TYPES = {
     "image/jpeg": "jpg",
     "image/jpg": "jpg",
     "image/webp": "webp",
-}
-_EXT_TO_CONTENT_TYPE = {
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "webp": "image/webp",
 }
 # Garde-fou taille : les images LinkedIn font quelques Mo max, large marge.
 _MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024
@@ -43,6 +30,13 @@ _IDENTITY_PROMPT_PREFIX = (
     "Place cette personne dans le contexte décrit ci-dessous, style photoréaliste "
     "professionnel adapté à LinkedIn. Aucun texte, logo ni filigrane dans l'image.\n\n"
 )
+
+# GPT Image 2 borne le nombre d'appels simultanés par org
+# (« Error code: 503 - Too many concurrent requests »).
+# On sérialise dans le process + on réessaie avec backoff.
+_IMAGE_API_LOCK = threading.Lock()
+_IMAGE_API_MAX_ATTEMPTS = 4  # 1 essai + 3 retries
+_IMAGE_API_BASE_BACKOFF_S = 10.0
 
 
 class ImageGenError(RuntimeError):
@@ -99,7 +93,7 @@ def fetch_reference_image(url: str, *, filename_stem: str = "reference") -> tupl
     Ces URLs viennent d'un champ libre côté client (saisie manuelle, post scrapé,
     ou photo de soi uploadée via Zernio) : traitées comme non fiables (garde-fou SSRF).
     """
-    filename, data, content_type = guarded_download(
+    return guarded_download(
         url,
         allowed_exts=_REFERENCE_IMAGE_EXTS,
         default_ext="png",
@@ -110,7 +104,6 @@ def fetch_reference_image(url: str, *, filename_stem: str = "reference") -> tupl
         filename_stem=filename_stem,
         user_agent="lkd-outreach/image-gen",
     )
-    return normalize_reference_image((filename, data, content_type))
 
 
 def with_identity_prefix(prompt: str) -> str:
@@ -123,102 +116,9 @@ def with_identity_prefix(prompt: str) -> str:
     return _IDENTITY_PROMPT_PREFIX + text
 
 
-def fallback_scene_prompt(post_text: str, *, identity: bool = False) -> str:
-    """Scène minimale quand Claude ne renvoie rien — jamais un prompt vide.
-
-    Un prompt vide est retiré du multipart par le SDK OpenAI → 400
-    « No valid description provided » côté API (panne opaque pour l'utilisateur).
-    """
-    excerpt = " ".join((post_text or "").split())[:180]
-    if identity:
-        if excerpt:
-            return (
-                "Portrait professionnel de la personne dans un contexte LinkedIn "
-                f"inspiré de ce sujet : {excerpt}. Lumière naturelle, cadrage mi-corps, "
-                "ambiance de travail moderne."
-            )
-        return (
-            "Portrait professionnel de la personne dans un bureau moderne lumineux, "
-            "cadrage mi-corps, lumière naturelle, ambiance LinkedIn photoréaliste."
-        )
-    if excerpt:
-        return (
-            "Illustration photoréaliste professionnelle pour un post LinkedIn "
-            f"sur : {excerpt}. Pas de texte dans l'image, format carré."
-        )
-    return (
-        "Illustration photoréaliste professionnelle pour LinkedIn, "
-        "ambiance bureau moderne, pas de texte, format carré."
-    )
-
-
-def normalize_reference_image(
-    item: tuple[str, bytes, str],
-) -> tuple[str, bytes, str]:
-    """Force un Content-Type `image/*` fiable pour le multipart OpenAI.
-
-    Les CDN (Zernio, etc.) renvoient parfois `application/octet-stream` : le SDK
-    propage alors ce type dans la partie fichier, ce qui peut faire échouer
-    `images.edit` de façon opaque. On dérive le type de l'extension du fichier.
-    """
-    filename, data, content_type = item
-    if not data:
-        raise ImageGenError("Image de référence vide.")
-    stem, _, ext = filename.rpartition(".")
-    ext = ext.lower()
-    if ext not in _EXT_TO_CONTENT_TYPE:
-        ext = "png"
-        filename = f"{stem or 'reference'}.{ext}"
-    expected = _EXT_TO_CONTENT_TYPE[ext]
-    ct = (content_type or "").lower().split(";", 1)[0].strip()
-    if ct == "image/jpg":
-        ct = "image/jpeg"
-    if ct not in _REFERENCE_IMAGE_CONTENT_TYPES:
-        ct = expected
-    return (filename, data, ct)
-
-
-def to_openai_image_file(
-    item: tuple[str, bytes, str],
-) -> tuple[str, io.BytesIO, str]:
-    """Convertit (filename, bytes, content_type) au format fichier attendu par le SDK."""
-    filename, data, content_type = normalize_reference_image(item)
-    return (filename, io.BytesIO(data), content_type)
-
-
-def resolve_image_prompt(
-    post_text: str,
-    prompt: str | None = None,
-    *,
-    identity: bool = False,
-) -> str:
-    """Construit un prompt non vide prêt pour l'API Images OpenAI."""
-    text = (prompt or "").strip()
-    if not text:
-        try:
-            text = (build_image_prompt(post_text, identity=identity) or "").strip()
-        except Exception:
-            text = ""
-    if not text:
-        text = fallback_scene_prompt(post_text, identity=identity)
-    if identity:
-        text = with_identity_prefix(text)
-    # Le préfixe seul (sans scène) ne décrit pas l'image → OpenAI peut le rejeter.
-    # Si on n'a que le préfixe, on ajoute une scène de repli.
-    if identity and text.strip() == _IDENTITY_PROMPT_PREFIX.strip():
-        text = with_identity_prefix(fallback_scene_prompt(post_text, identity=True))
-    if not text.strip():
-        raise ImageGenError(
-            "Aucun prompt d'image valide. Saisis une description de scène "
-            "(lieu, activité, lumière) puis réessaie."
-        )
-    return text
-
-
 def _is_transient_openai_error(exc: BaseException) -> bool:
     """503 concurrent / 429 rate-limit — réessayables ; le reste non."""
-    raw = str(exc).lower()
-    if "too many concurrent" in raw:
+    if "too many concurrent" in str(exc).lower():
         return True
     if isinstance(exc, RateLimitError):
         return True
@@ -228,7 +128,7 @@ def _is_transient_openai_error(exc: BaseException) -> bool:
 
 
 def _friendly_openai_error(exc: Exception) -> ImageGenError:
-    """Traduit les erreurs OpenAI cryptiques en message actionnable."""
+    """Traduit 503/429 OpenAI en message actionnable."""
     raw = str(exc)
     low = raw.lower()
     if "too many concurrent" in low or (
@@ -242,17 +142,6 @@ def _friendly_openai_error(exc: Exception) -> ImageGenError:
         return ImageGenError(
             "Limite de débit OpenAI atteinte. Réessaie dans une minute."
         )
-    if "no valid description" in low or "valid description provided" in low:
-        return ImageGenError(
-            "OpenAI a refusé le prompt (« aucune description valide »). "
-            "Réécris une scène concrète (lieu, activité, lumière) — pas seulement "
-            "« mets-moi dans l'image » — puis réessaie."
-        )
-    if "invalid" in low and "image" in low:
-        return ImageGenError(
-            "OpenAI a refusé une image de référence (format ou fichier illisible). "
-            "Réessaie avec une photo JPG/PNG/WebP claire."
-        )
     return ImageGenError(f"Génération d'image refusée : {raw[:400]}")
 
 
@@ -264,21 +153,19 @@ def _call_openai_image_api(
 ):
     """Appel OpenAI images.edit/generate avec verrou process + retries 503/429.
 
-    Les BytesIO sont recréés à chaque tentative (le SDK les consomme).
     Le verrou est gardé pendant l'attente de retry pour ne pas empiler
     d'autres appels pendant qu'on décharge la file concurrente OpenAI.
     """
     last_exc: Exception | None = None
     with _IMAGE_API_LOCK:
         for attempt in range(_IMAGE_API_MAX_ATTEMPTS):
-            openai_files = [to_openai_image_file(img) for img in images]
             try:
                 # Les modèles gpt-image-* renvoient toujours du b64_json
                 # et n'acceptent pas quality="standard" (low/medium/high/auto).
-                if openai_files:
+                if images:
                     return client.images.edit(
                         model="gpt-image-2",
-                        image=openai_files,
+                        image=list(images),
                         prompt=prompt,
                         size="1024x1024",
                         quality="high",
@@ -292,8 +179,6 @@ def _call_openai_image_api(
                     quality="high",
                     n=1,
                 )
-            except BadRequestError as exc:
-                raise _friendly_openai_error(exc) from exc
             except (RateLimitError, APIStatusError) as exc:
                 last_exc = exc
                 if not _is_transient_openai_error(exc) or attempt + 1 >= _IMAGE_API_MAX_ATTEMPTS:
@@ -329,7 +214,9 @@ def generate_post_image(
     if not api_key:
         raise ValueError("OPENAI_API_KEY manquant")
 
-    prompt = resolve_image_prompt(post_text, prompt, identity=identity)
+    prompt = (prompt or "").strip() or build_image_prompt(post_text, identity=identity)
+    if identity:
+        prompt = with_identity_prefix(prompt)
 
     images: list[tuple[str, bytes, str]] = []
     if reference_images:
