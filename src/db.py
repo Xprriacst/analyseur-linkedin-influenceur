@@ -624,6 +624,30 @@ def set_zernio_account(
     return resp.data[0] if resp.data else None
 
 
+def set_zernio_instagram_account(
+    access_token: str, account_id: str | None, account_name: str | None = None
+) -> dict | None:
+    """Persist (or clear) the connected Instagram account (id + nom) for this user (ALE-292)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    row = {
+        "user_id": user["id"],
+        "zernio_instagram_account_id": account_id,
+        "zernio_instagram_account_name": account_name if account_id else None,
+        "zernio_instagram_connected_at": now if account_id else None,
+        "updated_at": now,
+    }
+    resp = (
+        db.table("user_editorial_profiles")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def set_zernio_x_account(access_token: str, account_id: str | None) -> dict | None:
     """Persist (or clear) the connected X (Twitter) account id for this user."""
     user = get_user(access_token)

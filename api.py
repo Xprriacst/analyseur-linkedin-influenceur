@@ -726,6 +726,87 @@ def me_linkedin_publish(
     return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft, "media_count": len(payload.images)}
 
 
+# ── ALE-292 : Connexion Instagram via Zernio ──────────────────────────────────
+# Même patron que LinkedIn (compte + nom stockés sur le profil éditorial) —
+# gardé derrière le flag `instagram` existant (même flag que le dégrisage de la
+# sidebar, ALE-59) : masquer le bouton ne protège rien, l'endpoint reste
+# appelable par qui connaît son chemin.
+
+PLATFORM_INSTAGRAM = "instagram"
+
+
+class InstagramConnectRequest(BaseModel):
+    redirect_url: Optional[str] = Field(default=None, max_length=1000)
+
+
+def _instagram_status(token: str) -> dict[str, Any]:
+    profile = db.get_editorial_profile(token) or {}
+    return {
+        "configured": zernio.enabled(),
+        "connected": bool(profile.get("zernio_instagram_account_id")),
+        "account_id": profile.get("zernio_instagram_account_id"),
+        "account_name": profile.get("zernio_instagram_account_name"),
+        "profile_id": profile.get("zernio_profile_id"),
+        "connected_at": profile.get("zernio_instagram_connected_at"),
+    }
+
+
+@app.get("/me/instagram/status")
+def me_instagram_status(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Whether the user has an Instagram account connected through Zernio."""
+    require_feature(token, "instagram")
+    return _instagram_status(token)
+
+
+@app.post("/me/instagram/connect")
+def me_instagram_connect(
+    payload: InstagramConnectRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Return an Instagram OAuth URL the user opens to authorize publishing.
+
+    ⚠️ Instagram exige un compte Business ou Creator côté Meta — un compte
+    personnel ne peut pas être connecté (le retour Zernio l'indiquera).
+    """
+    require_feature(token, "instagram")
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    try:
+        profile_id = _ensure_zernio_profile(token)
+        auth_url = zernio.get_connect_url(profile_id, redirect_url=payload.redirect_url, platform=PLATFORM_INSTAGRAM)
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"auth_url": auth_url}
+
+
+@app.post("/me/instagram/refresh")
+def me_instagram_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Re-read the connected Instagram account from Zernio (call after OAuth return)."""
+    require_feature(token, "instagram")
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    profile_id = profile.get("zernio_profile_id")
+    if not profile_id:
+        return _instagram_status(token)
+    try:
+        account = zernio.find_account(profile_id, PLATFORM_INSTAGRAM)
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    account_id = account.get("_id") if account else None
+    account_name = zernio.account_display_name(account)
+    db.set_zernio_instagram_account(token, account_id, account_name)
+    return _instagram_status(token)
+
+
+@app.delete("/me/instagram")
+def me_instagram_disconnect(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Clear the user's connected Instagram account."""
+    require_feature(token, "instagram")
+    db.set_zernio_instagram_account(token, None)
+    return _instagram_status(token)
+
+
 # ── ALE-96 : Planification LinkedIn ──────────────────────────────────────────
 
 class CrossPostXPayload(BaseModel):
