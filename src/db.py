@@ -687,10 +687,11 @@ def get_user_ai_context(access_token: str | None) -> dict[str, Any] | None:
     return context
 
 
-def get_top_real_posts(access_token: str, limit: int = 40) -> list[dict]:
+def get_top_real_posts(access_token: str, limit: int = 40, platform: str = "linkedin") -> list[dict]:
     """Return the user's top-performing real posts (from analysed influencers).
 
-    Used to ground idea generation in actual content that worked.
+    Used to ground idea generation in actual content that worked. `platform`
+    (ALE-291) scope par réseau — jamais de mélange LinkedIn/Instagram.
     """
     if not supabase_enabled() or not access_token:
         return []
@@ -703,7 +704,7 @@ def get_top_real_posts(access_token: str, limit: int = 40) -> list[dict]:
             db.table("influencers")
             .select("id, name")
             .eq("user_id", user["id"])
-            .eq("platform", "linkedin")
+            .eq("platform", platform)
             .execute()
         )
         influencer_ids = [r["id"] for r in (inf_resp.data or [])]
@@ -766,32 +767,56 @@ def save_ideas(access_token: str, ideas: list[dict]) -> list[dict]:
 
 
 def save_generated_posts(
-    access_token: str, topic: str, variants: list[dict]
+    access_token: str, topic: str, variants: list[dict], platform: str = "linkedin"
 ) -> list[dict]:
-    """Persist generated post variants for the authenticated user. Returns saved rows (with ids)."""
+    """Persist generated post/reel-pack variants. Returns saved rows (with ids).
+
+    `platform="instagram"` (ALE-291) : les variants sont des packs reel
+    ({hook, script, caption, hashtags}), pas des posts — `post` porte la caption
+    (texte principal affiché), le reste va dans `reel_details` (jsonb).
+    """
     if not variants or not supabase_enabled():
         return variants
     user = get_user(access_token)
     if not user:
         return variants
     db = client_for_token(access_token)
-    rows = [
-        {
-            "user_id": user["id"],
-            "topic": topic or None,
-            "editorial_role": variant.get("editorial_role"),
-            "hook_type": variant.get("hook_type"),
-            "strategy": variant.get("strategy"),
-            "predicted_lift": variant.get("predicted_lift"),
-            "post": variant.get("post") or "",
-            # ALE-134 : auto-sauvegarde = brouillon non « sauvegardé ». L'id reste
-            # dispo (Slack/X), mais le post n'apparaît dans « Mes contenus » qu'après
-            # un clic explicite sur « Sauvegarder » (passe saved → true).
-            "saved": False,
-        }
-        for variant in variants
-        if variant.get("post")
-    ]
+    rows: list[dict[str, Any]] = []
+    for variant in variants:
+        if platform == "instagram":
+            caption = (variant.get("caption") or "").strip()
+            hook = (variant.get("hook") or "").strip()
+            if not caption and not hook:
+                continue
+            rows.append({
+                "user_id": user["id"],
+                "topic": topic or None,
+                "editorial_role": variant.get("editorial_role"),
+                "post": caption,
+                "platform": "instagram",
+                "reel_details": {
+                    "hook": hook,
+                    "script": variant.get("script") or "",
+                    "hashtags": variant.get("hashtags") or [],
+                    "trame_id": variant.get("trame_id"),
+                },
+                # ALE-134 : auto-sauvegarde = brouillon non « sauvegardé ». L'id reste
+                # dispo, mais le pack n'apparaît dans « Ma bibliothèque » qu'après
+                # un clic explicite sur « Sauvegarder » (passe saved → true).
+                "saved": False,
+            })
+        elif variant.get("post"):
+            rows.append({
+                "user_id": user["id"],
+                "topic": topic or None,
+                "editorial_role": variant.get("editorial_role"),
+                "hook_type": variant.get("hook_type"),
+                "strategy": variant.get("strategy"),
+                "predicted_lift": variant.get("predicted_lift"),
+                "post": variant.get("post") or "",
+                "platform": "linkedin",
+                "saved": False,
+            })
     if not rows:
         return variants
     resp = db.table("generated_posts").insert(rows).execute()
@@ -807,8 +832,14 @@ def create_saved_post(
     strategy: str | None = None,
     predicted_lift: str | None = None,
     media_items: list[dict] | None = None,
+    platform: str = "linkedin",
+    reel_details: dict | None = None,
 ) -> dict | None:
-    """Create a single explicitly-saved generated post (ALE-136 : sauvegarder le post du jour)."""
+    """Create a single explicitly-saved generated post (ALE-136 : sauvegarder le post du jour).
+
+    ``platform="instagram"`` + ``reel_details`` (ALE-291) : ``post_text`` porte
+    alors la caption, ``reel_details`` le pack (hook/script/hashtags).
+    """
     if not supabase_enabled():
         return None
     user = get_user(access_token)
@@ -823,10 +854,13 @@ def create_saved_post(
         "strategy": strategy,
         "predicted_lift": predicted_lift,
         "post": post_text,
+        "platform": platform,
         "saved": True,
     }
     if media_items:
         row["media_items"] = media_items
+    if reel_details:
+        row["reel_details"] = reel_details
     resp = (
         db.table("generated_posts")
         .insert(row)
@@ -859,6 +893,7 @@ def list_generated_posts(
     limit: int = 100,
     saved_only: bool = False,
     pending_validation: bool = False,
+    platform: str | None = None,
 ) -> list[dict]:
     """List the user's generated posts, newest first.
 
@@ -866,6 +901,8 @@ def list_generated_posts(
     (ALE-135 : « Mes contenus » n'affiche que les posts sauvegardés).
     With ``pending_validation=True``, only posts awaiting client validation
     (``slack_status='pending'``, not yet published on LinkedIn).
+    ``platform`` (ALE-291) filtre par réseau ; ``None`` = tous réseaux confondus
+    (compat. legacy — la plupart des appelants passent "linkedin" ou "instagram").
     """
     if not supabase_enabled():
         return []
@@ -882,6 +919,8 @@ def list_generated_posts(
         query = query.eq("saved", True)
     if pending_validation:
         query = query.eq("slack_status", "pending").is_("zernio_post_id", "null")
+    if platform:
+        query = query.eq("platform", platform)
     resp = query.order("created_at", desc=True).limit(limit).execute()
     return resp.data or []
 
@@ -924,11 +963,14 @@ def update_generated_post(
     new_post: str | None = None,
     saved: bool | None = None,
     media_items: list[dict] | None = None,
+    reel_details: dict | None = None,
 ) -> dict | None:
     """Update a saved post's text, `saved` flag and/or images (ALE-134/179).
 
     All fields are optional; only the provided ones are written. `media_items`
-    remplace la liste d'images ([] = tout retirer). Returns the updated row or None.
+    remplace la liste d'images ([] = tout retirer). `reel_details` (ALE-291,
+    packs Instagram : hook/script/hashtags) remplace intégralement le jsonb.
+    Returns the updated row or None.
     """
     user = get_user(access_token)
     if not user:
@@ -940,6 +982,8 @@ def update_generated_post(
         updates["saved"] = saved
     if media_items is not None:
         updates["media_items"] = media_items
+    if reel_details is not None:
+        updates["reel_details"] = reel_details
     if not updates:
         return None
     db = client_for_token(access_token)
@@ -961,6 +1005,7 @@ WELCOME_CREDITS = 150
 
 CREDIT_COSTS: dict[str, int] = {
     "generate_post": 5,    # par variant
+    "generate_reel": 5,    # par pack reel Instagram (ALE-291)
     "generate_ideas": 3,   # par lot (ALE-143)
     "analyze_job": 20,     # par influenceur
     "chat": 2,             # par message
@@ -1620,6 +1665,7 @@ def reconcile_stale_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
 _GENERATION_JOB_COLS = (
     "id,status,topic,editorial_role,web_search,count,template_id,"
     "inspiration_text,inspiration_author,inspiration_url,"
+    "platform,ig_trame_id,"
     "result,error,created_at,updated_at"
 )
 
@@ -1632,8 +1678,15 @@ def create_generation_job(
     count: int,
     template_id: str | None = None,
     inspiration: dict | None = None,
+    platform: str = "linkedin",
+    ig_trame_id: str | None = None,
 ) -> dict | None:
-    """Crée un job de génération `queued`. Retourne la ligne créée."""
+    """Crée un job de génération `queued`. Retourne la ligne créée.
+
+    ``platform="instagram"`` (ALE-291) : le job produit des packs reel plutôt
+    que des posts LinkedIn ; ``ig_trame_id`` porte la trame choisie (catalogue
+    statique, pas de FK — contrairement à ``template_id`` côté LinkedIn).
+    """
     user = get_user(access_token)
     if not user:
         return None
@@ -1645,9 +1698,12 @@ def create_generation_job(
         "editorial_role": editorial_role or None,
         "web_search": bool(web_search),
         "count": count,
+        "platform": platform,
     }
     if template_id:
         row["template_id"] = template_id
+    if ig_trame_id:
+        row["ig_trame_id"] = ig_trame_id
     if inspiration and (inspiration.get("text") or "").strip():
         row["inspiration_text"] = inspiration["text"].strip()[:6000]
         row["inspiration_author"] = (inspiration.get("author") or "").strip()[:200] or None
@@ -2261,8 +2317,13 @@ def append_chat_message(access_token: str, conversation_id: str, role: str, cont
 # Idée du jour — réservoir (idea_seeds) + idées générées (daily_ideas)
 # --------------------------------------------------------------------------- #
 
-def list_idea_seeds(access_token: str, limit: int = 200) -> list[dict]:
-    """List the user's idea seeds in manual order (position), oldest first as fallback."""
+def list_idea_seeds(access_token: str, limit: int = 200, platform: str = "linkedin") -> list[dict]:
+    """List the user's idea seeds in manual order (position), oldest first as fallback.
+
+    ``platform`` (ALE-291) scope le réservoir par réseau — un réservoir LinkedIn
+    et un réservoir Instagram séparés, pour éviter la pollution cross-plateforme
+    déjà vécue sur ALE-126/ALE-127.
+    """
     if not supabase_enabled():
         return []
     user = get_user(access_token)
@@ -2273,6 +2334,7 @@ def list_idea_seeds(access_token: str, limit: int = 200) -> list[dict]:
         db.table("idea_seeds")
         .select("*")
         .eq("user_id", user["id"])
+        .eq("platform", platform)
         .order("position", desc=False)
         .order("created_at", desc=False)
         .limit(limit)
@@ -2281,8 +2343,10 @@ def list_idea_seeds(access_token: str, limit: int = 200) -> list[dict]:
     return resp.data or []
 
 
-def add_idea_seed(access_token: str, text: str, comment: str | None = None) -> dict | None:
-    """Add a seed idea to the user's reservoir.
+def add_idea_seed(
+    access_token: str, text: str, comment: str | None = None, platform: str = "linkedin"
+) -> dict | None:
+    """Add a seed idea to the user's reservoir (scoped by `platform`, ALE-291).
 
     `comment` is an optional orientation note (used for listing-URL seeds) that is
     injected into the prompt at generation time.
@@ -2293,14 +2357,15 @@ def add_idea_seed(access_token: str, text: str, comment: str | None = None) -> d
     if not user:
         return None
     db = client_for_token(access_token)
-    row: dict[str, Any] = {"user_id": user["id"], "text": text}
+    row: dict[str, Any] = {"user_id": user["id"], "text": text, "platform": platform}
     if comment:
         row["comment"] = comment
-    # Nouvelle idée = ajoutée en fin de réservoir (position max + 1).
+    # Nouvelle idée = ajoutée en fin du réservoir DE CE RÉSEAU (position max + 1).
     last = (
         db.table("idea_seeds")
         .select("position")
         .eq("user_id", user["id"])
+        .eq("platform", platform)
         .order("position", desc=True)
         .limit(1)
         .execute()

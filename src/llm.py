@@ -1199,11 +1199,13 @@ def generate_one_line_ideas(
     recent_idea_lines: list[str] | None = None,
     seed_topic: str | None = None,
     reference_posts: list[dict] | None = None,
+    platform: str = "linkedin",
 ) -> list[dict]:
     """Generate scannable one-liner post ideas anchored in real top posts.
 
     Returns a list of {line, source_type, source_ref, source_url}.
     """
+    network = "Instagram" if platform == "instagram" else "LinkedIn"
     context_text = _format_user_context(user_context)
     posts_text = "\n".join(
         f"- [{p.get('name', '?')} · {p.get('engagement', 0)} réactions]"
@@ -1220,7 +1222,7 @@ def generate_one_line_ideas(
         if seed_topic else ""
     )
     system = (
-        "Tu es un stratège contenu LinkedIn. "
+        f"Tu es un stratège contenu {network}. "
         "Tu génères des idées de posts en une phrase, scannables, ancrées dans de vrais posts qui ont performé. "
         "Chaque idée doit être actionnable, originale et dicter clairement l'angle à prendre. "
         + _date_directive()
@@ -1234,7 +1236,7 @@ def generate_one_line_ideas(
         + recent_text
         + f"""
 
-Génère exactement {count} idées de posts LinkedIn en une ligne.
+Génère exactement {count} idées de posts {network} en une ligne.
 Règles :
 - Une idée = une phrase de 10-15 mots MAX qui dit quel angle prendre, pas un thème vague
 - Diversifie : hooks, angles, niveaux de funnel (attirer / éduquer / convertir), formats
@@ -1465,6 +1467,7 @@ def _auto_role_mix() -> list[str]:
 def suggest_angle_from_post(
     post_text: str,
     user_context: dict[str, Any] | None = None,
+    platform: str = "linkedin",
 ) -> str:
     """Déduit l'angle à prendre pour un post inspiré d'un post repéré ailleurs.
 
@@ -1472,8 +1475,9 @@ def suggest_angle_from_post(
     la génération. Ce n'est pas un résumé du post source : c'est sa transposition
     au métier du client (le post source, lui, part en référence à la génération).
     """
+    network = "Instagram" if platform == "instagram" else "LinkedIn"
     system = (
-        "Tu es un stratège contenu LinkedIn. À partir d'un post qui a plu au client, "
+        f"Tu es un stratège contenu {network}. À partir d'un post qui a plu au client, "
         "tu formules l'angle qu'IL devrait prendre sur SON métier — jamais un résumé du post source. "
         + _date_directive()
         + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
@@ -1500,19 +1504,24 @@ Schéma JSON attendu :
 def recommend_editorial_role(
     idea: str,
     user_context: dict[str, Any] | None = None,
+    platform: str = "linkedin",
 ) -> dict:
     """Recommande UN rôle éditorial pour une idée, avec sa justification.
 
     Le client garde la main (les 7 rôles restent proposés) : c'est une
     pré-sélection argumentée, pas une décision. Repli sur "performance" si le
     modèle rend un rôle inconnu — un rôle inventé casserait la génération.
+    Les rôles sont partagés entre LinkedIn et Instagram (l'intention éditoriale
+    ne change pas de réseau, seule la forme change) — `platform` n'ajuste que
+    le libellé du système, pas le catalogue.
     """
     roles_block = "\n".join(
         f'- "{key}" ({spec["label"]}) : {spec["guidance"].split(".")[0]}.'
         for key, spec in ROLE_SPECS.items()
     )
+    network = "Instagram" if platform == "instagram" else "LinkedIn"
     system = (
-        "Tu es un stratège contenu LinkedIn. Tu choisis le rôle éditorial le plus adapté à une idée de post. "
+        f"Tu es un stratège contenu {network}. Tu choisis le rôle éditorial le plus adapté à une idée de post. "
         + _date_directive()
         + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
@@ -1775,6 +1784,204 @@ Schéma JSON attendu (toutes les clés obligatoires) :
             v["predicted_lift"] = spec.get("indicator", "")
         if not v.get("strategy"):
             v["strategy"] = ""
+    return variants
+
+
+# ── Contenu Instagram — parcours guidé (ALE-291) ──
+#
+# Miroir de generate_posts, adapté au format Reel : le livrable n'est pas un
+# texte de post mais un pack {hook, script, caption, hashtags}. Les rôles
+# éditoriaux (ROLE_SPECS) sont réutilisés tels quels — l'intention éditoriale
+# ne change pas de réseau, seule la forme change. Les trames de reel sont un
+# catalogue STATIQUE (pas de bibliothèque utilisateur pour l'instant,
+# contrairement aux structures LinkedIn de post_templates).
+
+IG_TRAMES: list[dict[str, str]] = [
+    {
+        "id": "story",
+        "label": "Storytelling",
+        "description": "Une situation vécue, en 3-4 scènes : contexte, tension, bascule, leçon.",
+    },
+    {
+        "id": "tuto",
+        "label": "Tuto / Comment faire",
+        "description": "Une méthode ou astuce décomposée en étapes filmées, claires et actionnables.",
+    },
+    {
+        "id": "liste",
+        "label": "Liste / Top",
+        "description": "Une liste chiffrée (erreurs, signes, astuces…), un point par plan.",
+    },
+    {
+        "id": "avant_apres",
+        "label": "Avant / Après",
+        "description": "Contraste visuel ou de résultat entre un avant et un après concret.",
+    },
+    {
+        "id": "mythe",
+        "label": "Mythe vs réalité",
+        "description": "Démonte une idée reçue du secteur avec la réalité du terrain.",
+    },
+    {
+        "id": "pov",
+        "label": "POV / Scène jouée",
+        "description": "Une scène jouée face caméra, point de vue direct et incarné.",
+    },
+]
+
+_IG_TRAMES_BY_ID: dict[str, dict[str, str]] = {t["id"]: t for t in IG_TRAMES}
+
+
+REEL_QUALITY_GUARDRAILS = """
+Qualité rédactionnelle obligatoire :
+- Le hook doit être dit/montré dans les 3 PREMIÈRES secondes : une phrase choc, une question ou une scène qui arrête
+  le scroll — jamais une intro molle ("Salut, aujourd'hui je vais vous parler de...").
+- Le script doit être RÉALISTE À TOURNER SEUL avec un téléphone : pas de plan impossible, pas de montage complexe
+  imposé. 4 à 7 scènes numérotées, chacune avec CE QU'ON DIT (à l'oral) et CE QU'ON MONTRE (à l'écran).
+- La caption reprend/complète le hook en texte, apporte du contexte, se termine par UN SEUL appel à l'action clair
+  (commenter, enregistrer, envoyer en DM...).
+- Les hashtags mélangent 2-3 hashtags larges et 3-5 hashtags de niche — jamais les mêmes hashtags génériques recyclés
+  d'un pack à l'autre.
+- Calque le ton sur le profil éditorial du client. Évite le ton "coach LinkedIn IA" : pas de fausse gravité, pas de
+  punchlines isolées, pas de formules recyclées.
+""".strip()
+
+
+def generate_instagram_reel_packs(
+    topic: str | None,
+    top_posts_examples: list[dict],
+    benchmark: dict,
+    user_context: dict[str, Any] | None = None,
+    editorial_role: str | None = None,
+    trame_id: str | None = None,
+    count: int = 1,
+    inspiration: dict | None = None,
+) -> list[dict]:
+    """Génère des packs Reel Instagram (hook + script + caption + hashtags).
+
+    ``inspiration`` (optionnel) : {"text": ..., "author": ..., "url": ...} — le
+    reel dont le client s'inspire, à transposer, jamais à recopier (même
+    logique que le post d'inspiration LinkedIn).
+    """
+    from src.instagram_hooks import HOOK_TEMPLATES
+
+    examples_text = "\n\n".join(
+        f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng]\n{e.get('text', '')[:600]}"
+        for e in top_posts_examples[:6]
+    )
+    context_text = _format_user_context(user_context)
+    count = max(1, min(count, 5))
+
+    if editorial_role and editorial_role in ROLE_SPECS:
+        roles = [editorial_role] * count
+    else:
+        roles = _auto_role_mix()[:count]
+    roles_block = "\n\n".join(
+        f'Variant {i + 1} — rôle éditorial "{r}" ({ROLE_SPECS[r]["label"]}) :\n{ROLE_SPECS[r]["guidance"]}'
+        for i, r in enumerate(roles)
+    )
+
+    trame = _IG_TRAMES_BY_ID.get(trame_id or "")
+    trame_directive = (
+        f"\nTrame de reel imposée : {trame['label']} — {trame['description']}\n"
+        if trame
+        else (
+            "\nAucune trame imposée : choisis toi-même la structure la plus adaptée à l'idée "
+            "(storytelling, tuto, liste, avant/après, mythe vs réalité, POV...).\n"
+        )
+    )
+
+    hook_pool = "\n".join(
+        f"- {h}" for h in random.sample(HOOK_TEMPLATES, min(12, len(HOOK_TEMPLATES)))
+    )
+
+    inspiration_block = ""
+    if inspiration and (inspiration.get("text") or "").strip():
+        inspiration_block = (
+            "\n\nReel qui a inspiré le client (à TRANSPOSER à son métier, jamais à recopier) :\n"
+            f"{str(inspiration['text'])[:2000]}"
+        )
+
+    system = (
+        "Tu es un expert en stratégie de contenu Instagram (Reels). "
+        "Tu génères des packs Reel prêts à tourner : un hook parlé, un script scène par scène, "
+        "une caption et des hashtags — en respectant d'abord le contexte du client, "
+        "puis en t'appuyant sur les patterns observés chez les influenceurs Instagram analysés. "
+        "Chaque rôle éditorial a sa propre intention et sa propre forme — respecte-les strictement. "
+        + _date_directive()
+        + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    topic_clean = (topic or "").strip()
+    topic_directive = (
+        f'Sujet du reel à créer : "{topic_clean}"\n\n'
+        if topic_clean
+        else (
+            "Aucun sujet imposé : choisis toi-même, pour chaque variant, un sujet original à fort "
+            "potentiel, déduit du contexte client et des patterns du benchmark ci-dessous. "
+            "Varie les sujets entre les variants.\n\n"
+        )
+    )
+    user = (
+        topic_directive
+        + "Contexte client à respecter EN PRIORITÉ :\n"
+        + context_text
+        + trame_directive
+        + "\n\nBenchmarks issus de l'analyse d'influenceurs Instagram "
+        "(corpus_insights = données mesurées sur ce corpus réel, à respecter et ne pas contredire) :\n"
+        + json.dumps(benchmark, ensure_ascii=False, indent=2)
+        + "\n\nExemples des posts Instagram les plus performants du client :\n"
+        + examples_text
+        + inspiration_block
+        + f"\n\nBanque de hooks éprouvés (inspire-toi du RYTHME et du TON, ne recopie jamais tel quel, "
+        f"remplace tout placeholder) :\n{hook_pool}"
+        + f"\n\nGénère exactement {count} pack{'s' if count > 1 else ''} de reel, un par rôle éditorial "
+        "ci-dessous, DANS L'ORDRE indiqué :\n\n"
+        + roles_block
+        + """
+
+Règles communes :
+- Le pack doit être crédible pour le client : métier, audience, offre et ton priment sur les patterns viraux.
+- Langue : français. Pas de balises markdown dans les textes.
+
+"""
+        + REEL_QUALITY_GUARDRAILS
+        + """
+
+Schéma JSON attendu (toutes les clés obligatoires) :
+{
+  "variants": [
+    {
+      "editorial_role": "le code exact du rôle de ce variant (performance | methodologie | autorite | story | quotidien | opinion | relationnel)",
+      "hook": "ce qui est dit/montré dans les 3 premières secondes",
+      "script": "script scène par scène, numéroté, avec CE QU'ON DIT et CE QU'ON MONTRE pour chaque scène",
+      "caption": "légende du post, avec un seul appel à l'action en fin",
+      "hashtags": ["#exemple1", "#exemple2"]
+    }
+  ]
+}"""
+    )
+    data = _call(system, user, max_tokens=6000, temperature=0.7)
+    variants = data.get("variants", [])[:count]
+    for i, v in enumerate(variants):
+        if not isinstance(v, dict):
+            continue
+        role = v.get("editorial_role")
+        if not role or role not in ROLE_SPECS:
+            v["editorial_role"] = roles[i] if i < len(roles) else (editorial_role or "performance")
+        if trame_id:
+            v["trame_id"] = trame_id
+        hashtags = v.get("hashtags")
+        v["hashtags"] = (
+            [str(h).strip() for h in hashtags if str(h).strip()]
+            if isinstance(hashtags, list)
+            else []
+        )
+        if not v.get("hook"):
+            v["hook"] = ""
+        if not v.get("script"):
+            v["script"] = ""
+        if not v.get("caption"):
+            v["caption"] = ""
     return variants
 
 

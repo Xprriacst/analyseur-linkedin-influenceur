@@ -26,7 +26,7 @@ from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread, start_lead_collection_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters, lead_collect_credit_cost, effective_max_comments
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
-from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures
+from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures, IG_TRAMES
 from src.llm import adapt_post_for_x, adapt_post_for_reddit
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
@@ -1412,16 +1412,18 @@ def _enrich_influencers(corpus: list[dict]) -> list[dict]:
     return enrich_influencers(corpus)
 
 
-def _get_influencers(token: Optional[str]) -> list[dict]:
+def _get_influencers(token: Optional[str], platform: str = "linkedin") -> list[dict]:
     """Per-user data source: Supabase when configured, disk cache otherwise.
 
     When Supabase is enabled the endpoints become multi-user: a valid session
     is required and only the caller's data is returned (RLS-scoped).
+    ``platform`` (ALE-291) scope le corpus par réseau — LinkedIn et Instagram ne
+    doivent jamais se mélanger (régression déjà vécue sur ALE-126/ALE-127).
     """
     if db.supabase_enabled():
         if not token or not db.get_user(token):
             raise HTTPException(status_code=401, detail="Authentification requise.")
-        return _enrich_influencers(db.get_user_corpus(token))
+        return _enrich_influencers(db.get_user_corpus(token, platform=platform))
     return _load_cached_influencers()
 
 
@@ -1681,6 +1683,8 @@ class IdeasRequest(BaseModel):
     # (réponse tronquée → erreur) et la liste devient inutilisable côté client.
     count: int = Field(default=3, ge=1, le=3)
     web_search: bool = Field(default=False)
+    # ALE-291 : parcours guidé Instagram — idées tirées du corpus Instagram, pas LinkedIn.
+    platform: str = Field(default="linkedin", max_length=20)
 
 
 class GenerateRequest(BaseModel):
@@ -1721,7 +1725,8 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _get_influencers(token)
+    platform = payload.platform if payload.platform == "instagram" else "linkedin"
+    influencers = _get_influencers(token, platform=platform)
     if not influencers:
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
 
@@ -1735,7 +1740,7 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
         credits = balance
 
     # Carburant A : vrais posts performants des influenceurs analysés
-    real_posts = db.get_top_real_posts(token) if token else []
+    real_posts = db.get_top_real_posts(token, platform=platform) if token else []
     _, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
 
@@ -1755,7 +1760,11 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
         user_context=user_context,
         web_search=payload.web_search,
         recent_idea_lines=recent_idea_lines or None,
-        reference_posts=db.pick_reference_posts(token) or None,
+        # La bibliothèque de posts de référence est LinkedIn-only (ALE-67) : la
+        # réutiliser pour Instagram reproduirait la pollution cross-plateforme
+        # d'ALE-126/ALE-127.
+        reference_posts=(db.pick_reference_posts(token) or None) if platform == "linkedin" else None,
+        platform=platform,
     )
     save_error: str | None = None
     if token:
@@ -1919,11 +1928,15 @@ class GenerationJobRequest(GenerateRequest):
     modèle. L'ajouter au modèle commun l'aurait fait accepter — puis **ignorer en
     silence** — par `/generate` et `/generate/stream`."""
     inspiration: InspirationPost | None = Field(default=None)
+    # ALE-291 : parcours guidé Instagram — pack reel plutôt que post LinkedIn.
+    platform: str = Field(default="linkedin", max_length=20)
+    ig_trame_id: str | None = Field(default=None, max_length=50)
 
 
 @app.post("/generate/jobs")
 def create_generation_job(payload: GenerationJobRequest, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Lance une génération de posts en arrière-plan (file d'attente — ALE-141).
+    """Lance une génération de posts (ou de packs reel Instagram, ALE-291) en
+    arrière-plan (file d'attente — ALE-141).
 
     Non bloquant : on débite les crédits, on crée le job et on lance le thread,
     puis on rend la main immédiatement. Le frontend récupère le résultat via
@@ -1932,15 +1945,23 @@ def create_generation_job(payload: GenerationJobRequest, token: str = Depends(re
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _get_influencers(token)
+    platform = payload.platform if payload.platform == "instagram" else "linkedin"
+    influencers = _get_influencers(token, platform=platform)
     if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
+        detail = (
+            "Aucun influenceur Instagram analysé. Lance d'abord une analyse."
+            if platform == "instagram"
+            else "Aucun influenceur analysé. Lance d'abord une analyse."
+        )
+        raise HTTPException(status_code=400, detail=detail)
 
     # Débit après les préconditions : un user sans influenceur ne perd pas de crédits.
-    ok, balance = db.debit_credits(token, "generate_post", payload.count)
+    credit_action = "generate_reel" if platform == "instagram" else "generate_post"
+    ok, balance = db.debit_credits(token, credit_action, payload.count)
     if not ok:
-        cost = db.CREDIT_COSTS["generate_post"] * payload.count
-        raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} post(s) = {cost} crédit(s).")
+        cost = db.CREDIT_COSTS[credit_action] * payload.count
+        unit = "pack(s) reel" if platform == "instagram" else "post(s)"
+        raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} {unit} = {cost} crédit(s).")
 
     role = (payload.editorial_role or "").strip() or None
     topic = (payload.topic or "").strip() or None
@@ -1948,6 +1969,8 @@ def create_generation_job(payload: GenerationJobRequest, token: str = Depends(re
         token, topic, role, payload.web_search, payload.count,
         template_id=payload.template_id,
         inspiration=payload.inspiration.model_dump() if payload.inspiration else None,
+        platform=platform,
+        ig_trame_id=payload.ig_trame_id,
     )
     if not job:
         raise HTTPException(status_code=500, detail="Création du job de génération impossible.")
@@ -2033,19 +2056,36 @@ def read_inspiration_post(payload: InspirationRequest, token: str = Depends(requ
 
 class EditorialRoleRequest(BaseModel):
     idea: str = Field(..., min_length=3, max_length=2000)
+    platform: str = Field(default="linkedin", max_length=20)
 
 
 @app.post("/generate/editorial-role")
 def recommend_role(payload: EditorialRoleRequest, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Recommande un rôle éditorial pour l'idée retenue (gratuit, non contraignant)."""
+    """Recommande un rôle éditorial pour l'idée retenue (gratuit, non contraignant).
+
+    Le catalogue de rôles (ROLE_SPECS) est partagé entre LinkedIn et Instagram
+    (ALE-291) — `platform` n'ajuste que le libellé du prompt.
+    """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
-    reco = recommend_editorial_role(payload.idea.strip(), db.get_user_ai_context(token))
+    platform = payload.platform if payload.platform == "instagram" else "linkedin"
+    reco = recommend_editorial_role(payload.idea.strip(), db.get_user_ai_context(token), platform=platform)
     return {
         "editorial_role": reco["editorial_role"],
         "reason": reco["reason"],
         "roles": [{"value": key, "label": spec["label"]} for key, spec in ROLE_SPECS.items()],
     }
+
+
+@app.get("/generate/instagram/trames")
+def list_instagram_trames() -> dict[str, Any]:
+    """Catalogue statique des trames de reel Instagram (ALE-291).
+
+    Gratuit, sans effet de bord — contrairement aux structures LinkedIn (issues
+    de la bibliothèque utilisateur), les trames de reel sont un catalogue fixe
+    pour l'instant.
+    """
+    return {"trames": IG_TRAMES}
 
 
 class StructuresRequest(BaseModel):
@@ -2104,10 +2144,15 @@ def me_generated_ideas(
 @app.get("/me/generated-posts")
 def me_generated_posts(
     limit: int = 100,
+    platform: str = "linkedin",
     token: str = Depends(require_token),
 ) -> list[dict[str, Any]]:
-    """List the authenticated user's saved generated posts (ALE-135 : seulement les `saved`)."""
-    return db.list_generated_posts(token, limit=max(1, min(limit, 500)), saved_only=True)
+    """List the authenticated user's saved generated posts (ALE-135 : seulement les `saved`).
+
+    ``platform`` (ALE-291) scope « Ma bibliothèque » par réseau — LinkedIn et
+    Instagram ne partagent pas la même liste.
+    """
+    return db.list_generated_posts(token, limit=max(1, min(limit, 500)), saved_only=True, platform=platform)
 
 
 class CreatePostRequest(BaseModel):
@@ -2169,18 +2214,26 @@ def delete_me_generated_post(post_id: str, token: str = Depends(require_token)) 
     return {"deleted": db.delete_generated_post(token, post_id)}
 
 
+class ReelDetailsPayload(BaseModel):
+    hook: str = Field(default="", max_length=2000)
+    script: str = Field(default="", max_length=8000)
+    hashtags: list[str] = Field(default_factory=list, max_length=30)
+
+
 class UpdatePostRequest(BaseModel):
     post: str | None = Field(default=None, min_length=1, max_length=50000)
     saved: bool | None = None
     # None = ne pas toucher aux images ; [] = tout retirer (ALE-179).
     images: list[LinkedInImageRequest] | None = Field(default=None, max_length=zernio.MAX_LINKEDIN_IMAGES)
+    # ALE-291 : pack Instagram (hook/script/hashtags) — None = ne pas toucher.
+    reel_details: ReelDetailsPayload | None = Field(default=None)
 
 
 @app.put("/me/generated-posts/{post_id}")
 def update_me_generated_post(post_id: str, payload: UpdatePostRequest, token: str = Depends(require_token)) -> dict[str, Any]:
     """Update a saved post's text, its `saved` flag and/or its images (ALE-134/179)."""
-    if payload.post is None and payload.saved is None and payload.images is None:
-        raise HTTPException(status_code=400, detail="Rien à mettre à jour (post, saved ou images requis).")
+    if payload.post is None and payload.saved is None and payload.images is None and payload.reel_details is None:
+        raise HTTPException(status_code=400, detail="Rien à mettre à jour (post, saved, images ou reel_details requis).")
     media_items: list[dict[str, Any]] | None = None
     media_error = False
     if payload.images is not None:
@@ -2189,7 +2242,10 @@ def update_me_generated_post(post_id: str, payload: UpdatePostRequest, token: st
             raise HTTPException(status_code=502, detail="Hébergement des images impossible, réessaie.")
         if media_error:
             media_items = None  # échec upload : ne pas écraser les images existantes
-    updated = db.update_generated_post(token, post_id, payload.post, payload.saved, media_items=media_items)
+    updated = db.update_generated_post(
+        token, post_id, payload.post, payload.saved, media_items=media_items,
+        reel_details=payload.reel_details.model_dump() if payload.reel_details else None,
+    )
     if not updated:
         raise HTTPException(status_code=404, detail="Post introuvable ou non autorisé.")
     if media_error:
@@ -2562,6 +2618,8 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
 class IdeaSeedRequest(BaseModel):
     text: str = Field(..., min_length=3, max_length=2000)
     comment: str | None = Field(default=None, max_length=500)
+    # ALE-291 : réservoir séparé par réseau (jamais partagé LinkedIn/Instagram).
+    platform: str = Field(default="linkedin", max_length=20)
 
 
 class IdeaSeedReorderRequest(BaseModel):
@@ -2590,16 +2648,16 @@ def listing_preview(payload: ListingPreviewRequest, token: str = Depends(require
 
 
 @app.get("/me/idea-seeds")
-def me_idea_seeds(token: str = Depends(require_token)) -> list[dict[str, Any]]:
-    """List the user's idea reservoir."""
-    return db.list_idea_seeds(token)
+def me_idea_seeds(platform: str = "linkedin", token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List the user's idea reservoir, scoped by network (ALE-291)."""
+    return db.list_idea_seeds(token, platform=platform)
 
 
 @app.post("/me/idea-seeds")
 def add_me_idea_seed(payload: IdeaSeedRequest, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Add an idea to the user's reservoir."""
+    """Add an idea to the user's reservoir (scoped by network, ALE-291)."""
     comment = (payload.comment or "").strip() or None
-    seed = db.add_idea_seed(token, payload.text.strip(), comment=comment)
+    seed = db.add_idea_seed(token, payload.text.strip(), comment=comment, platform=payload.platform)
     if not seed:
         raise HTTPException(status_code=400, detail="Impossible d'enregistrer l'idée.")
     return seed
