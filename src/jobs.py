@@ -245,6 +245,27 @@ def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, cou
         ex.shutdown(wait=False)
 
 
+def _generate_reel_packs_guarded(topic, top_posts, benchmark, user_context, role, trame_id, count, inspiration=None):
+    """Exécute `generate_instagram_reel_packs` avec un timeout dur (ALE-291)."""
+    from src.llm import generate_instagram_reel_packs
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(
+        generate_instagram_reel_packs,
+        topic,
+        top_posts,
+        benchmark,
+        user_context=user_context,
+        editorial_role=role,
+        trame_id=trame_id,
+        count=count,
+        inspiration=inspiration,
+    )
+    try:
+        return fut.result(timeout=GENERATION_TIMEOUT_S)
+    finally:
+        ex.shutdown(wait=False)
+
+
 def process_generation_job(access_token: str, job_id: str) -> None:
     """Génère les posts d'un job en arrière-plan et persiste le résultat.
 
@@ -260,34 +281,52 @@ def process_generation_job(access_token: str, job_id: str) -> None:
         return
 
     db.update_generation_job(access_token, job_id, status="running")
+    platform = job.get("platform") or "linkedin"
     try:
-        influencers = enrich_influencers(db.get_user_corpus(access_token))
+        influencers = enrich_influencers(db.get_user_corpus(access_token, platform=platform))
         top_posts, benchmark = build_benchmark(influencers)
         user_context = db.get_user_ai_context(access_token)
         role = (job.get("editorial_role") or "").strip() or None
         topic = (job.get("topic") or "").strip()
         count = int(job.get("count") or 1)
 
-        # ALE-286 : le post d'inspiration passe en TÊTE des références (le
-        # formateur de prompt n'en garde que 5) — sinon un tirage aléatoire de la
-        # bibliothèque pourrait évincer le seul post que le client a explicitement
-        # choisi, et la génération l'ignorerait sans rien signaler.
-        reference_posts = db.pick_reference_posts(access_token) or []
-        inspiration_text = (job.get("inspiration_text") or "").strip()
-        if inspiration_text:
-            reference_posts = [{
-                "text": inspiration_text,
-                "author": job.get("inspiration_author"),
-                "url": job.get("inspiration_url"),
-                "note": "post choisi comme inspiration explicite pour CE post — à transposer, jamais à recopier",
-            }] + reference_posts
+        if platform == "instagram":
+            # ALE-291 : pack Reel Instagram (hook + script + caption + hashtags).
+            # Pas de bibliothèque de structures utilisateur pour l'instant — la
+            # trame vient d'un catalogue statique (ig_trame_id).
+            inspiration = None
+            inspiration_text = (job.get("inspiration_text") or "").strip()
+            if inspiration_text:
+                inspiration = {
+                    "text": inspiration_text,
+                    "author": job.get("inspiration_author"),
+                    "url": job.get("inspiration_url"),
+                }
+            variants = _generate_reel_packs_guarded(
+                topic, top_posts, benchmark, user_context, role,
+                job.get("ig_trame_id"), count, inspiration=inspiration,
+            )
+        else:
+            # ALE-286 : le post d'inspiration passe en TÊTE des références (le
+            # formateur de prompt n'en garde que 5) — sinon un tirage aléatoire de la
+            # bibliothèque pourrait évincer le seul post que le client a explicitement
+            # choisi, et la génération l'ignorerait sans rien signaler.
+            reference_posts = db.pick_reference_posts(access_token) or []
+            inspiration_text = (job.get("inspiration_text") or "").strip()
+            if inspiration_text:
+                reference_posts = [{
+                    "text": inspiration_text,
+                    "author": job.get("inspiration_author"),
+                    "url": job.get("inspiration_url"),
+                    "note": "post choisi comme inspiration explicite pour CE post — à transposer, jamais à recopier",
+                }] + reference_posts
 
-        template_id = job.get("template_id")
-        variants = _generate_posts_guarded(
-            topic, top_posts, benchmark, user_context, role, count,
-            reference_posts=reference_posts or None,
-            template=db.get_post_template(access_token, template_id) if template_id else None,
-        )
+            template_id = job.get("template_id")
+            variants = _generate_posts_guarded(
+                topic, top_posts, benchmark, user_context, role, count,
+                reference_posts=reference_posts or None,
+                template=db.get_post_template(access_token, template_id) if template_id else None,
+            )
 
         # Annulé pendant le calcul ? On respecte l'annulation.
         if db.get_generation_job_status(access_token, job_id) == "cancelled":
@@ -295,7 +334,7 @@ def process_generation_job(access_token: str, job_id: str) -> None:
 
         save_error: str | None = None
         try:
-            variants = db.save_generated_posts(access_token, topic, variants)
+            variants = db.save_generated_posts(access_token, topic, variants, platform=platform)
         except Exception as exc:  # noqa: BLE001 — la sauvegarde est best-effort
             save_error = str(exc)
 

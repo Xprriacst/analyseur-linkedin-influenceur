@@ -207,6 +207,13 @@ type Variant = {
   strategy: string;
   predicted_lift: string;
   post: string;
+  // ALE-291 : pack Reel Instagram — présents uniquement quand le job qui a
+  // produit ce variant porte `platform: "instagram"`.
+  hook?: string;
+  script?: string;
+  caption?: string;
+  hashtags?: string[];
+  trame_id?: string | null;
 };
 type LinkedInImageAttachment = {
   id: string;
@@ -234,6 +241,8 @@ type SavedPost = {
   created_at?: string;
   slack_status?: string | null;
   media_items?: SavedPostMediaItem[] | null;
+  // ALE-291 : pack Reel Instagram sauvegardé (présent uniquement si platform="instagram").
+  reel_details?: { hook?: string; script?: string; hashtags?: string[] } | null;
 };
 // ALE-59 : version X/Reddit stockée avec un post programmé ; après le passage
 // du cron, l'entrée porte aussi le résultat (status / error par réseau).
@@ -501,11 +510,18 @@ type GenerationJob = {
   inspiration_text?: string | null;
   inspiration_author?: string | null;
   inspiration_url?: string | null;
+  // ALE-291 : "linkedin" (défaut) ou "instagram" — distingue un post d'un pack reel.
+  platform?: "linkedin" | "instagram";
+  ig_trame_id?: string | null;
   result: { variants?: Variant[]; save_error?: string | null } | null;
   error: string | null;
   created_at: string;
   updated_at: string;
 };
+
+function generationJobPlatform(j: GenerationJob): "linkedin" | "instagram" {
+  return j.platform === "instagram" ? "instagram" : "linkedin";
+}
 
 // ALE-286 : un post LinkedIn lu depuis son lien, servant de référence à la génération.
 type InspirationPost = {
@@ -1740,6 +1756,9 @@ function InstagramContentHub({
   onJobCreated,
   onJobUpdated,
   onOpenReport,
+  // ALE-291 : parcours guidé (pack Reel) — même structure que ContentHub (LinkedIn).
+  generationJobs,
+  onGenerationJobCreated,
 }: {
   tab: ContentTab;
   onTab: (t: ContentTab) => void;
@@ -1752,13 +1771,22 @@ function InstagramContentHub({
   onJobCreated: (job: Job) => void;
   onJobUpdated: (job: Job) => void;
   onOpenReport: (markdown: string, name: string) => void;
+  generationJobs: GenerationJob[];
+  onGenerationJobCreated: (job: GenerationJob) => void;
 }) {
+  // ALE-291 : même ordre que Contenu LinkedIn — Générateur, Analyses, Ma bibliothèque.
   const subTabs: { key: ContentTab; label: string; icon: React.ReactNode }[] = [
-    // ALE-257 : « Analyses » en tête (Veille IG = lancement + tiroir séries).
+    { key: "generator", label: "Générateur de reels", icon: <PenTool size={14} /> },
     { key: "analyses", label: "Analyses", icon: <BarChart3 size={14} /> },
-    { key: "generator", label: "Générateur de hooks", icon: <PenTool size={14} /> },
-    { key: "library", label: "Mes contenus", icon: <Bookmark size={14} /> },
+    { key: "library", label: "Ma bibliothèque", icon: <ListChecks size={14} /> },
   ];
+  // Un pack Reel = un job Instagram : la file du Générateur ne doit voir que les
+  // siens, jamais ceux de LinkedIn (même principe que le cloisonnement du corpus,
+  // régression déjà vécue sur ALE-126/ALE-127).
+  const igGenerationJobs = useMemo(
+    () => generationJobs.filter((j) => generationJobPlatform(j) === "instagram"),
+    [generationJobs]
+  );
   return (
     <div>
       <div className="tabs">
@@ -1794,11 +1822,175 @@ function InstagramContentHub({
           />
         )
       ) : tab === "generator" ? (
-        <InstagramGenerator isAuthed={isAuthed} requireAuth={requireAuth} />
+        <InstagramGenerator
+          isAuthed={isAuthed}
+          requireAuth={requireAuth}
+          generationJobs={igGenerationJobs}
+          onGenerationJobCreated={onGenerationJobCreated}
+        />
       ) : (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "28px 20px", color: "var(--muted)" }}>
-          <Clock3 size={16} />
-          <span style={{ fontSize: 14 }}>Bientôt disponible pour Instagram.</span>
+        <InstagramLibraryView isAuthed={isAuthed} />
+      )}
+    </div>
+  );
+}
+
+// ALE-291 : champs édités d'un pack Reel, indexés par clé de ligne. Cache
+// module-level séparé de `_genCache` (LinkedIn) — même patron (ALE-145), mais
+// une pop-up d'édition différente (4 champs au lieu d'un texte de post).
+type IgPackFields = { hook: string; script: string; caption: string; hashtagsText: string };
+const _igGenCache: { edited: Record<string, IgPackFields>; expanded: string | null } = {
+  edited: {},
+  expanded: null,
+};
+
+// ALE-293 : simple lecture du statut de connexion Instagram (la connexion elle-
+// même se fait dans Mon profil → Connexions, ALE-292). Sert juste à savoir si
+// le bouton « Publier » peut s'activer.
+function useInstagramConnection(isAuthed: boolean) {
+  const [connected, setConnected] = useState(false);
+  const [accountName, setAccountName] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isAuthed) { setConnected(false); setAccountName(null); return; }
+    let cancelled = false;
+    authHeaders()
+      .then((h) => fetch(`${DIRECT_API_URL}/me/instagram/status`, { headers: h }))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setConnected(!!data.connected);
+        setAccountName(data.account_name || null);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isAuthed]);
+  return { connected, accountName };
+}
+
+/** Upload la vidéo tournée pour un reel (multipart — trop volumineux pour du base64 JSON). */
+async function uploadInstagramReelVideo(file: File): Promise<string> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${DIRECT_API_URL}/me/instagram/reel-video`, {
+    method: "POST",
+    headers: await authHeaders(),
+    body: form,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Upload de la vidéo impossible");
+  return data.url as string;
+}
+
+/** Publie immédiatement un reel Instagram (vidéo déjà uploadée + caption + hashtags). */
+async function publishInstagramReel(params: { caption: string; videoUrl: string; hashtags: string[] }): Promise<void> {
+  const res = await fetch(`${DIRECT_API_URL}/me/instagram/publish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    body: JSON.stringify({ caption: params.caption, video_url: params.videoUrl, hashtags: params.hashtags }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Publication Instagram impossible");
+}
+
+const MAX_REEL_VIDEO_BYTES = 100 * 1024 * 1024;
+
+/** Bloc partagé « uploader ma vidéo + publier » — utilisé dans la file du
+ *  Générateur ET dans Ma bibliothèque (un pack peut être généré maintenant et
+ *  publié plus tard, une fois la vidéo tournée). */
+function InstagramPublishBlock({
+  caption,
+  hashtags,
+  igConnected,
+  igAccountName,
+}: {
+  caption: string;
+  hashtags: string[];
+  igConnected: boolean;
+  igAccountName: string | null;
+}) {
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [videoName, setVideoName] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [published, setPublished] = useState(false);
+  const [error, setError] = useState("");
+
+  async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError("");
+    if (!/^video\/(mp4|quicktime)$/i.test(file.type)) {
+      setError("Formats acceptés : MP4 ou MOV.");
+      return;
+    }
+    if (file.size > MAX_REEL_VIDEO_BYTES) {
+      setError(`Vidéo trop volumineuse (${Math.round(file.size / 1024 / 1024)} Mo, ${MAX_REEL_VIDEO_BYTES / 1024 / 1024} Mo maximum).`);
+      return;
+    }
+    setUploading(true);
+    setPublished(false);
+    try {
+      const url = await uploadInstagramReelVideo(file);
+      setVideoUrl(url);
+      setVideoName(file.name);
+    } catch (err: any) {
+      setError(err.message || "Upload impossible");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function doPublish() {
+    if (!videoUrl) return;
+    setPublishing(true);
+    setError("");
+    try {
+      await publishInstagramReel({ caption, hashtags, videoUrl });
+      setPublished(true);
+    } catch (err: any) {
+      setError(err.message || "Publication impossible");
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+      <label className="role-picker-label" style={{ display: "block", marginBottom: 6 }}>
+        Ta vidéo tournée
+      </label>
+      {!igConnected && (
+        <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+          Connecte ton compte Instagram (Mon profil → Connexions) pour pouvoir publier.
+        </p>
+      )}
+      {videoUrl ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-start" }}>
+          <video controls src={videoUrl} style={{ maxWidth: 220, borderRadius: 8 }} />
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>{videoName}</span>
+        </div>
+      ) : (
+        <label className="secondary-button" style={{ display: "inline-flex", cursor: uploading ? "wait" : "pointer" }}>
+          {uploading ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />}
+          {uploading ? "Envoi en cours…" : "Choisir la vidéo (MP4/MOV)"}
+          <input type="file" accept="video/mp4,video/quicktime" onChange={onFileChange} disabled={uploading} style={{ display: "none" }} />
+        </label>
+      )}
+      {error && <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{error}</div>}
+      {videoUrl && (
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <button
+            className="primary-button"
+            disabled={!igConnected || publishing || published || !caption.trim()}
+            onClick={doPublish}
+          >
+            {publishing ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
+            {published ? "Publié ✓" : publishing ? "Publication…" : igAccountName ? `Publier sur ${igAccountName}` : "Publier sur Instagram"}
+          </button>
+          <button className="secondary-button" onClick={() => { setVideoUrl(null); setVideoName(null); setPublished(false); }}>
+            Changer de vidéo
+          </button>
         </div>
       )}
     </div>
@@ -1808,112 +2000,363 @@ function InstagramContentHub({
 function InstagramGenerator({
   isAuthed,
   requireAuth,
+  generationJobs,
+  onGenerationJobCreated,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
+  generationJobs: GenerationJob[];
+  onGenerationJobCreated: (job: GenerationJob) => void;
 }) {
-  const [hooks, setHooks] = useState<string[]>([]);
-  const [topic, setTopic] = useState("");
-  const [hookCount, setHookCount] = useState(8);
-  const [loadingHooks, setLoadingHooks] = useState(false);
-  const [copiedHook, setCopiedHook] = useState<number | null>(null);
-
+  // Les brouillons de wizard (LinkedIn + Instagram) partagent le même store
+  // module-level (`_wizardDrafts`) — on ne garde ici que ceux d'Instagram.
+  const [allDrafts, setAllDrafts] = useState<WizardDraft[]>(_wizardDrafts);
+  const drafts = useMemo(() => allDrafts.filter((d) => d.platform === "instagram"), [allDrafts]);
+  const [wizardId, setWizardId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(_igGenCache.expanded);
+  const [cancelling, setCancelling] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [edited, setEdited] = useState<Record<string, IgPackFields>>(_igGenCache.edited);
+  const [savingPost, setSavingPost] = useState<string | null>(null);
+  const [savedPost, setSavedPost] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [showAllLines, setShowAllLines] = useState(false);
+  const igConnection = useInstagramConnection(isAuthed);
 
-  async function generateHooks(t: string) {
-    if (!isAuthed) {
-      requireAuth("Crée un compte gratuit pour générer des hooks Instagram personnalisés.");
-      return;
-    }
-    setError("");
-    setLoadingHooks(true);
+  const lines = useMemo(() => buildPostLines(generationJobs), [generationJobs]);
+  const shownLines = showAllLines
+    ? lines
+    : lines.filter((l, i) => i < QUEUE_PREVIEW_COUNT || l.key === expanded);
+  const hiddenCount = lines.length - shownLines.length;
+  const activeCount = generationJobs.filter(generationJobIsActive).length;
+
+  useEffect(() => { _igGenCache.edited = edited; }, [edited]);
+  useEffect(() => { _igGenCache.expanded = expanded; }, [expanded]);
+
+  function fieldsOf(line: PostLine): IgPackFields {
+    return edited[line.key] || {
+      hook: line.variant?.hook || "",
+      script: line.variant?.script || "",
+      caption: line.variant?.caption || "",
+      hashtagsText: (line.variant?.hashtags || []).join(" "),
+    };
+  }
+
+  function setField(line: PostLine, field: keyof IgPackFields, value: string) {
+    setEdited((prev) => ({ ...prev, [line.key]: { ...fieldsOf(line), [field]: value } }));
+  }
+
+  function copyPack(line: PostLine) {
+    const f = fieldsOf(line);
+    const text = `Hook : ${f.hook}\n\nScript :\n${f.script}\n\nCaption :\n${f.caption}\n\nHashtags : ${f.hashtagsText}`;
+    void navigator.clipboard.writeText(text);
+    setCopied(line.key);
+    setTimeout(() => setCopied((c) => (c === line.key ? null : c)), 1500);
+  }
+
+  async function savePack(line: PostLine) {
+    const id = line.variant?.id;
+    if (!id) return;
+    setSavingPost(line.key);
     try {
-      const res = await fetch(`${DIRECT_API_URL}/instagram/hooks`, {
-        method: "POST",
+      const f = fieldsOf(line);
+      const hashtags = f.hashtagsText.split(/\s+/).map((h) => h.trim()).filter(Boolean);
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, {
+        method: "PUT",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ count: hookCount, topic: t.trim() || undefined }),
+        body: JSON.stringify({ post: f.caption, saved: true, reel_details: { hook: f.hook, script: f.script, hashtags } }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Échec de la génération de hooks");
-      setHooks(data.hooks || []);
-    } catch (err: any) {
-      setError(err.message);
+      if (res.ok) {
+        setSavedPost(line.key);
+        setTimeout(() => setSavedPost((s) => (s === line.key ? null : s)), 1500);
+      }
     } finally {
-      setLoadingHooks(false);
+      setSavingPost(null);
     }
   }
 
-  async function copyHook(text: string, idx: number) {
+  async function cancelJob(jobId: string) {
+    setCancelling(jobId);
     try {
-      await navigator.clipboard.writeText(text);
-      setCopiedHook(idx);
-      setTimeout(() => setCopiedHook(null), 2000);
-    } catch { /* ignore */ }
+      await fetch(`${DIRECT_API_URL}/generate/jobs/${jobId}/cancel`, { method: "POST", headers: await authHeaders() });
+    } catch { /* le polling de Home rattrapera l'état réel */ }
+    finally { setCancelling(null); }
+  }
+
+  function startWizard(idea = "") {
+    if (!isAuthed) { requireAuth("Connecte-toi pour générer des reels."); return; }
+    setError("");
+    const draft = newWizardDraft(idea, "instagram");
+    upsertWizardDraft(draft);
+    setWizardId(draft.id);
+  }
+
+  function closeWizard() {
+    _wizardDrafts = _wizardDrafts.filter(wizardDraftHasContent);
+    setAllDrafts(_wizardDrafts);
+    setWizardId(null);
+  }
+
+  function discardDraft(id: string) {
+    _wizardDrafts = _wizardDrafts.filter((d) => d.id !== id);
+    setAllDrafts(_wizardDrafts);
   }
 
   return (
     <div>
       {error && <div className="error">{error}</div>}
 
-      {/* Génération de hooks — même structure que « Générer des posts » */}
-      <div className="gen-section">
-        <h2 className="section-title"><PenTool size={20} /> Générer des hooks</h2>
-        <div className="gen-form">
-          <div className="url-input">
-            <PenTool size={16} color="var(--primary)" />
-            <input
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              placeholder="Sujet du hook (optionnel) : ex. routine matinale, productivité…"
-              onKeyDown={(e) => e.key === "Enter" && generateHooks(topic)}
-            />
-            <button className="primary-button" disabled={loadingHooks} onClick={() => generateHooks(topic)}>
-              {loadingHooks ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
-              Générer
-            </button>
-          </div>
-          <div className="role-picker">
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)" }}>
-              Nombre de hooks :
-              <select
-                value={hookCount}
-                onChange={(e) => setHookCount(Number(e.target.value))}
-                style={{ fontSize: 13, padding: "2px 6px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", cursor: "pointer" }}
-              >
-                <option value={5}>5</option>
-                <option value={8}>8</option>
-                <option value={12}>12</option>
-              </select>
-            </label>
-            <span className="role-picker-hint">
-              Hooks personnalisés selon ton profil éditorial (secteur, audience, offre, ton). Renseigne un sujet pour les orienter.
-            </span>
-          </div>
+      <div className="gen-hero">
+        <div>
+          <h2 className="section-title" style={{ margin: 0 }}><PenTool size={20} /> Générateur de reels</h2>
+          <p className="section-desc" style={{ margin: "6px 0 0" }}>
+            Une idée, un angle, une trame — et ton pack reel s&apos;écrit : hook, script, caption, hashtags.
+          </p>
         </div>
+        <button className="primary-button gen-hero-button" onClick={() => startWizard()}>
+          <Sparkles size={18} /> Générer un reel
+        </button>
       </div>
 
-      {hooks.length > 0 && (
-        <div className="variants-list">
-          {hooks.map((hook, i) => (
-            <div className="variant-card" key={i}>
-              <div className="variant-header">
-                <span className="variant-number" style={{ background: "var(--primary)" }}>{i + 1}</span>
+      <div style={{ marginTop: 24 }}>
+        <h3 className="section-title" style={{ fontSize: 16 }}>
+          <ListChecks size={18} /> Mes reels
+          {activeCount + drafts.length > 0 && (
+            <span className="badge" style={{ marginLeft: 8 }}>{activeCount + drafts.length} en cours</span>
+          )}
+        </h3>
+        {lines.length === 0 && drafts.length === 0 ? (
+          <p className="role-picker-hint">
+            Aucun reel pour l&apos;instant. Clique sur « Générer un reel » : les packs apparaîtront ici, un par ligne, au fur et à mesure.
+          </p>
+        ) : (
+          <div className="post-queue">
+            {drafts.map((d) => (
+              <div key={d.id} className="post-queue-row">
+                <div
+                  className="post-queue-line"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setWizardId(d.id)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setWizardId(d.id); } }}
+                >
+                  <span className="badge">En cours</span>
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{wizardDraftTitle(d)}</span>
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}>{wizardDraftStepLabel(d)}</span>
+                </div>
+                <button className="icon-button" title="Supprimer" onClick={() => discardDraft(d.id)}><Trash2 size={14} /></button>
               </div>
-              <p style={{ fontSize: 14, color: "var(--ink)", lineHeight: 1.5, margin: "4px 0 10px" }}>{hook}</p>
-              <button className="secondary-button" onClick={() => copyHook(hook, i)}>
-                {copiedHook === i ? <CheckCircle2 size={14} /> : <Link2 size={14} />}
-                {copiedHook === i ? "Copié ✓" : "Copier le hook"}
+            ))}
+
+            {shownLines.map((line) => {
+              const key = line.key;
+              const job = line.job;
+              const variant = line.variant;
+              const isExpanded = expanded === key;
+              const f = fieldsOf(line);
+              return (
+                <div key={key} className="post-queue-row">
+                  {!variant ? (
+                    <div className="post-queue-line">
+                      {job.status === "error" ? (
+                        <><AlertCircle size={14} color="#ef4444" /> <span style={{ color: "#ef4444" }}>{job.error || "Échec de la génération"}</span></>
+                      ) : job.status === "cancelled" ? (
+                        <><XCircle size={14} /> <span style={{ color: "var(--muted)" }}>Annulé</span></>
+                      ) : (
+                        <>
+                          <Loader2 size={14} className="spinning" />
+                          <span style={{ flex: 1 }}>
+                            {job.topic || "Reel en cours…"}
+                            {job.editorial_role && <span className="badge" style={{ marginLeft: 8, borderColor: roleColorOf(job.editorial_role), color: roleColorOf(job.editorial_role) }}>{roleLabelOf(job.editorial_role)}</span>}
+                          </span>
+                          {(job.status === "queued" || job.status === "running") && (
+                            <button className="icon-button" title="Annuler" disabled={cancelling === job.id} onClick={() => cancelJob(job.id)}>
+                              {cancelling === job.id ? <Loader2 size={13} className="spinning" /> : <XCircle size={14} />}
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <div>
+                      <div
+                        className="post-queue-line"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setExpanded((e) => (e === key ? null : key))}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpanded((v) => (v === key ? null : key)); } }}
+                      >
+                        {variant.editorial_role && <span className="badge" style={{ borderColor: roleColorOf(variant.editorial_role), color: roleColorOf(variant.editorial_role) }}>{roleLabelOf(variant.editorial_role)}</span>}
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.hook || f.caption || "Pack reel"}</span>
+                        <ChevronDown size={14} style={{ transform: isExpanded ? "rotate(180deg)" : undefined }} />
+                      </div>
+                      {isExpanded && (
+                        <div style={{ padding: "10px 4px 4px" }}>
+                          <label className="role-picker-label">Hook (3 premières secondes)</label>
+                          <textarea className="variant-text" rows={2} value={f.hook} onChange={(e) => setField(line, "hook", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Script (scène par scène)</label>
+                          <textarea className="variant-text" rows={6} value={f.script} onChange={(e) => setField(line, "script", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Caption</label>
+                          <textarea className="variant-text" rows={4} value={f.caption} onChange={(e) => setField(line, "caption", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Hashtags</label>
+                          <input className="variant-text" value={f.hashtagsText} onChange={(e) => setField(line, "hashtagsText", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                            <button className="secondary-button" onClick={() => copyPack(line)}>
+                              {copied === key ? <CheckCircle2 size={14} /> : <Copy size={14} />} {copied === key ? "Copié ✓" : "Copier le pack"}
+                            </button>
+                            <button className="secondary-button" disabled={savingPost === key || !variant.id} onClick={() => savePack(line)}>
+                              {savingPost === key ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />}
+                              {savedPost === key ? "Sauvegardé ✓" : "Sauvegarder dans Ma bibliothèque"}
+                            </button>
+                          </div>
+                          <InstagramPublishBlock
+                            caption={f.caption}
+                            hashtags={f.hashtagsText.split(/\s+/).map((h) => h.trim()).filter(Boolean)}
+                            igConnected={igConnection.connected}
+                            igAccountName={igConnection.accountName}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {(hiddenCount > 0 || showAllLines) && (
+          <button className="secondary-button" style={{ marginTop: 10 }} onClick={() => setShowAllLines((v) => !v)}>
+            {showAllLines
+              ? <>Réduire <ChevronDown size={14} style={{ transform: "rotate(180deg)" }} /></>
+              : <>Tout voir ({lines.length}) <ChevronDown size={14} /></>}
+          </button>
+        )}
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <IdeaReservoir
+          isAuthed={isAuthed}
+          platform="instagram"
+          desc="Note tes idées de reels quand elles viennent. Génère le pack quand tu veux."
+          onGenerate={(text) => startWizard(text)}
+        />
+      </div>
+
+      {/* Publication et upload vidéo — brique suivante (connexion Instagram Zernio). */}
+      <div className="card" style={{ padding: 16, opacity: 0.7, display: "flex", alignItems: "center", gap: 10, marginTop: 24 }}>
+        <Clock3 size={15} style={{ color: "var(--muted)" }} />
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>Uploader ta vidéo et publier le reel — bientôt disponible.</span>
+      </div>
+
+      {wizardId && (
+        <PostWizardModal
+          draftId={wizardId}
+          onClose={closeWizard}
+          onLaunched={(job) => {
+            onGenerationJobCreated(job);
+            setExpanded(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** « Ma bibliothèque » Instagram (ALE-291) : packs reel sauvegardés. Version
+ *  allégée de MyContentHub (LinkedIn) — pas encore de templates/veille pour
+ *  Instagram, juste les packs que le client a choisi de garder. */
+function InstagramLibraryView({ isAuthed }: { isAuthed: boolean }) {
+  const [posts, setPosts] = useState<SavedPost[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const igConnection = useInstagramConnection(isAuthed);
+
+  const load = useCallback(async () => {
+    if (!isAuthed) { setPosts([]); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/generated-posts?platform=instagram`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setPosts(Array.isArray(data) ? data : []);
+    } catch { /* liste vide en cas d'échec — pas d'alarme pour une lecture */ }
+    finally { setLoading(false); }
+  }, [isAuthed]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function deletePost(id: string) {
+    setDeleting(id);
+    setPosts((prev) => prev.filter((p) => p.id !== id));
+    try {
+      await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void load(); }
+    finally { setDeleting(null); }
+  }
+
+  function copyPost(post: SavedPost) {
+    const details = post.reel_details;
+    const text = `Hook : ${details?.hook || ""}\n\nScript :\n${details?.script || ""}\n\nCaption :\n${post.post || ""}\n\nHashtags : ${(details?.hashtags || []).join(" ")}`;
+    void navigator.clipboard.writeText(text);
+    setCopied(post.id);
+    setTimeout(() => setCopied((c) => (c === post.id ? null : c)), 1500);
+  }
+
+  if (!isAuthed) {
+    return <p className="role-picker-hint">Connecte-toi pour voir tes reels sauvegardés.</p>;
+  }
+  if (loading) {
+    return <p className="role-picker-hint">Chargement…</p>;
+  }
+  if (posts.length === 0) {
+    return <p className="role-picker-hint">Aucun reel sauvegardé pour l&apos;instant — génère un pack et sauvegarde-le depuis le Générateur.</p>;
+  }
+
+  return (
+    <div className="variants-list">
+      {posts.map((post) => {
+        const details = post.reel_details;
+        const isExpanded = expanded === post.id;
+        return (
+          <div className="variant-card" key={post.id}>
+            <div
+              style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+              role="button"
+              tabIndex={0}
+              onClick={() => setExpanded((e) => (e === post.id ? null : post.id))}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setExpanded((v) => (v === post.id ? null : post.id)); }}
+            >
+              {post.editorial_role && <span className="badge" style={{ borderColor: roleColorOf(post.editorial_role), color: roleColorOf(post.editorial_role) }}>{roleLabelOf(post.editorial_role)}</span>}
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{details?.hook || post.post || "Pack reel"}</span>
+              <ChevronDown size={14} style={{ transform: isExpanded ? "rotate(180deg)" : undefined }} />
+            </div>
+            {isExpanded && (
+              <div style={{ marginTop: 10 }}>
+                {details?.hook && <p style={{ fontSize: 13 }}><strong>Hook :</strong> {details.hook}</p>}
+                {details?.script && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Script :</strong><br />{details.script}</p>}
+                {post.post && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Caption :</strong><br />{post.post}</p>}
+                {!!details?.hashtags?.length && <p style={{ fontSize: 13, color: "var(--muted)" }}>{details.hashtags.join(" ")}</p>}
+                <InstagramPublishBlock
+                  caption={post.post || ""}
+                  hashtags={details?.hashtags || []}
+                  igConnected={igConnection.connected}
+                  igAccountName={igConnection.accountName}
+                />
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <button className="secondary-button" onClick={() => copyPost(post)}>
+                {copied === post.id ? <CheckCircle2 size={14} /> : <Copy size={14} />} {copied === post.id ? "Copié ✓" : "Copier"}
+              </button>
+              <button className="secondary-button" disabled={deleting === post.id} onClick={() => deletePost(post.id)}>
+                {deleting === post.id ? <Loader2 size={14} className="spinning" /> : <Trash2 size={14} />} Supprimer
               </button>
             </div>
-          ))}
-        </div>
-      )}
-
-      {/* Le reste (posts complets, publication, visuels) — bientôt disponible */}
-      <div className="card" style={{ padding: 16, opacity: 0.7, display: "flex", alignItems: "center", gap: 10, marginTop: 16 }}>
-        <Clock3 size={15} style={{ color: "var(--muted)" }} />
-        <span style={{ fontSize: 12, color: "var(--muted)" }}>Génération de posts complets, publication et visuels Instagram — bientôt disponible.</span>
-      </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -3688,11 +4131,14 @@ function IdeaReservoir({
   isAuthed,
   onGenerate,
   desc = "Ajoute tes idées : l'idée du jour piochera dedans en priorité.",
+  platform = "linkedin",
 }: {
   isAuthed: boolean;
   /** Fourni = un bouton « Générer un post » apparaît sur chaque idée. */
   onGenerate?: (text: string) => void;
   desc?: string;
+  /** ALE-291 : réservoir séparé par réseau — jamais partagé LinkedIn/Instagram. */
+  platform?: "linkedin" | "instagram";
 }) {
   const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
   const [draft, setDraft] = useState("");
@@ -3710,11 +4156,11 @@ function IdeaReservoir({
   const load = useCallback(async () => {
     if (!isAuthed) { setSeeds([]); return; }
     try {
-      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, { headers: await authHeaders() });
+      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds?platform=${platform}`, { headers: await authHeaders() });
       const data = await res.json();
       if (res.ok) setSeeds(Array.isArray(data) ? data : []);
     } catch { /* le réservoir est un plus : un échec de lecture n'affiche pas d'alarme */ }
-  }, [isAuthed]);
+  }, [isAuthed, platform]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -3730,7 +4176,7 @@ function IdeaReservoir({
       const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify(comment ? { text, comment } : { text }),
+        body: JSON.stringify(comment ? { text, comment, platform } : { text, platform }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Ajout impossible");
@@ -3951,6 +4397,9 @@ type WizardStep = "start" | "idea" | "ideas" | "inspiration" | "role" | "structu
 /** L'état complet d'un parcours guidé, tel qu'il survit à une fermeture. */
 type WizardDraft = {
   id: string;
+  // ALE-291 : LinkedIn et Instagram partagent le même parcours et le même
+  // stockage de brouillons — seul ce champ distingue un post d'un pack reel.
+  platform: "linkedin" | "instagram";
   step: WizardStep;
   idea: string;
   inspiration: InspirationPost | null;
@@ -3959,7 +4408,7 @@ type WizardDraft = {
   role: string;
   reco: { editorial_role: string; reason: string } | null;
   structures: StructureChoice[];
-  // "" = structure libre (aucune imposée) — c'est aussi le repli quand la
+  // "" = structure/trame libre (aucune imposée) — c'est aussi le repli quand la
   // bibliothèque est vide, pour qu'un compte neuf ne reste pas coincé là.
   templateId: string;
   recommendedId: string | null;
@@ -3968,9 +4417,10 @@ type WizardDraft = {
   pasted: string;
 };
 
-function newWizardDraft(idea = ""): WizardDraft {
+function newWizardDraft(idea = "", platform: "linkedin" | "instagram" = "linkedin"): WizardDraft {
   return {
     id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    platform,
     step: idea ? "idea" : "start",
     idea,
     inspiration: null,
@@ -3982,7 +4432,9 @@ function newWizardDraft(idea = ""): WizardDraft {
     templateId: "",
     recommendedId: null,
     url: "",
-    pasteMode: false,
+    // Instagram : pas d'endpoint de lecture d'un reel par lien pour l'instant —
+    // la porte « J'ai une inspiration » colle directement le texte.
+    pasteMode: platform === "instagram",
     pasted: "",
   };
 }
@@ -4013,15 +4465,19 @@ function wizardDraftHasContent(d: WizardDraft): boolean {
 
 /** Ce qui nomme la ligne : l'idée si elle est écrite, sinon celle qu'on a cochée. */
 function wizardDraftTitle(d: WizardDraft): string {
-  return d.idea.trim() || d.pickedLine.trim() || (d.inspiration ? `D'après le post de ${d.inspiration.author || "LinkedIn"}` : "") || "Post en préparation";
+  const sourceLabel = d.platform === "instagram" ? "reel" : "post";
+  const fallbackTitle = d.platform === "instagram" ? "Reel en préparation" : "Post en préparation";
+  return d.idea.trim() || d.pickedLine.trim()
+    || (d.inspiration ? `D'après le ${sourceLabel} de ${d.inspiration.author || (d.platform === "instagram" ? "Instagram" : "LinkedIn")}` : "")
+    || fallbackTitle;
 }
 
 /** Où en est le parcours — dit au client ce qu'il lui reste à faire. */
 function wizardDraftStepLabel(d: WizardDraft): string {
-  if (d.step === "structure") return "il reste à choisir la structure";
+  if (d.step === "structure") return d.platform === "instagram" ? "il reste à choisir la trame" : "il reste à choisir la structure";
   if (d.step === "role") return "il reste à choisir l'angle";
   if (d.step === "ideas") return d.pickedLine ? "idée choisie, à continuer" : "il reste à choisir une idée";
-  if (d.step === "inspiration") return d.inspiration ? "post lu, à continuer" : "il reste à coller le lien du post";
+  if (d.step === "inspiration") return d.inspiration ? `${d.platform === "instagram" ? "reel lu" : "post lu"}, à continuer` : (d.platform === "instagram" ? "il reste à coller le texte du reel" : "il reste à coller le lien du post");
   return "à continuer";
 }
 
@@ -4036,6 +4492,9 @@ function PostWizardModal({
 }) {
   type Step = WizardStep;
   const initial = useRef(_wizardDrafts.find((d) => d.id === draftId) || newWizardDraft()).current;
+  // ALE-291 : LinkedIn ou Instagram — porté par le brouillon lui-même (fixé à
+  // l'ouverture, jamais modifié en cours de parcours).
+  const platform = initial.platform;
   const openSeq = useRef(0);
   if (openSeq.current === 0) openSeq.current = ++_wizardOpenSeq;
   const done = useRef(false);
@@ -4062,8 +4521,8 @@ function PostWizardModal({
   // ligne est déjà à jour — rien à sauver dans le gestionnaire de fermeture.
   useEffect(() => {
     if (done.current) return;
-    upsertWizardDraft({ id: initial.id, step, idea, inspiration, ideaLines, pickedLine, role, reco, structures, templateId, recommendedId, url, pasteMode, pasted });
-  }, [initial.id, step, idea, inspiration, ideaLines, pickedLine, role, reco, structures, templateId, recommendedId, url, pasteMode, pasted]);
+    upsertWizardDraft({ id: initial.id, platform, step, idea, inspiration, ideaLines, pickedLine, role, reco, structures, templateId, recommendedId, url, pasteMode, pasted });
+  }, [initial.id, platform, step, idea, inspiration, ideaLines, pickedLine, role, reco, structures, templateId, recommendedId, url, pasteMode, pasted]);
 
   /** Écrit dans le brouillon une réponse arrivée APRÈS une fermeture (fermer
    *  pendant que les 3 idées se génèrent ne doit pas les perdre : elles sont
@@ -4095,12 +4554,12 @@ function PostWizardModal({
     if (step !== "idea") return;
     let cancelled = false;
     authHeaders()
-      .then((h) => fetch(`${DIRECT_API_URL}/me/idea-seeds`, { headers: h }))
+      .then((h) => fetch(`${DIRECT_API_URL}/me/idea-seeds?platform=${platform}`, { headers: h }))
       .then((r) => (r.ok ? r.json() : []))
       .then((data) => { if (!cancelled) setSeeds(Array.isArray(data) ? data.filter((s: IdeaSeed) => !s.used_at) : []); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [step]);
+  }, [step, platform]);
 
   async function generateIdeas() {
     setBusy("ideas");
@@ -4109,7 +4568,7 @@ function PostWizardModal({
       const res = await fetch(`${DIRECT_API_URL}/ideas`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ count: 3 }),
+        body: JSON.stringify({ count: 3, platform }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Génération des idées impossible");
@@ -4172,7 +4631,7 @@ function PostWizardModal({
       const res = await fetch(`${DIRECT_API_URL}/generate/editorial-role`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ idea: text }),
+        body: JSON.stringify({ idea: text, platform }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Recommandation indisponible");
@@ -4201,7 +4660,7 @@ function PostWizardModal({
       const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, platform }),
       });
       if (!res.ok) throw new Error("Enregistrement impossible");
       setSeedSaved(true);
@@ -4215,30 +4674,45 @@ function PostWizardModal({
     }
   }
 
-  /** Avant-dernière étape : l'IA propose les structures de la bibliothèque qui
-   *  collent le mieux à l'idée + au rôle. Le client en choisit UNE. */
+  /** Avant-dernière étape : l'IA propose les structures de la bibliothèque (LinkedIn)
+   *  ou les trames de reel (catalogue statique, Instagram) qui collent le mieux à
+   *  l'idée + au rôle. Le client en choisit UNE. */
   async function goToStructures() {
     setStep("structure");
     setBusy("structure");
     setError("");
+    const noun = platform === "instagram" ? "Trames" : "Structures";
     try {
-      const res = await fetch(`${DIRECT_API_URL}/generate/structures`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ idea: idea.trim(), editorial_role: role }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || "Structures indisponibles");
-      const list: StructureChoice[] = Array.isArray(data.structures) ? data.structures : [];
+      let list: StructureChoice[];
+      let recommendedId: string | null;
+      if (platform === "instagram") {
+        // ALE-291 : catalogue statique — pas de personnalisation par idée/rôle pour l'instant.
+        const res = await fetch(`${DIRECT_API_URL}/generate/instagram/trames`, { headers: await authHeaders() });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || "Trames indisponibles");
+        const trames: { id: string; label: string; description: string }[] = Array.isArray(data.trames) ? data.trames : [];
+        list = trames.map((t) => ({ id: t.id, label: t.label, structure_text: t.description, post_text: null }));
+        recommendedId = null;
+      } else {
+        const res = await fetch(`${DIRECT_API_URL}/generate/structures`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ idea: idea.trim(), editorial_role: role }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || "Structures indisponibles");
+        list = Array.isArray(data.structures) ? data.structures : [];
+        recommendedId = data.recommended_id ?? null;
+      }
       setStructures(list);
-      setRecommendedId(data.recommended_id ?? null);
-      // Pré-cochée : la plus adaptée selon l'IA. Bibliothèque vide → structure libre.
-      setTemplateId(data.recommended_id ?? "");
-      patchDraft({ step: "structure", structures: list, recommendedId: data.recommended_id ?? null, templateId: data.recommended_id ?? "" });
+      setRecommendedId(recommendedId);
+      // Pré-cochée : la plus adaptée selon l'IA. Bibliothèque vide → structure/trame libre.
+      setTemplateId(recommendedId ?? "");
+      patchDraft({ step: "structure", structures: list, recommendedId, templateId: recommendedId ?? "" });
     } catch (err: any) {
-      // La proposition n'est qu'un confort : sans elle, on écrit le post en
-      // structure libre plutôt que d'arrêter le client au bord de l'arrivée.
-      setError(`Structures indisponibles (${err.message}) — le post sera écrit en structure libre.`);
+      // La proposition n'est qu'un confort : sans elle, on écrit en structure/trame
+      // libre plutôt que d'arrêter le client au bord de l'arrivée.
+      setError(`${noun} indisponibles (${err.message}) — ce sera écrit en ${platform === "instagram" ? "trame" : "structure"} libre.`);
       setStructures([]);
       setRecommendedId(null);
       setTemplateId("");
@@ -4261,7 +4735,10 @@ function PostWizardModal({
           topic: idea.trim(),
           editorial_role: role,
           count: 1,
-          ...(templateId ? { template_id: templateId } : {}),
+          platform,
+          ...(templateId
+            ? platform === "instagram" ? { ig_trame_id: templateId } : { template_id: templateId }
+            : {}),
           ...(inspiration
             ? { inspiration: { text: inspiration.text, author: inspiration.author, url: inspiration.url } }
             : {}),
@@ -4282,7 +4759,12 @@ function PostWizardModal({
     }
   }
 
-  const startCards: { key: Step; icon: React.ReactNode; title: string; desc: string }[] = [
+  const isIg = platform === "instagram";
+  const startCards: { key: Step; icon: React.ReactNode; title: string; desc: string }[] = isIg ? [
+    { key: "idea", icon: <PenTool size={22} />, title: "J'ai une idée", desc: "Écris-la : on la garde pour plus tard, ou on en fait un reel tout de suite." },
+    { key: "ideas", icon: <Sparkles size={22} />, title: "Je n'ai pas d'idée", desc: `On t'en propose 3, tirées de ta veille Instagram et de ton positionnement (${WIZARD_IDEAS_CREDITS} crédits).` },
+    { key: "inspiration", icon: <Link2 size={22} />, title: "J'ai une inspiration", desc: "Colle le texte d'un reel qui t'a plu : on le transpose à ton métier." },
+  ] : [
     { key: "idea", icon: <PenTool size={22} />, title: "J'ai une idée", desc: "Écris-la : on la garde pour plus tard, ou on en fait un post tout de suite." },
     { key: "ideas", icon: <Sparkles size={22} />, title: "Je n'ai pas d'idée", desc: `On t'en propose 3, tirées de ta veille et de ton positionnement (${WIZARD_IDEAS_CREDITS} crédits).` },
     { key: "inspiration", icon: <Link2 size={22} />, title: "J'ai une inspiration", desc: "Colle le lien d'un post LinkedIn qui t'a plu : on le lit et on le transpose à ton métier." },
@@ -4292,9 +4774,9 @@ function PostWizardModal({
     start: "Par où on commence ?",
     idea: "Ton idée",
     ideas: "Trois idées pour toi",
-    inspiration: "Le post qui t'a inspiré",
-    role: "Quel angle pour ce post ?",
-    structure: "Sur quelle structure ?",
+    inspiration: isIg ? "Le reel qui t'a inspiré" : "Le post qui t'a inspiré",
+    role: isIg ? "Quel angle pour ce reel ?" : "Quel angle pour ce post ?",
+    structure: isIg ? "Sur quelle trame ?" : "Sur quelle structure ?",
   };
 
   return (
@@ -4445,26 +4927,37 @@ function PostWizardModal({
           <div>
             {!inspiration ? (
               <>
-                <label className="role-picker-label" htmlFor="wizard-url">Lien du post LinkedIn</label>
-                <div className="url-input" style={{ marginTop: 6 }}>
-                  <Link2 size={16} color="var(--primary)" style={{ flexShrink: 0 }} />
-                  <input
-                    id="wizard-url"
-                    value={url}
-                    onChange={(e) => setUrl(e.target.value)}
-                    placeholder="https://www.linkedin.com/posts/…"
-                    onKeyDown={(e) => { if (e.key === "Enter" && url.trim() && busy !== "inspiration") void readInspiration(); }}
-                  />
-                  <button className="primary-button" style={{ flexShrink: 0 }} disabled={!url.trim() || busy === "inspiration"} onClick={readInspiration}>
-                    {busy === "inspiration" ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />} Lire le post
-                  </button>
-                </div>
-                <p className="role-picker-hint" style={{ marginTop: 8 }}>
-                  Le post sert de référence : l&apos;IA en reprend l&apos;angle et la forme, mais réécrit tout pour ton métier — jamais de copier-coller.
-                </p>
+                {!isIg && (
+                  <>
+                    <label className="role-picker-label" htmlFor="wizard-url">Lien du post LinkedIn</label>
+                    <div className="url-input" style={{ marginTop: 6 }}>
+                      <Link2 size={16} color="var(--primary)" style={{ flexShrink: 0 }} />
+                      <input
+                        id="wizard-url"
+                        value={url}
+                        onChange={(e) => setUrl(e.target.value)}
+                        placeholder="https://www.linkedin.com/posts/…"
+                        onKeyDown={(e) => { if (e.key === "Enter" && url.trim() && busy !== "inspiration") void readInspiration(); }}
+                      />
+                      <button className="primary-button" style={{ flexShrink: 0 }} disabled={!url.trim() || busy === "inspiration"} onClick={readInspiration}>
+                        {busy === "inspiration" ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />} Lire le post
+                      </button>
+                    </div>
+                    <p className="role-picker-hint" style={{ marginTop: 8 }}>
+                      Le post sert de référence : l&apos;IA en reprend l&apos;angle et la forme, mais réécrit tout pour ton métier — jamais de copier-coller.
+                    </p>
+                  </>
+                )}
                 {pasteMode && (
-                  <div style={{ marginTop: 16 }}>
-                    <label className="role-picker-label" htmlFor="wizard-paste">Ou colle le texte du post</label>
+                  <div style={{ marginTop: isIg ? 0 : 16 }}>
+                    <label className="role-picker-label" htmlFor="wizard-paste">
+                      {isIg ? "Colle le texte (légende ou script) du reel qui t'a inspiré" : "Ou colle le texte du post"}
+                    </label>
+                    {isIg && (
+                      <p className="role-picker-hint" style={{ margin: "4px 0 8px" }}>
+                        Le reel sert de référence : l&apos;IA en reprend l&apos;angle et la forme, mais réécrit tout pour ton métier — jamais de copier-coller.
+                      </p>
+                    )}
                     <textarea
                       id="wizard-paste"
                       className="variant-text"
@@ -4485,7 +4978,7 @@ function PostWizardModal({
               <>
                 <div className="card" style={{ padding: 12, background: "var(--surface)", marginBottom: 14 }}>
                   <p className="role-picker-hint" style={{ margin: "0 0 6px" }}>
-                    Post lu{inspiration.author ? ` — ${inspiration.author}` : ""} :
+                    {isIg ? "Reel lu" : "Post lu"}{inspiration.author ? ` — ${inspiration.author}` : ""} :
                   </p>
                   <p style={{ margin: 0, fontSize: 13, whiteSpace: "pre-wrap", maxHeight: 160, overflowY: "auto" }}>{inspiration.text}</p>
                 </div>
@@ -4496,11 +4989,11 @@ function PostWizardModal({
                   value={idea}
                   onChange={(e) => setIdea(e.target.value)}
                   rows={3}
-                  placeholder="L'angle de ton post, en une phrase"
+                  placeholder={isIg ? "L'angle de ton reel, en une phrase" : "L'angle de ton post, en une phrase"}
                   style={{ width: "100%", boxSizing: "border-box", marginTop: 6 }}
                 />
                 <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                  <button className="secondary-button" onClick={() => { setInspiration(null); setPasteMode(false); }}>Changer de post</button>
+                  <button className="secondary-button" onClick={() => { setInspiration(null); setPasteMode(isIg); }}>{isIg ? "Changer de reel" : "Changer de post"}</button>
                   <button className="primary-button" disabled={idea.trim().length < 3} onClick={() => goToRole(idea)}>
                     Continuer <ChevronRight size={14} />
                   </button>
@@ -4594,8 +5087,8 @@ function PostWizardModal({
                   );
                 })}
 
-                {/* Toujours proposée : le client doit pouvoir refuser toute structure.
-                    Et quand la bibliothèque est vide, c'est la seule option — le
+                {/* Toujours proposée : le client doit pouvoir refuser toute structure/trame.
+                    Et quand la bibliothèque est vide (LinkedIn), c'est la seule option — le
                     parcours ne s'arrête pas là pour autant. */}
                 <button
                   className={`wizard-role-card ${templateId === "" ? "selected" : ""}`}
@@ -4607,10 +5100,12 @@ function PostWizardModal({
                     <span className="wizard-idea-check">
                       {templateId === "" ? <CheckCircle2 size={16} /> : <span className="wizard-idea-dot" />}
                     </span>
-                    <strong>Structure libre</strong>
+                    <strong>{isIg ? "Trame libre" : "Structure libre"}</strong>
                   </span>
                   <span className="wizard-role-goal">
-                    {structures.length === 0
+                    {isIg
+                      ? "Aucune trame imposée : l'IA choisit elle-même la structure la plus adaptée à l'idée."
+                      : structures.length === 0
                       ? "Ta bibliothèque est vide — ajoute des posts dans Ma bibliothèque pour qu'on te propose des structures."
                       : "Aucune structure imposée : l'IA écrit la forme qu'elle juge la meilleure."}
                   </span>
@@ -4619,11 +5114,11 @@ function PostWizardModal({
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center" }}>
               <span className="role-picker-hint" style={{ marginRight: "auto" }}>
-                1 post — {WIZARD_POST_CREDITS} crédits.
+                {isIg ? "1 pack reel" : "1 post"} — {WIZARD_POST_CREDITS} crédits.
               </span>
               <button className="primary-button" disabled={busy === "launch" || busy === "structure"} onClick={launch}>
                 {busy === "launch" ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
-                {busy === "launch" ? "Lancement…" : "Générer le post"}
+                {busy === "launch" ? "Lancement…" : isIg ? "Générer le reel" : "Générer le post"}
               </button>
             </div>
           </div>
@@ -4634,10 +5129,12 @@ function PostWizardModal({
 }
 
 function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJobCreated, imageJobs, onImageJobCreated, onRework }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { topic: string; nonce: number } | null; generationJobs: GenerationJob[]; onGenerationJobCreated: (job: GenerationJob) => void; imageJobs: ImageJob[]; onImageJobCreated: (job: ImageJob) => void; onRework?: (post: string) => void }) {
-  // Les parcours inachevés vivent dans `_wizardDrafts` (module-level) : ils
-  // s'affichent en lignes dans la file, au-dessus des posts. `wizardId` ne dit
-  // que lequel est ouvert dans la pop-up (null = aucune pop-up).
-  const [drafts, setDrafts] = useState<WizardDraft[]>(_wizardDrafts);
+  // Les parcours inachevés vivent dans `_wizardDrafts` (module-level, partagé
+  // avec Instagram — ALE-291) : ils s'affichent en lignes dans la file, au-dessus
+  // des posts. `wizardId` ne dit que lequel est ouvert dans la pop-up (null =
+  // aucune pop-up). On ne garde ici que les brouillons LinkedIn.
+  const [allDrafts, setAllDrafts] = useState<WizardDraft[]>(_wizardDrafts);
+  const drafts = useMemo(() => allDrafts.filter((d) => d.platform === "linkedin"), [allDrafts]);
   const [wizardId, setWizardId] = useState<string | null>(null);
   const [templates, setTemplates] = useState<PostTemplate[]>([]);
   const [expanded, setExpanded] = useState<string | null>(_genCache.expanded);
@@ -4895,13 +5392,13 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
    *  ouvert sans rien y faire, lui, ne laisse pas de trace. */
   function closeWizard() {
     _wizardDrafts = _wizardDrafts.filter(wizardDraftHasContent);
-    setDrafts(_wizardDrafts);
+    setAllDrafts(_wizardDrafts);
     setWizardId(null);
   }
 
   function discardDraft(id: string) {
     _wizardDrafts = _wizardDrafts.filter((d) => d.id !== id);
-    setDrafts(_wizardDrafts);
+    setAllDrafts(_wizardDrafts);
   }
 
   return (
@@ -13377,7 +13874,9 @@ function ContentHub({
           />
         )
       )}
-      {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs} onGenerationJobCreated={onGenerationJobCreated} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} onRework={onRework} />}
+      {/* ALE-291 : la file LinkedIn ne doit voir que ses propres jobs, jamais les
+          packs reel Instagram (même cloisonnement que le corpus). */}
+      {tab === "generator" && <Generator isAuthed={isAuthed} requireAuth={requireAuth} seed={seed} generationJobs={generationJobs.filter((j) => generationJobPlatform(j) === "linkedin")} onGenerationJobCreated={onGenerationJobCreated} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} onRework={onRework} />}
       {tab === "library" && (
         <MyContentHub isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} onInspire={onInspire} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
       )}
@@ -14228,6 +14727,8 @@ export default function Home() {
                   setLoadedReport({ content: markdown, name, path: "", updated_at: Date.now() / 1000 });
                   setContentTab("analyses");
                 }}
+                generationJobs={generationJobs}
+                onGenerationJobCreated={onGenerationJobCreated}
               />
             ) : (
               <InstagramPlaceholder />
