@@ -1844,6 +1844,159 @@ const _igGenCache: { edited: Record<string, IgPackFields>; expanded: string | nu
   expanded: null,
 };
 
+// ALE-293 : simple lecture du statut de connexion Instagram (la connexion elle-
+// même se fait dans Mon profil → Connexions, ALE-292). Sert juste à savoir si
+// le bouton « Publier » peut s'activer.
+function useInstagramConnection(isAuthed: boolean) {
+  const [connected, setConnected] = useState(false);
+  const [accountName, setAccountName] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isAuthed) { setConnected(false); setAccountName(null); return; }
+    let cancelled = false;
+    authHeaders()
+      .then((h) => fetch(`${DIRECT_API_URL}/me/instagram/status`, { headers: h }))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setConnected(!!data.connected);
+        setAccountName(data.account_name || null);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isAuthed]);
+  return { connected, accountName };
+}
+
+/** Upload la vidéo tournée pour un reel (multipart — trop volumineux pour du base64 JSON). */
+async function uploadInstagramReelVideo(file: File): Promise<string> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${DIRECT_API_URL}/me/instagram/reel-video`, {
+    method: "POST",
+    headers: await authHeaders(),
+    body: form,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Upload de la vidéo impossible");
+  return data.url as string;
+}
+
+/** Publie immédiatement un reel Instagram (vidéo déjà uploadée + caption + hashtags). */
+async function publishInstagramReel(params: { caption: string; videoUrl: string; hashtags: string[] }): Promise<void> {
+  const res = await fetch(`${DIRECT_API_URL}/me/instagram/publish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    body: JSON.stringify({ caption: params.caption, video_url: params.videoUrl, hashtags: params.hashtags }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Publication Instagram impossible");
+}
+
+const MAX_REEL_VIDEO_BYTES = 100 * 1024 * 1024;
+
+/** Bloc partagé « uploader ma vidéo + publier » — utilisé dans la file du
+ *  Générateur ET dans Ma bibliothèque (un pack peut être généré maintenant et
+ *  publié plus tard, une fois la vidéo tournée). */
+function InstagramPublishBlock({
+  caption,
+  hashtags,
+  igConnected,
+  igAccountName,
+}: {
+  caption: string;
+  hashtags: string[];
+  igConnected: boolean;
+  igAccountName: string | null;
+}) {
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [videoName, setVideoName] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [published, setPublished] = useState(false);
+  const [error, setError] = useState("");
+
+  async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError("");
+    if (!/^video\/(mp4|quicktime)$/i.test(file.type)) {
+      setError("Formats acceptés : MP4 ou MOV.");
+      return;
+    }
+    if (file.size > MAX_REEL_VIDEO_BYTES) {
+      setError(`Vidéo trop volumineuse (${Math.round(file.size / 1024 / 1024)} Mo, ${MAX_REEL_VIDEO_BYTES / 1024 / 1024} Mo maximum).`);
+      return;
+    }
+    setUploading(true);
+    setPublished(false);
+    try {
+      const url = await uploadInstagramReelVideo(file);
+      setVideoUrl(url);
+      setVideoName(file.name);
+    } catch (err: any) {
+      setError(err.message || "Upload impossible");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function doPublish() {
+    if (!videoUrl) return;
+    setPublishing(true);
+    setError("");
+    try {
+      await publishInstagramReel({ caption, hashtags, videoUrl });
+      setPublished(true);
+    } catch (err: any) {
+      setError(err.message || "Publication impossible");
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+      <label className="role-picker-label" style={{ display: "block", marginBottom: 6 }}>
+        Ta vidéo tournée
+      </label>
+      {!igConnected && (
+        <p className="role-picker-hint" style={{ marginBottom: 8 }}>
+          Connecte ton compte Instagram (Mon profil → Connexions) pour pouvoir publier.
+        </p>
+      )}
+      {videoUrl ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-start" }}>
+          <video controls src={videoUrl} style={{ maxWidth: 220, borderRadius: 8 }} />
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>{videoName}</span>
+        </div>
+      ) : (
+        <label className="secondary-button" style={{ display: "inline-flex", cursor: uploading ? "wait" : "pointer" }}>
+          {uploading ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />}
+          {uploading ? "Envoi en cours…" : "Choisir la vidéo (MP4/MOV)"}
+          <input type="file" accept="video/mp4,video/quicktime" onChange={onFileChange} disabled={uploading} style={{ display: "none" }} />
+        </label>
+      )}
+      {error && <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{error}</div>}
+      {videoUrl && (
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <button
+            className="primary-button"
+            disabled={!igConnected || publishing || published || !caption.trim()}
+            onClick={doPublish}
+          >
+            {publishing ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />}
+            {published ? "Publié ✓" : publishing ? "Publication…" : igAccountName ? `Publier sur ${igAccountName}` : "Publier sur Instagram"}
+          </button>
+          <button className="secondary-button" onClick={() => { setVideoUrl(null); setVideoName(null); setPublished(false); }}>
+            Changer de vidéo
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InstagramGenerator({
   isAuthed,
   requireAuth,
@@ -1868,6 +2021,7 @@ function InstagramGenerator({
   const [savedPost, setSavedPost] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [showAllLines, setShowAllLines] = useState(false);
+  const igConnection = useInstagramConnection(isAuthed);
 
   const lines = useMemo(() => buildPostLines(generationJobs), [generationJobs]);
   const shownLines = showAllLines
@@ -2055,6 +2209,12 @@ function InstagramGenerator({
                               {savedPost === key ? "Sauvegardé ✓" : "Sauvegarder dans Ma bibliothèque"}
                             </button>
                           </div>
+                          <InstagramPublishBlock
+                            caption={f.caption}
+                            hashtags={f.hashtagsText.split(/\s+/).map((h) => h.trim()).filter(Boolean)}
+                            igConnected={igConnection.connected}
+                            igAccountName={igConnection.accountName}
+                          />
                         </div>
                       )}
                     </div>
@@ -2112,6 +2272,7 @@ function InstagramLibraryView({ isAuthed }: { isAuthed: boolean }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const igConnection = useInstagramConnection(isAuthed);
 
   const load = useCallback(async () => {
     if (!isAuthed) { setPosts([]); return; }
@@ -2177,6 +2338,12 @@ function InstagramLibraryView({ isAuthed }: { isAuthed: boolean }) {
                 {details?.script && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Script :</strong><br />{details.script}</p>}
                 {post.post && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Caption :</strong><br />{post.post}</p>}
                 {!!details?.hashtags?.length && <p style={{ fontSize: 13, color: "var(--muted)" }}>{details.hashtags.join(" ")}</p>}
+                <InstagramPublishBlock
+                  caption={post.post || ""}
+                  hashtags={details?.hashtags || []}
+                  igConnected={igConnection.connected}
+                  igAccountName={igConnection.accountName}
+                />
               </div>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
