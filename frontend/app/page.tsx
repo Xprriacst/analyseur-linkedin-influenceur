@@ -532,7 +532,12 @@ type ImageJob = {
   reference_template_id: string | null;
   reference_self_photo_ids?: string[] | null;
   target_key: string;
-  result: { image_data?: string; prompt_used?: string; credits?: number | null } | null;
+  // ⚠️ ABSENT de la liste (`GET /generate-image/jobs`) : l'image pèse ~1,3 à 2 Mo
+  // et la liste est pollée toutes les 5 s — la renvoyer à chaque passage faisait
+  // tomber le serveur (OOM). Il est hydraté une seule fois par job, quand celui-ci
+  // passe `done`, via la route unitaire (cf. `hydrateImageJob`). Tester
+  // `job.result?.image_data` avant de s'en servir, jamais `job.status` seul.
+  result?: { image_data?: string; prompt_used?: string; credits?: number | null } | null;
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -555,6 +560,27 @@ function imageJobIsActive(j: ImageJob): boolean {
 /** Job d'image le plus récent pour un `target_key` donné (la liste est triée du plus récent au plus ancien). */
 function latestImageJobFor(jobs: ImageJob[], targetKey: string): ImageJob | null {
   return jobs.find((j) => j.target_key === targetKey) ?? null;
+}
+
+// Jobs dont l'image a déjà été récupérée — au niveau module, comme les caches
+// d'écran : le Set doit survivre aux re-renders, sinon on retéléchargerait
+// l'image à chaque passage du polling (c'est précisément ce qu'on corrige).
+const _hydratedImageJobIds = new Set<string>();
+
+/**
+ * Fusionne la liste fraîche (sans image) avec ce qu'on a déjà en mémoire.
+ *
+ * La liste pollée ne porte plus `result` : sans cette fusion, chaque passage
+ * effacerait l'image déjà récupérée et les écrans la verraient disparaître.
+ */
+function mergeImageJobs(prev: ImageJob[], fresh: ImageJob[]): ImageJob[] {
+  if (!prev.length) return fresh;
+  const known = new Map(prev.map((j) => [j.id, j]));
+  return fresh.map((j) => {
+    if (j.result?.image_data) return j;
+    const cached = known.get(j.id);
+    return cached?.result?.image_data ? { ...j, result: cached.result } : j;
+  });
 }
 
 const ITEM_STATUS_LABELS: Record<ItemStatus, string> = {
@@ -3092,7 +3118,10 @@ function ImageGenModal({
   });
   const job = imageJobs.find((j) => j.id === createdJobId) ?? null;
   const active = !!job && imageJobIsActive(job);
-  const done = job?.status === "done";
+  // On attend l'image elle-même, pas seulement le statut : elle arrive au
+  // passage de polling qui suit la complétion (la liste ne la porte plus).
+  // Sans ça, la pop-up annoncerait « Image générée » avec une vignette cassée.
+  const done = job?.status === "done" && !!job.result?.image_data;
   const notifiedCreditsRef = useRef<string | null>(null);
   const identityMode = selectedSelfIds.length > 0;
 
@@ -3185,12 +3214,15 @@ function ImageGenModal({
   // Rafraîchit le solde affiché une seule fois par job terminé (l'attache de
   // l'image au post, elle, est faite par l'écran appelant — pas ici — pour
   // fonctionner même si cette pop-up a été fermée entre-temps).
+  // On attend que le résultat soit récupéré : le solde y est porté, et la liste
+  // pollée ne le contient plus. Marquer le job comme notifié avant son arrivée
+  // ferait rater le rafraîchissement du compteur de crédits.
   useEffect(() => {
-    if (job?.status === "done" && notifiedCreditsRef.current !== job.id) {
+    if (job?.status === "done" && job.result && notifiedCreditsRef.current !== job.id) {
       notifiedCreditsRef.current = job.id;
-      emitCredits(job.result?.credits);
+      emitCredits(job.result.credits);
     }
-  }, [job?.status, job?.id, job?.result?.credits]);
+  }, [job?.status, job?.id, job?.result]);
 
   async function generate() {
     setError("");
@@ -13445,11 +13477,34 @@ export default function Home() {
   const anyGenerationJobActive = generationJobs.some(generationJobIsActive);
 
   // ALE-261 : génération d'image IA en file d'attente.
+  //
+  // La liste ne porte que l'état : l'image (~1,3 à 2 Mo) est récupérée une seule
+  // fois par job, à sa complétion. Avant ce découpage, chaque passage du polling
+  // (toutes les 5 s) retéléchargeait toutes les images passées — jusqu'à 45 Mo
+  // par appel — et faisait tomber le backend par saturation mémoire.
+  async function hydrateImageJob(id: string) {
+    if (_hydratedImageJobIds.has(id)) return;
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/generate-image/jobs/${id}`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok || !data?.result?.image_data) return;   // échec : on retentera au passage suivant
+      _hydratedImageJobIds.add(id);
+      setImageJobs((prev) => prev.map((j) => (j.id === id ? { ...j, result: data.result } : j)));
+    } catch { /* ignore — retenté au passage suivant */ }
+  }
+
   async function loadImageJobs() {
     try {
       const res = await fetch(`${DIRECT_API_URL}/generate-image/jobs`, { headers: await authHeaders() });
       const data = await res.json();
-      if (res.ok && Array.isArray(data)) setImageJobs(data);
+      if (!res.ok || !Array.isArray(data)) return;
+      const fresh = data as ImageJob[];
+      setImageJobs((prev) => mergeImageJobs(prev, fresh));
+      // En série : au premier chargement il peut y avoir plusieurs images à
+      // rapatrier, autant ne pas les demander toutes d'un coup.
+      for (const job of fresh) {
+        if (job.status === "done") await hydrateImageJob(job.id);
+      }
     } catch { /* ignore */ }
   }
 
@@ -13547,7 +13602,10 @@ export default function Home() {
   // Vit dans Home (comme les jobs de génération de posts) pour que fermer la
   // pop-up ImageGenModal ou changer d'onglet n'interrompe jamais le polling.
   useEffect(() => {
-    if (!isAuthed) { setImageJobs([]); return; }
+    // Le Set des images déjà récupérées se vide avec l'état : sinon, après une
+    // déconnexion/reconnexion, les jobs seraient considérés comme déjà hydratés
+    // et leurs images ne rejoindraient plus jamais leur post.
+    if (!isAuthed) { setImageJobs([]); _hydratedImageJobIds.clear(); return; }
     loadImageJobs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, session?.access_token]);
