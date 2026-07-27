@@ -35,6 +35,18 @@ IMAGE_CONTENT_TYPES = {
     "image/webp": "webp",
     "image/gif": "gif",
 }
+# ALE-293 : upload de la vidéo tournée pour un reel Instagram. Meta accepte
+# jusqu'à 300 Mo, mais on plafonne plus bas (100 Mo) pour protéger la mémoire
+# du web service Render — un fichier de cette taille traverse entièrement le
+# process (lecture + upload vers Zernio) avant d'être libéré, et l'historique
+# d'OOM du service (2026-06-25, 2026-07-10) rend une marge large nécessaire.
+# Un reel de 90 s (le max Instagram) tient largement dans cette limite à un
+# bitrate raisonnable.
+VIDEO_CONTENT_TYPES = {
+    "video/mp4": "mp4",
+    "video/quicktime": "mov",
+}
+MAX_REEL_VIDEO_BYTES = 100 * 1024 * 1024
 _DATA_URL_RE = re.compile(r"^data:(?P<content_type>[-\w.]+/[-+\w.]+);base64,(?P<data>.+)$", re.DOTALL)
 
 
@@ -83,7 +95,7 @@ def _sanitize_filename(filename: str | None, default_ext: str, index: int = 1) -
     name = (filename or "").strip().split("/")[-1].split("\\")[-1]
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-")
     if not name:
-        name = f"linkedin-image-{index}.{default_ext}"
+        name = f"media-{index}.{default_ext}"
     if "." not in name:
         name = f"{name}.{default_ext}"
     return name[:120]
@@ -133,7 +145,7 @@ def _wait_media_ready(public_url: str) -> None:
             time.sleep(MEDIA_READY_DELAY_S)
 
 
-def upload_media_bytes(filename: str, content_type: str, data: bytes) -> str:
+def upload_media_bytes(filename: str, content_type: str, data: bytes, timeout: int = 120) -> str:
     """Upload media bytes to Zernio storage and return the public URL."""
     presign = _request(
         "POST",
@@ -149,7 +161,7 @@ def upload_media_bytes(filename: str, content_type: str, data: bytes) -> str:
     req.add_header("Content-Type", content_type)
     req.add_header("Content-Length", str(len(data)))
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp.read()
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
@@ -158,6 +170,21 @@ def upload_media_bytes(filename: str, content_type: str, data: bytes) -> str:
         raise ZernioError(f"Upload média Zernio injoignable : {exc.reason}") from exc
     _wait_media_ready(public_url)
     return public_url
+
+
+def upload_reel_video(filename: str | None, content_type: str, data: bytes) -> str:
+    """Upload une vidéo de reel (bytes bruts, pas de data URL — trop volumineux
+    pour transiter en base64 dans un JSON) et retourne son URL publique."""
+    content_type = (content_type or "").lower().strip()
+    if content_type not in VIDEO_CONTENT_TYPES:
+        raise ZernioError("Format vidéo non supporté. Utilise MP4 ou MOV.")
+    if not data:
+        raise ZernioError("Vidéo invalide : fichier vide.")
+    if len(data) > MAX_REEL_VIDEO_BYTES:
+        mb = MAX_REEL_VIDEO_BYTES // (1024 * 1024)
+        raise ZernioError(f"Vidéo trop volumineuse ({len(data) // (1024 * 1024)} Mo, {mb} Mo maximum).")
+    safe_name = _sanitize_filename(filename, VIDEO_CONTENT_TYPES[content_type])
+    return upload_media_bytes(safe_name, content_type, data, timeout=300)
 
 
 def prepare_image_media_items(images: list[dict[str, Any]] | None) -> list[dict[str, Any]]:

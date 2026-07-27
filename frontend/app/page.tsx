@@ -2809,6 +2809,60 @@ function useReddit(isAuthed: boolean) {
   return { status, busy, error, connect };
 }
 
+// ALE-292 — connexion Instagram (publication) via Zernio. Statut structurellement
+// identique à LinkedIn (id + nom de compte) : réutilise le même type.
+type InstagramStatus = LinkedInStatus;
+
+function useInstagramPublish(isAuthed: boolean) {
+  const [status, setStatus] = useState<InstagramStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!isAuthed) { setStatus(null); return; }
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/instagram/status`, { headers: await authHeaders() });
+        if (res.ok) setStatus(await res.json());
+      } catch { /* ignore */ }
+    })();
+  }, [isAuthed]);
+
+  async function connect() {
+    setError("");
+    setBusy(true);
+    try {
+      const redirect = `${window.location.origin}${window.location.pathname}?instagram=connected`;
+      const res = await fetch(`${DIRECT_API_URL}/me/instagram/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ redirect_url: redirect }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion Instagram impossible");
+      window.location.href = data.auth_url;
+    } catch (err: any) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    setError("");
+    setBusy(true);
+    try {
+      await fetch(`${DIRECT_API_URL}/me/instagram`, { method: "DELETE", headers: await authHeaders() });
+      setStatus((prev) => prev ? { ...prev, connected: false, account_id: null } : prev);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return { status, busy, error, connect, disconnect };
+}
+
 type SlackStatus = {
   connected: boolean;
   configured: boolean;
@@ -9826,7 +9880,9 @@ function ProfileView({
   const linkedin = useLinkedIn(isAuthed);
   const twitter = useTwitter(isAuthed);
   const reddit = useReddit(isAuthed);
-  // ALE-59 : la ligne Reddit de Connexions n'existe que pour un compte flaggé.
+  const instagramPublish = useInstagramPublish(isAuthed);
+  // ALE-59/292 : les lignes Reddit et Instagram (publication) de Connexions
+  // n'existent que pour un compte flaggé.
   const featureFlags = useFeatures(isAuthed);
   const slack = useSlack(isAuthed);
   const outreach = useLinkedInOutreach(isAuthed);
@@ -10266,6 +10322,43 @@ function ProfileView({
             }
           />
           {twitter.error ? <div className="error" style={{ marginBottom: 12 }}>{twitter.error}</div> : null}
+
+          {/* ALE-292 : publication Instagram (Reels) — nécessite un compte Business
+              ou Creator côté Meta (les comptes personnels sont exclus de l'API,
+              contrainte Instagram/Zernio, pas de contournement possible). */}
+          {featureFlags.has("instagram") && <SettingRow
+            icon={<InstagramIcon size={18} />}
+            name="Instagram (publication)"
+            why={
+              instagramPublish.status?.connected
+                ? instagramPublish.status.account_name
+                  ? `Publier tes reels en un clic · ${instagramPublish.status.account_name}`
+                  : "Publier tes reels en un clic"
+                : "Nécessite un compte Instagram Business ou Creator (pas personnel)"
+            }
+            right={
+              instagramPublish.status?.connected ? (
+                <>
+                  <span className="status-pill ok"><CheckCircle2 size={14} /> Connecté</span>
+                  <button
+                    className="secondary-button"
+                    onClick={() => { if (window.confirm("Déconnecter le compte Instagram ?")) instagramPublish.disconnect(); }}
+                    disabled={instagramPublish.busy}
+                    style={{ fontSize: 12 }}
+                  >
+                    {instagramPublish.busy ? <Loader2 size={12} className="spinning" /> : null}
+                    Déconnecter
+                  </button>
+                </>
+              ) : (
+                <button className="primary-button" onClick={instagramPublish.connect} disabled={instagramPublish.busy}>
+                  {instagramPublish.busy ? <Loader2 size={14} className="spinning" /> : null}
+                  {instagramPublish.busy ? "Redirection…" : "Connecter"}
+                </button>
+              )
+            }
+          />}
+          {featureFlags.has("instagram") && instagramPublish.error ? <div className="error" style={{ marginBottom: 12 }}>{instagramPublish.error}</div> : null}
 
           {featureFlags.has("reddit") && <SettingRow
             icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="#ff4500" style={{ flexShrink: 0 }}><path d="M22 12.06c0-1.22-.99-2.2-2.2-2.2-.6 0-1.13.24-1.53.62-1.5-1.08-3.57-1.78-5.87-1.86l1-4.71 3.27.7a1.58 1.58 0 1 0 .16-.78l-3.65-.78a.4.4 0 0 0-.47.31l-1.12 5.25c-2.34.07-4.44.77-5.96 1.87-.4-.38-.93-.62-1.53-.62-1.21 0-2.2.98-2.2 2.2 0 .9.53 1.66 1.3 2-.03.22-.05.44-.05.67 0 3.39 3.95 6.14 8.82 6.14s8.82-2.75 8.82-6.14c0-.22-.02-.45-.05-.66.77-.35 1.31-1.12 1.31-2.01zM6.7 13.62c0-.87.71-1.58 1.58-1.58s1.58.71 1.58 1.58-.71 1.58-1.58 1.58-1.58-.71-1.58-1.58zm8.85 4.17c-1.08 1.08-3.15 1.16-3.76 1.16s-2.68-.08-3.75-1.16a.41.41 0 0 1 .58-.58c.68.68 2.13.92 3.17.92s2.5-.24 3.18-.92a.41.41 0 1 1 .58.58zm-.28-2.59c-.87 0-1.58-.71-1.58-1.58s.71-1.58 1.58-1.58 1.58.71 1.58 1.58-.71 1.58-1.58 1.58z"/></svg>}
@@ -13912,6 +14005,22 @@ export default function Home() {
         await fetch(`${DIRECT_API_URL}/me/x/refresh`, { method: "POST", headers: await authHeaders() });
       } catch { /* ignore */ }
       params.delete("x");
+      const qs = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+      setView("profile");
+    })();
+  }, [isAuthed]);
+
+  // Retour du flux OAuth Instagram (Zernio, ALE-292) : même logique que X/LinkedIn.
+  useEffect(() => {
+    if (!isAuthed) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("instagram") !== "connected") return;
+    (async () => {
+      try {
+        await fetch(`${DIRECT_API_URL}/me/instagram/refresh`, { method: "POST", headers: await authHeaders() });
+      } catch { /* ignore */ }
+      params.delete("instagram");
       const qs = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
       setView("profile");

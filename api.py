@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Header, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -724,6 +724,175 @@ def me_linkedin_publish(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft, "media_count": len(payload.images)}
+
+
+# ── ALE-292 : Connexion Instagram via Zernio ──────────────────────────────────
+# Même patron que LinkedIn (compte + nom stockés sur le profil éditorial) —
+# gardé derrière le flag `instagram` existant (même flag que le dégrisage de la
+# sidebar, ALE-59) : masquer le bouton ne protège rien, l'endpoint reste
+# appelable par qui connaît son chemin.
+
+PLATFORM_INSTAGRAM = "instagram"
+
+
+class InstagramConnectRequest(BaseModel):
+    redirect_url: Optional[str] = Field(default=None, max_length=1000)
+
+
+def _instagram_status(token: str) -> dict[str, Any]:
+    profile = db.get_editorial_profile(token) or {}
+    return {
+        "configured": zernio.enabled(),
+        "connected": bool(profile.get("zernio_instagram_account_id")),
+        "account_id": profile.get("zernio_instagram_account_id"),
+        "account_name": profile.get("zernio_instagram_account_name"),
+        "profile_id": profile.get("zernio_profile_id"),
+        "connected_at": profile.get("zernio_instagram_connected_at"),
+    }
+
+
+@app.get("/me/instagram/status")
+def me_instagram_status(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Whether the user has an Instagram account connected through Zernio."""
+    require_feature(token, "instagram")
+    return _instagram_status(token)
+
+
+@app.post("/me/instagram/connect")
+def me_instagram_connect(
+    payload: InstagramConnectRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Return an Instagram OAuth URL the user opens to authorize publishing.
+
+    ⚠️ Instagram exige un compte Business ou Creator côté Meta — un compte
+    personnel ne peut pas être connecté (le retour Zernio l'indiquera).
+    """
+    require_feature(token, "instagram")
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    try:
+        profile_id = _ensure_zernio_profile(token)
+        auth_url = zernio.get_connect_url(profile_id, redirect_url=payload.redirect_url, platform=PLATFORM_INSTAGRAM)
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"auth_url": auth_url}
+
+
+@app.post("/me/instagram/refresh")
+def me_instagram_refresh(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Re-read the connected Instagram account from Zernio (call after OAuth return)."""
+    require_feature(token, "instagram")
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    profile_id = profile.get("zernio_profile_id")
+    if not profile_id:
+        return _instagram_status(token)
+    try:
+        account = zernio.find_account(profile_id, PLATFORM_INSTAGRAM)
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    account_id = account.get("_id") if account else None
+    account_name = zernio.account_display_name(account)
+    db.set_zernio_instagram_account(token, account_id, account_name)
+    return _instagram_status(token)
+
+
+@app.delete("/me/instagram")
+def me_instagram_disconnect(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Clear the user's connected Instagram account."""
+    require_feature(token, "instagram")
+    db.set_zernio_instagram_account(token, None)
+    return _instagram_status(token)
+
+
+# ── ALE-293 : upload de la vidéo tournée + publication du reel ───────────────
+# La vidéo (jusqu'à 100 Mo, cf. zernio.MAX_REEL_VIDEO_BYTES) ne peut pas
+# transiter en base64 dans un JSON comme les images (ALE-179) — endpoint
+# multipart dédié. Upload puis publication sont deux appels séparés : le
+# client voit l'aperçu vidéo avant de publier, et peut réessayer la
+# publication sans re-uploader si Zernio échoue.
+
+@app.post("/me/instagram/reel-video")
+async def me_instagram_upload_reel_video(
+    request: Request,
+    file: UploadFile = File(...),
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Upload la vidéo tournée pour un reel et retourne son URL publique."""
+    require_feature(token, "instagram")
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    # Refus rapide sur la taille annoncée, avant de lire le corps en mémoire.
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > zernio.MAX_REEL_VIDEO_BYTES:
+        mb = zernio.MAX_REEL_VIDEO_BYTES // (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"Vidéo trop volumineuse ({mb} Mo maximum).")
+    data = await file.read()
+    try:
+        url = zernio.upload_reel_video(file.filename, file.content_type or "", data)
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"url": url}
+
+
+class InstagramReelPublishRequest(BaseModel):
+    caption: str = Field(..., min_length=1, max_length=2200)
+    video_url: str = Field(..., min_length=8, max_length=2000)
+    hashtags: list[str] = Field(default_factory=list, max_length=30)
+    # Reel visible uniquement dans l'onglet Reels (False) ou aussi dans le feed (True).
+    share_to_feed: bool = Field(default=True)
+    thumbnail_url: Optional[str] = Field(default=None, max_length=2000)
+
+
+@app.post("/me/instagram/publish")
+def me_instagram_publish(
+    payload: InstagramReelPublishRequest,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Publie immédiatement un reel Instagram (vidéo + caption + hashtags)."""
+    require_feature(token, "instagram")
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    account_id = profile.get("zernio_instagram_account_id")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="Aucun compte Instagram connecté. Connecte-le d'abord.")
+
+    import urllib.parse
+    video_url = payload.video_url.strip()
+    parsed = urllib.parse.urlparse(video_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=422, detail="URL de vidéo invalide.")
+
+    caption = payload.caption.strip()
+    hashtags = [h.strip() for h in payload.hashtags if h.strip()]
+    if hashtags:
+        tags_line = " ".join(h if h.startswith("#") else f"#{h}" for h in hashtags)
+        caption = f"{caption}\n\n{tags_line}"[:2200]
+
+    platform_specific_data: dict[str, Any] = {
+        "contentType": "reels",
+        "shareToFeed": payload.share_to_feed,
+        "isAiGenerated": True,
+    }
+    if payload.thumbnail_url:
+        platform_specific_data["instagramThumbnail"] = payload.thumbnail_url.strip()
+
+    try:
+        result = zernio.create_post(
+            caption,
+            account_id,
+            publish_now=True,
+            media_items=[{"type": "video", "url": video_url}],
+            platform=PLATFORM_INSTAGRAM,
+            platform_specific_data=platform_specific_data,
+        )
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=f"Publication Instagram impossible : {exc}") from exc
+    post = result.get("post") or result
+    return {"ok": True, "post_id": post.get("_id"), "post": post}
 
 
 # ── ALE-96 : Planification LinkedIn ──────────────────────────────────────────
