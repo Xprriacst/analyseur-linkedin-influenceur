@@ -138,23 +138,83 @@ def _date_directive() -> str:
     return base
 
 
+def _repair_inner_quotes(raw: str) -> str:
+    """Échappe les guillemets `"` non échappés à l'intérieur des valeurs texte.
+
+    Le modèle glisse parfois un guillemet dans le corps d'un post (ex. il m'a
+    dit "banco") sans l'échapper en `\\"`. `strict=False` ne relâche que les
+    caractères de contrôle, pas ça : json.loads casse avec « Expecting ','
+    delimiter » en plein milieu du post. On rejoue le texte caractère par
+    caractère : un `"` rencontré à l'intérieur d'une chaîne n'est traité comme
+    fermeture que si le prochain caractère significatif est structurel
+    (`,` `:` `}` `]` ou la fin) ; sinon c'est un guillemet interne → on
+    l'échappe.
+    """
+    out: list[str] = []
+    in_string = False
+    i = 0
+    n = len(raw)
+    while i < n:
+        ch = raw[i]
+        if not in_string:
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+            i += 1
+            continue
+        # dans une chaîne
+        if ch == "\\" and i + 1 < n:
+            # séquence d'échappement : on recopie les deux caractères tels quels
+            out.append(ch)
+            out.append(raw[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n and raw[j] in " \t\r\n":
+                j += 1
+            nxt = raw[j] if j < n else ""
+            if nxt in (",", ":", "}", "]", ""):
+                # vraie fermeture de chaîne
+                out.append(ch)
+                in_string = False
+            else:
+                # guillemet interne oublié par le modèle → on l'échappe
+                out.append('\\"')
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _loads_lenient(candidate: str) -> dict:
+    """json.loads(strict=False) avec une passe de réparation des guillemets."""
+    try:
+        return json.loads(candidate, strict=False)
+    except json.JSONDecodeError:
+        return json.loads(_repair_inner_quotes(candidate), strict=False)
+
+
 def _extract_json(text: str) -> dict:
     """Strip Claude's prose / markdown fences and parse JSON.
 
     `strict=False` : les champs texte libre (ex. le corps d'un post) peuvent
     contenir des retours à la ligne littéraux que le modèle oublie d'échapper
     en `\\n` — le mode strict de json.loads rejette ça avec "Invalid control
-    character", alors que le JSON est par ailleurs valide et complet.
+    character", alors que le JSON est par ailleurs valide et complet. Les
+    guillemets internes non échappés sont réparés en dernier recours par
+    `_loads_lenient`.
     """
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fence:
-        return json.loads(fence.group(1), strict=False)
+        return _loads_lenient(fence.group(1))
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
-        return json.loads(text[start : end + 1], strict=False)
-    return json.loads(text, strict=False)
+        return _loads_lenient(text[start : end + 1])
+    return _loads_lenient(text)
 
 
 def _track(resp) -> None:
