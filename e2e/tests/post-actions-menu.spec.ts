@@ -210,30 +210,59 @@ test("Contenu › Mes contenus : Image IA propose une image de référence depui
   await page.route("**/generate-image/prompt", (route) =>
     route.fulfill({ contentType: "application/json", body: JSON.stringify({ prompt: "Un prompt de test." }) })
   );
-  // ALE-261 : la génération d'image passe désormais par une file d'attente
-  // (job créé puis polled) — on mocke un job déjà `done` pour ne pas avoir à
-  // simuler le polling dans ce test lecture seule.
+  // ALE-261 : la génération d'image passe par une file d'attente (job créé puis
+  // polled). Le mock reproduit le contrat réel du 2026-07-27 : la LISTE ne porte
+  // plus l'image (elle est pollée toutes les 3 s et pèserait des dizaines de Mo
+  // par appel — c'est ce qui saturait la mémoire du backend jusqu'à l'OOM), et
+  // l'image se récupère sur la route unitaire. Si quelqu'un remet l'image dans
+  // la liste, ou si le frontend cesse d'aller la chercher, ce test tombe.
   const onePxPng =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
   let capturedBody: { reference_template_id?: string; target_key?: string } | null = null;
+  let jobCreated = false;
+  let unitCalls = 0;
   await page.route("**/generate-image/jobs", (route) => {
     if (route.request().method() === "GET") {
-      return route.fulfill({ contentType: "application/json", body: JSON.stringify([]) });
+      // Tant que rien n'est lancé : liste vide. Ensuite le job est terminé —
+      // mais SANS `result`, comme le vrai backend.
+      const jobs = jobCreated
+        ? [{
+            id: "job-e2e-1",
+            status: "done",
+            target_key: capturedBody?.target_key,
+            error: null,
+          }]
+        : [];
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify(jobs) });
     }
     if (route.request().method() === "POST") {
       capturedBody = route.request().postDataJSON();
+      jobCreated = true;
       return route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
           id: "job-e2e-1",
-          status: "done",
+          status: "queued",
           target_key: capturedBody?.target_key,
-          result: { image_data: onePxPng, prompt_used: "Un prompt de test.", credits: 95 },
           error: null,
         }),
       });
     }
     return route.fallback();
+  });
+  // Route unitaire : c'est ELLE qui porte l'image, une seule fois par job.
+  await page.route("**/generate-image/jobs/job-e2e-1", (route) => {
+    unitCalls += 1;
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "job-e2e-1",
+        status: "done",
+        target_key: capturedBody?.target_key,
+        result: { image_data: onePxPng, prompt_used: "Un prompt de test.", credits: 95 },
+        error: null,
+      }),
+    });
   });
 
   await gotoTab(page, "Contenu");
@@ -257,9 +286,14 @@ test("Contenu › Mes contenus : Image IA propose une image de référence depui
   await expect(page.getByText(/Inspiration : « Accroche choc \+ 3 bullets »/)).toBeVisible();
 
   await page.getByRole("button", { name: /Générer l'image/ }).click();
-  await expect(page.getByText(/Image jointe au post/)).toBeVisible();
+  // Le polling tourne toutes les 3 s, puis l'image est récupérée sur la route
+  // unitaire — d'où une attente plus large que le défaut.
+  await expect(page.getByText(/Image jointe au post/)).toBeVisible({ timeout: 20000 });
   expect(capturedBody?.reference_template_id).toBe("tpl-e2e-1");
   expect(capturedBody?.target_key).toBe("saved:e2e-ale-221");
+  // L'image a bien transité par la route unitaire, et une seule fois : la
+  // retélécharger à chaque passage du polling est exactement le bug corrigé.
+  expect(unitCalls).toBe(1);
 });
 
 // ALE-286 : l'onglet « Idée du jour » a disparu de la vue agence (il ne subsiste

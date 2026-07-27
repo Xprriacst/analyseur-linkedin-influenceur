@@ -4762,13 +4762,20 @@ def create_image_job(payload: GenerateImageRequest, token: str = Depends(require
 
 @app.get("/generate-image/jobs")
 def list_image_jobs(token: str = Depends(require_token)) -> list[dict[str, Any]]:
-    """Liste les jobs de génération d'image de l'utilisateur (plus récents d'abord)."""
+    """Liste l'état des jobs de génération d'image (plus récents d'abord).
+
+    ⚠️ Ne renvoie PAS `result` : cette route est pollée toutes les 5 s et
+    l'image pèse ~1,3 à 2 Mo par job — la renvoyer à chaque passage saturait la
+    mémoire du serveur jusqu'à l'OOM (cf. `db._IMAGE_JOB_LIST_COLS`). Le
+    frontend récupère l'image une seule fois par job via la route unitaire
+    ci-dessous, quand le job passe `done`.
+    """
     return db.list_image_jobs(token)
 
 
 @app.get("/generate-image/jobs/{job_id}")
 def get_image_job(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Récupère un job de génération d'image (pour le polling du frontend)."""
+    """Récupère un job de génération d'image, `result` (image) inclus."""
     job = db.get_image_job(token, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job de génération d'image introuvable.")

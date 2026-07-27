@@ -1765,10 +1765,19 @@ def reconcile_stale_generation_jobs(access_token: str, jobs: list[dict]) -> list
 # uniquement (jamais au lancement) — un échec ne coûte donc jamais de crédit,
 # pas de remboursement à gérer (contrairement aux séries d'analyse).
 
-_IMAGE_JOB_COLS = (
+# ⚠️ `result` porte l'image générée en base64 (~1,3 à 2 Mo par job). Le frontend
+# poll la LISTE toutes les 5 s : y inclure `result` renvoyait jusqu'à 45 Mo par
+# appel (30 jobs), soit ~120 Mo/min traversant la mémoire du process — la RSS
+# monte en escalier (l'allocateur CPython ne rend pas ses arènes à l'OS) jusqu'à
+# l'OOM kill. Mesuré en prod le 2026-07-27 : 2 redémarrages en 15 min pendant
+# une session, mémoire plate dès l'onglet fermé. La liste ne porte donc QUE
+# l'état ; l'image se récupère une fois par job via `get_image_job`.
+# Ne pas remettre `result` ici sans changer la façon dont le frontend poll.
+_IMAGE_JOB_LIST_COLS = (
     "id,status,post_text,prompt,reference_template_id,reference_self_photo_ids,"
-    "target_key,result,error,created_at,updated_at"
+    "target_key,error,created_at,updated_at"
 )
+_IMAGE_JOB_COLS = _IMAGE_JOB_LIST_COLS + ",result"
 
 # Photos de soi (0054) : plafond par compte + max transmis à GPT Image 2 par génération.
 SELF_PHOTOS_CAP = 5
@@ -1819,13 +1828,14 @@ def get_image_job(access_token: str, job_id: str) -> dict | None:
 
 
 def list_image_jobs(access_token: str, limit: int = 30) -> list[dict]:
+    """Liste l'ÉTAT des jobs — sans l'image (cf. `_IMAGE_JOB_LIST_COLS`)."""
     user = get_user(access_token)
     if not user:
         return []
     db = client_for_token(access_token)
     r = (
         db.table("image_generation_jobs")
-        .select(_IMAGE_JOB_COLS)
+        .select(_IMAGE_JOB_LIST_COLS)
         .eq("user_id", user["id"])
         .order("created_at", desc=True)
         .limit(limit)
