@@ -1726,6 +1726,8 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
     platform = payload.platform if payload.platform == "instagram" else "linkedin"
+    if platform == "instagram" and token:
+        require_feature(token, "instagram")
     influencers = _get_influencers(token, platform=platform)
     if not influencers:
         raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
@@ -1946,6 +1948,8 @@ def create_generation_job(payload: GenerationJobRequest, token: str = Depends(re
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
     platform = payload.platform if payload.platform == "instagram" else "linkedin"
+    if platform == "instagram":
+        require_feature(token, "instagram")
     influencers = _get_influencers(token, platform=platform)
     if not influencers:
         detail = (
@@ -2069,6 +2073,8 @@ def recommend_role(payload: EditorialRoleRequest, token: str = Depends(require_t
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant côté serveur.")
     platform = payload.platform if payload.platform == "instagram" else "linkedin"
+    if platform == "instagram":
+        require_feature(token, "instagram")
     reco = recommend_editorial_role(payload.idea.strip(), db.get_user_ai_context(token), platform=platform)
     return {
         "editorial_role": reco["editorial_role"],
@@ -2078,13 +2084,15 @@ def recommend_role(payload: EditorialRoleRequest, token: str = Depends(require_t
 
 
 @app.get("/generate/instagram/trames")
-def list_instagram_trames() -> dict[str, Any]:
+def list_instagram_trames(token: str = Depends(require_token)) -> dict[str, Any]:
     """Catalogue statique des trames de reel Instagram (ALE-291).
 
     Gratuit, sans effet de bord — contrairement aux structures LinkedIn (issues
     de la bibliothèque utilisateur), les trames de reel sont un catalogue fixe
-    pour l'instant.
+    pour l'instant. Gardé côté serveur comme le reste du parcours Instagram :
+    masquer le bouton ne protège rien pour un compte non flaggé.
     """
+    require_feature(token, "instagram")
     return {"trames": IG_TRAMES}
 
 
@@ -2656,6 +2664,8 @@ def me_idea_seeds(platform: str = "linkedin", token: str = Depends(require_token
 @app.post("/me/idea-seeds")
 def add_me_idea_seed(payload: IdeaSeedRequest, token: str = Depends(require_token)) -> dict[str, Any]:
     """Add an idea to the user's reservoir (scoped by network, ALE-291)."""
+    if payload.platform == "instagram":
+        require_feature(token, "instagram")
     comment = (payload.comment or "").strip() or None
     seed = db.add_idea_seed(token, payload.text.strip(), comment=comment, platform=payload.platform)
     if not seed:
