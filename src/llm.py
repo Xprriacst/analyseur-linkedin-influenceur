@@ -2328,8 +2328,17 @@ def adapt_post_for_reddit(post_text: str, profile: dict | None = None) -> dict:
 
     Reddit n'est pas LinkedIn : le ton personal branding (accroches, emojis,
     CTA) y est downvoté. On réécrit en contribution honnête, première personne,
-    100 % valeur — et on choisit la langue du subreddit visé (les grands
-    subreddits B2B sont anglophones). La bibliothèque curatée du dépôt sert de
+    100 % valeur — mais TOUJOURS dans la langue du post d'origine.
+
+    ⚠️ La règle initiale (« écris dans la langue du subreddit visé ») traduisait
+    en anglais à tous les coups : la bibliothèque Readyt est 100 % anglophone
+    (117/117 en `language: "en"`), donc le premier subreddit proposé l'est
+    toujours et la garde « garde le français pour un subreddit francophone » ne
+    pouvait jamais s'appliquer. Un client francophone récupérait un post traduit
+    sans l'avoir demandé. La langue appartient à l'auteur : on ne la change pas
+    à sa place.
+
+    La bibliothèque curatée du dépôt sert de
     socle ; le modèle peut proposer hors liste (vérifié ensuite via Zernio).
     Retourne {"title", "body", "subreddits": [{"name", "reason"}]}.
     """
@@ -2358,7 +2367,10 @@ def adapt_post_for_reddit(post_text: str, profile: dict | None = None) -> dict:
         "Pioche en priorité dans la bibliothèque ci-dessous ; à pertinence égale, préfère un subreddit avec un score GEO élevé "
         "(il a plus de chances d'être cité par les assistants IA). Tu peux proposer hors liste si un subreddit du métier est plus pertinent "
         "(il sera vérifié). Pour chacun, une raison courte en français.\n"
-        "- LANGUE : celle du subreddit visé en priorité (les grands subreddits B2B sont anglophones — adapte le titre ET le corps en anglais si le premier subreddit proposé est anglophone ; garde le français pour un subreddit francophone).\n"
+        "- LANGUE : écris le titre ET le corps dans la MÊME LANGUE que le post d'origine. Ne traduis JAMAIS, "
+        "même quand les subreddits proposés sont anglophones — c'est l'auteur qui choisit la langue dans laquelle il s'exprime, "
+        "pas la bibliothèque. Le champ « langue » de la bibliothèque ci-dessous est une information sur le subreddit, "
+        "pas une consigne de traduction.\n"
         "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown autour."
     )
     ctx = _crosspost_context(profile)
