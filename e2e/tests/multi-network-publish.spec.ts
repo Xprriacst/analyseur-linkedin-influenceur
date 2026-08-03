@@ -209,3 +209,73 @@ test("compte X non connecté : le logo n'active rien et renvoie vers Connexions"
   // Le bouton de confirmation reste « LinkedIn seul ».
   await expect(page.getByRole("button", { name: /Programmer sur LinkedIn/ })).toBeVisible();
 });
+
+// ── Texte éditable dans la modale Programmer ────────────────────────────────
+// Le texte y était en LECTURE SEULE : depuis l'Agent IA, la réponse complète du
+// modèle (explications comprises) partait telle quelle en programmation, sans
+// aucun moyen de la retoucher — et le post partait des jours plus tard, blabla
+// inclus. `PublishConfirmModal` était éditable depuis ALE-210 ; la modale
+// Programmer était le trou restant. Ce spec verrouille les deux propriétés qui
+// comptent : on peut corriger, et c'est bien la correction qui part au serveur.
+
+test("programmer : le texte est éditable et c'est la version corrigée qui part", async ({ page }) => {
+  await mockBase(page);
+
+  let schedulePayload: any = null;
+  await page.route("**/me/linkedin/schedule", (route) => {
+    schedulePayload = route.request().postDataJSON();
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, scheduled_post: { id: "sp-edit" } }),
+    });
+  });
+
+  await page.goto("/");
+  await openScheduleModal(page);
+
+  const textarea = page.getByTestId("schedule-post-text");
+  await expect(textarea).toHaveValue(SAVED_POST.post);
+  await expect(textarea).toBeEditable();
+
+  const corrected = "Version corrigée : sans le blabla de l'agent.";
+  await textarea.fill(corrected);
+
+  await page.getByRole("button", { name: /Programmer sur LinkedIn/ }).click();
+  await expect.poll(() => schedulePayload).not.toBeNull();
+  // Le point du correctif : c'est la version corrigée qui est programmée.
+  expect(schedulePayload.content).toBe(corrected);
+  expect(schedulePayload.content).not.toContain(SAVED_POST.post);
+});
+
+test("programmer : un texte vidé ne peut pas être programmé", async ({ page }) => {
+  // Sans ce garde-fou, effacer le blabla « un peu trop » programmerait un post
+  // vide, découvert seulement au créneau de publication.
+  await mockBase(page);
+  await page.goto("/");
+  await openScheduleModal(page);
+
+  await page.getByTestId("schedule-post-text").fill("   ");
+  await expect(page.getByRole("button", { name: /Programmer sur LinkedIn/ })).toBeDisabled();
+});
+
+test("programmer : l'adaptation X part du texte corrigé, pas de l'original", async ({ page }) => {
+  // Si l'adaptation repartait du texte d'origine, le client verrait sa version
+  // X reconstruite à partir du brouillon qu'il vient justement de nettoyer.
+  await mockBase(page);
+
+  let adaptPayload: any = null;
+  await page.route("**/me/publish/adapt/x", (route) => {
+    adaptPayload = route.request().postDataJSON();
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify(X_ADAPTATION) });
+  });
+
+  await page.goto("/");
+  await openScheduleModal(page);
+
+  const corrected = "Texte nettoyé avant adaptation X.";
+  await page.getByTestId("schedule-post-text").fill(corrected);
+  await page.getByRole("button", { name: "Publier aussi sur X" }).click();
+
+  await expect.poll(() => adaptPayload).not.toBeNull();
+  expect(adaptPayload.content).toBe(corrected);
+});

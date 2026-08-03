@@ -3453,6 +3453,14 @@ function SchedulePostModal({
   // ensemble au créneau par le cron. Le composant se masque seul en vue client.
   const [cross, setCross] = useState<CrossPostsDraft | null>(null);
   const [crossValid, setCrossValid] = useState(true);
+  // Le texte est ÉDITABLE avant programmation, comme dans PublishConfirmModal
+  // (ALE-210). Il était en lecture seule ici : depuis l'Agent IA, la réponse
+  // complète du modèle (explications comprises) partait donc telle quelle en
+  // programmation, sans aucun moyen de la retoucher — un post publié des jours
+  // plus tard avec le blabla de l'agent, sans que personne ne puisse l'arrêter
+  // entre-temps. C'est ce que le client corrige ici avant de valider le créneau.
+  const [value, setValue] = useState(text);
+  const trimmed = value.trim();
 
   async function doSchedule(validateViaSlack: boolean) {
     setError("");
@@ -3465,7 +3473,7 @@ function SchedulePostModal({
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
-          content: text,
+          content: value,
           scheduled_at: localDate.toISOString(),
           validate_via_slack: validateViaSlack,
           images: images.map((image) => ({
@@ -3493,18 +3501,25 @@ function SchedulePostModal({
       <div className="card" style={{ maxWidth: 520, width: "100%", padding: 24, maxHeight: "90vh", overflowY: "auto" }}>
         <h3 style={{ marginTop: 0, marginBottom: 8 }}>Programmer ce post</h3>
         <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+          Relis et ajuste le texte ci-dessous — c&apos;est lui qui sera publié.{" "}
           {slackCanUse(slackStatus)
-            ? "Choisis la date/heure, puis programme directement sur LinkedIn, ou demande d'abord une validation Slack — dans ce cas le post n'est publié à l'heure choisie que s'il est validé sur Slack."
+            ? "Choisis ensuite la date/heure, puis programme directement sur LinkedIn, ou demande d'abord une validation Slack — dans ce cas le post n'est publié à l'heure choisie que s'il est validé sur Slack."
             : ideasAccount
-              ? "Choisis la date/heure. Tu peux programmer directement sur LinkedIn, ou soumettre le post pour validation — il sera publié une fois validé dans l'app."
-              : "Choisis la date/heure : le post sera publié automatiquement sur LinkedIn à l'heure choisie."}
+              ? "Choisis ensuite la date/heure. Tu peux programmer directement sur LinkedIn, ou soumettre le post pour validation — il sera publié une fois validé dans l'app."
+              : "Choisis ensuite la date/heure : le post sera publié automatiquement sur LinkedIn à l'heure choisie."}
         </p>
+        <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>
+          Texte du post <span style={{ fontWeight: 400, color: "var(--muted)" }}>— modifiable</span>
+        </label>
         <textarea
-          readOnly
-          value={text}
-          rows={6}
+          data-testid="schedule-post-text"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          rows={10}
           className="variant-text"
           style={{ width: "100%", boxSizing: "border-box", marginBottom: 12 }}
+          disabled={scheduling}
+          placeholder="Le texte qui sera publié au créneau choisi."
         />
         {images.length > 0 && (
           <div style={{ marginBottom: 12 }}>
@@ -3523,8 +3538,10 @@ function SchedulePostModal({
             </div>
           </div>
         )}
+        {/* baseText = le texte corrigé, pas l'original : sinon l'adaptation X/Reddit
+            repartirait du brouillon que le client vient justement de nettoyer. */}
         <CrossNetworkPanels
-          baseText={text}
+          baseText={value}
           disabled={scheduling}
           onChange={(c, valid) => { setCross(c); setCrossValid(valid); }}
         />
@@ -3545,7 +3562,7 @@ function SchedulePostModal({
           {slackCanUse(slackStatus) ? (
             <button
               className="secondary-button"
-              disabled={scheduling || !scheduleDate || !crossValid}
+              disabled={scheduling || !scheduleDate || !crossValid || !trimmed}
               title="Envoyer une demande de validation Slack avant publication"
               onClick={() => doSchedule(true)}
             >
@@ -3554,14 +3571,14 @@ function SchedulePostModal({
           ) : ideasAccount ? (
             <button
               className="secondary-button"
-              disabled={scheduling || !scheduleDate || !crossValid}
+              disabled={scheduling || !scheduleDate || !crossValid || !trimmed}
               title="Le client validera ce post dans son espace"
               onClick={() => doSchedule(true)}
             >
               {scheduling ? <Loader2 size={14} className="spinning" /> : <Clock3 size={14} />} Soumettre pour validation
             </button>
           ) : null}
-          <button className="primary-button" disabled={scheduling || !scheduleDate || !crossValid} onClick={() => doSchedule(false)}>
+          <button className="primary-button" disabled={scheduling || !scheduleDate || !crossValid || !trimmed} onClick={() => doSchedule(false)}>
             {scheduling
               ? <><Loader2 size={14} className="spinning" /> Planification…</>
               : cross
