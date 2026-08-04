@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Linkedin, Loader2 } from "lucide-react";
-import CrossNetworkPanels, { type CrossPostsDraft } from "./CrossNetworkPanels";
+import CrossNetworkPanels, { type CrossPostsDraft, countSelectedNetworks } from "./CrossNetworkPanels";
 
 // Aperçu de publication partagé (ALE-210). Utilisé partout où l'on peut publier
 // un post sur LinkedIn (Générateur, Idée du jour, Mes contenus, Assistant IA) :
@@ -40,7 +40,7 @@ export default function PublishConfirmModal({
   const [cross, setCross] = useState<CrossPostsDraft | null>(null);
   const [crossValid, setCrossValid] = useState(true);
   const trimmed = value.trim();
-  const networkCount = 1 + (cross?.x ? 1 : 0) + (cross?.reddit ? 1 : 0);
+  const networkCount = countSelectedNetworks(cross);
 
   return (
     <div
