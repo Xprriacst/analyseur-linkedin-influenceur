@@ -35,7 +35,13 @@ from src.stats import compute_stats
 from src.instagram_hooks import select_hooks
 from src.trends import compute_trends
 from src.daily_ideas import _render_idea_markdown
-from src.listing import ListingError, build_listing_topic, fetch_listing_preview, is_listing_url
+from src.listing import (
+    ListingError,
+    build_listing_topic,
+    cached_listing_preview,
+    fetch_listing_preview,
+    is_listing_url,
+)
 
 load_dotenv()
 
@@ -2128,6 +2134,23 @@ def create_generation_job(payload: GenerationJobRequest, token: str = Depends(re
         )
         raise HTTPException(status_code=400, detail=detail)
 
+    # ALE-156 : sujet = lien d'annonce → on ancre le post sur le bien (titre,
+    # prix, description) plutôt que de donner l'URL brute au modèle, et on garde
+    # la photo pour la rattacher au post généré (comme le faisait l'idée du jour
+    # avant que le parcours guidé ne devienne le point d'entrée). Résolu AVANT le
+    # débit : une annonce illisible ne coûte rien — et échoue explicitement (422)
+    # plutôt que de produire en silence un post sans sa photo.
+    topic = (payload.topic or "").strip() or None
+    listing_image_url = listing_source_url = None
+    if platform == "linkedin" and topic and is_listing_url(topic):
+        try:
+            preview = cached_listing_preview(topic)
+            topic = build_listing_topic(preview)
+            listing_image_url = preview.get("image_url")
+            listing_source_url = preview.get("source_url")
+        except ListingError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
     # Débit après les préconditions : un user sans influenceur ne perd pas de crédits.
     credit_action = "generate_reel" if platform == "instagram" else "generate_post"
     ok, balance = db.debit_credits(token, credit_action, payload.count)
@@ -2137,13 +2160,14 @@ def create_generation_job(payload: GenerationJobRequest, token: str = Depends(re
         raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} {unit} = {cost} crédit(s).")
 
     role = (payload.editorial_role or "").strip() or None
-    topic = (payload.topic or "").strip() or None
     job = db.create_generation_job(
         token, topic, role, payload.web_search, payload.count,
         template_id=payload.template_id,
         inspiration=payload.inspiration.model_dump() if payload.inspiration else None,
         platform=platform,
         ig_trame_id=payload.ig_trame_id,
+        listing_image_url=listing_image_url,
+        listing_source_url=listing_source_url,
     )
     if not job:
         raise HTTPException(status_code=500, detail="Création du job de génération impossible.")
@@ -2227,6 +2251,24 @@ def read_inspiration_post(payload: InspirationRequest, token: str = Depends(requ
     }
 
 
+def _wizard_idea_text(idea: str) -> str:
+    """Idée du parcours guidé = parfois un lien d'annonce (ALE-156).
+
+    Les aides à la décision (rôle, structures) recevraient alors une URL brute —
+    le modèle recommanderait à l'aveugle. Best-effort : on lit l'annonce (mémo
+    10 min, donc une seule lecture pour tout le parcours) et on raisonne sur son
+    contenu ; si le site bloque, on continue sur le texte tel quel plutôt que
+    d'arrêter le client sur une étape purement consultative.
+    """
+    idea = idea.strip()
+    if is_listing_url(idea):
+        try:
+            return build_listing_topic(cached_listing_preview(idea))
+        except ListingError:
+            pass
+    return idea
+
+
 class EditorialRoleRequest(BaseModel):
     idea: str = Field(..., min_length=3, max_length=2000)
     platform: str = Field(default="linkedin", max_length=20)
@@ -2244,7 +2286,7 @@ def recommend_role(payload: EditorialRoleRequest, token: str = Depends(require_t
     platform = payload.platform if payload.platform == "instagram" else "linkedin"
     if platform == "instagram":
         require_feature(token, "instagram")
-    reco = recommend_editorial_role(payload.idea.strip(), db.get_user_ai_context(token), platform=platform)
+    reco = recommend_editorial_role(_wizard_idea_text(payload.idea), db.get_user_ai_context(token), platform=platform)
     return {
         "editorial_role": reco["editorial_role"],
         "reason": reco["reason"],
@@ -2292,7 +2334,7 @@ def suggest_post_structures(payload: StructuresRequest, token: str = Depends(req
         library = db.list_post_templates(token)
     except Exception:  # noqa: BLE001 — la bibliothèque est un plus, pas un prérequis
         library = []
-    suggested = suggest_structures(payload.idea.strip(), role, library)
+    suggested = suggest_structures(_wizard_idea_text(payload.idea), role, library)
 
     return {
         "structures": [
