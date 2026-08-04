@@ -1936,6 +1936,9 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
         # d'ALE-126/ALE-127.
         reference_posts=(db.pick_reference_posts(token) or None) if platform == "linkedin" else None,
         platform=platform,
+        # Mémoire des posts déjà créés/publiés : les idées proposées ne doivent
+        # pas re-proposer ce qui a déjà été posté.
+        recent_posts=db.get_recent_post_memory(token, platform=platform) or None,
     )
     save_error: str | None = None
     if token:
@@ -1988,6 +1991,8 @@ def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) ->
         "credits": credits,
         "reference_posts": db.pick_reference_posts(token) or None,
         "template": db.get_post_template(token, payload.template_id) if (token and payload.template_id) else None,
+        # Mémoire des posts déjà créés/publiés (anti-répétition + continuité).
+        "recent_posts": db.get_recent_post_memory(token) or None,
     }
 
 
@@ -2017,6 +2022,7 @@ def _generate_posts_response(
         on_web_search=on_web_search,
         reference_posts=context["reference_posts"],
         template=context["template"],
+        recent_posts=context["recent_posts"],
     )
     variants, save_error = _save_generated_variants(token, context["topic"], variants)
     return {"variants": variants, "save_error": save_error, "credits": context["credits"]}
@@ -2050,6 +2056,7 @@ def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(opt
                     on_web_search=on_web_search,
                     reference_posts=context["reference_posts"],
                     template=context["template"],
+                    recent_posts=context["recent_posts"],
                 )
                 variants, save_error = _save_generated_variants(token, context["topic"], variants)
                 events.put(("done", {
@@ -4448,6 +4455,7 @@ def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]
     posts = generate_posts(
         seed_text, top_posts, benchmark, user_context=user_context, count=1,
         reference_posts=db.pick_reference_posts(token) or None,
+        recent_posts=db.get_recent_post_memory(token) or None,
     )
     if not posts:
         raise HTTPException(status_code=500, detail="La génération n'a produit aucun post.")
@@ -5088,12 +5096,15 @@ def chat(payload: ChatRequest, token: str = Depends(require_token)) -> Streaming
     history = db.get_chat_messages(token, conversation_id, limit=80)
     top_posts, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
+    # Mémoire des posts déjà créés/publiés : l'assistant s'en souvient
+    # (anti-répétition, continuité, « qu'est-ce que j'ai déjà posté ? »).
+    recent_posts = db.get_recent_post_memory(token) or None
 
     def stream_response():
         assistant_text = ""
         yield _sse("meta", {"conversation_id": conversation_id, "credits": credits_balance})
         try:
-            for delta in chat_stream(history, top_posts, benchmark, user_context=user_context):
+            for delta in chat_stream(history, top_posts, benchmark, user_context=user_context, recent_posts=recent_posts):
                 assistant_text += delta
                 yield _sse("delta", {"text": delta})
             if assistant_text.strip():

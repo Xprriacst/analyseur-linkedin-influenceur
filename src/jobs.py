@@ -224,7 +224,7 @@ def start_job_thread(access_token: str, job_id: str) -> None:
 GENERATION_TIMEOUT_S = 300
 
 
-def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, count, reference_posts=None, template=None):
+def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, count, reference_posts=None, template=None, recent_posts=None):
     """Exécute `generate_posts` avec un timeout dur (thread jetable abandonné si figé)."""
     from src.llm import generate_posts
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -238,6 +238,7 @@ def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, cou
         count=count,
         reference_posts=reference_posts,
         template=template,
+        recent_posts=recent_posts,
     )
     try:
         return fut.result(timeout=GENERATION_TIMEOUT_S)
@@ -245,7 +246,7 @@ def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, cou
         ex.shutdown(wait=False)
 
 
-def _generate_reel_packs_guarded(topic, top_posts, benchmark, user_context, role, trame_id, count, inspiration=None):
+def _generate_reel_packs_guarded(topic, top_posts, benchmark, user_context, role, trame_id, count, inspiration=None, recent_posts=None):
     """Exécute `generate_instagram_reel_packs` avec un timeout dur (ALE-291)."""
     from src.llm import generate_instagram_reel_packs
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -259,6 +260,7 @@ def _generate_reel_packs_guarded(topic, top_posts, benchmark, user_context, role
         trame_id=trame_id,
         count=count,
         inspiration=inspiration,
+        recent_posts=recent_posts,
     )
     try:
         return fut.result(timeout=GENERATION_TIMEOUT_S)
@@ -289,6 +291,8 @@ def process_generation_job(access_token: str, job_id: str) -> None:
         role = (job.get("editorial_role") or "").strip() or None
         topic = (job.get("topic") or "").strip()
         count = int(job.get("count") or 1)
+        # Mémoire des posts déjà créés/publiés sur ce réseau (fail-safe : []).
+        recent_posts = db.get_recent_post_memory(access_token, platform=platform) or None
 
         if platform == "instagram":
             # ALE-291 : pack Reel Instagram (hook + script + caption + hashtags).
@@ -305,6 +309,7 @@ def process_generation_job(access_token: str, job_id: str) -> None:
             variants = _generate_reel_packs_guarded(
                 topic, top_posts, benchmark, user_context, role,
                 job.get("ig_trame_id"), count, inspiration=inspiration,
+                recent_posts=recent_posts,
             )
         else:
             # ALE-286 : le post d'inspiration passe en TÊTE des références (le
@@ -326,6 +331,7 @@ def process_generation_job(access_token: str, job_id: str) -> None:
                 topic, top_posts, benchmark, user_context, role, count,
                 reference_posts=reference_posts or None,
                 template=db.get_post_template(access_token, template_id) if template_id else None,
+                recent_posts=recent_posts,
             )
 
         # Annulé pendant le calcul ? On respecte l'annulation.
