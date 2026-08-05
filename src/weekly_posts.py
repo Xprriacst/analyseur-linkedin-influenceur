@@ -78,6 +78,11 @@ def _generate_for_user(user_id: str, run_date: datetime.date) -> int:
     top_posts, benchmark = build_benchmark(influencers)
     context = db.get_ai_context_for_user(user_id)
     slack_cfg = db.get_slack_config_for_user(user_id)
+    # Mémoire des posts déjà créés/publiés, chargée une fois pour tous les
+    # créneaux de la semaine (service-role : pas de JWT dans le cron). Les posts
+    # générés PENDANT ce run y sont ajoutés au fil de l'eau : le créneau 2 doit
+    # se souvenir du post du créneau 1, sinon le cron écrirait 3 posts jumeaux.
+    recent_posts: list[dict] = db.get_recent_post_memory_for_user(user_id) or []
 
     created = 0
     for slot in schedule:
@@ -116,6 +121,7 @@ def _generate_for_user(user_id: str, run_date: datetime.date) -> int:
             benchmark,
             user_context=context,
             count=1,
+            recent_posts=recent_posts or None,
         )
         if not posts:
             print(f"  · {user_id}: génération vide pour {local_date}, skip")
@@ -125,6 +131,13 @@ def _generate_for_user(user_id: str, run_date: datetime.date) -> int:
         if not post_text:
             print(f"  · {user_id}: post vide pour {local_date}, skip")
             continue
+
+        # Le créneau suivant doit se souvenir de ce post (en tête : le plus récent).
+        recent_posts.insert(0, {
+            "text": post_text[:db.POST_MEMORY_TEXT_CAP],
+            "status": "généré ce run (posts de la semaine)",
+            "date": utc_date,
+        })
 
         scheduled_at_iso = utc_dt.isoformat()
         # Toujours en attente de validation : Slack si actif + connecté,

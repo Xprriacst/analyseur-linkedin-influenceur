@@ -98,6 +98,8 @@ def _generate_for_user(user_id: str, today: str) -> bool:
         user_context=context,
         editorial_role=daily_role,
         count=1,
+        # Mémoire des posts déjà créés/publiés (service-role : pas de JWT ici).
+        recent_posts=db.get_recent_post_memory_for_user(user_id) or None,
     )
     if not posts:
         print(f"  · {user_id}: génération vide, skip")
