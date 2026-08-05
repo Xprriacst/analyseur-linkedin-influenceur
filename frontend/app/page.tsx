@@ -61,7 +61,7 @@ import PublishConfirmModal from "./components/PublishConfirmModal";
 import ZoomableImage from "./components/ZoomableImage";
 // ALE-59 — publication multi-réseaux : panneaux X/Reddit partagés entre la
 // pop-up Publier et la modale Programmer, + helper de publication post-LinkedIn.
-import CrossNetworkPanels, { publishCrossNetworks, XLogo, RedditLogo, type CrossPostsDraft } from "./components/CrossNetworkPanels";
+import CrossNetworkPanels, { publishCrossNetworks, countSelectedNetworks, XLogo, RedditLogo, type CrossPostsDraft } from "./components/CrossNetworkPanels";
 // ALE-284 — les types de l'autopilote sont définis avec le composant qui les rend, et
 // importés ici : les redéclarer dans ce fichier les ferait diverger à la première
 // évolution du contrat serveur.
@@ -3581,9 +3581,12 @@ function SchedulePostModal({
           <button className="primary-button" disabled={scheduling || !scheduleDate || !crossValid || !trimmed} onClick={() => doSchedule(false)}>
             {scheduling
               ? <><Loader2 size={14} className="spinning" /> Planification…</>
-              : cross
-                ? <><Clock3 size={14} /> Programmer sur {1 + (cross.x ? 1 : 0) + (cross.reddit ? 1 : 0)} réseaux</>
-                : <><Clock3 size={14} /> Programmer sur LinkedIn</>}
+              : (() => {
+                  const n = countSelectedNetworks(cross);
+                  return n > 1 || cross?.skip_linkedin
+                    ? <><Clock3 size={14} /> Programmer sur {n} réseau{n > 1 ? "x" : ""}</>
+                    : <><Clock3 size={14} /> Programmer sur LinkedIn</>;
+                })()}
           </button>
         </div>
       </div>
@@ -5337,19 +5340,34 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     setDrafted(null);
     setPublishing(key);
     setConfirmPublish(null);
+    const skipLinkedin = !!cross?.skip_linkedin;
     try {
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft, images: imagePayload(key) }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon impossible" : "Publication impossible"));
-      if (draft) setDrafted(key); else setPublished(key);
-      // ALE-59 : les versions X/Reddit ne partent qu'APRÈS le succès LinkedIn.
-      if (!draft && cross) {
+      if (!skipLinkedin) {
+        const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ content: text, draft, images: imagePayload(key) }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon impossible" : "Publication impossible"));
+        if (draft) setDrafted(key);
+        else setPublished(key);
+      }
+      if (!draft && cross && (cross.x || cross.reddit)) {
         const summary = await publishCrossNetworks(cross);
-        if (summary.errors.length) setPublishError(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+        if (skipLinkedin) {
+          if (summary.errors.length && !summary.published.length) {
+            throw new Error(summary.errors.join(" · "));
+          }
+          if (summary.published.length) setPublished(key);
+          if (summary.errors.length) {
+            setPublishError(`Publié sur ${summary.published.join(", ")} ✓ — mais ${summary.errors.join(" · ")}`);
+          }
+        } else if (summary.errors.length) {
+          setPublishError(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+        }
+      } else if (!draft && skipLinkedin) {
+        throw new Error("Aucun réseau sélectionné pour la publication.");
       }
     } catch (err: any) {
       setPublishError(err.message);
@@ -5380,11 +5398,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   }
 
   function openScheduleModal(line: PostLine) {
-    if (!isAuthed) { requireAuth("Connecte-toi pour programmer une publication LinkedIn."); return; }
-    if (!linkedin.status?.connected) {
-      setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
-      return;
-    }
+    if (!isAuthed) { requireAuth("Connecte-toi pour programmer une publication."); return; }
     setPublishError("");
     setScheduleModal({ key: line.key, text: textOf(line), images: images[line.key] || [] });
   }
@@ -7146,7 +7160,8 @@ function LibraryView({
 
   async function publishSavedPost(p: SavedPost, overrideText?: string, cross?: CrossPostsDraft | null) {
     setConfirmPublishPostId(null);
-    if (!linkedin.status?.connected) {
+    const skipLinkedin = !!cross?.skip_linkedin;
+    if (!skipLinkedin && !linkedin.status?.connected) {
       setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
       return;
     }
@@ -7154,19 +7169,36 @@ function LibraryView({
     setPublishingPost(p.id);
     try {
       const text = overrideText ?? editedPosts[p.id] ?? p.post;
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft: false, images: savedPostImagePayload(p) }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Publication impossible");
-      setPublishedPost(p.id);
-      setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, slack_status: "published" } : pp));
-      setTimeout(() => setPublishedPost((s) => s === p.id ? null : s), 3000);
-      if (cross) {
+      if (!skipLinkedin) {
+        const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ content: text, draft: false, images: savedPostImagePayload(p) }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Publication impossible");
+        setPublishedPost(p.id);
+        setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, slack_status: "published" } : pp));
+        setTimeout(() => setPublishedPost((s) => s === p.id ? null : s), 3000);
+      }
+      if (cross && (cross.x || cross.reddit)) {
         const summary = await publishCrossNetworks(cross);
-        if (summary.errors.length) setPublishError(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+        if (skipLinkedin) {
+          if (summary.errors.length && !summary.published.length) {
+            throw new Error(summary.errors.join(" · "));
+          }
+          if (summary.published.length) {
+            setPublishedPost(p.id);
+            setTimeout(() => setPublishedPost((s) => s === p.id ? null : s), 3000);
+          }
+          if (summary.errors.length) {
+            setPublishError(`Publié sur ${summary.published.join(", ")} ✓ — mais ${summary.errors.join(" · ")}`);
+          }
+        } else if (summary.errors.length) {
+          setPublishError(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+        }
+      } else if (skipLinkedin) {
+        throw new Error("Aucun réseau sélectionné pour la publication.");
       }
     } catch (err: any) {
       setPublishError(err.message);

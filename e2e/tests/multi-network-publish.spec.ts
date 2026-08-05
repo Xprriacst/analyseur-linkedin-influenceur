@@ -192,6 +192,37 @@ test("sidebar : X et Reddit grisés « Bientôt », Instagram dégrisé et dépl
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
+test("programmer sans LinkedIn : X et Reddit seuls dans cross_posts avec skip_linkedin", async ({ page }) => {
+  await mockBase(page);
+
+  let schedulePayload: any = null;
+  await page.route("**/me/linkedin/schedule", (route) => {
+    schedulePayload = route.request().postDataJSON();
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, scheduled_post: { id: "sp-x-rd" } }),
+    });
+  });
+
+  await page.goto("/");
+  await openScheduleModal(page);
+
+  // Désactiver LinkedIn (doit activer X ou Reddit d'abord — on active les deux).
+  await page.getByRole("button", { name: "Publier aussi sur X" }).click();
+  await expect(page.getByTestId("x-panel")).toBeVisible();
+  await page.getByRole("button", { name: "Publier aussi sur Reddit" }).click();
+  await expect(page.getByTestId("reddit-panel")).toBeVisible();
+  await page.getByRole("button", { name: "Publier sur LinkedIn" }).click();
+  await expect(page.getByText(/LinkedIn désactivé/)).toBeVisible();
+
+  await page.getByRole("button", { name: /Programmer sur 2 réseau/ }).click();
+  await expect.poll(() => schedulePayload).not.toBeNull();
+  expect(schedulePayload.cross_posts?.skip_linkedin).toBe(true);
+  expect(schedulePayload.cross_posts?.x?.tweets).toEqual(X_ADAPTATION.tweets);
+  expect(schedulePayload.cross_posts?.reddit?.subreddit).toBe("marketing");
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
 test("compte X non connecté : le logo n'active rien et renvoie vers Connexions", async ({ page }) => {
   await mockBase(page, { xConnected: false });
   let adaptCalled = false;
