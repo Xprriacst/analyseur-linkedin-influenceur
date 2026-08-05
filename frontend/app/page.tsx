@@ -207,8 +207,16 @@ type Variant = {
   strategy: string;
   predicted_lift: string;
   post: string;
-  // ALE-291 : pack Reel Instagram — présents uniquement quand le job qui a
+  // ALE-291 : pack Reel Instagram — présent uniquement quand le job qui a
   // produit ce variant porte `platform: "instagram"`.
+  //
+  // ⚠️ DEUX FORMES possibles, et c'est voulu : le modèle produit le pack À PLAT
+  // (hook/script/caption/hashtags), puis `db.save_generated_posts` le range dans
+  // la forme base — `post` porte la caption, le reste va dans `reel_details` —
+  // et c'est CETTE forme qui repart au front dans `result.variants`. La forme à
+  // plat ne subsiste que si la sauvegarde a échoué (`save_error`), auquel cas
+  // le pack doit rester lisible quand même. `packOf()` lit donc les deux.
+  reel_details?: { hook?: string; script?: string; hashtags?: string[] } | null;
   hook?: string;
   script?: string;
   caption?: string;
@@ -2035,11 +2043,15 @@ function InstagramGenerator({
   useEffect(() => { _igGenCache.expanded = expanded; }, [expanded]);
 
   function fieldsOf(line: PostLine): IgPackFields {
+    const v = line.variant;
+    // Forme base (le cas normal, après `save_generated_posts`) d'abord, forme à
+    // plat en repli (sauvegarde en échec) — cf. le commentaire sur `Variant`.
+    const details = v?.reel_details;
     return edited[line.key] || {
-      hook: line.variant?.hook || "",
-      script: line.variant?.script || "",
-      caption: line.variant?.caption || "",
-      hashtagsText: (line.variant?.hashtags || []).join(" "),
+      hook: details?.hook || v?.hook || "",
+      script: details?.script || v?.script || "",
+      caption: v?.post || v?.caption || "",
+      hashtagsText: (details?.hashtags || v?.hashtags || []).join(" "),
     };
   }
 
@@ -2194,13 +2206,13 @@ function InstagramGenerator({
                       {isExpanded && (
                         <div style={{ padding: "10px 4px 4px" }}>
                           <label className="role-picker-label">Hook (3 premières secondes)</label>
-                          <textarea className="variant-text" rows={2} value={f.hook} onChange={(e) => setField(line, "hook", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <textarea className="variant-text" rows={2} value={f.hook} onChange={(e) => setField(line, "hook", e.target.value)} aria-label="Hook du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Script (scène par scène)</label>
-                          <textarea className="variant-text" rows={6} value={f.script} onChange={(e) => setField(line, "script", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <textarea className="variant-text" rows={6} value={f.script} onChange={(e) => setField(line, "script", e.target.value)} aria-label="Script du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Caption</label>
-                          <textarea className="variant-text" rows={4} value={f.caption} onChange={(e) => setField(line, "caption", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <textarea className="variant-text" rows={4} value={f.caption} onChange={(e) => setField(line, "caption", e.target.value)} aria-label="Caption du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Hashtags</label>
-                          <input className="variant-text" value={f.hashtagsText} onChange={(e) => setField(line, "hashtagsText", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <input className="variant-text" value={f.hashtagsText} onChange={(e) => setField(line, "hashtagsText", e.target.value)} aria-label="Hashtags du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
                             <button className="secondary-button" onClick={() => copyPack(line)}>
                               {copied === key ? <CheckCircle2 size={14} /> : <Copy size={14} />} {copied === key ? "Copié ✓" : "Copier le pack"}
