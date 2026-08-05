@@ -160,8 +160,14 @@ def _iter_jsonld(html: str):
 
 
 def _first_img_src(html: str) -> str | None:
-    m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
-    return m.group(1).strip() if m else None
+    for m in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE):
+        src = m.group(1).strip()
+        # Les `data:` URIs sont des placeholders de lazy-loading (flou SVG…),
+        # jamais la photo de l'annonce — les retenir faisait échouer toute la
+        # lecture sur « Lien non supporté » alors que la page avait des photos.
+        if src and not src.lower().startswith("data:"):
+            return src
+    return None
 
 
 def _jsonld_image(node: dict[str, Any]) -> str | None:
@@ -290,6 +296,33 @@ def fetch_listing_preview(url: str, *, download_image: bool = True) -> dict[str,
         content_type, data = _download_image(image_url)
         b64 = base64.b64encode(data).decode("ascii")
         preview["image_data_url"] = f"data:{content_type};base64,{b64}"
+    return preview
+
+
+# --- Mémo court pour le parcours guidé ------------------------------------- #
+# Le wizard lit la même annonce jusqu'à trois fois (recommandation du rôle →
+# proposition des structures → lancement du job). Sans mémo, chaque étape
+# retéléchargerait la page — lent pour le client, et suspect pour le site.
+# Les échecs ne sont PAS mémorisés : un blocage passager ne doit pas coller.
+
+_PREVIEW_CACHE_TTL_S = 600
+_preview_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def cached_listing_preview(url: str) -> dict[str, Any]:
+    """`fetch_listing_preview(download_image=False)` avec mémo de 10 minutes."""
+    import time
+
+    url = url.strip()
+    hit = _preview_cache.get(url)
+    now = time.monotonic()
+    if hit and now - hit[0] < _PREVIEW_CACHE_TTL_S:
+        return hit[1]
+    preview = fetch_listing_preview(url, download_image=False)
+    _preview_cache[url] = (now, preview)
+    if len(_preview_cache) > 100:  # borne mémoire, purge naïve des plus vieux
+        for key, _ in sorted(_preview_cache.items(), key=lambda kv: kv[1][0])[:50]:
+            _preview_cache.pop(key, None)
     return preview
 
 
