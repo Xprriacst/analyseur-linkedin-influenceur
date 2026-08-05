@@ -949,6 +949,139 @@ def list_generated_posts(
     return resp.data or []
 
 
+# --- Mémoire des posts déjà créés --------------------------------------------- #
+# « L'IA doit se souvenir des posts qui ont été faits » : on relit les posts
+# récents du client (publiés + générés) pour les injecter dans les prompts de
+# génération et de chat. Lecture seule, volontairement compacte (le prompt est
+# borné) et FAIL-SAFE : toute erreur rend une liste vide — la mémoire ne doit
+# jamais casser une génération.
+
+POST_MEMORY_LIMIT = 12  # entrées max injectées dans un prompt
+POST_MEMORY_TEXT_CAP = 400  # caractères gardés par post côté db (le prompt retronque)
+
+
+def _post_memory_key(text: str) -> str:
+    """Clé de dédoublonnage : texte normalisé (espaces/casse), préfixe borné."""
+    return " ".join(str(text or "").split()).lower()[:160]
+
+
+def dedupe_post_memory(entries: list[dict], limit: int = POST_MEMORY_LIMIT) -> list[dict]:
+    """Dédoublonne les entrées de mémoire par texte normalisé, dans l'ordre reçu.
+
+    Un même post existe souvent deux fois (généré PUIS publié) : l'ordre d'entrée
+    décide qui gagne — les appelants mettent les posts publiés en premier.
+    """
+    seen: set[str] = set()
+    out: list[dict] = []
+    for entry in entries:
+        text = str(entry.get("text") or "").strip()
+        if not text:
+            continue
+        key = _post_memory_key(text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _post_memory_from_client(
+    db: Any, user_id: str, platform: str = "linkedin", limit: int = POST_MEMORY_LIMIT
+) -> list[dict]:
+    """Charge la mémoire des posts récents d'un user avec le client fourni.
+
+    Deux sources, chacune best-effort (l'échec de l'une n'empêche pas l'autre) :
+    - `scheduled_posts` publiés (LinkedIn uniquement) → statut « publié » ;
+    - `generated_posts` récents de la plateforme → « publié » (zernio_post_id),
+      « sauvegardé » (saved) ou « généré ».
+    """
+    entries: list[dict] = []
+
+    if platform == "linkedin":
+        try:
+            resp = (
+                db.table("scheduled_posts")
+                .select("post_text, scheduled_at")
+                .eq("user_id", user_id)
+                .eq("status", "published")
+                .order("scheduled_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            for row in resp.data or []:
+                text = str(row.get("post_text") or "").strip()
+                if not text:
+                    continue
+                entries.append({
+                    "text": text[:POST_MEMORY_TEXT_CAP],
+                    "status": "publié",
+                    "date": str(row.get("scheduled_at") or "")[:10] or None,
+                })
+        except Exception:
+            pass
+
+    try:
+        resp = (
+            db.table("generated_posts")
+            .select("post, saved, zernio_post_id, created_at")
+            .eq("user_id", user_id)
+            .eq("platform", platform)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        for row in resp.data or []:
+            text = str(row.get("post") or "").strip()
+            if not text:
+                continue
+            if row.get("zernio_post_id"):
+                status = "publié"
+            elif row.get("saved"):
+                status = "sauvegardé"
+            else:
+                status = "généré (brouillon)"
+            entries.append({
+                "text": text[:POST_MEMORY_TEXT_CAP],
+                "status": status,
+                "date": str(row.get("created_at") or "")[:10] or None,
+            })
+    except Exception:
+        pass
+
+    return dedupe_post_memory(entries, limit=limit)
+
+
+def get_recent_post_memory(
+    access_token: str | None, platform: str = "linkedin", limit: int = POST_MEMORY_LIMIT
+) -> list[dict]:
+    """Mémoire des posts récents du user authentifié. Fail-safe : erreur → []."""
+    if not access_token or not supabase_enabled():
+        return []
+    try:
+        user = get_user(access_token)
+        if not user:
+            return []
+        return _post_memory_from_client(
+            client_for_token(access_token), user["id"], platform=platform, limit=limit
+        )
+    except Exception:
+        return []
+
+
+def get_recent_post_memory_for_user(
+    user_id: str, platform: str = "linkedin", limit: int = POST_MEMORY_LIMIT
+) -> list[dict]:
+    """Variante service-role pour les crons (idée du jour, posts hebdo)."""
+    if not admin_enabled():
+        return []
+    try:
+        return _post_memory_from_client(admin_client(), user_id, platform=platform, limit=limit)
+    except Exception:
+        return []
+
+
 def delete_generated_idea(access_token: str, idea_id: str) -> bool:
     """Delete one of the user's saved ideas. Returns True if a row was removed."""
     user = get_user(access_token)
@@ -1690,6 +1823,7 @@ _GENERATION_JOB_COLS = (
     "id,status,topic,editorial_role,web_search,count,template_id,"
     "inspiration_text,inspiration_author,inspiration_url,"
     "platform,ig_trame_id,"
+    "listing_image_url,listing_source_url,"
     "result,error,created_at,updated_at"
 )
 
@@ -1704,12 +1838,18 @@ def create_generation_job(
     inspiration: dict | None = None,
     platform: str = "linkedin",
     ig_trame_id: str | None = None,
+    listing_image_url: str | None = None,
+    listing_source_url: str | None = None,
 ) -> dict | None:
     """Crée un job de génération `queued`. Retourne la ligne créée.
 
     ``platform="instagram"`` (ALE-291) : le job produit des packs reel plutôt
     que des posts LinkedIn ; ``ig_trame_id`` porte la trame choisie (catalogue
     statique, pas de FK — contrairement à ``template_id`` côté LinkedIn).
+
+    ``listing_image_url``/``listing_source_url`` (ALE-156) : photo et lien de
+    l'annonce quand le sujet était un lien d'annonce immobilière — le frontend
+    rattache la photo au post généré.
     """
     user = get_user(access_token)
     if not user:
@@ -1732,6 +1872,10 @@ def create_generation_job(
         row["inspiration_text"] = inspiration["text"].strip()[:6000]
         row["inspiration_author"] = (inspiration.get("author") or "").strip()[:200] or None
         row["inspiration_url"] = (inspiration.get("url") or "").strip()[:2000] or None
+    if listing_image_url:
+        row["listing_image_url"] = listing_image_url[:2000]
+    if listing_source_url:
+        row["listing_source_url"] = listing_source_url[:2000]
     resp = (
         db.table("generation_jobs")
         .insert(row)

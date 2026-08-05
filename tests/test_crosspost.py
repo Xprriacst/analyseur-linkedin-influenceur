@@ -334,8 +334,41 @@ class SchedulerCrossPublishTest(unittest.TestCase):
         self.assertIsNone(calls[0].get("platform_specific_data"))
         self.assertEqual(calls[0]["content"], "un seul tweet")
 
+    def test_skip_linkedin_flag_is_ignored_by_publish_cross_posts(self):
+        """skip_linkedin est une métadonnée de programmation, pas un réseau."""
+        from src import scheduler
 
-class RedditLanguageInstructionTest(unittest.TestCase):
+        post = self._post()
+        post["cross_posts"] = {
+            "skip_linkedin": True,
+            "x": {"tweets": ["tweet seul"]},
+        }
+        with mock.patch.object(scheduler.zernio, "create_post", return_value={"post": {"_id": "z-x"}}):
+            result = scheduler.publish_cross_posts(post)
+
+        self.assertNotIn("skip_linkedin", result)
+        self.assertEqual(result["x"]["status"], "published")
+
+    def test_run_skips_linkedin_when_flagged(self):
+        from src import scheduler
+
+        post = self._post(zernio_account_id=None)
+        post["cross_posts"] = {
+            "skip_linkedin": True,
+            "x": {"tweets": ["hello x"]},
+        }
+        due = [post]
+
+        with mock.patch.object(scheduler.db, "admin_enabled", return_value=True), \
+             mock.patch.object(scheduler.zernio, "enabled", return_value=True), \
+             mock.patch.object(scheduler.db, "get_due_scheduled_posts", return_value=due), \
+             mock.patch.object(scheduler, "publish_cross_posts", return_value={"x": {"status": "published"}}) as pub, \
+             mock.patch.object(scheduler.db, "update_scheduled_post_status") as upd:
+            scheduler.run()
+
+        pub.assert_called_once()
+        upd.assert_called_once()
+        self.assertEqual(upd.call_args[0][1], "published")
     """La version Reddit doit rester dans la langue du post d'origine.
 
     L'ancienne consigne (« langue du subreddit visé, en anglais si le premier

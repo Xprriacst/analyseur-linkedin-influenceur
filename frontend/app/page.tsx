@@ -61,7 +61,7 @@ import PublishConfirmModal from "./components/PublishConfirmModal";
 import ZoomableImage from "./components/ZoomableImage";
 // ALE-59 — publication multi-réseaux : panneaux X/Reddit partagés entre la
 // pop-up Publier et la modale Programmer, + helper de publication post-LinkedIn.
-import CrossNetworkPanels, { publishCrossNetworks, XLogo, RedditLogo, type CrossPostsDraft } from "./components/CrossNetworkPanels";
+import CrossNetworkPanels, { publishCrossNetworks, countSelectedNetworks, XLogo, RedditLogo, type CrossPostsDraft } from "./components/CrossNetworkPanels";
 // ALE-284 — les types de l'autopilote sont définis avec le composant qui les rend, et
 // importés ici : les redéclarer dans ce fichier les ferait diverger à la première
 // évolution du contrat serveur.
@@ -207,8 +207,16 @@ type Variant = {
   strategy: string;
   predicted_lift: string;
   post: string;
-  // ALE-291 : pack Reel Instagram — présents uniquement quand le job qui a
+  // ALE-291 : pack Reel Instagram — présent uniquement quand le job qui a
   // produit ce variant porte `platform: "instagram"`.
+  //
+  // ⚠️ DEUX FORMES possibles, et c'est voulu : le modèle produit le pack À PLAT
+  // (hook/script/caption/hashtags), puis `db.save_generated_posts` le range dans
+  // la forme base — `post` porte la caption, le reste va dans `reel_details` —
+  // et c'est CETTE forme qui repart au front dans `result.variants`. La forme à
+  // plat ne subsiste que si la sauvegarde a échoué (`save_error`), auquel cas
+  // le pack doit rester lisible quand même. `packOf()` lit donc les deux.
+  reel_details?: { hook?: string; script?: string; hashtags?: string[] } | null;
   hook?: string;
   script?: string;
   caption?: string;
@@ -219,7 +227,7 @@ type LinkedInImageAttachment = {
   id: string;
   url: string;
   filename?: string;
-  source: "upload" | "generated";
+  source: "upload" | "generated" | "listing";
 };
 type SavedIdea = Idea & { id: string; created_at?: string };
 // Image persistée sur un post sauvegardé (URL publique Zernio, format media_items).
@@ -510,6 +518,10 @@ type GenerationJob = {
   inspiration_text?: string | null;
   inspiration_author?: string | null;
   inspiration_url?: string | null;
+  // ALE-156 : sujet = lien d'annonce → photo principale + lien de l'annonce,
+  // rattachés automatiquement au post généré.
+  listing_image_url?: string | null;
+  listing_source_url?: string | null;
   // ALE-291 : "linkedin" (défaut) ou "instagram" — distingue un post d'un pack reel.
   platform?: "linkedin" | "instagram";
   ig_trame_id?: string | null;
@@ -1436,21 +1448,18 @@ function Sidebar({
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {!restricted && (() => {
         // `soon` : réseau visible mais grisé (pas encore ouvert aux clients).
-        // ALE-59 + feature flags : Instagram ne se dégrise (et X/Reddit
-        // n'apparaissent, grisés « Bientôt ») que pour les comptes porteurs du
-        // flag correspondant — déploiement progressif, fail closed pendant le
-        // chargement. La PUBLICATION X/Reddit passe par la pop-up multi-réseaux
-        // (elle aussi gardée par flag) ; l'onglet réseau dédié reste à
-        // construire (ALE-60/76…).
-        const networks: { key: Platform | "x" | "reddit"; label: string; icon: React.ReactNode; soon?: boolean }[] = [
+        // ALE-59 + feature flags : Instagram ne se dégrise que pour les comptes
+        // porteurs du flag correspondant — déploiement progressif, fail closed
+        // pendant le chargement.
+        // Les entrées X et Reddit grisées « Bientôt » ont été RETIRÉES (demande
+        // d'Alex) : elles annonçaient un onglet réseau dédié qui n'est pas au
+        // programme, alors que la PUBLICATION X/Reddit, elle, existe déjà et
+        // passe par la pop-up multi-réseaux (Publier/Programmer) + les lignes
+        // de connexion de Mon profil › Connexions. Un teaser qui promet moins
+        // que ce que l'app fait déjà induit en erreur.
+        const networks: { key: Platform; label: string; icon: React.ReactNode; soon?: boolean }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
           { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} />, soon: !featureFlags.has("instagram") },
-          ...(featureFlags.has("x")
-            ? [{ key: "x" as const, label: "X", icon: <XLogo size={14} />, soon: true }]
-            : []),
-          ...(featureFlags.has("reddit")
-            ? [{ key: "reddit" as const, label: "Reddit", icon: <RedditLogo size={14} />, soon: true }]
-            : []),
         ];
         // ALE-257 : « Veille » retirée — l'analyse (profils, classement, tendances,
         // monitoring) vit désormais dans « Contenu » › sous-onglet « Analyses ».
@@ -2034,11 +2043,15 @@ function InstagramGenerator({
   useEffect(() => { _igGenCache.expanded = expanded; }, [expanded]);
 
   function fieldsOf(line: PostLine): IgPackFields {
+    const v = line.variant;
+    // Forme base (le cas normal, après `save_generated_posts`) d'abord, forme à
+    // plat en repli (sauvegarde en échec) — cf. le commentaire sur `Variant`.
+    const details = v?.reel_details;
     return edited[line.key] || {
-      hook: line.variant?.hook || "",
-      script: line.variant?.script || "",
-      caption: line.variant?.caption || "",
-      hashtagsText: (line.variant?.hashtags || []).join(" "),
+      hook: details?.hook || v?.hook || "",
+      script: details?.script || v?.script || "",
+      caption: v?.post || v?.caption || "",
+      hashtagsText: (details?.hashtags || v?.hashtags || []).join(" "),
     };
   }
 
@@ -2193,13 +2206,13 @@ function InstagramGenerator({
                       {isExpanded && (
                         <div style={{ padding: "10px 4px 4px" }}>
                           <label className="role-picker-label">Hook (3 premières secondes)</label>
-                          <textarea className="variant-text" rows={2} value={f.hook} onChange={(e) => setField(line, "hook", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <textarea className="variant-text" rows={2} value={f.hook} onChange={(e) => setField(line, "hook", e.target.value)} aria-label="Hook du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Script (scène par scène)</label>
-                          <textarea className="variant-text" rows={6} value={f.script} onChange={(e) => setField(line, "script", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <textarea className="variant-text" rows={6} value={f.script} onChange={(e) => setField(line, "script", e.target.value)} aria-label="Script du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Caption</label>
-                          <textarea className="variant-text" rows={4} value={f.caption} onChange={(e) => setField(line, "caption", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <textarea className="variant-text" rows={4} value={f.caption} onChange={(e) => setField(line, "caption", e.target.value)} aria-label="Caption du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Hashtags</label>
-                          <input className="variant-text" value={f.hashtagsText} onChange={(e) => setField(line, "hashtagsText", e.target.value)} style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <input className="variant-text" value={f.hashtagsText} onChange={(e) => setField(line, "hashtagsText", e.target.value)} aria-label="Hashtags du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
                             <button className="secondary-button" onClick={() => copyPack(line)}>
                               {copied === key ? <CheckCircle2 size={14} /> : <Copy size={14} />} {copied === key ? "Copié ✓" : "Copier le pack"}
@@ -3581,9 +3594,12 @@ function SchedulePostModal({
           <button className="primary-button" disabled={scheduling || !scheduleDate || !crossValid || !trimmed} onClick={() => doSchedule(false)}>
             {scheduling
               ? <><Loader2 size={14} className="spinning" /> Planification…</>
-              : cross
-                ? <><Clock3 size={14} /> Programmer sur {1 + (cross.x ? 1 : 0) + (cross.reddit ? 1 : 0)} réseaux</>
-                : <><Clock3 size={14} /> Programmer sur LinkedIn</>}
+              : (() => {
+                  const n = countSelectedNetworks(cross);
+                  return n > 1 || cross?.skip_linkedin
+                    ? <><Clock3 size={14} /> Programmer sur {n} réseau{n > 1 ? "x" : ""}</>
+                    : <><Clock3 size={14} /> Programmer sur LinkedIn</>;
+                })()}
           </button>
         </div>
       </div>
@@ -4098,6 +4114,7 @@ function structureName(s: StructureChoice): string {
 // sauvegardées, et la ligne ouverte.
 const _genCache: {
   appliedImageJobIds: Set<string>;
+  appliedListingLineKeys: Set<string>;
   edited: Record<string, string>;
   images: Record<string, LinkedInImageAttachment[]>;
   expanded: string | null;
@@ -4105,6 +4122,9 @@ const _genCache: {
   // ALE-261 : jobs d'image déjà rattachés, pour ne les appliquer qu'une fois même
   // si le job termine pendant qu'on est sur un autre onglet.
   appliedImageJobIds: new Set(),
+  // ALE-156 : lignes dont la photo d'annonce a déjà été rattachée — sans ce
+  // garde-fou, retirer la photo la ferait réapparaître au rendu suivant.
+  appliedListingLineKeys: new Set(),
   edited: {},
   images: {},
   expanded: null,
@@ -4869,6 +4889,15 @@ function PostWizardModal({
               placeholder="Ex. : pourquoi la plupart des PME ratent leur premier projet IA sur le cadrage, pas sur l'outil"
               style={{ width: "100%", boxSizing: "border-box", marginTop: 6 }}
             />
+            {/* ALE-156 : idée = lien d'annonce → on annonce ce qui va se passer
+                (lecture du bien + photo rattachée), sinon le client croit que
+                le modèle va recevoir une URL brute. */}
+            {!isIg && /^https?:\/\/\S+$/i.test(idea.trim()) && (
+              <p className="role-picker-hint" style={{ marginTop: 8 }}>
+                <Linkedin size={12} style={{ verticalAlign: "-2px" }} /> Lien d'annonce détecté : on lira le bien (titre, prix, description)
+                et sa photo principale sera rattachée automatiquement au post.
+              </p>
+            )}
             {seeds.length > 0 && (
               <div style={{ marginTop: 14 }}>
                 <p className="role-picker-hint" style={{ marginBottom: 6 }}>Ou reprends une idée que tu avais mise de côté :</p>
@@ -5239,7 +5268,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     }));
   }
 
-  function attachImage(key: string, url: string, source: "upload" | "generated", filename: string, id: string) {
+  function attachImage(key: string, url: string, source: LinkedInImageAttachment["source"], filename: string, id: string) {
     setImages((prev) => {
       const current = prev[key] || [];
       if (current.some((im) => im.id === id)) return prev;   // rattachement idempotent
@@ -5260,6 +5289,21 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageJobs]);
+
+  // ALE-156 : la photo de l'annonce rejoint le post généré depuis un lien
+  // d'annonce — comme le faisait l'idée du jour avant le parcours guidé. Le
+  // job porte l'URL (persistée en base) : la photo revient donc même si la
+  // page a été quittée pendant la génération.
+  useEffect(() => {
+    for (const line of lines) {
+      const url = line.job.listing_image_url;
+      if (!url || !line.variant) continue;
+      if (_genCache.appliedListingLineKeys.has(line.key)) continue;
+      _genCache.appliedListingLineKeys.add(line.key);
+      attachImage(line.key, url, "listing", "photo-annonce.jpg", `listing-${line.key}`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lines]);
 
   function activeImageJobFor(key: string): ImageJob | null {
     const job = latestImageJobFor(imageJobs, `variant:${key}`);
@@ -5337,19 +5381,34 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     setDrafted(null);
     setPublishing(key);
     setConfirmPublish(null);
+    const skipLinkedin = !!cross?.skip_linkedin;
     try {
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft, images: imagePayload(key) }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon impossible" : "Publication impossible"));
-      if (draft) setDrafted(key); else setPublished(key);
-      // ALE-59 : les versions X/Reddit ne partent qu'APRÈS le succès LinkedIn.
-      if (!draft && cross) {
+      if (!skipLinkedin) {
+        const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ content: text, draft, images: imagePayload(key) }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || (draft ? "Enregistrement du brouillon impossible" : "Publication impossible"));
+        if (draft) setDrafted(key);
+        else setPublished(key);
+      }
+      if (!draft && cross && (cross.x || cross.reddit)) {
         const summary = await publishCrossNetworks(cross);
-        if (summary.errors.length) setPublishError(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+        if (skipLinkedin) {
+          if (summary.errors.length && !summary.published.length) {
+            throw new Error(summary.errors.join(" · "));
+          }
+          if (summary.published.length) setPublished(key);
+          if (summary.errors.length) {
+            setPublishError(`Publié sur ${summary.published.join(", ")} ✓ — mais ${summary.errors.join(" · ")}`);
+          }
+        } else if (summary.errors.length) {
+          setPublishError(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+        }
+      } else if (!draft && skipLinkedin) {
+        throw new Error("Aucun réseau sélectionné pour la publication.");
       }
     } catch (err: any) {
       setPublishError(err.message);
@@ -5380,11 +5439,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
   }
 
   function openScheduleModal(line: PostLine) {
-    if (!isAuthed) { requireAuth("Connecte-toi pour programmer une publication LinkedIn."); return; }
-    if (!linkedin.status?.connected) {
-      setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
-      return;
-    }
+    if (!isAuthed) { requireAuth("Connecte-toi pour programmer une publication."); return; }
     setPublishError("");
     setScheduleModal({ key: line.key, text: textOf(line), images: images[line.key] || [] });
   }
@@ -5694,6 +5749,12 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                             {(images[key] || []).map((image, imageIndex) => (
                               <div key={image.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
                                 <ZoomableImage src={image.url} alt={`Image jointe ${imageIndex + 1}`} />
+                                {image.source === "listing" && (
+                                  <p className="role-picker-hint" style={{ margin: "6px 0 0", fontSize: 11 }}>
+                                    Photo de l&apos;annonce — rattachée automatiquement
+                                    {safeHttpUrl(line.job.listing_source_url) && <> · <a href={safeHttpUrl(line.job.listing_source_url)} target="_blank" rel="noreferrer">voir l&apos;annonce</a></>}
+                                  </p>
+                                )}
                                 <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                                   <a
                                     href={image.url}
@@ -7146,7 +7207,8 @@ function LibraryView({
 
   async function publishSavedPost(p: SavedPost, overrideText?: string, cross?: CrossPostsDraft | null) {
     setConfirmPublishPostId(null);
-    if (!linkedin.status?.connected) {
+    const skipLinkedin = !!cross?.skip_linkedin;
+    if (!skipLinkedin && !linkedin.status?.connected) {
       setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
       return;
     }
@@ -7154,19 +7216,36 @@ function LibraryView({
     setPublishingPost(p.id);
     try {
       const text = overrideText ?? editedPosts[p.id] ?? p.post;
-      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ content: text, draft: false, images: savedPostImagePayload(p) }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Publication impossible");
-      setPublishedPost(p.id);
-      setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, slack_status: "published" } : pp));
-      setTimeout(() => setPublishedPost((s) => s === p.id ? null : s), 3000);
-      if (cross) {
+      if (!skipLinkedin) {
+        const res = await fetch(`${DIRECT_API_URL}/me/linkedin/publish`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+          body: JSON.stringify({ content: text, draft: false, images: savedPostImagePayload(p) }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Publication impossible");
+        setPublishedPost(p.id);
+        setPosts((prev) => prev.map((pp) => pp.id === p.id ? { ...pp, slack_status: "published" } : pp));
+        setTimeout(() => setPublishedPost((s) => s === p.id ? null : s), 3000);
+      }
+      if (cross && (cross.x || cross.reddit)) {
         const summary = await publishCrossNetworks(cross);
-        if (summary.errors.length) setPublishError(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+        if (skipLinkedin) {
+          if (summary.errors.length && !summary.published.length) {
+            throw new Error(summary.errors.join(" · "));
+          }
+          if (summary.published.length) {
+            setPublishedPost(p.id);
+            setTimeout(() => setPublishedPost((s) => s === p.id ? null : s), 3000);
+          }
+          if (summary.errors.length) {
+            setPublishError(`Publié sur ${summary.published.join(", ")} ✓ — mais ${summary.errors.join(" · ")}`);
+          }
+        } else if (summary.errors.length) {
+          setPublishError(`Publié sur LinkedIn ✓ — mais ${summary.errors.join(" · ")}`);
+        }
+      } else if (skipLinkedin) {
+        throw new Error("Aucun réseau sélectionné pour la publication.");
       }
     } catch (err: any) {
       setPublishError(err.message);
@@ -14336,6 +14415,7 @@ export default function Home() {
       // images du compte précédent réapparaîtraient chez le suivant dans le même
       // onglet. Toute clé ajoutée à `_genCache` doit être purgée ici.
       _genCache.appliedImageJobIds = new Set();
+      _genCache.appliedListingLineKeys = new Set();
       _genCache.edited = {};
       _genCache.images = {};
       _genCache.expanded = null;

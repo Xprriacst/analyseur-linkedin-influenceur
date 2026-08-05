@@ -35,7 +35,13 @@ from src.stats import compute_stats
 from src.instagram_hooks import select_hooks
 from src.trends import compute_trends
 from src.daily_ideas import _render_idea_markdown
-from src.listing import ListingError, build_listing_topic, fetch_listing_preview, is_listing_url
+from src.listing import (
+    ListingError,
+    build_listing_topic,
+    cached_listing_preview,
+    fetch_listing_preview,
+    is_listing_url,
+)
 
 load_dotenv()
 
@@ -911,6 +917,7 @@ class CrossPostRedditPayload(BaseModel):
 
 class CrossPostsPayload(BaseModel):
     """ALE-59 : versions adaptées X/Reddit stockées avec le post programmé."""
+    skip_linkedin: bool = False
     x: CrossPostXPayload | None = None
     reddit: CrossPostRedditPayload | None = None
 
@@ -938,6 +945,8 @@ def _cross_posts_payload_dict(cross: CrossPostsPayload | None) -> dict[str, Any]
     if cross is None:
         return {}
     result: dict[str, Any] = {}
+    if cross.skip_linkedin:
+        result["skip_linkedin"] = True
     if cross.x is not None:
         tweets = [t.strip() for t in cross.x.tweets if isinstance(t, str) and t.strip()]
         if not tweets:
@@ -986,20 +995,28 @@ def me_linkedin_schedule(
     if not zernio.enabled():
         raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
     profile = db.get_editorial_profile(token) or {}
-    if not profile.get("zernio_account_id"):
+    cross_posts = _cross_posts_payload_dict(payload.cross_posts)
+    skip_linkedin = bool(cross_posts.get("skip_linkedin"))
+    if not skip_linkedin and not profile.get("zernio_account_id"):
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
+    if skip_linkedin and not cross_posts.get("x") and not cross_posts.get("reddit"):
+        raise HTTPException(
+            status_code=400,
+            detail="Sans LinkedIn, active au moins X ou Reddit.",
+        )
     _validate_future_scheduled_at(payload.scheduled_at)
 
-    # Les images sont mises en ligne dès la programmation (URLs publiques) :
-    # le message de validation Slack ne peut afficher que des URLs publiques,
-    # et on évite de stocker des data-URLs base64 en base. Le cron republie
-    # ces items tels quels (prepare_image_media_items est idempotent).
-    try:
-        media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
-    except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=f"Impossible de préparer les images du post : {exc}") from exc
+    media_items: list[dict[str, Any]] = []
+    if not skip_linkedin:
+        # Les images sont mises en ligne dès la programmation (URLs publiques) :
+        # le message de validation Slack ne peut afficher que des URLs publiques,
+        # et on évite de stocker des data-URLs base64 en base. Le cron republie
+        # ces items tels quels (prepare_image_media_items est idempotent).
+        try:
+            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
+        except zernio.ZernioError as exc:
+            raise HTTPException(status_code=502, detail=f"Impossible de préparer les images du post : {exc}") from exc
 
-    cross_posts = _cross_posts_payload_dict(payload.cross_posts)
     # Déploiement progressif : n'exige la feature que si le payload embarque la
     # version correspondante (le cadençage LinkedIn reste ouvert à tous).
     if "x" in cross_posts:
@@ -1936,6 +1953,9 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
         # d'ALE-126/ALE-127.
         reference_posts=(db.pick_reference_posts(token) or None) if platform == "linkedin" else None,
         platform=platform,
+        # Mémoire des posts déjà créés/publiés : les idées proposées ne doivent
+        # pas re-proposer ce qui a déjà été posté.
+        recent_posts=db.get_recent_post_memory(token, platform=platform) or None,
     )
     save_error: str | None = None
     if token:
@@ -1988,6 +2008,8 @@ def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) ->
         "credits": credits,
         "reference_posts": db.pick_reference_posts(token) or None,
         "template": db.get_post_template(token, payload.template_id) if (token and payload.template_id) else None,
+        # Mémoire des posts déjà créés/publiés (anti-répétition + continuité).
+        "recent_posts": db.get_recent_post_memory(token) or None,
     }
 
 
@@ -2017,6 +2039,7 @@ def _generate_posts_response(
         on_web_search=on_web_search,
         reference_posts=context["reference_posts"],
         template=context["template"],
+        recent_posts=context["recent_posts"],
     )
     variants, save_error = _save_generated_variants(token, context["topic"], variants)
     return {"variants": variants, "save_error": save_error, "credits": context["credits"]}
@@ -2050,6 +2073,7 @@ def generate_stream(payload: GenerateRequest, token: Optional[str] = Depends(opt
                     on_web_search=on_web_search,
                     reference_posts=context["reference_posts"],
                     template=context["template"],
+                    recent_posts=context["recent_posts"],
                 )
                 variants, save_error = _save_generated_variants(token, context["topic"], variants)
                 events.put(("done", {
@@ -2128,6 +2152,23 @@ def create_generation_job(payload: GenerationJobRequest, token: str = Depends(re
         )
         raise HTTPException(status_code=400, detail=detail)
 
+    # ALE-156 : sujet = lien d'annonce → on ancre le post sur le bien (titre,
+    # prix, description) plutôt que de donner l'URL brute au modèle, et on garde
+    # la photo pour la rattacher au post généré (comme le faisait l'idée du jour
+    # avant que le parcours guidé ne devienne le point d'entrée). Résolu AVANT le
+    # débit : une annonce illisible ne coûte rien — et échoue explicitement (422)
+    # plutôt que de produire en silence un post sans sa photo.
+    topic = (payload.topic or "").strip() or None
+    listing_image_url = listing_source_url = None
+    if platform == "linkedin" and topic and is_listing_url(topic):
+        try:
+            preview = cached_listing_preview(topic)
+            topic = build_listing_topic(preview)
+            listing_image_url = preview.get("image_url")
+            listing_source_url = preview.get("source_url")
+        except ListingError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
     # Débit après les préconditions : un user sans influenceur ne perd pas de crédits.
     credit_action = "generate_reel" if platform == "instagram" else "generate_post"
     ok, balance = db.debit_credits(token, credit_action, payload.count)
@@ -2137,13 +2178,14 @@ def create_generation_job(payload: GenerationJobRequest, token: str = Depends(re
         raise HTTPException(status_code=402, detail=f"Crédits insuffisants (solde : {balance}). Génération de {payload.count} {unit} = {cost} crédit(s).")
 
     role = (payload.editorial_role or "").strip() or None
-    topic = (payload.topic or "").strip() or None
     job = db.create_generation_job(
         token, topic, role, payload.web_search, payload.count,
         template_id=payload.template_id,
         inspiration=payload.inspiration.model_dump() if payload.inspiration else None,
         platform=platform,
         ig_trame_id=payload.ig_trame_id,
+        listing_image_url=listing_image_url,
+        listing_source_url=listing_source_url,
     )
     if not job:
         raise HTTPException(status_code=500, detail="Création du job de génération impossible.")
@@ -2227,6 +2269,24 @@ def read_inspiration_post(payload: InspirationRequest, token: str = Depends(requ
     }
 
 
+def _wizard_idea_text(idea: str) -> str:
+    """Idée du parcours guidé = parfois un lien d'annonce (ALE-156).
+
+    Les aides à la décision (rôle, structures) recevraient alors une URL brute —
+    le modèle recommanderait à l'aveugle. Best-effort : on lit l'annonce (mémo
+    10 min, donc une seule lecture pour tout le parcours) et on raisonne sur son
+    contenu ; si le site bloque, on continue sur le texte tel quel plutôt que
+    d'arrêter le client sur une étape purement consultative.
+    """
+    idea = idea.strip()
+    if is_listing_url(idea):
+        try:
+            return build_listing_topic(cached_listing_preview(idea))
+        except ListingError:
+            pass
+    return idea
+
+
 class EditorialRoleRequest(BaseModel):
     idea: str = Field(..., min_length=3, max_length=2000)
     platform: str = Field(default="linkedin", max_length=20)
@@ -2244,7 +2304,7 @@ def recommend_role(payload: EditorialRoleRequest, token: str = Depends(require_t
     platform = payload.platform if payload.platform == "instagram" else "linkedin"
     if platform == "instagram":
         require_feature(token, "instagram")
-    reco = recommend_editorial_role(payload.idea.strip(), db.get_user_ai_context(token), platform=platform)
+    reco = recommend_editorial_role(_wizard_idea_text(payload.idea), db.get_user_ai_context(token), platform=platform)
     return {
         "editorial_role": reco["editorial_role"],
         "reason": reco["reason"],
@@ -2292,7 +2352,7 @@ def suggest_post_structures(payload: StructuresRequest, token: str = Depends(req
         library = db.list_post_templates(token)
     except Exception:  # noqa: BLE001 — la bibliothèque est un plus, pas un prérequis
         library = []
-    suggested = suggest_structures(payload.idea.strip(), role, library)
+    suggested = suggest_structures(_wizard_idea_text(payload.idea), role, library)
 
     return {
         "structures": [
@@ -4448,6 +4508,7 @@ def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]
     posts = generate_posts(
         seed_text, top_posts, benchmark, user_context=user_context, count=1,
         reference_posts=db.pick_reference_posts(token) or None,
+        recent_posts=db.get_recent_post_memory(token) or None,
     )
     if not posts:
         raise HTTPException(status_code=500, detail="La génération n'a produit aucun post.")
@@ -5088,12 +5149,15 @@ def chat(payload: ChatRequest, token: str = Depends(require_token)) -> Streaming
     history = db.get_chat_messages(token, conversation_id, limit=80)
     top_posts, benchmark = _build_benchmark(influencers)
     user_context = db.get_user_ai_context(token)
+    # Mémoire des posts déjà créés/publiés : l'assistant s'en souvient
+    # (anti-répétition, continuité, « qu'est-ce que j'ai déjà posté ? »).
+    recent_posts = db.get_recent_post_memory(token) or None
 
     def stream_response():
         assistant_text = ""
         yield _sse("meta", {"conversation_id": conversation_id, "credits": credits_balance})
         try:
-            for delta in chat_stream(history, top_posts, benchmark, user_context=user_context):
+            for delta in chat_stream(history, top_posts, benchmark, user_context=user_context, recent_posts=recent_posts):
                 assistant_text += delta
                 yield _sse("delta", {"text": delta})
             if assistant_text.strip():

@@ -37,7 +37,8 @@ test("le parcours mène de l'idée à UN post en file, sur la structure choisie"
         })
       : route.fallback()
   );
-  await page.route("**/me/idea-seeds", (route) =>
+  // `*` final : le réservoir est requêté avec `?platform=linkedin` (ALE-291).
+  await page.route("**/me/idea-seeds*", (route) =>
     route.request().method() === "GET"
       ? route.fulfill({
           contentType: "application/json",
@@ -193,7 +194,7 @@ test("la file ne montre que les 3 derniers posts, « Tout voir » déplie le res
 test("le réservoir d'idées est sur la page, et chaque idée lance le parcours (ALE-287)", async ({ page }) => {
   await mockEmptyQueue(page);
   const seeds = [{ id: "s1", text: "Le cadrage avant l'outil", used_at: null, comment: null }];
-  await page.route("**/me/idea-seeds", (route) => {
+  await page.route("**/me/idea-seeds*", (route) => {
     if (route.request().method() === "GET") {
       return route.fulfill({ contentType: "application/json", body: JSON.stringify(seeds) });
     }
@@ -227,7 +228,7 @@ test("le réservoir d'idées est sur la page, et chaque idée lance le parcours 
 
 test("bibliothèque vide : le parcours propose la structure libre et n'est pas bloqué", async ({ page }) => {
   await mockEmptyQueue(page);
-  await page.route("**/me/idea-seeds", (route) =>
+  await page.route("**/me/idea-seeds*", (route) =>
     route.request().method() === "GET"
       ? route.fulfill({ contentType: "application/json", body: "[]" })
       : route.fallback()
@@ -262,7 +263,7 @@ test("bibliothèque vide : le parcours propose la structure libre et n'est pas b
 
 test("« Fermer » laisse le post en ligne dans la file, cliquable pour reprendre", async ({ page }) => {
   await mockEmptyQueue(page);
-  await page.route("**/me/idea-seeds", (route) =>
+  await page.route("**/me/idea-seeds*", (route) =>
     route.request().method() === "GET" ? route.fulfill({ contentType: "application/json", body: "[]" }) : route.fallback()
   );
   await page.route("**/generate/editorial-role", (route) =>
@@ -351,6 +352,52 @@ test("« Fermer » laisse le post en ligne dans la file, cliquable pour reprendr
 
   // Plus rien à perdre ⇒ l'alerte se tait à nouveau.
   expect(await warnsOnLeave()).toBe(false);
+});
+
+test("lien d'annonce : le parcours l'annonce, et la photo du bien rejoint le post généré (ALE-156)", async ({ page }) => {
+  // Un job terminé issu d'un lien d'annonce porte la photo (listing_image_url) :
+  // elle doit être rattachée automatiquement à la ligne — c'est LE fix du bug
+  // « l'image ne se télécharge plus » (le parcours guidé perdait la photo que
+  // l'idée du jour rattachait avant lui).
+  const job = {
+    id: "job-annonce",
+    status: "done",
+    topic: "Rédige un post LinkedIn pour mettre en avant ce bien immobilier.\nBien : Loft 3 pièces — Bordeaux.",
+    editorial_role: "story",
+    web_search: false,
+    count: 1,
+    template_id: null,
+    listing_image_url: "https://cdn.exemple.com/photo-annonce.jpg",
+    listing_source_url: "https://www.exemple-immo.com/annonce/123",
+    result: { variants: [{ id: "p-1", editorial_role: "story", hook_type: "story", strategy: "", predicted_lift: "", post: "Un loft rare à Bordeaux…" }] },
+    error: null,
+    created_at: "2026-08-04T10:00:00Z",
+    updated_at: "2026-08-04T10:00:00Z",
+  };
+  await page.route("**/generate/jobs", (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({ contentType: "application/json", body: JSON.stringify([job]) })
+      : route.fallback()
+  );
+
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Générateur de posts");
+
+  await page.locator(".post-queue-line").first().click();
+  await expect(page.getByText(/1 image jointe au post LinkedIn/i)).toBeVisible();
+  await expect(page.getByText(/Photo de l'annonce — rattachée automatiquement/i)).toBeVisible();
+  await expect(page.getByRole("link", { name: /voir l'annonce/i })).toHaveAttribute(
+    "href",
+    "https://www.exemple-immo.com/annonce/123"
+  );
+
+  // Et le parcours dit ce qui va se passer quand l'idée saisie est un lien —
+  // sinon le client croit que le modèle recevra une URL brute.
+  await page.getByRole("button", { name: /Générer un post/i }).click();
+  const modal = page.getByRole("dialog", { name: /Générer un post/i });
+  await modal.getByRole("button", { name: /J'ai une idée/i }).click();
+  await modal.getByLabel(/De quoi veux-tu parler/i).fill("https://www.exemple-immo.com/annonce/123");
+  await expect(modal.getByText(/Lien d'annonce détecté/i)).toBeVisible();
 });
 
 test("« J'ai une inspiration » : le post lu devient l'angle proposé, ajustable", async ({ page }) => {

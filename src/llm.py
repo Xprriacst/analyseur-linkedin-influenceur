@@ -526,6 +526,39 @@ def _format_reference_posts(reference_posts: list[dict] | None) -> str:
     )
 
 
+def _format_recent_posts(recent_posts: list[dict] | None) -> str:
+    """Render the user's own recent posts (memory) for LLM prompts.
+
+    « L'IA se souvient des posts qui ont été faits » : le bloc rappelle ce que
+    le client a déjà publié/généré récemment, avec deux effets voulus —
+    anti-répétition (sujets/angles déjà traités) et continuité (faire écho à un
+    post précédent quand c'est pertinent). Chaîne vide quand il n'y a rien.
+    """
+    if not recent_posts:
+        return ""
+    entries = []
+    for post in recent_posts[:12]:
+        text = str(post.get("text") or "").strip()
+        if not text:
+            continue
+        bits = [str(b) for b in [post.get("status"), post.get("date")] if b]
+        header = f"[{' · '.join(bits)}] " if bits else ""
+        entries.append(f"- {header}{text[:300]}")
+    if not entries:
+        return ""
+    return (
+        "\n\nMémoire — posts déjà créés par le client récemment (du plus récent au plus ancien) :\n"
+        + "\n".join(entries)
+        + "\n\nRègles de mémoire :\n"
+        "- Ne reproduis pas un sujet, un angle ou une anecdote déjà traités dans ces posts "
+        "récents, sauf si le sujet demandé l'impose explicitement.\n"
+        "- Varie les accroches et les structures par rapport à ces posts récents — pas deux "
+        "posts construits pareil d'affilée.\n"
+        "- Tu peux faire écho à un post précédent (suite, retour d'expérience, réponse aux "
+        "réactions) quand c'est pertinent : la continuité est un atout, la répétition non."
+    )
+
+
 def extract_post_template(post_text: str) -> dict:
     """Extrait le squelette réutilisable d'un post d'influenceur (ALE-217).
 
@@ -1200,6 +1233,7 @@ def generate_one_line_ideas(
     seed_topic: str | None = None,
     reference_posts: list[dict] | None = None,
     platform: str = "linkedin",
+    recent_posts: list[dict] | None = None,
 ) -> list[dict]:
     """Generate scannable one-liner post ideas anchored in real top posts.
 
@@ -1233,6 +1267,7 @@ def generate_one_line_ideas(
         + seed_directive
         + f"\n\nPosts réels les plus performants (source + engagement) :\n{posts_text}"
         + _format_reference_posts(reference_posts)
+        + _format_recent_posts(recent_posts)
         + recent_text
         + f"""
 
@@ -1655,6 +1690,7 @@ def generate_posts(
     on_web_search: Callable[[dict[str, Any]], None] | None = None,
     reference_posts: list[dict] | None = None,
     template: dict | None = None,
+    recent_posts: list[dict] | None = None,
 ) -> list[dict]:
     """Generate LinkedIn post variants (default 1) covering editorial roles.
 
@@ -1726,6 +1762,7 @@ def generate_posts(
         + examples_text
         + _format_reference_posts(reference_posts)
         + _format_template(template)
+        + _format_recent_posts(recent_posts)
         + f"\n\nGénère exactement {count} variant{'s' if count > 1 else ''} de post{'s' if count > 1 else ''} LinkedIn, un par rôle éditorial ci-dessous, "
         "DANS L'ORDRE indiqué :\n\n"
         + roles_block
@@ -1856,6 +1893,7 @@ def generate_instagram_reel_packs(
     trame_id: str | None = None,
     count: int = 1,
     inspiration: dict | None = None,
+    recent_posts: list[dict] | None = None,
 ) -> list[dict]:
     """Génère des packs Reel Instagram (hook + script + caption + hashtags).
 
@@ -1932,6 +1970,7 @@ def generate_instagram_reel_packs(
         + "\n\nExemples des posts Instagram les plus performants du client :\n"
         + examples_text
         + inspiration_block
+        + _format_recent_posts(recent_posts)
         + f"\n\nBanque de hooks éprouvés (inspire-toi du RYTHME et du TON, ne recopie jamais tel quel, "
         f"remplace tout placeholder) :\n{hook_pool}"
         + f"\n\nGénère exactement {count} pack{'s' if count > 1 else ''} de reel, un par rôle éditorial "
@@ -1991,6 +2030,7 @@ def _chat_system_prompt(
     top_posts_examples: list[dict],
     benchmark: dict,
     user_context: dict[str, Any] | None = None,
+    recent_posts: list[dict] | None = None,
 ) -> str:
     examples = [
         {
@@ -2030,6 +2070,7 @@ def _chat_system_prompt(
         f"{json.dumps(benchmark, ensure_ascii=False, indent=2)}\n\n"
         "Exemples de posts performants :\n"
         f"{json.dumps(examples, ensure_ascii=False, indent=2)}"
+        f"{_format_recent_posts(recent_posts)}"
     )
 
 
@@ -2038,6 +2079,7 @@ def chat_stream(
     top_posts_examples: list[dict],
     benchmark: dict,
     user_context: dict[str, Any] | None = None,
+    recent_posts: list[dict] | None = None,
 ):
     """Stream a conversational assistant response as text deltas."""
     anthropic_messages = [
@@ -2045,7 +2087,9 @@ def chat_stream(
         for m in messages[-24:]
         if m.get("role") in {"user", "assistant"} and (m.get("content") or "").strip()
     ]
-    system = _chat_system_prompt(top_posts_examples, benchmark, user_context=user_context)
+    system = _chat_system_prompt(
+        top_posts_examples, benchmark, user_context=user_context, recent_posts=recent_posts
+    )
     stream_kwargs: dict[str, Any] = dict(
         model=_model(),
         max_tokens=6000,
