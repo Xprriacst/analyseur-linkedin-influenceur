@@ -219,7 +219,7 @@ type LinkedInImageAttachment = {
   id: string;
   url: string;
   filename?: string;
-  source: "upload" | "generated";
+  source: "upload" | "generated" | "listing";
 };
 type SavedIdea = Idea & { id: string; created_at?: string };
 // Image persistée sur un post sauvegardé (URL publique Zernio, format media_items).
@@ -510,6 +510,10 @@ type GenerationJob = {
   inspiration_text?: string | null;
   inspiration_author?: string | null;
   inspiration_url?: string | null;
+  // ALE-156 : sujet = lien d'annonce → photo principale + lien de l'annonce,
+  // rattachés automatiquement au post généré.
+  listing_image_url?: string | null;
+  listing_source_url?: string | null;
   // ALE-291 : "linkedin" (défaut) ou "instagram" — distingue un post d'un pack reel.
   platform?: "linkedin" | "instagram";
   ig_trame_id?: string | null;
@@ -4098,6 +4102,7 @@ function structureName(s: StructureChoice): string {
 // sauvegardées, et la ligne ouverte.
 const _genCache: {
   appliedImageJobIds: Set<string>;
+  appliedListingLineKeys: Set<string>;
   edited: Record<string, string>;
   images: Record<string, LinkedInImageAttachment[]>;
   expanded: string | null;
@@ -4105,6 +4110,9 @@ const _genCache: {
   // ALE-261 : jobs d'image déjà rattachés, pour ne les appliquer qu'une fois même
   // si le job termine pendant qu'on est sur un autre onglet.
   appliedImageJobIds: new Set(),
+  // ALE-156 : lignes dont la photo d'annonce a déjà été rattachée — sans ce
+  // garde-fou, retirer la photo la ferait réapparaître au rendu suivant.
+  appliedListingLineKeys: new Set(),
   edited: {},
   images: {},
   expanded: null,
@@ -4869,6 +4877,15 @@ function PostWizardModal({
               placeholder="Ex. : pourquoi la plupart des PME ratent leur premier projet IA sur le cadrage, pas sur l'outil"
               style={{ width: "100%", boxSizing: "border-box", marginTop: 6 }}
             />
+            {/* ALE-156 : idée = lien d'annonce → on annonce ce qui va se passer
+                (lecture du bien + photo rattachée), sinon le client croit que
+                le modèle va recevoir une URL brute. */}
+            {!isIg && /^https?:\/\/\S+$/i.test(idea.trim()) && (
+              <p className="role-picker-hint" style={{ marginTop: 8 }}>
+                <Linkedin size={12} style={{ verticalAlign: "-2px" }} /> Lien d'annonce détecté : on lira le bien (titre, prix, description)
+                et sa photo principale sera rattachée automatiquement au post.
+              </p>
+            )}
             {seeds.length > 0 && (
               <div style={{ marginTop: 14 }}>
                 <p className="role-picker-hint" style={{ marginBottom: 6 }}>Ou reprends une idée que tu avais mise de côté :</p>
@@ -5239,7 +5256,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     }));
   }
 
-  function attachImage(key: string, url: string, source: "upload" | "generated", filename: string, id: string) {
+  function attachImage(key: string, url: string, source: LinkedInImageAttachment["source"], filename: string, id: string) {
     setImages((prev) => {
       const current = prev[key] || [];
       if (current.some((im) => im.id === id)) return prev;   // rattachement idempotent
@@ -5260,6 +5277,21 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageJobs]);
+
+  // ALE-156 : la photo de l'annonce rejoint le post généré depuis un lien
+  // d'annonce — comme le faisait l'idée du jour avant le parcours guidé. Le
+  // job porte l'URL (persistée en base) : la photo revient donc même si la
+  // page a été quittée pendant la génération.
+  useEffect(() => {
+    for (const line of lines) {
+      const url = line.job.listing_image_url;
+      if (!url || !line.variant) continue;
+      if (_genCache.appliedListingLineKeys.has(line.key)) continue;
+      _genCache.appliedListingLineKeys.add(line.key);
+      attachImage(line.key, url, "listing", "photo-annonce.jpg", `listing-${line.key}`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lines]);
 
   function activeImageJobFor(key: string): ImageJob | null {
     const job = latestImageJobFor(imageJobs, `variant:${key}`);
@@ -5705,6 +5737,12 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
                             {(images[key] || []).map((image, imageIndex) => (
                               <div key={image.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--surface)" }}>
                                 <ZoomableImage src={image.url} alt={`Image jointe ${imageIndex + 1}`} />
+                                {image.source === "listing" && (
+                                  <p className="role-picker-hint" style={{ margin: "6px 0 0", fontSize: 11 }}>
+                                    Photo de l&apos;annonce — rattachée automatiquement
+                                    {safeHttpUrl(line.job.listing_source_url) && <> · <a href={safeHttpUrl(line.job.listing_source_url)} target="_blank" rel="noreferrer">voir l&apos;annonce</a></>}
+                                  </p>
+                                )}
                                 <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                                   <a
                                     href={image.url}
@@ -14365,6 +14403,7 @@ export default function Home() {
       // images du compte précédent réapparaîtraient chez le suivant dans le même
       // onglet. Toute clé ajoutée à `_genCache` doit être purgée ici.
       _genCache.appliedImageJobIds = new Set();
+      _genCache.appliedListingLineKeys = new Set();
       _genCache.edited = {};
       _genCache.images = {};
       _genCache.expanded = null;

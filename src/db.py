@@ -1823,6 +1823,7 @@ _GENERATION_JOB_COLS = (
     "id,status,topic,editorial_role,web_search,count,template_id,"
     "inspiration_text,inspiration_author,inspiration_url,"
     "platform,ig_trame_id,"
+    "listing_image_url,listing_source_url,"
     "result,error,created_at,updated_at"
 )
 
@@ -1837,12 +1838,18 @@ def create_generation_job(
     inspiration: dict | None = None,
     platform: str = "linkedin",
     ig_trame_id: str | None = None,
+    listing_image_url: str | None = None,
+    listing_source_url: str | None = None,
 ) -> dict | None:
     """Crée un job de génération `queued`. Retourne la ligne créée.
 
     ``platform="instagram"`` (ALE-291) : le job produit des packs reel plutôt
     que des posts LinkedIn ; ``ig_trame_id`` porte la trame choisie (catalogue
     statique, pas de FK — contrairement à ``template_id`` côté LinkedIn).
+
+    ``listing_image_url``/``listing_source_url`` (ALE-156) : photo et lien de
+    l'annonce quand le sujet était un lien d'annonce immobilière — le frontend
+    rattache la photo au post généré.
     """
     user = get_user(access_token)
     if not user:
@@ -1865,6 +1872,10 @@ def create_generation_job(
         row["inspiration_text"] = inspiration["text"].strip()[:6000]
         row["inspiration_author"] = (inspiration.get("author") or "").strip()[:200] or None
         row["inspiration_url"] = (inspiration.get("url") or "").strip()[:2000] or None
+    if listing_image_url:
+        row["listing_image_url"] = listing_image_url[:2000]
+    if listing_source_url:
+        row["listing_source_url"] = listing_source_url[:2000]
     resp = (
         db.table("generation_jobs")
         .insert(row)
