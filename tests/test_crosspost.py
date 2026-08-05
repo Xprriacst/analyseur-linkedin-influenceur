@@ -335,5 +335,48 @@ class SchedulerCrossPublishTest(unittest.TestCase):
         self.assertEqual(calls[0]["content"], "un seul tweet")
 
 
+class RedditLanguageInstructionTest(unittest.TestCase):
+    """La version Reddit doit rester dans la langue du post d'origine.
+
+    L'ancienne consigne (« langue du subreddit visé, en anglais si le premier
+    subreddit est anglophone ») traduisait systématiquement : la bibliothèque
+    est 100 % anglophone, donc le premier subreddit l'est toujours. On verrouille
+    ici la consigne envoyée au modèle — c'est le seul point vérifiable sans
+    appeler l'API (la sortie du modèle, elle, se contrôle à la main).
+    """
+
+    def _captured_system_prompt(self) -> str:
+        from src import llm
+
+        captured: dict[str, str] = {}
+
+        def fake_call(system, user, **kwargs):
+            captured["system"] = system
+            return {"title": "titre", "body": "corps", "subreddits": [{"name": "SaaS", "reason": "test"}]}
+
+        with mock.patch.object(llm, "_call", side_effect=fake_call):
+            llm.adapt_post_for_reddit("Un post en français.")
+        return captured["system"]
+
+    def test_prompt_demands_source_language(self):
+        system = self._captured_system_prompt()
+        self.assertIn("MÊME LANGUE que le post d'origine", system)
+        self.assertIn("Ne traduis JAMAIS", system)
+
+    def test_prompt_never_orders_an_english_translation(self):
+        system = self._captured_system_prompt()
+        # Formulation exacte de l'ancienne consigne : sa réapparition ferait
+        # revenir le bug sans qu'aucun autre test ne bronche.
+        self.assertNotIn("adapte le titre ET le corps en anglais", system)
+
+    def test_library_is_fully_anglophone(self):
+        # Raison d'être du correctif : tant qu'aucun subreddit francophone n'est
+        # dans la bibliothèque, une règle « suis la langue du subreddit » ne peut
+        # produire que de l'anglais. Si ce test casse (ajout de subreddits FR),
+        # rouvrir le choix de langue devient envisageable — cf. stratégie B.
+        library = crosspost.load_subreddit_library()
+        self.assertTrue(all(entry.get("language") == "en" for entry in library))
+
+
 if __name__ == "__main__":
     unittest.main()
