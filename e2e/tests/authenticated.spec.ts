@@ -206,8 +206,10 @@ test("LinkedIn › Prospection : liste des leads + panneau de détail (ALE-229)"
     await expect(page.getByText(/Signaux d'intention/i)).toHaveCount(0);
   }
   await expect(page.locator(".error")).toHaveCount(0);
-  // ALE-59 : Instagram est dégrisé (l'entête se déplie) ; les entrées grisées
-  // « Bientôt » sont désormais X et Reddit.
+  // La sidebar ne porte plus d'entrée réseau « Bientôt » pour X ni Reddit :
+  // leur publication existe déjà (pop-up multi-réseaux + Connexions), un teaser
+  // qui promet moins que l'app fait induirait en erreur.
   await page.locator(".nav-item", { hasText: "Instagram" }).first().click();
-  await expect(page.locator(".nav-item", { hasText: "Bientôt" })).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "X Bientôt" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Reddit Bientôt" })).toHaveCount(0);
 });

@@ -1436,21 +1436,18 @@ function Sidebar({
       {/* Navigation — accordéon : LinkedIn / Instagram déplient leurs sous-onglets (Veille / Contenu), Agent IA au même niveau */}
       {!restricted && (() => {
         // `soon` : réseau visible mais grisé (pas encore ouvert aux clients).
-        // ALE-59 + feature flags : Instagram ne se dégrise (et X/Reddit
-        // n'apparaissent, grisés « Bientôt ») que pour les comptes porteurs du
-        // flag correspondant — déploiement progressif, fail closed pendant le
-        // chargement. La PUBLICATION X/Reddit passe par la pop-up multi-réseaux
-        // (elle aussi gardée par flag) ; l'onglet réseau dédié reste à
-        // construire (ALE-60/76…).
-        const networks: { key: Platform | "x" | "reddit"; label: string; icon: React.ReactNode; soon?: boolean }[] = [
+        // ALE-59 + feature flags : Instagram ne se dégrise que pour les comptes
+        // porteurs du flag correspondant — déploiement progressif, fail closed
+        // pendant le chargement.
+        // Les entrées X et Reddit grisées « Bientôt » ont été RETIRÉES (demande
+        // d'Alex) : elles annonçaient un onglet réseau dédié qui n'est pas au
+        // programme, alors que la PUBLICATION X/Reddit, elle, existe déjà et
+        // passe par la pop-up multi-réseaux (Publier/Programmer) + les lignes
+        // de connexion de Mon profil › Connexions. Un teaser qui promet moins
+        // que ce que l'app fait déjà induit en erreur.
+        const networks: { key: Platform; label: string; icon: React.ReactNode; soon?: boolean }[] = [
           { key: "linkedin", label: "LinkedIn", icon: <Linkedin size={14} /> },
           { key: "instagram", label: "Instagram", icon: <InstagramIcon size={14} />, soon: !featureFlags.has("instagram") },
-          ...(featureFlags.has("x")
-            ? [{ key: "x" as const, label: "X", icon: <XLogo size={14} />, soon: true }]
-            : []),
-          ...(featureFlags.has("reddit")
-            ? [{ key: "reddit" as const, label: "Reddit", icon: <RedditLogo size={14} />, soon: true }]
-            : []),
         ];
         // ALE-257 : « Veille » retirée — l'analyse (profils, classement, tendances,
         // monitoring) vit désormais dans « Contenu » › sous-onglet « Analyses ».

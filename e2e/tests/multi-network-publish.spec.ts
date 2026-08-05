@@ -173,13 +173,14 @@ test("compte SANS flags : rien de multi-réseaux ne s'affiche (même état serve
   await expect(page.getByRole("button", { name: /Programmer sur LinkedIn/ })).toBeVisible();
 });
 
-test("sidebar : X et Reddit grisés « Bientôt », Instagram dégrisé et dépliable", async ({ page }) => {
+test("sidebar : aucune entrée X/Reddit, même avec les flags ; Instagram dégrisé et dépliable", async ({ page }) => {
   await mockBase(page);
   await page.goto("/");
-  // X et Reddit : entêtes visibles mais inertes (la publication passe par la
-  // pop-up multi-réseaux ; l'onglet réseau dédié reste à construire).
-  await expect(page.getByRole("button", { name: "X Bientôt" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Reddit Bientôt" })).toBeDisabled();
+  // X et Reddit n'ont PAS d'entrée réseau, flags ou pas : leur publication
+  // passe par la pop-up multi-réseaux et Mon profil › Connexions. Un teaser
+  // « Bientôt » laisserait croire que la fonctionnalité n'existe pas encore.
+  await expect(page.getByRole("button", { name: "X Bientôt" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Reddit Bientôt" })).toHaveCount(0);
   // Instagram n'est plus grisé : son entête se déplie et révèle son sous-onglet
   // Contenu (en plus de celui de LinkedIn, ouvert par défaut).
   const contenu = page.locator(".nav-item-sub", { hasText: "Contenu" });
