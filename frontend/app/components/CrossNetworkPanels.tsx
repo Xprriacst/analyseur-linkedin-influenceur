@@ -21,9 +21,17 @@ export const X_TWEET_MAX = 280;
 const REDDIT_TITLE_MAX = 300;
 
 export type CrossPostsDraft = {
+  /** Quand true, LinkedIn est décoché — publication X/Reddit seulement. */
+  skip_linkedin?: boolean;
   x?: { tweets: string[] };
   reddit?: { title: string; subreddit: string; body: string };
 };
+
+/** Nombre de réseaux sélectionnés (LinkedIn compte sauf si skip_linkedin). */
+export function countSelectedNetworks(cross: CrossPostsDraft | null): number {
+  const linkedin = cross ? !cross.skip_linkedin : true;
+  return (linkedin ? 1 : 0) + (cross?.x ? 1 : 0) + (cross?.reddit ? 1 : 0);
+}
 
 type NetStatus = { configured: boolean; connected: boolean } | null;
 
@@ -189,10 +197,12 @@ export default function CrossNetworkPanels({
   // (/me/features), fail closed pendant le chargement — sans flag, la rangée
   // de logos n'existe pas pour ce compte.
   const [feats, setFeats] = useState<string[] | null>(null);
+  const [linkedinStatus, setLinkedinStatus] = useState<NetStatus>(null);
   const [xStatus, setXStatus] = useState<NetStatus>(null);
   const [redditStatus, setRedditStatus] = useState<NetStatus>(null);
   const [hint, setHint] = useState("");
 
+  const [linkedinActive, setLinkedinActive] = useState(true);
   const [xActive, setXActive] = useState(false);
   const [xLoading, setXLoading] = useState(false);
   const [xError, setXError] = useState("");
@@ -224,6 +234,7 @@ export default function CrossNetworkPanels({
             .then((r) => (r.ok ? r.json() : { features: [] }))
             .then((d) => { if (alive) setFeats(Array.isArray(d?.features) ? d.features : []); })
             .catch(() => { if (alive) setFeats([]); });
+          fetch(`${DIRECT_API_URL}/me/linkedin/status`, { headers }).then((r) => (r.ok ? r.json() : null)).then((s) => { if (alive) setLinkedinStatus(s); }).catch(() => {});
           fetch(`${DIRECT_API_URL}/me/x/status`, { headers }).then((r) => (r.ok ? r.json() : null)).then((s) => { if (alive) setXStatus(s); }).catch(() => {});
           fetch(`${DIRECT_API_URL}/me/reddit/status`, { headers }).then((r) => (r.ok ? r.json() : null)).then((s) => { if (alive) setRedditStatus(s); }).catch(() => {});
         });
@@ -256,9 +267,13 @@ export default function CrossNetworkPanels({
         valid = false;
       }
     }
-    const any = !!cross.x || !!cross.reddit;
-    onChangeRef.current(any ? cross : null, valid);
-  }, [xActive, xText, xLoading, redditActive, redditLoading, redditTitle, redditBody, selectedSub, customMode]);
+    if (!linkedinActive) {
+      cross.skip_linkedin = true;
+      if (!cross.x && !cross.reddit) valid = false;
+    }
+    const anyCross = !!cross.x || !!cross.reddit || cross.skip_linkedin;
+    onChangeRef.current(anyCross ? cross : null, valid);
+  }, [linkedinActive, xActive, xText, xLoading, redditActive, redditLoading, redditTitle, redditBody, selectedSub, customMode]);
 
   async function adaptX() {
     setXLoading(true);
@@ -350,12 +365,29 @@ export default function CrossNetworkPanels({
     if (!redditAdapted && !redditLoading) void adaptReddit();
   }
 
+  function toggleLinkedin() {
+    setHint("");
+    if (linkedinActive) {
+      if (!xActive && !redditActive) {
+        setHint("Active au moins X ou Reddit avant de retirer LinkedIn.");
+        return;
+      }
+      setLinkedinActive(false);
+      return;
+    }
+    if (!linkedinStatus?.connected) {
+      setHint("Connecte ton compte LinkedIn dans Mon profil → Connexions pour publier sur LinkedIn.");
+      return;
+    }
+    setLinkedinActive(true);
+  }
+
   // Rien à proposer : vue client, ou compte sans aucun des deux flags
   // (déploiement progressif — fail closed tant que les droits ne sont pas lus).
   const hasX = (feats || []).includes("x");
   const hasReddit = (feats || []).includes("reddit");
   if (!agency || (!hasX && !hasReddit)) return null;
-  const activeCount = 1 + (xActive ? 1 : 0) + (redditActive ? 1 : 0);
+  const activeCount = (linkedinActive ? 1 : 0) + (xActive ? 1 : 0) + (redditActive ? 1 : 0);
 
   const netButtonStyle = (pressed: boolean, color: string): React.CSSProperties => ({
     display: "inline-flex", alignItems: "center", justifyContent: "center",
@@ -370,9 +402,18 @@ export default function CrossNetworkPanels({
     <div data-testid="cross-network-panels">
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "4px 0 12px" }}>
         <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--muted)" }}>Réseaux</span>
-        <span title="LinkedIn (toujours actif)" aria-label="LinkedIn — toujours actif" style={{ ...netButtonStyle(true, "#0a66c2"), cursor: "default" }}>
-          <svg width={19} height={19} viewBox="0 0 24 24" aria-hidden="true"><path fill="#0a66c2" d="M4.98 3.5C4.98 4.88 3.87 6 2.5 6S0 4.88 0 3.5 1.12 1 2.5 1s2.48 1.12 2.48 2.5zM.22 8.1h4.56V23H.22V8.1zM8.34 8.1h4.37v2.03h.06c.61-1.15 2.1-2.37 4.32-2.37 4.62 0 5.47 3.04 5.47 7v8.24h-4.55v-7.3c0-1.74-.03-3.98-2.43-3.98-2.43 0-2.8 1.9-2.8 3.86V23H8.34V8.1z" /></svg>
-        </span>
+        <button
+          type="button"
+          aria-pressed={linkedinActive}
+          aria-label="Publier sur LinkedIn"
+          disabled={disabled || linkedinStatus === null}
+          onClick={toggleLinkedin}
+          style={netButtonStyle(linkedinActive, "#0a66c2")}
+          onMouseEnter={(e) => { if (!linkedinActive) e.currentTarget.style.color = "#0a66c2"; }}
+          onMouseLeave={(e) => { if (!linkedinActive) e.currentTarget.style.color = "#b9b9c4"; }}
+        >
+          <svg width={19} height={19} viewBox="0 0 24 24" aria-hidden="true"><path fill={linkedinActive ? "#0a66c2" : "currentColor"} d="M4.98 3.5C4.98 4.88 3.87 6 2.5 6S0 4.88 0 3.5 1.12 1 2.5 1s2.48 1.12 2.48 2.5zM.22 8.1h4.56V23H.22V8.1zM8.34 8.1h4.37v2.03h.06c.61-1.15 2.1-2.37 4.32-2.37 4.62 0 5.47 3.04 5.47 7v8.24h-4.55v-7.3c0-1.74-.03-3.98-2.43-3.98-2.43 0-2.8 1.9-2.8 3.86V23H8.34V8.1z" /></svg>
+        </button>
         {/* Logos inactifs tant que le statut de connexion n'est pas chargé : un
             clic trop tôt afficherait à tort « connecte ton compte ». Chaque
             logo n'existe que pour un compte porteur du flag correspondant. */}
@@ -405,9 +446,13 @@ export default function CrossNetworkPanels({
           </button>
         )}
         <span style={{ fontSize: 12, color: "var(--muted)" }}>
-          {activeCount === 1
-            ? "LinkedIn seul — clique un logo pour adapter le post à un autre réseau"
-            : "Le post sera adapté à chaque réseau avant l’envoi"}
+          {activeCount === 0
+            ? "Active au moins un réseau"
+            : activeCount === 1 && linkedinActive && !xActive && !redditActive
+              ? "LinkedIn seul — clique un logo pour adapter le post à un autre réseau"
+              : activeCount === 1 && !linkedinActive
+                ? "LinkedIn désactivé — publication sur le réseau sélectionné uniquement"
+                : "Le post sera adapté à chaque réseau avant l’envoi"}
         </span>
       </div>
       {hint && <p style={{ fontSize: 12.5, color: "#b45309", margin: "0 0 10px" }}>{hint}</p>}

@@ -39,6 +39,7 @@ def publish_cross_posts(post: dict) -> dict:
     n'empêche ni Reddit ni le statut `published` du post LinkedIn.
     """
     cross = dict(post.get("cross_posts") or {})
+    cross.pop("skip_linkedin", None)  # métadonnée — pas un réseau
 
     # Déploiement progressif (fail closed) : sans ce contrôle, retirer le flag à
     # un compte ne couperait pas les versions X/Reddit qu'il a déjà programmées —
@@ -124,6 +125,34 @@ def run() -> None:
         post_id = post["id"]
         user_id = post["user_id"]
         account_id = post.get("zernio_account_id")
+        skip_linkedin = bool((post.get("cross_posts") or {}).get("skip_linkedin"))
+
+        if skip_linkedin:
+            if not post.get("cross_posts"):
+                logger.warning(f"Post {post_id} (user {user_id}) : skip_linkedin sans cross_posts.")
+                db.update_scheduled_post_status(
+                    post_id, "failed", error="Aucun réseau sélectionné pour la publication."
+                )
+                continue
+            try:
+                cross_results = publish_cross_posts(post)
+                any_ok = any(
+                    isinstance(entry, dict) and entry.get("status") == "published"
+                    for key, entry in cross_results.items()
+                    if key in ("x", "reddit")
+                )
+                if not any_ok:
+                    db.update_scheduled_post_status(
+                        post_id, "failed", cross_posts=cross_results,
+                        error="Publication échouée sur tous les réseaux sélectionnés.",
+                    )
+                    continue
+                db.update_scheduled_post_status(post_id, "published", cross_posts=cross_results)
+                logger.info(f"Post {post_id} publié sans LinkedIn (user {user_id}).")
+            except Exception as exc:
+                logger.error(f"Erreur publication post {post_id} (sans LinkedIn) : {exc}")
+                db.update_scheduled_post_status(post_id, "failed", error=str(exc))
+            continue
 
         if not account_id:
             logger.warning(f"Post {post_id} (user {user_id}) : compte LinkedIn non connecté.")

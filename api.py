@@ -917,6 +917,7 @@ class CrossPostRedditPayload(BaseModel):
 
 class CrossPostsPayload(BaseModel):
     """ALE-59 : versions adaptées X/Reddit stockées avec le post programmé."""
+    skip_linkedin: bool = False
     x: CrossPostXPayload | None = None
     reddit: CrossPostRedditPayload | None = None
 
@@ -944,6 +945,8 @@ def _cross_posts_payload_dict(cross: CrossPostsPayload | None) -> dict[str, Any]
     if cross is None:
         return {}
     result: dict[str, Any] = {}
+    if cross.skip_linkedin:
+        result["skip_linkedin"] = True
     if cross.x is not None:
         tweets = [t.strip() for t in cross.x.tweets if isinstance(t, str) and t.strip()]
         if not tweets:
@@ -992,20 +995,28 @@ def me_linkedin_schedule(
     if not zernio.enabled():
         raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
     profile = db.get_editorial_profile(token) or {}
-    if not profile.get("zernio_account_id"):
+    cross_posts = _cross_posts_payload_dict(payload.cross_posts)
+    skip_linkedin = bool(cross_posts.get("skip_linkedin"))
+    if not skip_linkedin and not profile.get("zernio_account_id"):
         raise HTTPException(status_code=400, detail="Aucun compte LinkedIn connecté. Connecte-le d'abord.")
+    if skip_linkedin and not cross_posts.get("x") and not cross_posts.get("reddit"):
+        raise HTTPException(
+            status_code=400,
+            detail="Sans LinkedIn, active au moins X ou Reddit.",
+        )
     _validate_future_scheduled_at(payload.scheduled_at)
 
-    # Les images sont mises en ligne dès la programmation (URLs publiques) :
-    # le message de validation Slack ne peut afficher que des URLs publiques,
-    # et on évite de stocker des data-URLs base64 en base. Le cron republie
-    # ces items tels quels (prepare_image_media_items est idempotent).
-    try:
-        media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
-    except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=f"Impossible de préparer les images du post : {exc}") from exc
+    media_items: list[dict[str, Any]] = []
+    if not skip_linkedin:
+        # Les images sont mises en ligne dès la programmation (URLs publiques) :
+        # le message de validation Slack ne peut afficher que des URLs publiques,
+        # et on évite de stocker des data-URLs base64 en base. Le cron republie
+        # ces items tels quels (prepare_image_media_items est idempotent).
+        try:
+            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
+        except zernio.ZernioError as exc:
+            raise HTTPException(status_code=502, detail=f"Impossible de préparer les images du post : {exc}") from exc
 
-    cross_posts = _cross_posts_payload_dict(payload.cross_posts)
     # Déploiement progressif : n'exige la feature que si le payload embarque la
     # version correspondante (le cadençage LinkedIn reste ouvert à tous).
     if "x" in cross_posts:

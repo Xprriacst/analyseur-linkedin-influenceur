@@ -173,13 +173,14 @@ test("compte SANS flags : rien de multi-réseaux ne s'affiche (même état serve
   await expect(page.getByRole("button", { name: /Programmer sur LinkedIn/ })).toBeVisible();
 });
 
-test("sidebar : X et Reddit grisés « Bientôt », Instagram dégrisé et dépliable", async ({ page }) => {
+test("sidebar : aucune entrée X/Reddit, même avec les flags ; Instagram dégrisé et dépliable", async ({ page }) => {
   await mockBase(page);
   await page.goto("/");
-  // X et Reddit : entêtes visibles mais inertes (la publication passe par la
-  // pop-up multi-réseaux ; l'onglet réseau dédié reste à construire).
-  await expect(page.getByRole("button", { name: "X Bientôt" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Reddit Bientôt" })).toBeDisabled();
+  // X et Reddit n'ont PAS d'entrée réseau, flags ou pas : leur publication
+  // passe par la pop-up multi-réseaux et Mon profil › Connexions. Un teaser
+  // « Bientôt » laisserait croire que la fonctionnalité n'existe pas encore.
+  await expect(page.getByRole("button", { name: "X Bientôt" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Reddit Bientôt" })).toHaveCount(0);
   // Instagram n'est plus grisé : son entête se déplie et révèle son sous-onglet
   // Contenu (en plus de celui de LinkedIn, ouvert par défaut).
   const contenu = page.locator(".nav-item-sub", { hasText: "Contenu" });
@@ -189,6 +190,37 @@ test("sidebar : X et Reddit grisés « Bientôt », Instagram dégrisé et dépl
   // Sous Instagram déplié : la Prospection IG n'existe pas encore — teaser
   // grisé « Bientôt », inerte.
   await expect(page.getByRole("button", { name: "Prospection Bientôt" })).toBeDisabled();
+  await expect(page.locator(".error")).toHaveCount(0);
+});
+
+test("programmer sans LinkedIn : X et Reddit seuls dans cross_posts avec skip_linkedin", async ({ page }) => {
+  await mockBase(page);
+
+  let schedulePayload: any = null;
+  await page.route("**/me/linkedin/schedule", (route) => {
+    schedulePayload = route.request().postDataJSON();
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, scheduled_post: { id: "sp-x-rd" } }),
+    });
+  });
+
+  await page.goto("/");
+  await openScheduleModal(page);
+
+  // Désactiver LinkedIn (doit activer X ou Reddit d'abord — on active les deux).
+  await page.getByRole("button", { name: "Publier aussi sur X" }).click();
+  await expect(page.getByTestId("x-panel")).toBeVisible();
+  await page.getByRole("button", { name: "Publier aussi sur Reddit" }).click();
+  await expect(page.getByTestId("reddit-panel")).toBeVisible();
+  await page.getByRole("button", { name: "Publier sur LinkedIn" }).click();
+  await expect(page.getByText(/LinkedIn désactivé/)).toBeVisible();
+
+  await page.getByRole("button", { name: /Programmer sur 2 réseau/ }).click();
+  await expect.poll(() => schedulePayload).not.toBeNull();
+  expect(schedulePayload.cross_posts?.skip_linkedin).toBe(true);
+  expect(schedulePayload.cross_posts?.x?.tweets).toEqual(X_ADAPTATION.tweets);
+  expect(schedulePayload.cross_posts?.reddit?.subreddit).toBe("marketing");
   await expect(page.locator(".error")).toHaveCount(0);
 });
 
