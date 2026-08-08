@@ -26,6 +26,7 @@ import {
   ChevronRight,
   Linkedin,
   Loader2,
+  Lock,
   Mail,
   MessageSquare,
   Sparkles,
@@ -468,6 +469,9 @@ export default function OnboardingScreen({
   }, [step, calendlyUrl]);
 
   const showProgress = step === "page1" || step === "page2";
+  // Écrans qui gagnent à respirer sur grand écran (grilles et colonnes), par
+  // opposition aux écrans de saisie où une colonne étroite reste plus lisible.
+  const isWideStep = step === "gains" || step === "simulation" || step === "lead_form";
   const isAnalysis =
     step === "analysis" ||
     step === "analysis_detail" ||
@@ -478,7 +482,13 @@ export default function OnboardingScreen({
 
   return (
     <div className={"onb-overlay" + (isAnalysis ? " onb-overlay-analysis" : "")}>
-      <div className={"onb-shell" + (isAnalysis ? " onb-shell-analysis" : "")}>
+      <div
+        className={
+          "onb-shell" +
+          (isAnalysis ? " onb-shell-analysis" : "") +
+          (isWideStep ? " onb-shell-wide" : "")
+        }
+      >
         {showProgress && (
           <div className="onb-progress">
             <div className="onb-progress-fill" style={{ width: step === "page1" ? "50%" : "100%" }} />
@@ -798,7 +808,7 @@ export default function OnboardingScreen({
                 </div>
 
                 <button type="button" className="onb-analysis-cta" onClick={() => setStep("simulation")}>
-                  Voir mon profil dans 90 jours
+                  Continuer <ChevronRight size={16} />
                 </button>
               </>
             )}
@@ -861,6 +871,14 @@ export default function OnboardingScreen({
               de posts, ton ciblage de prospection et un plan sur 90 jours.
             </p>
 
+            {/* L'aperçu passe AVANT le formulaire dans le DOM : sur mobile il se
+                lit donc en premier — on voit ce qu'on échange avant qu'on nous
+                demande un téléphone. Sur desktop, la grille le remet à gauche,
+                en vis-à-vis des champs. */}
+            <div className="onb-lead-grid">
+              <AuditPreviewMock name={sel.displayName || preview?.name} />
+
+              <div className="onb-lead-form">
             <div className="onb-analysis-card">
               <label className="onb-analysis-label" htmlFor="lead-name">Nom et prénom</label>
               <input
@@ -907,6 +925,9 @@ export default function OnboardingScreen({
               {saving ? <Loader2 size={16} className="spinning" /> : <Mail size={16} />}{" "}
               Recevoir mon audit gratuit
             </button>
+              </div>
+            </div>
+
             <button type="button" className="onb-analysis-skip" onClick={finish}>
               Je préfère créer mon compte directement
             </button>
@@ -934,6 +955,55 @@ export default function OnboardingScreen({
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Aperçu flouté de l'audit complet, montré à côté du formulaire.
+ *
+ * Le formulaire demande trois informations dont un téléphone : il faut donc voir
+ * ce qu'on échange AVANT de le remplir. Les titres de sections restent nets (on
+ * doit pouvoir lire ce qu'on reçoit), seul le contenu est flouté.
+ *
+ * ⚠️ C'est une mise en scène assumée, pas un extrait du vrai audit — il n'existe
+ * pas encore à cet instant, il est généré après l'envoi. D'où des lignes grises
+ * plutôt qu'un faux texte lisible : rien ici ne prétend être un contenu réel, et
+ * il n'y a donc aucune promesse qui puisse être démentie par l'e-mail reçu.
+ */
+function AuditPreviewMock({ name }: { name?: string }) {
+  const sections: { title: string; lines: number[] }[] = [
+    { title: "Diagnostic de ton profil", lines: [100, 92, 78] },
+    { title: "Ton titre réécrit — 3 propositions", lines: [88, 95, 70] },
+    { title: "Ta section « Infos »", lines: [100, 84, 96, 62] },
+    { title: "3 concepts de bannière", lines: [90, 76] },
+    { title: "Les comptes à suivre dans ta niche", lines: [94, 88, 72] },
+    { title: "Tes angles de posts", lines: [86, 98, 68] },
+    { title: "Ton plan sur 90 jours", lines: [92, 80, 88] },
+  ];
+
+  return (
+    <div className="onb-doc" aria-hidden="true">
+      <div className="onb-doc-page">
+        <div className="onb-doc-head">
+          <div className="onb-doc-kicker">Audit LinkedIn complet</div>
+          <div className="onb-doc-title">{name?.trim() || "Ton profil"}</div>
+        </div>
+        {sections.map((section) => (
+          <div className="onb-doc-section" key={section.title}>
+            <div className="onb-doc-section-title">{section.title}</div>
+            <div className="onb-doc-lines">
+              {section.lines.map((width, i) => (
+                <span className="onb-doc-line" key={i} style={{ width: `${width}%` }} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="onb-doc-fade" />
+      <div className="onb-doc-seal">
+        <Lock size={13} /> {sections.length} sections · débloquées à l&apos;envoi
       </div>
     </div>
   );

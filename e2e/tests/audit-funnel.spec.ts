@@ -98,11 +98,18 @@ async function reachLeadForm(page: Page): Promise<{ projectionBody: () => any }>
   await expect(page.locator(".onb-gain-money")).toContainText("6 000");
   await page.getByRole("button", { name: "5 000 à 20 000 €" }).click();
   await expect(page.locator(".onb-gain-money")).toContainText("24 000");
-  await page.getByRole("button", { name: /Voir mon profil dans 90 jours/ }).click();
+  // Le CTA des gains est un « Continuer » générique : on le cible dans son écran
+  // pour ne pas le confondre avec ceux des écrans de questions précédents.
+  await page.locator(".onb-screen").getByRole("button", { name: "Continuer", exact: true }).click();
 
   // Simulation : ancrée sur les vrais abonnés scrapés (1 200 aujourd'hui).
   await expect(page.locator(".onb-sim-grid")).toContainText("1 200");
   await page.getByRole("button", { name: /Recevoir mon audit complet gratuit/ }).click();
+
+  // Le formulaire demande un téléphone : l'aperçu de ce qu'on reçoit doit être là,
+  // sections lisibles et contenu flouté (sans lui, on demande sans rien montrer).
+  await expect(page.locator(".onb-doc")).toBeVisible();
+  await expect(page.locator(".onb-doc-section-title").first()).toHaveText("Diagnostic de ton profil");
 
   return { projectionBody: () => projectionBody };
 }
