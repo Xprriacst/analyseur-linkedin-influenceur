@@ -162,6 +162,7 @@ export default function StartPage() {
     return (
       <OnboardingScreen
         anonymous
+        leadFunnel
         onFinish={onboardingDone}
         onSkip={onboardingSkipped}
         finishLabel="Continuer"
