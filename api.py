@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import hashlib
+import re
 import secrets
 import sys
 import threading
@@ -20,6 +21,7 @@ from pydantic import BaseModel, Field
 from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing
 from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
+from src import emailer, full_audit
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -195,6 +197,23 @@ class EditorialProfileDraftRequest(BaseModel):
     # wizard d'onboarding la demande — le bouton « Pré-remplir » de Mon profil
     # utilise le même endpoint et ne doit pas payer un appel LLM de plus.
     include_preview: bool = False
+
+
+class FullAuditRequest(BaseModel):
+    """Lead « audit complet gratuit » déposé à la fin de l'audit léger (anonyme).
+
+    Le snapshot preview/profile revient du client tel que l'audit léger l'a rendu :
+    c'est uniquement du contenu pour un e-mail adressé au lead lui-même (aucun
+    privilège, aucune écriture au nom d'un compte) — d'où des bornes de taille
+    plutôt qu'une re-vérification serveur.
+    """
+    name: str = Field(max_length=120)
+    email: str = Field(max_length=200)
+    phone: str = Field(max_length=40)
+    linkedin_url: str | None = Field(default=None, max_length=500)
+    input_kind: str | None = Field(default=None, max_length=20)
+    preview: dict[str, Any] | None = None
+    profile: dict[str, Any] | None = None
 
 
 @app.get("/health")
@@ -596,6 +615,130 @@ def draft_onboarding_profile(payload: EditorialProfileDraftRequest, request: Req
             "website_summary": bool(website_seed and website_seed.get("summary")),
         },
     }
+
+
+# --- Audit complet gratuit (lead magnet, fin du parcours /start) --------------
+#
+# Le visiteur laisse nom + email + téléphone → le lead est capturé en base, le
+# pack semi-personnalisé est généré + envoyé par e-mail EN TÂCHE DE FOND (un
+# appel Claude ≈ 30-60 s : trop long pour la requête HTTP, et le visiteur part
+# sur Calendly sans attendre). Limiteur d'IP dédié : un abus coûterait un appel
+# Claude + un e-mail par requête.
+
+_FULL_AUDIT_MAX = int(os.environ.get("FULL_AUDIT_MAX_PER_HOUR", "3"))
+_full_audit_hits: dict[str, list[float]] = {}
+_full_audit_lock = threading.Lock()
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
+
+
+def _rate_limit_full_audit(request: Request) -> None:
+    ip = _client_ip(request)
+    now = time.time()
+    with _full_audit_lock:
+        hits = [t for t in _full_audit_hits.get(ip, []) if now - t < _ONBOARDING_DRAFT_WINDOW_S]
+        if len(hits) >= _FULL_AUDIT_MAX:
+            raise HTTPException(
+                status_code=429,
+                detail="Trop de demandes depuis cette connexion. Réessaie dans une heure.",
+            )
+        hits.append(now)
+        _full_audit_hits[ip] = hits
+        if len(_full_audit_hits) > 5000:
+            for key in [k for k, v in _full_audit_hits.items() if not v or now - v[-1] > _ONBOARDING_DRAFT_WINDOW_S]:
+                _full_audit_hits.pop(key, None)
+
+
+def _process_full_audit_lead(lead_id: str | None, lead: dict[str, Any]) -> None:
+    """Génère le pack + envoie les e-mails. Tourne dans un thread : toute erreur
+    est consignée sur le lead (jamais montrée au visiteur, déjà parti sur Calendly)."""
+    audit = None
+    status, email_error = "received", None
+    try:
+        audit = full_audit.generate_full_audit(
+            lead.get("name", ""), lead.get("preview"), lead.get("profile")
+        )
+    except Exception as exc:
+        status, email_error = "failed", f"Génération : {exc}"[:500]
+    if audit is None and status == "received":
+        status, email_error = "failed", "Génération : audit vide (JSON invalide ou sections manquantes)"
+
+    if audit is not None:
+        if not emailer.enabled():
+            # Lead capturé quand même — l'audit est en base, renvoyable dès que
+            # RESEND_API_KEY sera posée (et le domaine vérifié chez Resend).
+            status, email_error = "email_disabled", "RESEND_API_KEY absente"
+        else:
+            try:
+                emailer.send_email(
+                    lead["email"],
+                    "Ton audit LinkedIn complet (offert)",
+                    full_audit.render_audit_email_html(lead.get("name", ""), audit),
+                )
+                status = "sent"
+            except Exception as exc:
+                status, email_error = "failed", f"Envoi : {exc}"[:500]
+
+    db.update_audit_lead(lead_id or "", {
+        "status": status,
+        "email_error": email_error,
+        "audit": audit,
+    })
+
+    # Notification interne (best-effort, jamais bloquante) : Tom/Alex savent
+    # qu'un lead arrive AVANT le call Calendly.
+    if emailer.enabled() and emailer.notify_recipients():
+        try:
+            emailer.send_email(
+                emailer.notify_recipients(),
+                f"Nouveau lead audit complet : {lead.get('name', '')}",
+                full_audit.render_notify_email_html({**lead, "status": status}),
+            )
+        except Exception:
+            pass
+
+
+@app.post("/onboarding/full-audit")
+def request_full_audit(payload: FullAuditRequest, request: Request) -> dict[str, Any]:
+    """Capture le lead et lance la génération/envoi de l'audit complet en fond."""
+    _rate_limit_full_audit(request)
+
+    name = (payload.name or "").strip()
+    email = (payload.email or "").strip().lower()
+    phone = (payload.phone or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Ajoute ton nom et prénom.")
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="Cet e-mail ne semble pas valide.")
+    # Téléphone obligatoire (décision produit) : validation volontairement souple,
+    # on veut un numéro joignable, pas un format — ≥ 8 chiffres couvre FR + intl.
+    if sum(c.isdigit() for c in phone) < 8:
+        raise HTTPException(status_code=400, detail="Ajoute un numéro de téléphone valide.")
+
+    lead = {
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "linkedin_url": (payload.linkedin_url or "").strip() or None,
+        "input_kind": (payload.input_kind or "").strip() or None,
+        "preview": payload.preview or None,
+        "profile": payload.profile or None,
+    }
+    lead_id = db.insert_audit_lead({
+        **{k: v for k, v in lead.items() if k != "profile"},
+        "profile_draft": lead["profile"],
+        "ip_hash": _client_ip_hash(request),
+    })
+    if lead_id is None:
+        # Sans service-role (dev local) le lead ne peut pas être persisté : on le
+        # loggue pour ne pas le perdre en silence, et l'e-mail part quand même.
+        print(f"⚠️  audit_leads non persisté (service-role absent ?) : {email}", file=sys.stderr)
+
+    threading.Thread(
+        target=_process_full_audit_lead, args=(lead_id, lead), daemon=True
+    ).start()
+
+    return {"ok": True, "email_enabled": emailer.enabled()}
 
 
 @app.get("/me/analyses/{analysis_id}")

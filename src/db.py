@@ -110,6 +110,34 @@ def log_onboarding_preview_event(
         pass
 
 
+def insert_audit_lead(fields: dict) -> str | None:
+    """Capture un lead « audit complet » (parcours anonyme, table `audit_leads`).
+
+    Service-role uniquement (table sans policy RLS, cf. migration 0060). Retourne
+    l'id du lead, ou None si la capture a échoué — l'appelant décide quoi en faire
+    (le tunnel continue vers Calendly quoi qu'il arrive, mais l'échec est loggé :
+    perdre un lead en silence est exactement la panne muette à éviter).
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return None
+    try:
+        res = admin_client().table("audit_leads").insert(fields).execute()
+        rows = res.data or []
+        return rows[0].get("id") if rows else None
+    except Exception:
+        return None
+
+
+def update_audit_lead(lead_id: str, fields: dict) -> None:
+    """Met à jour un lead audit (statut d'envoi, audit généré). Best-effort."""
+    if not lead_id or not supabase_enabled() or not admin_enabled():
+        return
+    try:
+        admin_client().table("audit_leads").update(fields).eq("id", lead_id).execute()
+    except Exception:
+        pass
+
+
 # Successful validations are cached in-process: virtually every db helper
 # re-validates the same token, and each validation is a network round-trip to
 # Supabase Auth. Trade-off: a revoked token stays accepted at most TTL seconds.

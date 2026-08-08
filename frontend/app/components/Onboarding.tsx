@@ -20,18 +20,25 @@
 import { useEffect, useState } from "react";
 import {
   AlertTriangle,
+  Bell,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Linkedin,
   Loader2,
+  Mail,
   Sparkles,
   Target,
+  TrendingUp,
+  Users,
 } from "lucide-react";
 import { authHeaders } from "../lib/supabase";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
+
+/** Fin du tunnel « audit complet » : choix d'un créneau de 15 min avec Tom. */
+const CALENDLY_URL = "https://calendly.com/tom-clareo-solutions/15min";
 
 /** Le profil éditorial tel que rendu par l'onboarding (clés du draft + réponses). */
 export type OnboardingProfile = Record<string, string>;
@@ -54,7 +61,13 @@ export type OnboardingPreview = {
 };
 
 // --- Onboarding « Cible » : wizard accueil → scan → analyse → confirmation ---
-type OnbStep = "intro" | "scanning" | "analysis" | "analysis_detail" | "page1" | "page2";
+// Parcours anonyme (/start) uniquement, après l'analyse : gains → simulation →
+// formulaire (audit complet par e-mail) → Calendly. Le wizard des comptes
+// connectés garde son chemin historique analyse → chips (page1/page2).
+type OnbStep =
+  | "intro" | "scanning" | "analysis" | "analysis_detail"
+  | "gains" | "simulation" | "leadform" | "leadsent"
+  | "page1" | "page2";
 type OnbOption = { label: string; match?: string[] };
 
 const ONB_AUDIENCE_OPTIONS: OnbOption[] = [
@@ -105,6 +118,14 @@ function fmtCompact(n: number): string {
   if (n < 10000) return `${(n / 1000).toFixed(1).replace(".0", "")}K`;
   if (n < 1000000) return `${Math.round(n / 1000)}K`;
   return `${(n / 1000000).toFixed(1).replace(".0", "")}M`;
+}
+
+/** Projection prudente d'abonnés pour la SIMULATION avant/après (étiquetée comme
+ * telle à l'écran) : jamais présentée comme une promesse, juste un ordre de
+ * grandeur cohérent avec le point de départ réel scrapé. */
+function projectFollowers(current: number): number {
+  if (!current || current <= 0) return 750;
+  return Math.max(current + 250, Math.round(current * 1.35));
 }
 
 function initials(name: string, handle: string): string {
@@ -221,6 +242,12 @@ export default function OnboardingScreen({
   const [sel, setSel] = useState(() => onbInitSel({}));
   const [saving, setSaving] = useState(false);
   const [scanIdx, setScanIdx] = useState(0);
+  // Formulaire « audit complet » (tunnel anonyme) — les 3 champs sont obligatoires.
+  const [leadName, setLeadName] = useState("");
+  const [leadEmail, setLeadEmail] = useState("");
+  const [leadPhone, setLeadPhone] = useState("");
+  const [leadError, setLeadError] = useState("");
+  const [leadSending, setLeadSending] = useState(false);
 
   const up = (patch: Partial<ReturnType<typeof onbInitSel>>) =>
     setSel((s) => ({ ...s, ...patch }));
@@ -232,6 +259,14 @@ export default function OnboardingScreen({
     if (/^https?:\/\//i.test(v) || /^www\./i.test(v) || /^[\w-]+(\.[\w-]+)+(\/|$)/i.test(v)) return "website";
     return "description";
   })();
+
+  // Confirmation lue (~4,5 s) puis départ vers Calendly dans le MÊME onglet :
+  // la note « ton audit arrive par e-mail » doit avoir le temps d'être vue.
+  useEffect(() => {
+    if (step !== "leadsent") return;
+    const id = setTimeout(() => { window.location.href = CALENDLY_URL; }, 4500);
+    return () => clearTimeout(id);
+  }, [step]);
 
   useEffect(() => {
     if (step !== "scanning") return;
@@ -287,6 +322,42 @@ export default function OnboardingScreen({
     }
   }
 
+  /** Envoie le lead « audit complet ». Le pack est généré et envoyé par e-mail
+   * côté serveur (tâche de fond) — ici on passe direct à la confirmation. */
+  async function submitLead() {
+    const name = leadName.trim();
+    const email = leadEmail.trim();
+    const phone = leadPhone.trim();
+    if (!name || !email || !phone) {
+      setLeadError("Les trois champs sont obligatoires pour recevoir ton audit.");
+      return;
+    }
+    setLeadError("");
+    setLeadSending(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/onboarding/full-audit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          email,
+          phone,
+          linkedin_url: inputKind === "linkedin" ? aiInput.trim() : "",
+          input_kind: inputKind,
+          preview,
+          profile: draft,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Envoi impossible — réessaie.");
+      setStep("leadsent");
+    } catch (err: any) {
+      setLeadError(err?.message || "Envoi impossible — réessaie.");
+    } finally {
+      setLeadSending(false);
+    }
+  }
+
   async function finish() {
     setSaving(true);
     const merged: Record<string, string> = {
@@ -307,7 +378,9 @@ export default function OnboardingScreen({
   }
 
   const showProgress = step === "page1" || step === "page2";
-  const isAnalysis = step === "analysis" || step === "analysis_detail";
+  const isAnalysis =
+    step === "analysis" || step === "analysis_detail" ||
+    step === "gains" || step === "simulation" || step === "leadform" || step === "leadsent";
 
   return (
     <div className={"onb-overlay" + (isAnalysis ? " onb-overlay-analysis" : "")}>
@@ -459,9 +532,19 @@ export default function OnboardingScreen({
             <button
               type="button"
               className="onb-analysis-cta"
-              onClick={() => setStep("page1")}
+              onClick={() => {
+                // Visiteur sans compte : direction le tunnel audit complet
+                // (gains → simulation → formulaire → Calendly). Compte connecté :
+                // chemin historique vers les chips.
+                if (anonymous) {
+                  setLeadName(preview.name || "");
+                  setStep("gains");
+                } else {
+                  setStep("page1");
+                }
+              }}
             >
-              Continuer <ChevronRight size={16} />
+              {anonymous ? "Ce que tu peux gagner" : "Continuer"} <ChevronRight size={16} />
             </button>
             <button
               type="button"
@@ -470,6 +553,181 @@ export default function OnboardingScreen({
             >
               ← Retour à l&apos;analyse
             </button>
+          </div>
+        )}
+
+        {step === "gains" && preview && (
+          <div className="onb-screen onb-analysis" key="gains">
+            <h2 className="onb-analysis-title">Ce que tu peux gagner</h2>
+            <p className="onb-gains-sub">
+              Fourchettes observées chez des profils comparables au tien (indépendants
+              et dirigeants B2B) qui structurent leur LinkedIn — un ordre de grandeur,
+              pas une promesse.
+            </p>
+
+            <div className="onb-gain-item">
+              <div className="onb-gain-icon"><Mail size={18} /></div>
+              <div>
+                <div className="onb-gain-range">2 à 5 demandes de contact entrantes / semaine</div>
+                <div className="onb-gain-how">en optimisant ton profil et tes posts</div>
+              </div>
+            </div>
+            <div className="onb-gain-item">
+              <div className="onb-gain-icon"><Target size={18} /></div>
+              <div>
+                <div className="onb-gain-range">5 à 15 conversations qualifiées / mois</div>
+                <div className="onb-gain-how">avec une prospection ciblée sur ta niche</div>
+              </div>
+            </div>
+            <div className="onb-gain-item">
+              <div className="onb-gain-icon"><TrendingUp size={18} /></div>
+              <div>
+                <div className="onb-gain-range">×2 à ×3 de portée sur tes posts</div>
+                <div className="onb-gain-how">avec des structures qui ont fait leurs preuves</div>
+              </div>
+            </div>
+
+            <button type="button" className="onb-analysis-cta" onClick={() => setStep("simulation")}>
+              Voir mon profil dans 90 jours <ChevronRight size={16} />
+            </button>
+            <button type="button" className="onb-analysis-skip" onClick={() => setStep("analysis_detail")}>
+              ← Retour
+            </button>
+          </div>
+        )}
+
+        {step === "simulation" && preview && (
+          <div className="onb-screen onb-analysis" key="simulation">
+            <h2 className="onb-analysis-title">Ton profil dans 90 jours</h2>
+            <p className="onb-gains-sub">
+              Simulation basée sur des trajectoires de profils comparables — pas une
+              promesse chiffrée.
+            </p>
+
+            <div className="onb-sim-card">
+              <div className="onb-sim-banner">Bannière optimisée — proposition dans ton audit</div>
+              <div className="onb-sim-head">
+                {preview.avatar_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    className="onb-sim-avatar"
+                    src={preview.avatar_url}
+                    alt=""
+                    onError={(e) => { e.currentTarget.style.display = "none"; }}
+                  />
+                ) : (
+                  <div className="onb-sim-avatar onb-sim-avatar-fallback" aria-hidden>
+                    {initials(preview.name, preview.handle)}
+                  </div>
+                )}
+                <div>
+                  <div className="onb-sim-name">{preview.name || "Ton profil"}</div>
+                  <div className="onb-sim-headline">Titre de profil réécrit — 3 propositions dans ton audit</div>
+                </div>
+              </div>
+              <div className="onb-sim-stats">
+                <div className="onb-sim-stat">
+                  <Users size={15} />
+                  <div>
+                    <strong>{fmtCompact(projectFollowers(preview.followers))}</strong>
+                    <span>
+                      abonnés{preview.followers > 0 ? ` (aujourd'hui ${fmtCompact(preview.followers)})` : ""}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="onb-sim-badge">
+                <Mail size={15} />
+                <span><strong>5 messages non lus</strong> — dont 2 demandes de mission</span>
+              </div>
+              <div className="onb-sim-badge">
+                <Bell size={15} />
+                <span><strong>12 demandes de contact</strong> reçues cette semaine</span>
+              </div>
+              <div className="onb-sim-tag">Simulation</div>
+            </div>
+
+            <button type="button" className="onb-analysis-cta" onClick={() => setStep("leadform")}>
+              Recevoir mon audit complet gratuit <ChevronRight size={16} />
+            </button>
+            <button type="button" className="onb-analysis-skip" onClick={() => setStep("gains")}>
+              ← Retour
+            </button>
+          </div>
+        )}
+
+        {step === "leadform" && (
+          <div className="onb-screen onb-analysis" key="leadform">
+            <h2 className="onb-analysis-title">Ton audit complet, offert</h2>
+            <p className="onb-gains-sub">
+              Par e-mail : plan d&apos;action 90 jours, titres de profil prêts à copier,
+              section « À propos », concepts de bannière, influenceurs à suivre dans ta
+              niche, angles de posts et ciblage de prospection.
+            </p>
+
+            <div className="onb-lead-form">
+              <label className="onb-lead-label">Nom et prénom *</label>
+              <input
+                className="onb-lead-input"
+                value={leadName}
+                onChange={(e) => setLeadName(e.target.value)}
+                placeholder="Ton nom et prénom"
+                autoComplete="name"
+              />
+              <label className="onb-lead-label">E-mail *</label>
+              <input
+                className="onb-lead-input"
+                type="email"
+                value={leadEmail}
+                onChange={(e) => setLeadEmail(e.target.value)}
+                placeholder="toi@exemple.com"
+                autoComplete="email"
+              />
+              <label className="onb-lead-label">Téléphone *</label>
+              <input
+                className="onb-lead-input"
+                type="tel"
+                value={leadPhone}
+                onChange={(e) => setLeadPhone(e.target.value)}
+                placeholder="06 12 34 56 78"
+                autoComplete="tel"
+              />
+            </div>
+
+            <div className="onb-lead-note">
+              📩 Ton audit complet arrive par e-mail d&apos;ici quelques minutes. Ensuite,
+              choisis un créneau de 15 min avec Tom pour le décoder ensemble.
+            </div>
+
+            {leadError && <div className="onb-lead-error">{leadError}</div>}
+
+            <button
+              type="button"
+              className="onb-analysis-cta"
+              onClick={submitLead}
+              disabled={leadSending}
+            >
+              {leadSending ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />}
+              Recevoir mon audit complet gratuit
+            </button>
+            <button type="button" className="onb-analysis-skip" onClick={() => setStep("simulation")}>
+              ← Retour
+            </button>
+          </div>
+        )}
+
+        {step === "leadsent" && (
+          <div className="onb-screen onb-analysis onb-leadsent" key="leadsent">
+            <div className="onb-leadsent-icon"><CheckCircle2 size={40} /></div>
+            <h2 className="onb-analysis-title">C&apos;est noté !</h2>
+            <p className="onb-gains-sub">
+              Ton audit complet arrive <strong>par e-mail</strong> d&apos;ici quelques
+              minutes. On t&apos;emmène choisir ton créneau de 15 min avec Tom…
+            </p>
+            <div className="onb-leadsent-wait"><Loader2 size={18} className="spinning" /> Redirection en cours</div>
+            <a className="onb-analysis-cta" href={CALENDLY_URL}>
+              Choisir mon créneau maintenant
+            </a>
           </div>
         )}
 
