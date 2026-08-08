@@ -110,6 +110,88 @@ def log_onboarding_preview_event(
         pass
 
 
+def insert_audit_lead(lead: dict[str, Any]) -> dict[str, Any] | None:
+    """Enregistre un lead du tunnel « audit complet » (landing, sans compte).
+
+    Écriture en service-role : le visiteur n'a pas de session, et la table est
+    volontairement inaccessible avec la clé anon (données nominatives, cf. 0060).
+
+    Contrairement au journal de previews, un échec est REMONTÉ (renvoie None et
+    laisse l'appelant décider) : perdre silencieusement un prospect qui a laissé
+    son téléphone n'est pas un incident acceptable, alors que perdre une ligne de
+    comptage anonyme l'est.
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return None
+    res = admin_client().table("audit_leads").insert(lead).execute()
+    rows = getattr(res, "data", None) or []
+    return rows[0] if rows else None
+
+
+def now_iso() -> str:
+    """Horodatage UTC ISO — utilisé par les écritures faites hors requête HTTP."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def get_audit_lead(lead_id: str) -> dict[str, Any] | None:
+    """Relit un lead d'audit (service-role : la table est fermée au client)."""
+    if not supabase_enabled() or not admin_enabled() or not lead_id:
+        return None
+    try:
+        res = (
+            admin_client()
+            .table("audit_leads")
+            .select("*")
+            .eq("id", lead_id)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def update_audit_lead(lead_id: str, patch: dict[str, Any]) -> None:
+    """Met à jour l'état d'un lead (génération / envoi de l'audit)."""
+    if not supabase_enabled() or not admin_enabled() or not lead_id or not patch:
+        return
+    try:
+        admin_client().table("audit_leads").update(patch).eq("id", lead_id).execute()
+    except Exception:
+        pass
+
+
+def find_recent_audit_lead(email: str, within_hours: int = 24) -> dict[str, Any] | None:
+    """Dernier lead enregistré pour cet e-mail dans la fenêtre donnée.
+
+    Sert à ne pas re-générer (ni re-notifier) un audit pour quelqu'un qui
+    re-soumet le formulaire — un double-clic ou un retour arrière ne doit pas
+    coûter un second audit ni faire croire à deux prospects distincts.
+    """
+    if not supabase_enabled() or not admin_enabled() or not email:
+        return None
+    try:
+        since = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(hours=max(1, int(within_hours)))
+        ).isoformat()
+        res = (
+            admin_client()
+            .table("audit_leads")
+            .select("id, created_at, status, email")
+            .eq("email", email.strip().lower())
+            .gte("created_at", since)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
 # Successful validations are cached in-process: virtually every db helper
 # re-validates the same token, and each validation is a network round-trip to
 # Supabase Auth. Trade-off: a revoked token stays accepted at most TTL seconds.

@@ -747,6 +747,137 @@ a { color: inherit; text-decoration: none; }
 }
 .onb-analysis-skip:hover { color: rgba(255,255,255,.85); }
 
+/* --- Tunnel « audit complet » : gains, simulation, formulaire --------------- */
+
+/* Encart d'hypothèses. Il porte les conditions de la projection affichée
+   au-dessus : sans lui les chiffres deviennent une promesse invérifiable, il ne
+   doit donc jamais devenir un détail illisible. */
+.onb-note {
+  margin: 2px 0 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(139,92,246,.12);
+  border: 1px solid rgba(160,140,255,.28);
+  color: #ddd9ff;
+  font-size: 12.5px; line-height: 1.55;
+  display: flex; flex-direction: column; gap: 4px;
+}
+
+.onb-gain-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.onb-gain-card {
+  padding: 14px 15px;
+  border-radius: 16px;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.12);
+}
+.onb-gain-label { font-size: 12px; opacity: .72; line-height: 1.35; }
+.onb-gain-value { margin-top: 6px; font-size: 20px; font-weight: 800; letter-spacing: -.02em; }
+.onb-gain-hint { margin-top: 3px; font-size: 11.5px; opacity: .6; }
+
+.onb-gain-highlight {
+  padding: 18px;
+  border-radius: 18px;
+  text-align: center;
+  background: linear-gradient(145deg, rgba(70,72,212,.55), rgba(139,92,246,.45));
+  border: 1px solid rgba(178,182,255,.35);
+  box-shadow: 0 12px 34px rgba(70,72,212,.32);
+}
+.onb-gain-money { margin-top: 6px; font-size: 27px; font-weight: 800; letter-spacing: -.025em; }
+
+/* Palier de panier moyen — même famille visuelle que les hashtags de l'analyse. */
+.onb-band {
+  padding: 8px 13px; border-radius: 999px;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  color: #d0d2ff;
+  background: rgba(70,72,212,.22);
+  border: 1px solid rgba(160,164,255,.28);
+  transition: background .18s, border-color .18s, color .18s, transform .12s;
+}
+.onb-band:hover { border-color: rgba(190,193,255,.6); }
+.onb-band:active { transform: scale(.97); }
+.onb-band.selected { background: #5d60ea; border-color: #a3a6ff; color: #fff; font-weight: 600; }
+
+/* Simulation « avant / après ». Deux colonnes même sur mobile : c'est la
+   comparaison qui porte le message — empilées, les deux cartes ne se lisent plus
+   l'une contre l'autre et l'écran perd sa raison d'être. */
+.onb-sim-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.onb-sim-card {
+  position: relative;
+  padding: 0 12px 14px;
+  border-radius: 16px;
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.12);
+  overflow: hidden;
+  text-align: center;
+}
+.onb-sim-after {
+  border-color: rgba(178,182,255,.5);
+  background: rgba(93,96,234,.16);
+  box-shadow: 0 14px 36px rgba(70,72,212,.3);
+}
+.onb-sim-caption {
+  padding: 9px 0 8px; font-size: 11.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .05em; opacity: .68;
+}
+.onb-sim-banner { height: 38px; margin: 0 -12px; background: linear-gradient(120deg, #3a3cc4, #7c5cf0); }
+.onb-sim-after .onb-sim-banner { background: linear-gradient(120deg, #4648d4, #a855f7, #5d60ea); }
+.onb-sim-avatar {
+  width: 46px; height: 46px; margin: -23px auto 0;
+  border-radius: 50%; display: grid; place-items: center;
+  font-size: 14px; font-weight: 700; color: #fff;
+  background: linear-gradient(145deg, #4648d4, #7a7cf0);
+  border: 2px solid #171833;
+}
+.onb-sim-avatar-img { object-fit: cover; }
+.onb-sim-name { margin-top: 7px; font-size: 13px; font-weight: 700; line-height: 1.25; }
+.onb-sim-followers { margin-top: 2px; font-size: 12px; opacity: .72; }
+.onb-sim-rows { margin-top: 11px; display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.onb-sim-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; border-radius: 9px;
+  background: rgba(255,255,255,.05);
+  font-size: 11px;
+}
+.onb-sim-row-icon { display: flex; opacity: .7; flex-shrink: 0; }
+.onb-sim-row-label { flex: 1; min-width: 0; opacity: .8; line-height: 1.25; }
+.onb-sim-badge {
+  min-width: 20px; padding: 1px 6px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; text-align: center;
+  background: rgba(255,255,255,.1); color: rgba(255,255,255,.5);
+}
+.onb-sim-badge.active { background: #e0245e; color: #fff; }
+
+/* Champs de formulaire sur fond sombre — les `.onb-input` du wizard clair
+   deviennent illisibles ici (fond blanc sur fond nuit). */
+.onb-dark-input {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 15px;
+  color: #fff;
+  background: rgba(255,255,255,.07);
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 12px;
+  transition: border-color .18s, box-shadow .18s;
+}
+.onb-dark-input::placeholder { color: rgba(255,255,255,.4); }
+.onb-dark-input:focus {
+  outline: none;
+  border-color: #a3a6ff;
+  box-shadow: 0 0 0 4px rgba(122,124,240,.22);
+}
+
+.onb-done-badge {
+  width: 62px; height: 62px; margin: 6px auto 2px;
+  border-radius: 50%; display: grid; place-items: center;
+  color: #3ecf8e;
+  background: rgba(62,207,142,.14);
+  border: 1px solid rgba(62,207,142,.35);
+}
+
+@media (max-width: 380px) {
+  .onb-gain-grid { grid-template-columns: 1fr; }
+}
+
 .jobs-list {
   display: grid;
   gap: 18px;
