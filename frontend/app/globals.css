@@ -874,8 +874,115 @@ a { color: inherit; text-decoration: none; }
   border: 1px solid rgba(62,207,142,.35);
 }
 
+/* --- Aperçu flouté de l'audit (écran formulaire) ---------------------------
+   Les TITRES de sections restent nets, seul le contenu est flouté : le visiteur
+   doit pouvoir lire ce qu'il reçoit, pas deviner. Le flou porte sur des lignes
+   grises et non sur du faux texte — rien ici ne prétend être un contenu réel,
+   donc rien ne peut être démenti par l'e-mail qu'il recevra. */
+.onb-doc {
+  position: relative;
+  border-radius: 18px;
+  overflow: hidden;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.12);
+}
+.onb-doc-page {
+  padding: 16px 16px 46px;
+  max-height: 340px;
+  overflow: hidden;
+  text-align: left;
+}
+.onb-doc-head { margin-bottom: 14px; }
+.onb-doc-kicker {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+  color: #b9bcff;
+}
+.onb-doc-title {
+  margin-top: 3px;
+  font-size: 16px; font-weight: 800; letter-spacing: -.02em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.onb-doc-section + .onb-doc-section { margin-top: 13px; }
+.onb-doc-section-title { font-size: 12.5px; font-weight: 600; color: #e6e4ff; }
+/* Le flou est porté par le conteneur des lignes, pas par chaque ligne : appliqué
+   ligne à ligne, `filter` crée un contexte d'empilement par élément et le rendu
+   part en dégradé irrégulier selon le navigateur. */
+.onb-doc-lines {
+  margin-top: 7px;
+  display: flex; flex-direction: column; gap: 6px;
+  filter: blur(3.4px);
+  opacity: .5;
+  user-select: none;
+}
+.onb-doc-line {
+  display: block; height: 7px; border-radius: 999px;
+  background: linear-gradient(90deg, rgba(255,255,255,.5), rgba(255,255,255,.22));
+}
+/* Fondu vers le bas : la page doit sembler continuer, pas s'arrêter net. */
+.onb-doc-fade {
+  position: absolute; inset: auto 0 0 0; height: 130px;
+  background: linear-gradient(180deg, rgba(15,16,36,0), rgba(15,16,36,.86) 62%, #10112a);
+  pointer-events: none;
+}
+.onb-doc-seal {
+  position: absolute; left: 50%; bottom: 13px; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 13px; border-radius: 999px;
+  white-space: nowrap;
+  font-size: 11.5px; font-weight: 600; color: #fff;
+  background: rgba(70,72,212,.72);
+  border: 1px solid rgba(178,182,255,.45);
+  backdrop-filter: blur(6px);
+}
+
+/* Écran formulaire : une seule colonne par défaut (mobile), l'aperçu au-dessus
+   des champs — il est dans le DOM avant eux exprès. */
+.onb-lead-grid { display: grid; gap: 14px; }
+.onb-lead-form { display: flex; flex-direction: column; gap: 14px; }
+
+/* --- Desktop : les écrans de restitution respirent ------------------------- */
+/* La colonne de 420 px est taillée pour les écrans de SAISIE. Les gains (4
+   cartes), la simulation (2 cartes côte à côte) et le formulaire (aperçu +
+   champs) y étouffent dès qu'on a la place de faire mieux. */
+@media (min-width: 860px) {
+  .onb-shell.onb-shell-wide { max-width: 860px; }
+  .onb-shell-wide .onb-gain-grid { grid-template-columns: repeat(4, 1fr); }
+  .onb-shell-wide .onb-gain-value { font-size: 22px; }
+  .onb-shell-wide .onb-gain-money { font-size: 32px; }
+  .onb-shell-wide .onb-sim-grid { gap: 16px; }
+  .onb-shell-wide .onb-analysis-title { font-size: 27px; }
+  /* Aperçu à gauche, formulaire à droite : le CTA reste visible sans défiler. */
+  .onb-lead-grid { grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+  .onb-doc-page { max-height: 420px; }
+}
+
+/* --- Mobile ---------------------------------------------------------------- */
+@media (max-width: 560px) {
+  /* L'overlay garde ses marges latérales mais rend la hauteur au contenu :
+     le tunnel a des écrans longs, 24 px en haut ET en bas se paient en défilement. */
+  .onb-overlay { padding: 16px 14px 22px; }
+  .onb-analysis-title { font-size: 21px; }
+  .onb-gain-card { padding: 12px 12px; }
+  .onb-gain-value { font-size: 18px; }
+  .onb-gain-money { font-size: 24px; }
+  .onb-gain-highlight { padding: 15px 14px; }
+  /* Cibles tactiles : 8px de haut sur un pastille de sélection, c'est trop petit
+     pour un pouce — c'est le contrôle qui porte tout l'écran des gains. */
+  .onb-band { padding: 10px 14px; font-size: 13.5px; }
+  .onb-doc-page { max-height: 260px; padding-bottom: 42px; }
+  .onb-doc-fade { height: 110px; }
+}
+
 @media (max-width: 380px) {
   .onb-gain-grid { grid-template-columns: 1fr; }
+  /* La simulation reste à 2 colonnes même ici : c'est la comparaison avant/après
+     qui porte le message, empilée elle ne se lit plus. On rétrécit son contenu
+     plutôt que de casser la mise en regard. */
+  .onb-sim-grid { gap: 7px; }
+  .onb-sim-card { padding: 9px; }
+  .onb-sim-name { font-size: 12px; }
+  .onb-sim-row { font-size: 10.5px; }
+  .onb-doc-seal { font-size: 10.5px; padding: 6px 11px; }
 }
 
 .jobs-list {
