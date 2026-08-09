@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import json
 import hashlib
+import html as html_lib
+import re
 import secrets
 import sys
 import threading
@@ -20,6 +22,8 @@ from pydantic import BaseModel, Field
 from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing
 from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
+from src import audit_projection, mailer
+from src.audit_report import start_audit_email_thread
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
@@ -197,6 +201,33 @@ class EditorialProfileDraftRequest(BaseModel):
     include_preview: bool = False
 
 
+class AuditProjectionRequest(BaseModel):
+    """Chiffres du scrape servant de base à la projection de gains (aucun coût)."""
+
+    followers: int = Field(default=0, ge=0, le=100_000_000)
+    connections: int = Field(default=0, ge=0, le=100_000_000)
+    posts_count: int = Field(default=0, ge=0, le=100_000)
+
+
+class AuditLeadRequest(BaseModel):
+    """Formulaire du tunnel « audit complet gratuit » (landing, sans compte)."""
+
+    full_name: str = Field(min_length=2, max_length=120)
+    email: str = Field(min_length=5, max_length=200)
+    phone: str = Field(min_length=6, max_length=40)
+    linkedin_url: str | None = Field(default=None, max_length=500)
+    website_url: str | None = Field(default=None, max_length=500)
+    input_kind: str | None = Field(default=None, max_length=20)
+    consent: bool = False
+    # Instantané de ce que le visiteur a VU (audit léger, réponses, projection
+    # affichée). On le stocke plutôt que de le recalculer à l'envoi : la preview
+    # coûte un scrape Apify + un appel Claude, et l'audit doit correspondre aux
+    # chiffres qu'on lui a montrés, pas à ceux d'un second calcul.
+    preview: dict[str, Any] | None = None
+    profile: dict[str, Any] | None = None
+    projection: dict[str, Any] | None = None
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
@@ -315,11 +346,17 @@ def delete_me_self_photo(photo_id: str, token: str = Depends(require_token)) -> 
     return {"ok": True, "id": photo_id}
 
 
+def _html_escape(value: str) -> str:
+    """Échappe une valeur avant insertion dans un e-mail HTML.
+
+    Le contenu vient d'un formulaire public : sans échappement, un nom contenant
+    des chevrons casserait la mise en page de l'e-mail interne (au mieux).
+    """
+    return html_lib.escape(value or "", quote=True)
+
+
 def _clean_html_text(html: str) -> str:
     """Extract a compact text summary from public HTML without adding dependencies."""
-    import html as html_lib
-    import re
-
     text = re.sub(r"(?is)<(script|style|noscript).*?</\1>", " ", html)
     title = ""
     title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", text)
@@ -485,6 +522,13 @@ _ONBOARDING_DRAFT_MAX = int(os.environ.get("ONBOARDING_DRAFT_MAX_PER_HOUR", "5")
 _onboarding_draft_hits: dict[str, list[float]] = {}
 _onboarding_draft_lock = threading.Lock()
 
+# Même garde-fou pour le dépôt de lead du tunnel d'audit : il n'appelle ni Apify ni
+# Claude à la soumission, mais il déclenche un e-mail et une génération — de quoi
+# transformer un formulaire ouvert en robinet à spam s'il n'était pas borné.
+_AUDIT_LEAD_MAX = int(os.environ.get("AUDIT_LEAD_MAX_PER_HOUR", "5"))
+_audit_lead_hits: dict[str, list[float]] = {}
+_audit_lead_lock = threading.Lock()
+
 
 def _client_ip(request: Request) -> str:
     """IP d'origine — Render place le vrai client en tête de X-Forwarded-For."""
@@ -502,22 +546,36 @@ def _client_ip_hash(request: Request) -> str | None:
     return hashlib.sha256(ip.encode()).hexdigest()[:16]
 
 
-def _rate_limit_onboarding_draft(request: Request) -> None:
+def _rate_limit_ip(
+    request: Request,
+    store: dict[str, list[float]],
+    lock: threading.Lock,
+    max_hits: int,
+    detail: str,
+) -> None:
+    """Compteur glissant par IP, partagé par les routes publiques payantes."""
     ip = _client_ip(request)
     now = time.time()
-    with _onboarding_draft_lock:
-        hits = [t for t in _onboarding_draft_hits.get(ip, []) if now - t < _ONBOARDING_DRAFT_WINDOW_S]
-        if len(hits) >= _ONBOARDING_DRAFT_MAX:
-            raise HTTPException(
-                status_code=429,
-                detail="Trop d'analyses depuis cette connexion. Réessaie dans une heure, ou crée ton compte.",
-            )
+    with lock:
+        hits = [t for t in store.get(ip, []) if now - t < _ONBOARDING_DRAFT_WINDOW_S]
+        if len(hits) >= max_hits:
+            raise HTTPException(status_code=429, detail=detail)
         hits.append(now)
-        _onboarding_draft_hits[ip] = hits
+        store[ip] = hits
         # Purge opportuniste : sans ça le dictionnaire grossit indéfiniment.
-        if len(_onboarding_draft_hits) > 5000:
-            for key in [k for k, v in _onboarding_draft_hits.items() if not v or now - v[-1] > _ONBOARDING_DRAFT_WINDOW_S]:
-                _onboarding_draft_hits.pop(key, None)
+        if len(store) > 5000:
+            for key in [k for k, v in store.items() if not v or now - v[-1] > _ONBOARDING_DRAFT_WINDOW_S]:
+                store.pop(key, None)
+
+
+def _rate_limit_onboarding_draft(request: Request) -> None:
+    _rate_limit_ip(
+        request,
+        _onboarding_draft_hits,
+        _onboarding_draft_lock,
+        _ONBOARDING_DRAFT_MAX,
+        "Trop d'analyses depuis cette connexion. Réessaie dans une heure, ou crée ton compte.",
+    )
 
 
 @app.post("/onboarding/draft")
@@ -596,6 +654,132 @@ def draft_onboarding_profile(payload: EditorialProfileDraftRequest, request: Req
             "website_summary": bool(website_seed and website_seed.get("summary")),
         },
     }
+
+
+# --- Tunnel « audit complet gratuit » ----------------------------------------
+#
+# Suite immédiate de l'audit léger : on montre au visiteur ce qu'il gagnerait à
+# tenir son LinkedIn, puis on échange l'audit complet (envoyé par e-mail) contre
+# ses coordonnées, et on l'emmène prendre rendez-vous.
+#
+# Deux routes seulement, et aucune des deux ne rappelle Apify ou Claude à la
+# soumission : la projection est de l'arithmétique, et la génération de l'audit
+# part en tâche de fond APRÈS avoir répondu. Le visiteur ne doit jamais attendre
+# derrière un appel modèle avec son téléphone déjà saisi.
+
+AUDIT_CALENDLY_URL = os.environ.get(
+    "AUDIT_CALENDLY_URL", "https://calendly.com/tom-clareo-solutions/15min"
+)
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
+
+
+@app.post("/onboarding/projection")
+def onboarding_projection(payload: AuditProjectionRequest) -> dict[str, Any]:
+    """Gains projetés pour chaque palier de panier moyen (calcul pur, gratuit).
+
+    Non borné par IP volontairement : la route ne consomme ni scrape ni modèle,
+    la limiter n'aurait aucun effet protecteur et casserait un simple rechargement.
+    """
+    return audit_projection.project_all_bands(
+        followers=payload.followers,
+        connections=payload.connections,
+        posts_count=payload.posts_count,
+    )
+
+
+@app.post("/onboarding/audit-lead")
+def onboarding_audit_lead(payload: AuditLeadRequest, request: Request) -> dict[str, Any]:
+    """Dépose un lead et lance l'envoi de l'audit complet en tâche de fond."""
+    _rate_limit_ip(
+        request,
+        _audit_lead_hits,
+        _audit_lead_lock,
+        _AUDIT_LEAD_MAX,
+        "Trop de demandes depuis cette connexion. Réessaie dans une heure.",
+    )
+
+    full_name = (payload.full_name or "").strip()
+    email = (payload.email or "").strip().lower()
+    phone = (payload.phone or "").strip()
+
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="Adresse e-mail invalide.")
+    # Les trois champs sont obligatoires côté produit : on le fait respecter ici
+    # aussi, pas seulement dans le formulaire — une validation qui ne vit que dans
+    # le navigateur n'est pas une validation.
+    if len(re.sub(r"\D", "", phone)) < 6:
+        raise HTTPException(status_code=422, detail="Numéro de téléphone invalide.")
+    if not full_name:
+        raise HTTPException(status_code=422, detail="Nom manquant.")
+
+    # Re-soumission (double-clic, retour arrière) : on ne recrée pas de lead et on
+    # ne relance pas la génération, mais on répond OK — du point de vue du visiteur
+    # son geste a bien abouti, et c'est vrai.
+    existing = db.find_recent_audit_lead(email)
+    if existing:
+        return {"ok": True, "duplicate": True, "calendly_url": AUDIT_CALENDLY_URL}
+
+    lead_row = None
+    try:
+        lead_row = db.insert_audit_lead({
+            "full_name": full_name,
+            "email": email,
+            "phone": phone,
+            "linkedin_url": (payload.linkedin_url or "").strip() or None,
+            "website_url": (payload.website_url or "").strip() or None,
+            "input_kind": (payload.input_kind or "").strip() or None,
+            "preview": payload.preview or None,
+            "profile": payload.profile or None,
+            "projection": payload.projection or None,
+            "consent": bool(payload.consent),
+            "ip_hash": _client_ip_hash(request),
+            "status": "pending",
+        })
+    except Exception as exc:
+        # Le prospect a laissé ses coordonnées : on ne le renvoie pas dans le mur
+        # pour un incident de base. On prévient l'équipe et on le laisse aller au
+        # rendez-vous — c'est le geste qui compte le plus dans ce tunnel.
+        print(f"[audit-lead] enregistrement impossible pour {email} : {exc}", file=sys.stderr)
+
+    lead_id = (lead_row or {}).get("id")
+
+    # Notification interne — best-effort, jamais bloquante.
+    _notify_internal_audit_lead(full_name, email, phone, payload)
+
+    if lead_id:
+        start_audit_email_thread(str(lead_id), AUDIT_CALENDLY_URL)
+
+    return {"ok": True, "lead_id": lead_id, "calendly_url": AUDIT_CALENDLY_URL}
+
+
+def _notify_internal_audit_lead(
+    full_name: str, email: str, phone: str, payload: AuditLeadRequest
+) -> None:
+    """Prévient l'équipe qu'un lead vient d'arriver (silencieux si non configuré)."""
+    recipients = mailer.internal_recipients()
+    if not recipients:
+        return
+    preview = payload.preview or {}
+    rows = [
+        ("Nom", full_name),
+        ("E-mail", email),
+        ("Téléphone", phone),
+        ("LinkedIn", payload.linkedin_url or "—"),
+        ("Site web", payload.website_url or "—"),
+        ("Niche détectée", str(preview.get("niche") or "—")),
+        ("Abonnés", str(preview.get("followers") or "—")),
+    ]
+    html = "<h2>Nouveau lead — audit complet</h2><table cellpadding='6'>" + "".join(
+        f"<tr><td><strong>{label}</strong></td><td>{_html_escape(str(value))}</td></tr>"
+        for label, value in rows
+    ) + "</table>"
+    mailer.send_email_safe(
+        recipients,
+        f"Nouveau lead audit — {full_name}",
+        html,
+        reply_to=email,
+    )
 
 
 @app.get("/me/analyses/{analysis_id}")

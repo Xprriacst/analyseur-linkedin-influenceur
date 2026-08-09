@@ -20,13 +20,18 @@
 import { useEffect, useState } from "react";
 import {
   AlertTriangle,
+  Briefcase,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Linkedin,
   Loader2,
+  Lock,
+  Mail,
+  MessageSquare,
   Sparkles,
   Target,
+  Users,
 } from "lucide-react";
 import { authHeaders } from "../lib/supabase";
 
@@ -53,8 +58,45 @@ export type OnboardingPreview = {
   improvements: string[];
 };
 
+/** Fourchette basse/haute — le tunnel n'affiche jamais de valeur unique. */
+export type OnbRange = { low: number; high: number };
+
+/** Gains projetés pour un palier de panier moyen (calculés par le serveur). */
+export type OnbProjection = {
+  followers_now: number;
+  followers_gain: OnbRange;
+  followers_after: OnbRange;
+  relations_per_month: OnbRange;
+  conversations_per_month: OnbRange;
+  clients_per_month: OnbRange;
+  revenue_per_month: OnbRange;
+  deal_value: number;
+};
+
+export type OnbBand = {
+  key: string;
+  label: string;
+  deal_value: number;
+  projection: OnbProjection;
+  assumptions: string[];
+};
+
 // --- Onboarding « Cible » : wizard accueil → scan → analyse → confirmation ---
-type OnbStep = "intro" | "scanning" | "analysis" | "analysis_detail" | "page1" | "page2";
+//
+// Sur la landing (`leadFunnel`), le parcours ne s'arrête pas à la confirmation :
+// il enchaîne sur les gains projetés, une simulation « avant / après », puis
+// l'échange audit complet ↔ coordonnées, et se termine sur la prise de rendez-vous.
+type OnbStep =
+  | "intro"
+  | "scanning"
+  | "analysis"
+  | "analysis_detail"
+  | "page1"
+  | "page2"
+  | "gains"
+  | "simulation"
+  | "lead_form"
+  | "lead_done";
 type OnbOption = { label: string; match?: string[] };
 
 const ONB_AUDIENCE_OPTIONS: OnbOption[] = [
@@ -105,6 +147,23 @@ function fmtCompact(n: number): string {
   if (n < 10000) return `${(n / 1000).toFixed(1).replace(".0", "")}K`;
   if (n < 1000000) return `${Math.round(n / 1000)}K`;
   return `${(n / 1000000).toFixed(1).replace(".0", "")}M`;
+}
+
+/** Entier en français, avec espaces insécables sur les milliers. */
+function fmtInt(n: number): string {
+  return Math.round(n || 0).toLocaleString("fr-FR");
+}
+
+/** Montant arrondi — la projection est une estimation, pas une facture. */
+function fmtMoney(n: number): string {
+  return `${fmtInt(n)} €`;
+}
+
+/** Fourchette affichée « bas à haut ». Bornes égales ⇒ une seule valeur. */
+function fmtRange(range: OnbRange | undefined, fmt: (n: number) => string): string {
+  if (!range) return "—";
+  if (range.low === range.high) return fmt(range.low);
+  return `${fmt(range.low)} à ${fmt(range.high)}`;
 }
 
 function initials(name: string, handle: string): string {
@@ -201,12 +260,19 @@ function OnbChips({ options, field, onChange, placeholder }: {
 
 export default function OnboardingScreen({
   anonymous = false,
+  leadFunnel = false,
   onFinish,
   onSkip,
   finishLabel = "C'est parti",
 }: {
   /** true = visiteur sans compte : analyse via la route publique, réponses rendues à l'appelant. */
   anonymous?: boolean;
+  /**
+   * true = landing : après les questions, on enchaîne sur les gains projetés et
+   * l'échange « audit complet contre coordonnées » plutôt que sur la création de
+   * compte. Le wizard in-app (compte déjà créé) ne doit jamais voir ces écrans.
+   */
+  leadFunnel?: boolean;
   /** Reçoit le profil complet. L'appelant décide : enregistrer, ou emmener vers l'inscription. */
   onFinish: (profile: OnboardingProfile) => void | Promise<void>;
   /** « Passer » — l'utilisateur refuse de répondre. */
@@ -221,6 +287,16 @@ export default function OnboardingScreen({
   const [sel, setSel] = useState(() => onbInitSel({}));
   const [saving, setSaving] = useState(false);
   const [scanIdx, setScanIdx] = useState(0);
+
+  // --- Tunnel « audit complet » (landing uniquement) ---
+  const [bands, setBands] = useState<OnbBand[]>([]);
+  const [bandKey, setBandKey] = useState<string>("mid");
+  const [lead, setLead] = useState({ name: "", email: "", phone: "" });
+  const [leadError, setLeadError] = useState("");
+  const [calendlyUrl, setCalendlyUrl] = useState("");
+
+  const band = bands.find((b) => b.key === bandKey) || bands[0] || null;
+  const projection = band?.projection || null;
 
   const up = (patch: Partial<ReturnType<typeof onbInitSel>>) =>
     setSel((s) => ({ ...s, ...patch }));
@@ -287,9 +363,9 @@ export default function OnboardingScreen({
     }
   }
 
-  async function finish() {
-    setSaving(true);
-    const merged: Record<string, string> = {
+  /** Le profil consolidé : brouillon IA + réponses confirmées par le visiteur. */
+  function mergedProfile(): Record<string, string> {
+    return {
       ...draft,
       display_name: sel.displayName.trim() || draft.display_name || "",
       target_audience: sel.audienceMode === "large" ? "Large, pas de niche précise" : onbJoin(sel.audience),
@@ -297,8 +373,12 @@ export default function OnboardingScreen({
       linkedin_objective: onbJoin(sel.objective),
       industry: onbJoin(sel.industry),
     };
+  }
+
+  async function finish() {
+    setSaving(true);
     try {
-      await onFinish(merged);
+      await onFinish(mergedProfile());
     } catch {
       // L'appelant gère ses erreurs. Ici on relâche juste le bouton pour ne pas
       // laisser l'utilisateur bloqué sur un spinner définitif.
@@ -306,12 +386,109 @@ export default function OnboardingScreen({
     }
   }
 
+  /**
+   * Charge les gains projetés (un jeu par palier de panier moyen).
+   *
+   * Best-effort assumé : si le calcul est injoignable, on saute directement au
+   * formulaire. Bloquer l'accès à l'audit complet parce qu'un écran de mise en
+   * scène n'a pas répondu ferait perdre le prospect pour rien.
+   */
+  async function toGains() {
+    setStep("gains");
+    if (bands.length > 0) return;
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/onboarding/projection`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          followers: preview?.followers || 0,
+          connections: preview?.connections || 0,
+          posts_count: preview?.posts_count || 0,
+        }),
+      });
+      if (!res.ok) throw new Error("projection indisponible");
+      const data = await res.json();
+      const list: OnbBand[] = Array.isArray(data?.bands) ? data.bands : [];
+      if (list.length === 0) throw new Error("projection vide");
+      setBands(list);
+      setBandKey(data?.default_band || list[0].key);
+    } catch {
+      setStep("lead_form");
+    }
+  }
+
+  async function submitLead() {
+    const name = lead.name.trim();
+    const email = lead.email.trim();
+    const phone = lead.phone.trim();
+    if (!name) { setLeadError("Indique ton nom et prénom."); return; }
+    if (!/^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(email)) { setLeadError("Indique une adresse e-mail valide."); return; }
+    if (phone.replace(/\D/g, "").length < 6) { setLeadError("Indique un numéro de téléphone valide."); return; }
+
+    setLeadError("");
+    setSaving(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/onboarding/audit-lead`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          full_name: name,
+          email,
+          phone,
+          linkedin_url: inputKind === "linkedin" ? aiInput.trim() : "",
+          website_url: inputKind === "website" ? aiInput.trim() : "",
+          input_kind: inputKind,
+          consent: true,
+          preview,
+          profile: mergedProfile(),
+          projection: projection || null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || "Envoi impossible. Réessaie dans un instant.");
+      setCalendlyUrl(data?.calendly_url || "");
+      setStep("lead_done");
+    } catch (err: any) {
+      setLeadError(err?.message || "Envoi impossible. Réessaie dans un instant.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /**
+   * Redirection vers la prise de rendez-vous, après un temps de lecture.
+   *
+   * ⚠️ Le délai n'est pas cosmétique : sans lui, la page saute sur Calendly avant
+   * que « ton audit arrive par e-mail » ait pu être lu, et le visiteur ne sait
+   * plus ce qu'il est censé recevoir.
+   */
+  useEffect(() => {
+    if (step !== "lead_done" || !calendlyUrl) return;
+    const id = setTimeout(() => { window.location.href = calendlyUrl; }, 4000);
+    return () => clearTimeout(id);
+  }, [step, calendlyUrl]);
+
   const showProgress = step === "page1" || step === "page2";
-  const isAnalysis = step === "analysis" || step === "analysis_detail";
+  // Écrans qui gagnent à respirer sur grand écran (grilles et colonnes), par
+  // opposition aux écrans de saisie où une colonne étroite reste plus lisible.
+  const isWideStep = step === "gains" || step === "simulation" || step === "lead_form";
+  const isAnalysis =
+    step === "analysis" ||
+    step === "analysis_detail" ||
+    step === "gains" ||
+    step === "simulation" ||
+    step === "lead_form" ||
+    step === "lead_done";
 
   return (
     <div className={"onb-overlay" + (isAnalysis ? " onb-overlay-analysis" : "")}>
-      <div className={"onb-shell" + (isAnalysis ? " onb-shell-analysis" : "")}>
+      <div
+        className={
+          "onb-shell" +
+          (isAnalysis ? " onb-shell-analysis" : "") +
+          (isWideStep ? " onb-shell-wide" : "")
+        }
+      >
         {showProgress && (
           <div className="onb-progress">
             <div className="onb-progress-fill" style={{ width: step === "page1" ? "50%" : "100%" }} />
@@ -550,13 +727,340 @@ export default function OnboardingScreen({
               <button type="button" className="onb-back" onClick={() => setStep("page1")}>
                 <ChevronLeft size={16} /> Retour
               </button>
-              <button type="button" className="onb-cta" onClick={finish} disabled={saving}>
-                {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />} {finishLabel}
+              <button
+                type="button"
+                className="onb-cta"
+                onClick={leadFunnel ? toGains : finish}
+                disabled={saving}
+              >
+                {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />}{" "}
+                {leadFunnel ? "Voir ce que je peux gagner" : finishLabel}
               </button>
             </div>
           </div>
         )}
+
+        {step === "gains" && (
+          <div className="onb-screen onb-analysis" key="gains">
+            <h2 className="onb-analysis-title">Ce que tu peux gagner</h2>
+            <p className="onb-analysis-summary" style={{ opacity: 0.8 }}>
+              En tenant ton LinkedIn et en prospectant les bonnes personnes, voici ce que
+              donne un trimestre.
+            </p>
+
+            {!projection ? (
+              <div className="onb-scan" style={{ padding: "28px 0" }}>
+                <Loader2 size={26} className="spinning" />
+              </div>
+            ) : (
+              <>
+                <div className="onb-gain-grid">
+                  <div className="onb-gain-card">
+                    <div className="onb-gain-label">Abonnés dans 90 jours</div>
+                    <div className="onb-gain-value">{fmtRange(projection.followers_after, fmtInt)}</div>
+                    <div className="onb-gain-hint">
+                      aujourd&apos;hui {fmtInt(projection.followers_now)} · +{fmtRange(projection.followers_gain, fmtInt)}
+                    </div>
+                  </div>
+                  <div className="onb-gain-card">
+                    <div className="onb-gain-label">Nouvelles relations ciblées</div>
+                    <div className="onb-gain-value">{fmtRange(projection.relations_per_month, fmtInt)}</div>
+                    <div className="onb-gain-hint">par mois</div>
+                  </div>
+                  <div className="onb-gain-card">
+                    <div className="onb-gain-label">Conversations qualifiées</div>
+                    <div className="onb-gain-value">{fmtRange(projection.conversations_per_month, fmtInt)}</div>
+                    <div className="onb-gain-hint">par mois</div>
+                  </div>
+                  <div className="onb-gain-card">
+                    <div className="onb-gain-label">Nouveaux clients</div>
+                    <div className="onb-gain-value">{fmtRange(projection.clients_per_month, fmtInt)}</div>
+                    <div className="onb-gain-hint">par mois</div>
+                  </div>
+                </div>
+
+                <div className="onb-analysis-block">
+                  <div className="onb-analysis-label">Ton panier moyen</div>
+                  <div className="onb-analysis-tags">
+                    {bands.map((b) => (
+                      <button
+                        key={b.key}
+                        type="button"
+                        className={"onb-band" + (b.key === bandKey ? " selected" : "")}
+                        aria-pressed={b.key === bandKey}
+                        onClick={() => setBandKey(b.key)}
+                      >
+                        {b.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="onb-gain-highlight">
+                  <div className="onb-gain-label">Chiffre d&apos;affaires mensuel supplémentaire</div>
+                  <div className="onb-gain-money">{fmtRange(projection.revenue_per_month, fmtMoney)}</div>
+                </div>
+
+                <div className="onb-note">
+                  {(band?.assumptions || []).map((line) => (
+                    <div key={line}>{line}</div>
+                  ))}
+                </div>
+
+                <button type="button" className="onb-analysis-cta" onClick={() => setStep("simulation")}>
+                  Continuer <ChevronRight size={16} />
+                </button>
+              </>
+            )}
+
+            <button type="button" className="onb-analysis-skip" onClick={() => setStep("page2")}>
+              ← Retour
+            </button>
+          </div>
+        )}
+
+        {step === "simulation" && projection && (
+          <div className="onb-screen onb-analysis" key="simulation">
+            <h2 className="onb-analysis-title">Ton profil dans 90 jours</h2>
+            <p className="onb-analysis-summary" style={{ opacity: 0.8 }}>
+              À gauche ton compte aujourd&apos;hui, à droite la même page une fois la
+              machine lancée.
+            </p>
+
+            <div className="onb-sim-grid">
+              <SimCard
+                variant="before"
+                caption="Aujourd'hui"
+                preview={preview}
+                followers={projection.followers_now}
+                invites={0}
+                messages={0}
+                offers={0}
+              />
+              <SimCard
+                variant="after"
+                caption="Dans 90 jours"
+                preview={preview}
+                followers={projection.followers_after.high}
+                invites={projection.relations_per_month.high}
+                messages={projection.conversations_per_month.high}
+                offers={projection.clients_per_month.high}
+              />
+            </div>
+
+            <div className="onb-note">
+              Simulation à partir des fourchettes hautes de l&apos;écran précédent.
+              Aucune donnée réelle de ton compte n&apos;est modifiée.
+            </div>
+
+            <button type="button" className="onb-analysis-cta" onClick={() => setStep("lead_form")}>
+              Recevoir mon audit complet gratuit
+            </button>
+            <button type="button" className="onb-analysis-skip" onClick={() => setStep("gains")}>
+              ← Retour aux chiffres
+            </button>
+          </div>
+        )}
+
+        {step === "lead_form" && (
+          <div className="onb-screen onb-analysis" key="lead_form">
+            <h2 className="onb-analysis-title">Ton audit complet, offert</h2>
+            <p className="onb-analysis-summary" style={{ opacity: 0.85 }}>
+              Tu le reçois par e-mail : ton titre et ta section « Infos » réécrits,
+              3 concepts de bannière, les comptes à suivre dans ta niche, tes angles
+              de posts, ton ciblage de prospection et un plan sur 90 jours.
+            </p>
+
+            {/* L'aperçu passe AVANT le formulaire dans le DOM : sur mobile il se
+                lit donc en premier — on voit ce qu'on échange avant qu'on nous
+                demande un téléphone. Sur desktop, la grille le remet à gauche,
+                en vis-à-vis des champs. */}
+            <div className="onb-lead-grid">
+              <AuditPreviewMock name={sel.displayName || preview?.name} />
+
+              <div className="onb-lead-form">
+            <div className="onb-analysis-card">
+              <label className="onb-analysis-label" htmlFor="lead-name">Nom et prénom</label>
+              <input
+                id="lead-name"
+                className="onb-dark-input"
+                value={lead.name}
+                onChange={(e) => setLead({ ...lead, name: e.target.value })}
+                placeholder="Camille Durand"
+                autoComplete="name"
+              />
+
+              <label className="onb-analysis-label" htmlFor="lead-email" style={{ marginTop: 14 }}>E-mail</label>
+              <input
+                id="lead-email"
+                className="onb-dark-input"
+                type="email"
+                value={lead.email}
+                onChange={(e) => setLead({ ...lead, email: e.target.value })}
+                placeholder="camille@exemple.com"
+                autoComplete="email"
+              />
+
+              <label className="onb-analysis-label" htmlFor="lead-phone" style={{ marginTop: 14 }}>Téléphone</label>
+              <input
+                id="lead-phone"
+                className="onb-dark-input"
+                type="tel"
+                value={lead.phone}
+                onChange={(e) => setLead({ ...lead, phone: e.target.value })}
+                placeholder="06 12 34 56 78"
+                autoComplete="tel"
+                onKeyDown={(e) => { if (e.key === "Enter") submitLead(); }}
+              />
+            </div>
+
+            <div className="onb-note">
+              Ces informations servent à t&apos;envoyer ton audit et à te recontacter à
+              ce sujet. Rien d&apos;autre.
+            </div>
+
+            {leadError && <div className="onb-error">{leadError}</div>}
+
+            <button type="button" className="onb-analysis-cta" onClick={submitLead} disabled={saving}>
+              {saving ? <Loader2 size={16} className="spinning" /> : <Mail size={16} />}{" "}
+              Recevoir mon audit gratuit
+            </button>
+              </div>
+            </div>
+
+            <button type="button" className="onb-analysis-skip" onClick={finish}>
+              Je préfère créer mon compte directement
+            </button>
+          </div>
+        )}
+
+        {step === "lead_done" && (
+          <div className="onb-screen onb-analysis" key="lead_done">
+            <div className="onb-done-badge"><CheckCircle2 size={30} /></div>
+            <h2 className="onb-analysis-title" style={{ textAlign: "center" }}>C&apos;est envoyé</h2>
+            <div className="onb-analysis-card" style={{ textAlign: "center" }}>
+              <p className="onb-analysis-summary">
+                Ton audit complet arrive par e-mail sur <strong>{lead.email}</strong> dans
+                les prochaines minutes.
+              </p>
+              <p className="onb-analysis-summary" style={{ marginTop: 10, opacity: 0.8 }}>
+                On t&apos;emmène choisir un créneau de 15 minutes pour le passer en revue
+                ensemble.
+              </p>
+            </div>
+            {calendlyUrl && (
+              <a className="onb-analysis-cta" href={calendlyUrl} style={{ textDecoration: "none" }}>
+                Choisir mon créneau <ChevronRight size={16} />
+              </a>
+            )}
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Aperçu flouté de l'audit complet, montré à côté du formulaire.
+ *
+ * Le formulaire demande trois informations dont un téléphone : il faut donc voir
+ * ce qu'on échange AVANT de le remplir. Les titres de sections restent nets (on
+ * doit pouvoir lire ce qu'on reçoit), seul le contenu est flouté.
+ *
+ * ⚠️ C'est une mise en scène assumée, pas un extrait du vrai audit — il n'existe
+ * pas encore à cet instant, il est généré après l'envoi. D'où des lignes grises
+ * plutôt qu'un faux texte lisible : rien ici ne prétend être un contenu réel, et
+ * il n'y a donc aucune promesse qui puisse être démentie par l'e-mail reçu.
+ */
+function AuditPreviewMock({ name }: { name?: string }) {
+  const sections: { title: string; lines: number[] }[] = [
+    { title: "Diagnostic de ton profil", lines: [100, 92, 78] },
+    { title: "Ton titre réécrit — 3 propositions", lines: [88, 95, 70] },
+    { title: "Ta section « Infos »", lines: [100, 84, 96, 62] },
+    { title: "3 concepts de bannière", lines: [90, 76] },
+    { title: "Les comptes à suivre dans ta niche", lines: [94, 88, 72] },
+    { title: "Tes angles de posts", lines: [86, 98, 68] },
+    { title: "Ton plan sur 90 jours", lines: [92, 80, 88] },
+  ];
+
+  return (
+    <div className="onb-doc" aria-hidden="true">
+      <div className="onb-doc-page">
+        <div className="onb-doc-head">
+          <div className="onb-doc-kicker">Audit LinkedIn complet</div>
+          <div className="onb-doc-title">{name?.trim() || "Ton profil"}</div>
+        </div>
+        {sections.map((section) => (
+          <div className="onb-doc-section" key={section.title}>
+            <div className="onb-doc-section-title">{section.title}</div>
+            <div className="onb-doc-lines">
+              {section.lines.map((width, i) => (
+                <span className="onb-doc-line" key={i} style={{ width: `${width}%` }} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="onb-doc-fade" />
+      <div className="onb-doc-seal">
+        <Lock size={13} /> {sections.length} sections · débloquées à l&apos;envoi
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Une carte de la simulation « avant / après ».
+ *
+ * C'est une mise en scène, pas une capture : la photo et le nom viennent du
+ * scrape (donc du vrai compte), les compteurs viennent de la projection affichée
+ * juste avant. Rien n'est inventé ici qui n'ait déjà été montré et justifié.
+ */
+function SimCard({
+  variant,
+  caption,
+  preview,
+  followers,
+  invites,
+  messages,
+  offers,
+}: {
+  variant: "before" | "after";
+  caption: string;
+  preview: OnboardingPreview | null;
+  followers: number;
+  invites: number;
+  messages: number;
+  offers: number;
+}) {
+  const name = preview?.name || "Ton profil";
+  return (
+    <div className={"onb-sim-card" + (variant === "after" ? " onb-sim-after" : "")}>
+      <div className="onb-sim-caption">{caption}</div>
+      <div className="onb-sim-banner" />
+      {preview?.avatar_url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img className="onb-sim-avatar onb-sim-avatar-img" src={preview.avatar_url} alt="" />
+      ) : (
+        <div className="onb-sim-avatar" aria-hidden>{initials(name, preview?.handle || "")}</div>
+      )}
+      <div className="onb-sim-name">{name}</div>
+      <div className="onb-sim-followers">{fmtInt(followers)} abonnés</div>
+      <div className="onb-sim-rows">
+        <SimRow icon={<Users size={14} />} label="Invitations reçues" value={invites} />
+        <SimRow icon={<MessageSquare size={14} />} label="Messages non lus" value={messages} />
+        <SimRow icon={<Briefcase size={14} />} label="Propositions" value={offers} />
+      </div>
+    </div>
+  );
+}
+
+function SimRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: number }) {
+  return (
+    <div className="onb-sim-row">
+      <span className="onb-sim-row-icon">{icon}</span>
+      <span className="onb-sim-row-label">{label}</span>
+      <span className={"onb-sim-badge" + (value > 0 ? " active" : "")}>{value > 0 ? value : "—"}</span>
     </div>
   );
 }
