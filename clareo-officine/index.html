@@ -1,318 +1,1225 @@
 <!DOCTYPE html>
 <html lang="fr">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Clareo Officine — L'IA au service du titulaire</title>
-    <meta
-      name="description"
-      content="Clareo Officine aide les pharmacies d'officine à activer ce que leur LGO laisse dormir, piloter la charge et gagner du temps sur les tâches à faible valeur — by Clareo Solutions."
-    />
-    <meta property="og:title" content="Clareo Officine — L'IA au service du titulaire" />
-    <meta
-      property="og:description"
-      content="Activer le LGO, exploiter vos exports, gagner du temps au comptoir et en back-office. Sans remplacer votre logiciel métier."
-    />
-    <meta property="og:type" content="website" />
-    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650;9..144,700&family=Sora:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
-    <link rel="stylesheet" href="css/styles.css" />
-  </head>
-  <body>
-    <a class="skip-link" href="#contenu">Aller au contenu</a>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clareo Officine — Audit IA Pharmacies</title>
+  <meta
+    name="description"
+    content="Audit IA pour pharmacies d'officine — questionnaire de cadrage terrain by Clareo Solutions."
+  />
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650;9..144,700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #0f2a32;
+      --ink-soft: #3a5660;
+      --muted: #6a838c;
+      --line: #d2e0e4;
+      --paper: #f3f8fa;
+      --paper-2: #e6f0f3;
+      --card: #ffffff;
+      --forest: #0f766e;
+      --forest-deep: #115e59;
+      --sage: #5eead4;
+      --accent: #0ea5a4;
+      --accent-soft: #ccfbf1;
+      --ok: #0f766e;
+      --shadow: 0 18px 50px rgba(15, 42, 50, 0.08);
+      --radius: 18px;
+    }
 
-    <header class="site-header" data-animate>
-      <a class="brand" href="#top" aria-label="Clareo Officine — accueil">
-        <span class="brand-mark" aria-hidden="true"></span>
-        <span class="brand-text">
-          <strong>Clareo Officine</strong>
-          <small>by Clareo Solutions</small>
-        </span>
-      </a>
-      <nav class="nav" aria-label="Navigation principale">
-        <a href="#cas">Cas d'usage</a>
-        <a href="#methode">Méthode</a>
-        <a href="#confiance">Confiance</a>
-        <a class="nav-cta" href="#contact">Demander un audit</a>
-      </nav>
-      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="mobile-nav">
-        Menu
-      </button>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Source Sans 3", system-ui, sans-serif;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(45, 212, 191, 0.18), transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, rgba(14, 165, 164, 0.12), transparent 45%),
+        linear-gradient(180deg, #e8f4f7 0%, #ffffff 32%, #f3fafb 100%);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.035;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      z-index: 0;
+    }
+
+    .page {
+      position: relative;
+      z-index: 1;
+      width: min(920px, calc(100% - 2rem));
+      margin: 2.5rem auto 4rem;
+    }
+
+    /* —— Hero —— */
+    .hero {
+      position: relative;
+      overflow: hidden;
+      border-radius: 28px;
+      padding: clamp(2rem, 5vw, 3.4rem);
+      color: #f7f4ee;
+      background-color: #0f766e;
+      background-image:
+        radial-gradient(ellipse 70% 80% at 100% 0%, rgba(56, 189, 248, 0.28), transparent 55%),
+        radial-gradient(ellipse 60% 70% at 0% 100%, rgba(45, 212, 191, 0.22), transparent 50%),
+        linear-gradient(145deg, #115e59 0%, #0f766e 55%, #0d9488 100%);
+      box-shadow: var(--shadow);
+      animation: rise 0.7s ease both;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.14;
+      background:
+        radial-gradient(circle at 18% 28%, transparent 0 22px, rgba(247,244,238,0.35) 23px 24px, transparent 25px),
+        radial-gradient(circle at 42% 18%, transparent 0 14px, rgba(247,244,238,0.28) 15px 16px, transparent 17px),
+        radial-gradient(circle at 68% 30%, transparent 0 18px, rgba(247,244,238,0.22) 19px 20px, transparent 21px);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -80px;
+      bottom: -90px;
+      width: 280px;
+      height: 280px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(56, 189, 248, 0.35), transparent 65%);
+      pointer-events: none;
+    }
+
+    .hero > * { position: relative; z-index: 1; }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #d7e5dc;
+      margin-bottom: 1rem;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 1.6rem;
+      height: 2px;
+      background: var(--accent);
+      border-radius: 2px;
+    }
+
+    .hero h1 {
+      font-family: Fraunces, Georgia, serif;
+      font-weight: 700;
+      font-size: clamp(2.2rem, 5vw, 3.5rem);
+      line-height: 1.05;
+      letter-spacing: -0.02em;
+      margin: 0 0 0.85rem;
+      max-width: 12ch;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 38rem;
+      color: #e5eee8;
+      font-size: 1.05rem;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin-top: 1.6rem;
+    }
+
+    .chip {
+      border: 1px solid rgba(247, 244, 238, 0.22);
+      background: rgba(247, 244, 238, 0.08);
+      backdrop-filter: blur(6px);
+      border-radius: 999px;
+      padding: 0.4rem 0.85rem;
+      font-size: 0.85rem;
+      color: #f3f7f4;
+    }
+
+    /* —— Identity strip —— */
+    .identity {
+      margin-top: 1.25rem;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.85rem;
+      animation: rise 0.8s 0.08s ease both;
+    }
+
+    .field {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 0.85rem 1rem 0.7rem;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.7) inset;
+    }
+
+    .field label {
+      display: block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+
+    .field input,
+    .answer-line input,
+    .metric input,
+    .hours-grid input,
+    .text-answer,
+    .stack-lines input {
+      width: 100%;
+      border: none;
+      border-bottom: 1.5px solid #c9d2cb;
+      background: transparent;
+      font: inherit;
+      color: var(--ink);
+      padding: 0.25rem 0;
+      outline: none;
+      transition: border-color 0.2s ease;
+    }
+
+    .field input:focus,
+    .answer-line input:focus,
+    .metric input:focus,
+    .hours-grid input:focus,
+    .text-answer:focus,
+    .stack-lines input:focus {
+      border-color: var(--forest);
+    }
+
+    .text-answer {
+      min-height: 5.5rem;
+      resize: vertical;
+      border: 1.5px solid #c9d2cb;
+      border-radius: 12px;
+      padding: 0.75rem 0.9rem;
+      background: #fff;
+    }
+
+    /* —— TOC —— */
+    .toc {
+      margin: 1.5rem 0 0.5rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.65rem;
+      animation: rise 0.85s 0.12s ease both;
+    }
+
+    .toc a {
+      text-decoration: none;
+      color: var(--ink);
+      background: rgba(255, 253, 248, 0.72);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 0.85rem 0.95rem;
+      transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+    }
+
+    .toc a:hover {
+      transform: translateY(-2px);
+      border-color: #b7c7bb;
+      background: #fff;
+    }
+
+    .toc strong {
+      display: block;
+      font-family: Fraunces, Georgia, serif;
+      font-size: 1.02rem;
+      font-weight: 650;
+      margin-bottom: 0.15rem;
+    }
+
+    .toc span {
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+
+    /* —— Sections —— */
+    .section {
+      margin-top: 1.6rem;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: clamp(1.3rem, 3vw, 2rem);
+      box-shadow: var(--shadow);
+      animation: rise 0.7s ease both;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+      margin-bottom: 1.35rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--paper-2);
+    }
+
+    .section-num {
+      flex: 0 0 auto;
+      width: 3rem;
+      height: 3rem;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-family: Fraunces, Georgia, serif;
+      font-weight: 700;
+      font-size: 1.15rem;
+      color: var(--forest-deep);
+      background: linear-gradient(160deg, #ecfeff, #ccfbf1);
+      border: 1px solid #99f6e4;
+    }
+
+    .section-head h2 {
+      margin: 0 0 0.2rem;
+      font-family: Fraunces, Georgia, serif;
+      font-size: clamp(1.45rem, 3vw, 1.85rem);
+      font-weight: 650;
+      letter-spacing: -0.015em;
+    }
+
+    .section-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .q {
+      padding: 1rem 0;
+      border-top: 1px dashed #e2e8e3;
+    }
+
+    .q:first-of-type { border-top: none; padding-top: 0.2rem; }
+
+    .q-label {
+      display: flex;
+      gap: 0.75rem;
+      align-items: baseline;
+      margin-bottom: 0.7rem;
+    }
+
+    .q-n {
+      flex: 0 0 auto;
+      font-weight: 700;
+      color: var(--forest);
+      font-variant-numeric: tabular-nums;
+      min-width: 1.6rem;
+    }
+
+    .q-label h3 {
+      margin: 0;
+      font-size: 1.02rem;
+      font-weight: 600;
+      line-height: 1.35;
+    }
+
+    .answer-line { margin-top: 0.15rem; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .metric {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 0.8rem 0.9rem;
+    }
+
+    .metric label {
+      display: block;
+      font-size: 0.9rem;
+      color: var(--ink-soft);
+      margin-bottom: 0.35rem;
+    }
+
+    .metric .suffix {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .metric .suffix span {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+
+    .pct-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem;
+    }
+
+    .hours-grid {
+      display: grid;
+      gap: 0.55rem;
+    }
+
+    .hours-row {
+      display: grid;
+      grid-template-columns: 1fr 110px;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.55rem 0.75rem;
+      border-radius: 12px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+    }
+
+    .hours-row span { color: var(--ink-soft); font-size: 0.95rem; }
+    .hours-row .unit {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .hours-row .unit em {
+      font-style: normal;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.88rem;
+    }
+
+    .stack-lines {
+      display: grid;
+      gap: 0.55rem;
+    }
+
+    .stack-lines label {
+      display: grid;
+      grid-template-columns: 1.4rem 1fr;
+      gap: 0.55rem;
+      align-items: center;
+      color: var(--ink-soft);
+      font-weight: 600;
+    }
+
+    /* choices */
+    .choices {
+      display: grid;
+      gap: 0.45rem;
+    }
+
+    .choices.cols-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .choice {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      padding: 0.7rem 0.85rem;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #fff;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+    }
+
+    .choice:hover {
+      border-color: #b8c9bd;
+      transform: translateY(-1px);
+    }
+
+    .choice input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .box {
+      width: 1.1rem;
+      height: 1.1rem;
+      border-radius: 5px;
+      border: 1.7px solid #9aada1;
+      background: #fff;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      transition: all 0.15s ease;
+    }
+
+    .choice input[type="radio"] + .box { border-radius: 999px; }
+
+    .choice input:checked + .box {
+      background: var(--forest);
+      border-color: var(--forest);
+      box-shadow: inset 0 0 0 2px #fff;
+    }
+
+    .choice:has(input:checked) {
+      border-color: #9fbfad;
+      background: #f1f7f3;
+    }
+
+    .choice .other-input {
+      flex: 1;
+      border: none;
+      border-bottom: 1.5px solid #c9d2cb;
+      background: transparent;
+      font: inherit;
+      min-width: 0;
+      outline: none;
+    }
+
+    .freq-table {
+      display: grid;
+      gap: 0.75rem;
+    }
+
+    .freq-row {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 0.85rem;
+      background: var(--paper);
+    }
+
+    .freq-row > span {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 0.55rem;
+      color: var(--ink-soft);
+    }
+
+    .freq-opts {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.4rem;
+    }
+
+    .freq-opts .choice {
+      justify-content: center;
+      text-align: center;
+      padding: 0.55rem 0.35rem;
+      font-size: 0.88rem;
+    }
+
+    .freq-opts .box { display: none; }
+
+    .note {
+      margin-top: 1.1rem;
+      padding: 0.9rem 1rem;
+      border-radius: 14px;
+      background: var(--accent-soft);
+      color: #115e59;
+      font-size: 0.92rem;
+      border: 1px solid #99f6e4;
+    }
+
+    .closing {
+      margin-top: 1.6rem;
+      border-radius: 24px;
+      padding: clamp(1.4rem, 3vw, 2.1rem);
+      background:
+        linear-gradient(145deg, rgba(15, 118, 110, 0.97), rgba(17, 94, 89, 0.96));
+      color: #f4f7f5;
+      box-shadow: var(--shadow);
+    }
+
+    .closing h2 {
+      margin: 0 0 0.4rem;
+      font-family: Fraunces, Georgia, serif;
+      font-size: clamp(1.5rem, 3vw, 1.9rem);
+    }
+
+    .closing p {
+      margin: 0 0 1rem;
+      color: #d7e4dc;
+    }
+
+    .closing textarea {
+      width: 100%;
+      min-height: 8rem;
+      border: 1px solid rgba(247, 244, 238, 0.25);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+      padding: 0.9rem 1rem;
+      font: inherit;
+      resize: vertical;
+      outline: none;
+    }
+
+    .closing textarea::placeholder { color: rgba(247, 244, 238, 0.55); }
+
+    .footer {
+      margin-top: 1.4rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+      padding-bottom: 1rem;
+    }
+
+    .actions {
+      position: sticky;
+      bottom: 1rem;
+      z-index: 5;
+      display: flex;
+      justify-content: center;
+      gap: 0.6rem;
+      margin-top: 1.5rem;
+      animation: rise 0.9s 0.2s ease both;
+    }
+
+    .actions button {
+      appearance: none;
+      border: none;
+      border-radius: 999px;
+      padding: 0.85rem 1.25rem;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 10px 30px rgba(20, 35, 28, 0.16);
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+
+    .actions button:hover { transform: translateY(-1px); }
+    .actions .primary {
+      background: var(--forest);
+      color: #fff;
+    }
+    .actions .ghost {
+      background: #fff;
+      color: var(--forest-deep);
+      border: 1px solid var(--line);
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(14px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @media (max-width: 720px) {
+      .identity { grid-template-columns: 1fr; }
+      .pct-grid { grid-template-columns: 1fr; }
+      .choices.cols-2 { grid-template-columns: 1fr; }
+      .freq-opts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .hours-row { grid-template-columns: 1fr 90px; }
+      .hero h1 { max-width: none; }
+    }
+
+    @media print {
+      body {
+        background: #fff;
+      }
+      body::before, .actions, .toc { display: none !important; }
+      .page {
+        width: 100%;
+        margin: 0;
+      }
+      .hero, .section, .closing, .identity .field {
+        box-shadow: none !important;
+        break-inside: avoid;
+      }
+      .section, .closing { margin-top: 0.9rem; }
+      .choice { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+<form id="audit-form">
+    <header class="hero">
+      <div class="eyebrow">Clareo Officine · by Clareo Solutions</div>
+      <h1>Audit IA Pharmacies d’Officine</h1>
+      <p>
+        Questionnaire de cadrage pour comprendre le quotidien de l’officine,
+        repérer les frictions à fort levier, et prioriser les cas d’usage IA / automatisation.
+      </p>
+      <div class="hero-meta">
+        <span class="chip">28 questions</span>
+        <span class="chip">≈ 20–30 min</span>
+        <span class="chip">7 thèmes</span>
+        <span class="chip">Diagnostic terrain</span>
+      </div>
     </header>
 
-    <div id="mobile-nav" class="mobile-nav" aria-hidden="true">
-      <a href="#cas">Cas d'usage</a>
-      <a href="#methode">Méthode</a>
-      <a href="#confiance">Confiance</a>
-      <a href="#contact">Demander un audit</a>
-    </div>
-
-    <main id="top">
-      <section class="hero" aria-labelledby="hero-title">
-        <div class="hero-media" aria-hidden="true">
-          <img
-            src="assets/hero.jpg"
-            alt=""
-            width="1600"
-            height="900"
-            fetchpriority="high"
-          />
-          <div class="hero-scrim"></div>
-        </div>
-        <div class="hero-content" data-animate>
-          <p class="brand-hero">Clareo Officine</p>
-          <h1 id="hero-title">Votre LGO en sait plus que vous n'en utilisez.</h1>
-          <p class="hero-lead">
-            On active ce qui dort déjà, on lit vos exports avec l'IA, et on vous
-            indique quoi ne pas automatiser.
-          </p>
-          <div class="hero-actions">
-            <a class="btn btn-primary" href="#contact">Demander un audit officine</a>
-            <a class="btn btn-ghost" href="#cas">Voir les cas d'usage</a>
-          </div>
-        </div>
-      </section>
-
-      <section class="section problem" id="contenu" aria-labelledby="problem-title">
-        <div class="section-inner" data-animate>
-          <p class="eyebrow">Le constat</p>
-          <h2 id="problem-title">Le titulaire perd du temps là où le logiciel est déjà payé.</h2>
-          <p class="section-lead">
-            Plannings au feeling, rejets qui s'accumulent, remises labos non
-            contrôlées, courriers réécrits à la main — alors que le LGO et les
-            exports contiennent déjà l'essentiel.
-          </p>
-          <ul class="pain-list">
-            <li>
-              <span>01</span>
-              <div>
-                <strong>Fonctions LGO dormantes</strong>
-                <p>Modules payés, jamais paramétrés. L'équipe ne sait pas ce qui existe.</p>
-              </div>
-            </li>
-            <li>
-              <span>02</span>
-              <div>
-                <strong>Charge & staffing approximatifs</strong>
-                <p>Les pics horaires sont dans les ventes. Le planning, lui, reste artisanal.</p>
-              </div>
-            </li>
-            <li>
-              <span>03</span>
-              <div>
-                <strong>Back-office chronophage</strong>
-                <p>Rejets, factures, courriers, procédures — du temps titulaire à faible marge.</p>
-              </div>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <section class="section cases" id="cas" aria-labelledby="cases-title">
-        <div class="section-inner">
-          <header class="section-head" data-animate>
-            <p class="eyebrow">Ce qu'on traite</p>
-            <h2 id="cases-title">Des chantiers concrets, issus du terrain officinal.</h2>
-            <p class="section-lead">
-              Priorité aux gains rapides : ce que le LGO peut déjà faire, puis
-              l'IA sur vos exports, puis un outil marché seulement si besoin.
-            </p>
-          </header>
-
-          <div class="case-grid">
-            <article class="case" data-animate>
-              <p class="case-tag">Priorité 0</p>
-              <h3>Audit des fonctions LGO dormantes</h3>
-              <p>
-                Checklist par éditeur (LEO, LGPI, Winpharma, Smart Rx…) et
-                plan d'activation pour l'équipe — livrable dès le premier jour.
-              </p>
-            </article>
-            <article class="case" data-animate>
-              <p class="case-tag">Priorité 0</p>
-              <h3>Plannings & courbe de charge</h3>
-              <p>
-                Export des ventes horodatées → diagnostic sous/sur-staffing
-                chiffré, puis trames de planning sous contraintes pharmaceutiques.
-              </p>
-            </article>
-            <article class="case" data-animate>
-              <p class="case-tag">Priorité 0</p>
-              <h3>Rejets, tiers payant & mutuelles</h3>
-              <p>
-                Paramétrage LGO d'abord, puis tri et relances assistés depuis
-                l'export — avant d'externaliser si le volume déborde.
-              </p>
-            </article>
-            <article class="case" data-animate>
-              <p class="case-tag">Priorité 0</p>
-              <h3>Rédaction, procédures & courriers</h3>
-              <p>
-                Trames validées par le titulaire : courriers, procédures internes,
-                notes d'équipe. Gain immédiat, zéro nouvel outil à installer.
-              </p>
-            </article>
-            <article class="case" data-animate>
-              <p class="case-tag">Priorité 1</p>
-              <h3>Remises labos & écarts grossistes</h3>
-              <p>
-                Contrôle des conditions d'achat et détection des écarts que le
-                LGO laisse passer — avant la réclamation.
-              </p>
-            </article>
-            <article class="case" data-animate>
-              <p class="case-tag">Priorité 1</p>
-              <h3>Factures & facture électronique</h3>
-              <p>
-                Rapprochement commande / BL / facture par l'IA, et mise à niveau
-                pour la réception électronique obligatoire.
-              </p>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <section class="section method" id="methode" aria-labelledby="method-title">
-        <div class="section-inner" data-animate>
-          <p class="eyebrow">La méthode Clareo Officine</p>
-          <h2 id="method-title">On n'empile pas un énième logiciel.</h2>
-          <p class="section-lead">
-            Ordre de triage fixe — pour éviter les achats inutiles et les
-            automatisations dangereuses.
-          </p>
-
-          <ol class="method-steps">
-            <li>
-              <strong>LGO dormant</strong>
-              <p>Activer et paramétrer ce qui est déjà payé.</p>
-            </li>
-            <li>
-              <strong>IA sur exports</strong>
-              <p>Claude lit vos fichiers métier — charge, rejets, factures, remises.</p>
-            </li>
-            <li>
-              <strong>Outil marché</strong>
-              <p>Un logiciel spécialisé seulement quand le vide est réel.</p>
-            </li>
-            <li>
-              <strong>Custom</strong>
-              <p>Dernier recours, pour les structures multi-sites ou très spécifiques.</p>
-            </li>
-          </ol>
-        </div>
-      </section>
-
-      <section class="section trust" id="confiance" aria-labelledby="trust-title">
-        <div class="section-inner trust-grid" data-animate>
-          <div>
-            <p class="eyebrow">Confiance</p>
-            <h2 id="trust-title">Savoir dire non fait partie du métier.</h2>
-            <p class="section-lead">
-              Certaines zones restent hors IA. Les dire clairement, c'est ce qui
-              rend un audit crédible auprès d'un titulaire.
-            </p>
-          </div>
-          <ul class="trust-list">
-            <li>
-              <strong>Interactions médicamenteuses</strong>
-              <span>Bases officielles et LGO uniquement (Vidal, Thériaque, BCB).</span>
-            </li>
-            <li>
-              <strong>Fausses ordonnances</strong>
-              <span>Téléservices officiels et outils métier — pas de détection IA en v1.</span>
-            </li>
-            <li>
-              <strong>Validation humaine</strong>
-              <span>Toute suggestion sur données sensibles passe sous le regard du titulaire.</span>
-            </li>
-            <li>
-              <strong>Données d'officine</strong>
-              <span>Exports contrôlés, pas de remplacement de votre LGO, pas de boîte noire.</span>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <section class="section contact" id="contact" aria-labelledby="contact-title">
-        <div class="section-inner contact-layout" data-animate>
-          <div class="contact-copy">
-            <p class="eyebrow">Démarrer</p>
-            <h2 id="contact-title">Un audit officine, pas une démo générique.</h2>
-            <p class="section-lead">
-              Décrivez votre LGO, vos douleurs du moment et le volume de votre
-              officine. On vous répond avec un plan de triage — pas un catalogue.
-            </p>
-            <ul class="contact-points">
-              <li>Réponse sous 48 h ouvrées</li>
-              <li>Adapté LEO, LGPI, Winpharma, Smart Rx…</li>
-              <li>By Clareo Solutions — IA pour PME françaises</li>
-            </ul>
-          </div>
-
-          <form class="contact-form" id="audit-form" novalidate>
-            <div class="field">
-              <label for="name">Nom</label>
-              <input id="name" name="name" type="text" autocomplete="name" required />
-            </div>
-            <div class="field">
-              <label for="email">E-mail professionnel</label>
-              <input id="email" name="email" type="email" autocomplete="email" required />
-            </div>
-            <div class="field">
-              <label for="pharmacy">Nom de l'officine</label>
-              <input id="pharmacy" name="pharmacy" type="text" autocomplete="organization" required />
-            </div>
-            <div class="field">
-              <label for="lgo">Votre LGO</label>
-              <select id="lgo" name="lgo" required>
-                <option value="">Choisir…</option>
-                <option>LEO</option>
-                <option>LGPI</option>
-                <option>Winpharma</option>
-                <option>Smart Rx</option>
-                <option>Autre / plusieurs</option>
-              </select>
-            </div>
-            <div class="field field-full">
-              <label for="message">Votre priorité du moment</label>
-              <textarea
-                id="message"
-                name="message"
-                rows="4"
-                placeholder="Ex. rejets TP, planning du samedi, contrôle des remises labos…"
-                required
-              ></textarea>
-            </div>
-            <button class="btn btn-primary field-full" type="submit">
-              Envoyer la demande d'audit
-            </button>
-            <p class="form-note field-full" id="form-status" role="status" aria-live="polite"></p>
-          </form>
-        </div>
-      </section>
-    </main>
-
-    <footer class="site-footer">
-      <div class="footer-inner">
-        <div class="footer-brand">
-          <span class="brand-mark" aria-hidden="true"></span>
-          <div>
-            <strong>Clareo Officine</strong>
-            <p>by Clareo Solutions</p>
-          </div>
-        </div>
-        <p class="footer-tag">
-          L'IA au service des pharmacies d'officine — activer, trier, accélérer.
-        </p>
-        <p class="footer-copy">© <span id="year"></span> Clareo Solutions</p>
+    <section class="identity" aria-label="Identité de l'officine">
+      <div class="field">
+        <label for="officine">Nom de l’officine</label>
+        <input id="officine" name="officine" autocomplete="organization" />
       </div>
-    </footer>
+      <div class="field">
+        <label for="titulaire">Pharmacien(ne) titulaire</label>
+        <input id="titulaire" name="titulaire" autocomplete="name" />
+      </div>
+      <div class="field">
+        <label for="ville">Ville</label>
+        <input id="ville" name="ville" />
+      </div>
+      <div class="field">
+        <label for="date">Date de l’audit</label>
+        <input id="date" name="date_audit" type="date" />
+      </div>
+    </section>
 
-    <script src="js/main.js"></script>
-  </body>
+    <nav class="toc" aria-label="Sommaire">
+      <a href="#s1"><strong>01 · Officine</strong><span>Taille, volume, CA</span></a>
+      <a href="#s2"><strong>02 · Quotidien</strong><span>Douleurs & priorités</span></a>
+      <a href="#s3"><strong>03 · Dispensation</strong><span>Ordonnances & conseil</span></a>
+      <a href="#s4"><strong>04 · Stocks</strong><span>Commandes & LGO</span></a>
+      <a href="#s5"><strong>05 · Patients</strong><span>Services & appels</span></a>
+      <a href="#s6"><strong>06 · Admin</strong><span>Tiers-payant & mutuelles</span></a>
+      <a href="#s7"><strong>07 · Numérique</strong><span>Outils, budget & IA</span></a>
+    </nav>
+
+    <!-- 1 -->
+    <section class="section" id="s1">
+      <div class="section-head">
+        <div class="section-num">01</div>
+        <div>
+          <h2>Portrait de l’officine</h2>
+          <p>Comprendre la taille, le rythme et la structure du chiffre d’affaires.</p>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">1</span><h3>Combien d’employés travaillent dans votre officine&nbsp;?</h3></div>
+        <div class="answer-line"><input name="employes" inputmode="numeric" aria-label="Nombre d'employés" /></div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">2</span><h3>Quel est votre volume d’activité quotidien / chiffre d’affaires&nbsp;?</h3></div>
+        <div class="metrics">
+          <div class="metric">
+            <label>Ordonnances traitées / jour</label>
+            <div class="suffix"><input name="ordonnances_jour" inputmode="numeric" /><span>/ j</span></div>
+          </div>
+          <div class="metric">
+            <label>Clients servis / jour</label>
+            <div class="suffix"><input name="clients_jour" inputmode="numeric" /><span>/ j</span></div>
+          </div>
+          <div class="metric">
+            <label>CA (indicatif)</label>
+            <div class="suffix"><input name="ca" placeholder="ex. annuel ou mensuel" /><span>€</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">3</span><h3>Quelle est la répartition de votre chiffre d’affaires&nbsp;?</h3></div>
+        <div class="pct-grid">
+          <div class="metric">
+            <label>Ordonnances</label>
+            <div class="suffix"><input name="pct_ordonnances" inputmode="numeric" /><span>%</span></div>
+          </div>
+          <div class="metric">
+            <label>Parapharmacie / OTC</label>
+            <div class="suffix"><input name="pct_para" inputmode="numeric" /><span>%</span></div>
+          </div>
+          <div class="metric">
+            <label>Autres services</label>
+            <div class="suffix"><input name="pct_autres" inputmode="numeric" /><span>%</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2 -->
+    <section class="section" id="s2">
+      <div class="section-head">
+        <div class="section-num">02</div>
+        <div>
+          <h2>Quotidien & priorités</h2>
+          <p>Identifier ce qui consomme le temps et ce qui pèse vraiment.</p>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">4</span><h3>Quelle est votre plus grande difficulté dans votre quotidien&nbsp;?</h3></div>
+        <textarea name="difficulte" class="text-answer" placeholder="Décrivez la friction principale…"></textarea>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">5</span><h3>Quelles sont les 3 tâches qui vous prennent le plus de temps au quotidien&nbsp;?</h3></div>
+        <div class="stack-lines">
+          <label><span>1.</span><input name="top1" /></label>
+          <label><span>2.</span><input name="top2" /></label>
+          <label><span>3.</span><input name="top3" /></label>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">6</span><h3>Combien d’heures par semaine consacrez-vous à…</h3></div>
+        <div class="hours-grid">
+          <div class="hours-row"><span>Gestion des stocks et commandes</span><div class="unit"><input name="h_stocks" inputmode="numeric" /><em>h</em></div></div>
+          <div class="hours-row"><span>Tâches administratives / comptabilité</span><div class="unit"><input name="h_admin" inputmode="numeric" /><em>h</em></div></div>
+          <div class="hours-row"><span>Gestion des périmés / inventaires</span><div class="unit"><input name="h_perimes_inv" inputmode="numeric" /><em>h</em></div></div>
+          <div class="hours-row"><span>Formation de l’équipe</span><div class="unit"><input name="h_formation" inputmode="numeric" /><em>h</em></div></div>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">7</span><h3>Si vous pouviez éliminer <em>une seule</em> tâche de votre quotidien, laquelle serait-ce&nbsp;?</h3></div>
+        <div class="answer-line"><input name="tache_eliminer" /></div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">8</span><h3>Quel est le temps d’attente moyen de vos clients aux heures de pointe&nbsp;?</h3></div>
+        <div class="metrics" style="max-width:280px">
+          <div class="metric">
+            <label>Attente moyenne</label>
+            <div class="suffix"><input name="attente" inputmode="numeric" /><span>min</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">9</span><h3>Y a-t-il des services que vous aimeriez développer dans les prochaines années&nbsp;?</h3></div>
+        <textarea name="services_developper" class="text-answer" placeholder="Services envisagés, freins éventuels…"></textarea>
+      </div>
+    </section>
+
+    <!-- 3 -->
+    <section class="section" id="s3">
+      <div class="section-head">
+        <div class="section-num">03</div>
+        <div>
+          <h2>Dispensation & conseil</h2>
+          <p>Mesurer la charge liée aux ordonnances et à la sécurité pharmaceutique.</p>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">10</span><h3>Rencontrez-vous des difficultés avec…</h3></div>
+        <div class="choices cols-2">
+          <label class="choice"><input type="checkbox" name="disp" value="Ordonnances manuscrites" /><span class="box"></span>Lecture des ordonnances manuscrites</label>
+          <label class="choice"><input type="checkbox" name="disp" value="Interactions" /><span class="box"></span>Vérification des interactions médicamenteuses</label>
+          <label class="choice"><input type="checkbox" name="disp" value="Ordonnances complexes" /><span class="box"></span>Ordonnances complexes (chimio, VIH…)</label>
+          <label class="choice"><input type="checkbox" name="disp" value="Renouvellements chroniques" /><span class="box"></span>Renouvellements d’ordonnances chroniques</label>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">11</span><h3>Combien de temps passez-vous en moyenne sur…</h3></div>
+        <div class="hours-grid">
+          <div class="hours-row"><span>Déchiffrage d’une ordonnance manuscrite</span><div class="unit"><input name="min_dechiffrage" inputmode="numeric" /><em>min</em></div></div>
+          <div class="hours-row"><span>Vérification des interactions</span><div class="unit"><input name="min_interactions" inputmode="numeric" /><em>min</em></div></div>
+          <div class="hours-row"><span>Conseil patient par ordonnance</span><div class="unit"><input name="min_conseil" inputmode="numeric" /><em>min</em></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4 -->
+    <section class="section" id="s4">
+      <div class="section-head">
+        <div class="section-num">04</div>
+        <div>
+          <h2>Stocks, commandes & LGO</h2>
+          <p>Cartographier les pertes, les ruptures et le niveau d’automatisation.</p>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">12</span><h3>Combien de temps passez-vous par semaine à…</h3></div>
+        <div class="hours-grid">
+          <div class="hours-row"><span>Passer des commandes</span><div class="unit"><input name="h_commandes" inputmode="numeric" /><em>h</em></div></div>
+          <div class="hours-row"><span>Gérer les périmés</span><div class="unit"><input name="h_perimes" inputmode="numeric" /><em>h</em></div></div>
+          <div class="hours-row"><span>Faire l’inventaire</span><div class="unit"><input name="h_inventaire" inputmode="numeric" /><em>h</em></div></div>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">13</span><h3>Quel est votre budget annuel de perte lié aux périmés&nbsp;?</h3></div>
+        <div class="choices cols-2">
+          <label class="choice"><input type="radio" name="perimes" value="Moins de 1000€" /><span class="box"></span>&lt; 1 000 €</label>
+          <label class="choice"><input type="radio" name="perimes" value="1000-5000€" /><span class="box"></span>1 000 – 5 000 €</label>
+          <label class="choice"><input type="radio" name="perimes" value="5000-10000€" /><span class="box"></span>5 000 – 10 000 €</label>
+          <label class="choice"><input type="radio" name="perimes" value="Plus de 10000€" /><span class="box"></span>&gt; 10 000 €</label>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">14</span><h3>Utilisez-vous un système de vérification automatique des interactions médicamenteuses&nbsp;?</h3></div>
+        <div class="choices cols-2">
+          <label class="choice"><input type="radio" name="interactions" value="Oui LGO" /><span class="box"></span>Oui, intégré au LGO</label>
+          <label class="choice"><input type="radio" name="interactions" value="Oui externe" /><span class="box"></span>Oui, outil externe</label>
+          <label class="choice"><input type="radio" name="interactions" value="Non manuelle" /><span class="box"></span>Non, vérification manuelle</label>
+          <label class="choice"><input type="radio" name="interactions" value="Parfois" /><span class="box"></span>Parfois seulement</label>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">15</span><h3>Quel logiciel de gestion utilisez-vous&nbsp;?</h3></div>
+        <div class="metrics">
+          <div class="metric" style="grid-column: 1 / -1">
+            <label>Nom du LGO</label>
+            <input name="lgo" />
+          </div>
+        </div>
+        <p style="margin:0.9rem 0 0.55rem;font-weight:600;color:var(--ink-soft)">Êtes-vous satisfait&nbsp;?</p>
+        <div class="choices cols-2" style="margin-bottom:0.8rem">
+          <label class="choice"><input type="radio" name="lgo_sat" value="Oui" /><span class="box"></span>Oui</label>
+          <label class="choice"><input type="radio" name="lgo_sat" value="Non" /><span class="box"></span>Non</label>
+          <label class="choice"><input type="radio" name="lgo_sat" value="Partiellement" /><span class="box"></span>Partiellement</label>
+        </div>
+        <textarea name="pourquoi_lgo" class="text-answer" placeholder="Pourquoi ?"></textarea>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">16</span><h3>Comment gérez-vous vos commandes&nbsp;?</h3></div>
+        <div class="choices cols-2">
+          <label class="choice"><input type="radio" name="commandes" value="Manuel LGO" /><span class="box"></span>Manuellement via le LGO</label>
+          <label class="choice"><input type="radio" name="commandes" value="Semi-auto" /><span class="box"></span>Système semi-automatique</label>
+          <label class="choice"><input type="radio" name="commandes" value="Auto" /><span class="box"></span>Réapprovisionnement automatique</label>
+          <label class="choice"><input type="radio" name="commandes" value="Autre" /><span class="box"></span>Autre <input class="other-input" name="commandes_autre" aria-label="Préciser autre mode de commande" /></label>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">17</span><h3>À quelle fréquence rencontrez-vous…</h3></div>
+        <div class="freq-table">
+          <div class="freq-row">
+            <span>Ruptures de stock</span>
+            <div class="freq-opts">
+              <label class="choice"><input type="radio" name="ruptures" value="Jamais" /><span class="box"></span>Jamais</label>
+              <label class="choice"><input type="radio" name="ruptures" value="Rarement" /><span class="box"></span>Rarement</label>
+              <label class="choice"><input type="radio" name="ruptures" value="Souvent" /><span class="box"></span>Souvent</label>
+              <label class="choice"><input type="radio" name="ruptures" value="Très souvent" /><span class="box"></span>Très souvent</label>
+            </div>
+          </div>
+          <div class="freq-row">
+            <span>Surstockage / périmés</span>
+            <div class="freq-opts">
+              <label class="choice"><input type="radio" name="surstock" value="Jamais" /><span class="box"></span>Jamais</label>
+              <label class="choice"><input type="radio" name="surstock" value="Rarement" /><span class="box"></span>Rarement</label>
+              <label class="choice"><input type="radio" name="surstock" value="Souvent" /><span class="box"></span>Souvent</label>
+              <label class="choice"><input type="radio" name="surstock" value="Très souvent" /><span class="box"></span>Très souvent</label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5 -->
+    <section class="section" id="s5">
+      <div class="section-head">
+        <div class="section-num">05</div>
+        <div>
+          <h2>Services & relation patient</h2>
+          <p>Ce que l’officine propose déjà, et ce qui sollicite le comptoir / le téléphone.</p>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">18</span><h3>Proposez-vous des services particuliers actuellement&nbsp;?</h3></div>
+        <div class="choices cols-2">
+          <label class="choice"><input type="checkbox" name="services" value="Entretiens" /><span class="box"></span>Entretiens pharmaceutiques</label>
+          <label class="choice"><input type="checkbox" name="services" value="Livraison" /><span class="box"></span>Livraison à domicile</label>
+          <label class="choice"><input type="checkbox" name="services" value="Click & collect" /><span class="box"></span>Click & collect</label>
+          <label class="choice"><input type="checkbox" name="services" value="Tests rapides" /><span class="box"></span>Tests rapides (COVID, grippe…)</label>
+          <label class="choice"><input type="checkbox" name="services" value="Vaccinations" /><span class="box"></span>Vaccinations</label>
+          <label class="choice"><input type="checkbox" name="services" value="Préparations" /><span class="box"></span>Préparations magistrales</label>
+          <label class="choice"><input type="checkbox" name="services" value="Fidélité" /><span class="box"></span>Programme de fidélité</label>
+          <label class="choice"><input type="checkbox" name="services" value="Autre" /><span class="box"></span>Autre <input class="other-input" name="services_autre" aria-label="Autre service" /></label>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">19</span><h3>Recevez-vous beaucoup d’appels pour…</h3></div>
+        <div class="choices cols-2">
+          <label class="choice"><input type="checkbox" name="appels_pour" value="Disponibilité" /><span class="box"></span>Vérifier la disponibilité de produits</label>
+          <label class="choice"><input type="checkbox" name="appels_pour" value="Conseils" /><span class="box"></span>Demander des conseils</label>
+          <label class="choice"><input type="checkbox" name="appels_pour" value="RDV" /><span class="box"></span>Prendre rendez-vous</label>
+          <label class="choice"><input type="checkbox" name="appels_pour" value="Renouvellements" /><span class="box"></span>Renouveler des ordonnances</label>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">20</span><h3>Combien d’appels téléphoniques recevez-vous par jour&nbsp;?</h3></div>
+        <div class="metrics" style="max-width:280px">
+          <div class="metric">
+            <label>Appels / jour</label>
+            <div class="suffix"><input name="appels_jour" inputmode="numeric" /><span>/ j</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">21</span><h3>Vos patients vous posent-ils souvent les mêmes questions&nbsp;?</h3></div>
+        <div class="choices">
+          <label class="choice"><input type="radio" name="faq" value="Très souvent" /><span class="box"></span>Oui, très souvent</label>
+          <label class="choice"><input type="radio" name="faq" value="Parfois" /><span class="box"></span>Oui, parfois</label>
+          <label class="choice"><input type="radio" name="faq" value="Rarement" /><span class="box"></span>Non, rarement</label>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6 -->
+    <section class="section" id="s6">
+      <div class="section-head">
+        <div class="section-num">06</div>
+        <div>
+          <h2>Administratif & tiers-payant</h2>
+          <p>Les frictions derrière le comptoir qui n’apparaissent pas au client.</p>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">22</span><h3>Combien de temps passez-vous par jour sur la facturation tiers-payant&nbsp;?</h3></div>
+        <div class="answer-line"><input name="temps_tiers" placeholder="ex. 45 min / jour" /></div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">23</span><h3>Rencontrez-vous des rejets de télétransmission&nbsp;?</h3></div>
+        <textarea name="rejets" class="text-answer" placeholder="Fréquence, causes fréquentes, impact…"></textarea>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">24</span><h3>Quelles sont vos principales difficultés administratives&nbsp;?</h3></div>
+        <div class="choices cols-2">
+          <label class="choice"><input type="checkbox" name="admin" value="Comptabilité" /><span class="box"></span>Comptabilité</label>
+          <label class="choice"><input type="checkbox" name="admin" value="Traçabilité" /><span class="box"></span>Traçabilité réglementaire</label>
+          <label class="choice"><input type="checkbox" name="admin" value="Mutuelles" /><span class="box"></span>Gestion des mutuelles</label>
+          <label class="choice"><input type="checkbox" name="admin" value="Déclarations" /><span class="box"></span>Déclarations fiscales / sociales</label>
+          <label class="choice"><input type="checkbox" name="admin" value="Autre" /><span class="box"></span>Autre <input class="other-input" name="admin_autre" aria-label="Autre difficulté admin" /></label>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7 -->
+    <section class="section" id="s7">
+      <div class="section-head">
+        <div class="section-num">07</div>
+        <div>
+          <h2>Maturité numérique & IA</h2>
+          <p>Ce qui existe déjà, ce qui manque, et ce qui mériterait d’être automatisé.</p>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">25</span><h3>Quels outils numériques utilisez-vous actuellement&nbsp;?</h3></div>
+        <div class="choices cols-2">
+          <label class="choice"><input type="checkbox" name="outils" value="LGO" /><span class="box"></span>LGO (logiciel de gestion d’officine)</label>
+          <label class="choice"><input type="checkbox" name="outils" value="Robot" /><span class="box"></span>Robot de dispensation</label>
+          <label class="choice"><input type="checkbox" name="outils" value="Caisse auto" /><span class="box"></span>Système de caisse automatisé</label>
+          <label class="choice"><input type="checkbox" name="outils" value="CRM" /><span class="box"></span>CRM (gestion relation client)</label>
+          <label class="choice"><input type="checkbox" name="outils" value="BI" /><span class="box"></span>Outils de business intelligence</label>
+          <label class="choice"><input type="checkbox" name="outils" value="App mobile" /><span class="box"></span>Application mobile</label>
+          <label class="choice"><input type="checkbox" name="outils" value="Site/e-commerce" /><span class="box"></span>Site web / e-commerce</label>
+          <label class="choice"><input type="checkbox" name="outils" value="Autre" /><span class="box"></span>Autre <input class="other-input" name="outils_autre" aria-label="Autre outil numérique" /></label>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">26</span><h3>Avez-vous déjà utilisé des solutions d’IA ou d’automatisation&nbsp;?</h3></div>
+        <div class="choices cols-2">
+          <label class="choice"><input type="radio" name="ia" value="Oui actuellement" /><span class="box"></span>Oui, actuellement</label>
+          <label class="choice"><input type="radio" name="ia" value="Oui passé" /><span class="box"></span>Oui, dans le passé</label>
+          <label class="choice"><input type="radio" name="ia" value="Non jamais" /><span class="box"></span>Non, jamais</label>
+          <label class="choice"><input type="radio" name="ia" value="Non mais intéressé" /><span class="box"></span>Non, mais intéressé(e)</label>
+        </div>
+      </div>
+
+      <div class="q">
+        <div class="q-label"><span class="q-n">27</span><h3>Quel est votre budget annuel pour les outils numériques / logiciels&nbsp;?</h3></div>
+        <div class="choices cols-2">
+          <label class="choice"><input type="radio" name="budget" value="Moins de 2000€" /><span class="box"></span>&lt; 2 000 €</label>
+          <label class="choice"><input type="radio" name="budget" value="2000-5000€" /><span class="box"></span>2 000 – 5 000 €</label>
+          <label class="choice"><input type="radio" name="budget" value="5000-10000€" /><span class="box"></span>5 000 – 10 000 €</label>
+          <label class="choice"><input type="radio" name="budget" value="Plus de 10000€" /><span class="box"></span>&gt; 10 000 €</label>
+        </div>
+      </div>
+
+      <div class="note">
+        Astuce terrain&nbsp;: laissez la question 28 ouverte — c’est souvent là que sort le vrai besoin, au-delà des cases cochées.
+      </div>
+    </section>
+
+    <section class="closing" id="s8">
+      <h2>28 · La solution idéale</h2>
+      <p>Quelle serait pour vous la solution qui transformerait vraiment votre quotidien&nbsp;?</p>
+      <textarea name="solution" placeholder="Imaginez que tout est possible… Que disparaît en premier ? Que gagnez-vous ?"></textarea>
+    </section>
+
+    <div class="actions no-print">
+      <button class="primary" type="submit">Envoyer vers Notion</button>
+      <button class="ghost" type="button" onclick="window.print()">Imprimer / PDF</button>
+      <button class="ghost" type="button" onclick="window.scrollTo({top:0, behavior:'smooth'})">Haut de page</button>
+    </div>
+</form>
+
+    <p class="footer">Clareo Officine · by Clareo Solutions · Audit IA — Pharmacies d’officine · Document de cadrage terrain</p>
+  </div>
+
+<script>
+(function () {
+  var DB_URL = "https://www.notion.so/77764f5454e64b11904effe2ad7b7f23";
+  var PAGE_URL = "https://www.notion.so/3b731487ede8817f9c63e942c257752f";
+
+  function apiUrl() {
+    return window.AUDIT_NOTION_API_URL || localStorage.getItem("AUDIT_NOTION_API_URL") || "";
+  }
+  function g(fd, n) { return (fd.get(n) || "").toString().trim(); }
+  function all(fd, n) { return fd.getAll(n).map(String); }
+  function num(v) {
+    if (v === "" || v == null) return null;
+    var n = Number(String(v).replace(",", ".").replace(/\s/g, ""));
+    return isNaN(n) ? null : n;
+  }
+
+  function collectNotionProps() {
+    var fd = new FormData(document.getElementById("audit-form"));
+    var officine = g(fd, "officine") || "Réponse audit (sans nom)";
+    var top = [g(fd, "top1"), g(fd, "top2"), g(fd, "top3")].filter(Boolean).join("\n");
+    var props = {
+      "Officine": officine,
+      "Titulaire": g(fd, "titulaire") || null,
+      "Ville": g(fd, "ville") || null,
+      "Source": "HTML",
+      "Statut": "Nouveau"
+    };
+    var d = g(fd, "date_audit");
+    if (d) {
+      props["date:Date audit:start"] = d;
+      props["date:Date audit:is_datetime"] = 0;
+    }
+    var mapNum = {
+      "Employés": "employes",
+      "Ordonnances / jour": "ordonnances_jour",
+      "Clients / jour": "clients_jour",
+      "% Ordonnances": "pct_ordonnances",
+      "% Parapharmacie": "pct_para",
+      "% Autres services": "pct_autres",
+      "Heures stocks/commandes": "h_stocks",
+      "Heures admin": "h_admin",
+      "Heures périmés/inventaires": "h_perimes_inv",
+      "Heures formation": "h_formation",
+      "Attente pointe (min)": "attente",
+      "Min déchiffrage": "min_dechiffrage",
+      "Min interactions": "min_interactions",
+      "Min conseil": "min_conseil",
+      "Heures commandes": "h_commandes",
+      "Heures périmés": "h_perimes",
+      "Heures inventaire": "h_inventaire",
+      "Appels / jour": "appels_jour"
+    };
+    Object.keys(mapNum).forEach(function (k) {
+      var n = num(g(fd, mapNum[k]));
+      if (n != null) props[k] = n;
+    });
+    var mapText = {
+      "CA indicatif": "ca",
+      "Plus grande difficulté": "difficulte",
+      "Tâche à éliminer": "tache_eliminer",
+      "Services à développer": "services_developper",
+      "LGO": "lgo",
+      "Pourquoi LGO": "pourquoi_lgo",
+      "Temps tiers-payant": "temps_tiers",
+      "Rejets télétransmission": "rejets",
+      "Solution idéale": "solution"
+    };
+    Object.keys(mapText).forEach(function (k) {
+      var v = g(fd, mapText[k]);
+      if (v) props[k] = v;
+    });
+    if (top) props["Top 3 tâches chronophages"] = top;
+
+    var mapSel = {
+      "Perte périmés": "perimes",
+      "Vérif. interactions": "interactions",
+      "Satisfaction LGO": "lgo_sat",
+      "Gestion commandes": "commandes",
+      "Fréquence ruptures": "ruptures",
+      "Fréquence surstock": "surstock",
+      "Mêmes questions": "faq",
+      "Expérience IA": "ia",
+      "Budget outils": "budget"
+    };
+    Object.keys(mapSel).forEach(function (k) {
+      var v = g(fd, mapSel[k]);
+      if (v) props[k] = v;
+    });
+
+    var disp = all(fd, "disp"); if (disp.length) props["Difficultés dispensation"] = disp;
+    var serv = all(fd, "services"); if (serv.length) props["Services proposés"] = serv;
+    var app = all(fd, "appels_pour"); if (app.length) props["Appels pour"] = app;
+    var adm = all(fd, "admin"); if (adm.length) props["Difficultés admin"] = adm;
+    var out = all(fd, "outils"); if (out.length) props["Outils numériques"] = out;
+
+    // Also keep a raw snapshot for safety
+    var raw = {};
+    fd.forEach(function (v, k) {
+      if (raw[k] === undefined) raw[k] = v;
+      else if (Array.isArray(raw[k])) raw[k].push(v);
+      else raw[k] = [raw[k], v];
+    });
+    props["Réponses brutes (JSON)"] = JSON.stringify(raw).slice(0, 1900);
+    return props;
+  }
+
+  function download(obj) {
+    var blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "reponse-audit-ia-officine.json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  document.getElementById("audit-form").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var btn = e.submitter || document.querySelector('button[type="submit"]');
+    var props = collectNotionProps();
+    var url = apiUrl();
+    var payload = { parent: { data_source_id: "256bd752-d25e-4b3c-ac84-e88b1d0d6722" }, properties: props };
+    if (btn) { btn.disabled = true; btn.textContent = "Envoi…"; }
+    try {
+      if (url) {
+        var res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error(await res.text());
+        alert("Réponse enregistrée dans Notion.");
+        window.open(DB_URL, "_blank");
+      } else {
+        download(props);
+        alert(
+          "Réponses exportées en JSON (prêtes pour Notion).\\n\\n" +
+          "Pour un envoi direct depuis ce HTML, branchez une petite API avec NOTION_TOKEN puis :\\n" +
+          "localStorage.setItem('AUDIT_NOTION_API_URL', 'https://…')\\n\\n" +
+          "Sinon utilisez le formulaire Notion (Share → Anyone with the link) sur la page Audit IA."
+        );
+        window.open(PAGE_URL, "_blank");
+      }
+    } catch (err) {
+      console.error(err);
+      download(props);
+      alert("Échec d'envoi. JSON téléchargé en secours.\\n" + err);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Envoyer vers Notion"; }
+    }
+  });
+})();
+</script>
+
+</body>
 </html>

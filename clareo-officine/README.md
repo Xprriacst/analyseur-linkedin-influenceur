@@ -1,16 +1,12 @@
 # Clareo Officine
 
-Site vitrine de **Clareo Officine** (by Clareo Solutions) — accompagnement IA pour les pharmacies d'officine.
+Site **Audit IA — Pharmacies d’Officine** (by Clareo Solutions).
 
-## Contenu
+Brochure interactive de cadrage terrain : 28 questions, 7 thèmes, envoi vers Notion
+(base *Réponses Audit IA Officine*).
 
-Landing page unique :
-
-- promesse titulaire / LGO
-- cas d'usage prioritaires (audit LGO, planning, rejets, rédaction, remises, factures)
-- méthode de triage (LGO dormant → IA sur exports → outil marché → custom)
-- zones de non-automatisation (interactions, fausses ordonnances)
-- formulaire d'audit (ouvre un `mailto:` vers Clareo Solutions)
+Source de vérité du contenu : page Notion
+[Audit IA — Pharmacies d’Officine](https://www.notion.so/3b731487ede8817f9c63e942c257752f).
 
 ## Lancer en local
 
@@ -19,13 +15,12 @@ cd clareo-officine
 python3 -m http.server 4173
 ```
 
-Puis ouvrir `http://localhost:4173`.
-
 ## Déploiement Netlify
 
-Dossier racine du site : `clareo-officine/`.
+Publish directory : `.` (voir `netlify.toml`).
 
-- Build command : _(vide)_
-- Publish directory : `.` (ou `clareo-officine` si le site Netlify pointe sur le dépôt entier)
+Pour brancher l’envoi direct Notion :
 
-Le fichier `netlify.toml` de ce dossier fixe le publish directory à `.`.
+```js
+localStorage.setItem('AUDIT_NOTION_API_URL', 'https://…')
+```
