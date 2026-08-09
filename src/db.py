@@ -192,6 +192,32 @@ def find_recent_audit_lead(email: str, within_hours: int = 24) -> dict[str, Any]
         return None
 
 
+def list_audit_leads(limit: int = 100) -> list[dict[str, Any]]:
+    """Liste les leads du tunnel audit (dashboard interne, service-role).
+
+    On ne remonte pas `audit_payload` / `profile` / `projection` : trop lourds
+    pour une table de suivi. La niche / les abonnés viennent du `preview`.
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return []
+    try:
+        res = (
+            admin_client()
+            .table("audit_leads")
+            .select(
+                "id, created_at, full_name, email, phone, linkedin_url, "
+                "website_url, input_kind, status, error_message, sent_at, "
+                "consent, preview"
+            )
+            .order("created_at", desc=True)
+            .limit(max(1, min(int(limit), 500)))
+            .execute()
+        )
+        return list(getattr(res, "data", None) or [])
+    except Exception:
+        return []
+
+
 # Successful validations are cached in-process: virtually every db helper
 # re-validates the same token, and each validation is a network round-trip to
 # Supabase Auth. Trade-off: a revoked token stays accepted at most TTL seconds.

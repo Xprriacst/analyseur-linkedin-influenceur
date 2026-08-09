@@ -782,6 +782,57 @@ def _notify_internal_audit_lead(
     )
 
 
+# Comptes internes autorisés à lire les leads du tunnel /start.
+# Surcharge possible via AUDIT_LEADS_ADMIN_EMAILS (virgules).
+_AUDIT_LEADS_ADMIN_EMAILS = {
+    e.strip().lower()
+    for e in os.environ.get(
+        "AUDIT_LEADS_ADMIN_EMAILS",
+        "alexandre@clareo-solutions.fr,alexandre.errasti@gmail.com,tom@clareo-solutions.fr",
+    ).split(",")
+    if e.strip()
+}
+
+
+def require_audit_leads_admin(token: str) -> dict[str, Any]:
+    """404 si le compte n'est pas dans la liste interne (pas de 403 : on ne teaser pas)."""
+    user = db.get_user(token)
+    email = str((user or {}).get("email") or "").strip().lower()
+    if not user or email not in _AUDIT_LEADS_ADMIN_EMAILS:
+        raise HTTPException(status_code=404, detail="Introuvable.")
+    return user
+
+
+@app.get("/admin/audit-leads")
+def admin_audit_leads(
+    token: str = Depends(require_token),
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Dashboard interne : qui a rempli le questionnaire du tunnel audit."""
+    require_audit_leads_admin(token)
+    rows = db.list_audit_leads(limit=limit)
+    leads: list[dict[str, Any]] = []
+    for row in rows:
+        preview = row.get("preview") if isinstance(row.get("preview"), dict) else {}
+        leads.append({
+            "id": row.get("id"),
+            "created_at": row.get("created_at"),
+            "full_name": row.get("full_name"),
+            "email": row.get("email"),
+            "phone": row.get("phone"),
+            "linkedin_url": row.get("linkedin_url"),
+            "website_url": row.get("website_url"),
+            "input_kind": row.get("input_kind"),
+            "status": row.get("status"),
+            "error_message": row.get("error_message"),
+            "sent_at": row.get("sent_at"),
+            "consent": row.get("consent"),
+            "niche": preview.get("niche"),
+            "followers": preview.get("followers"),
+        })
+    return {"count": len(leads), "leads": leads}
+
+
 @app.get("/me/analyses/{analysis_id}")
 def me_analysis(analysis_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
     """Fetch a single stored analysis (report + computed data)."""
