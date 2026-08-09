@@ -7,7 +7,7 @@
   --brass-deep: #8f6f49;
   --line: rgba(10, 36, 32, 0.12);
   --text: #1c2b28;
-  --muted: #4f635e;
+  --muted: #3f524d;
   --white: #ffffff;
   --shadow: 0 24px 60px rgba(10, 36, 32, 0.18);
   --radius: 18px;
@@ -212,10 +212,20 @@ textarea {
   border-bottom: 1px solid var(--line);
 }
 
+.mobile-nav.is-open {
+  display: flex;
+}
+
 .mobile-nav a {
   padding: 0.7rem 0.4rem;
   font-weight: 500;
   color: var(--ink);
+}
+
+@media (min-width: 761px) {
+  .mobile-nav.is-open {
+    display: none;
+  }
 }
 
 .hero {
@@ -482,8 +492,8 @@ textarea {
 
 .trust-grid {
   display: grid;
-  grid-template-columns: 1.05fr 1fr;
-  gap: clamp(2rem, 5vw, 4rem);
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: clamp(1.5rem, 3vw, 2.5rem);
   align-items: start;
 }
 
