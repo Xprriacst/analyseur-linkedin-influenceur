@@ -28,6 +28,8 @@ type Lead = {
   sent_at?: string | null;
   niche?: string | null;
   followers?: number | null;
+  notion_url?: string | null;
+  public_token?: string | null;
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -157,7 +159,7 @@ export default function LeadsPage() {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
                   <thead>
                     <tr style={{ background: "var(--surface-low)", textAlign: "left" }}>
-                      {["Quand", "Nom", "Contact", "Profil", "Niche", "Statut"].map((h) => (
+                      {["Quand", "Nom", "Contact", "Profil", "Niche", "Audit", "Statut"].map((h) => (
                         <th key={h} style={th}>
                           {h}
                         </th>
@@ -190,6 +192,29 @@ export default function LeadsPage() {
                           )}
                         </td>
                         <td style={td}>{lead.niche || "—"}</td>
+                        <td style={td}>
+                          {lead.notion_url ? (
+                            <a
+                              href={lead.notion_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ color: "var(--primary)", fontWeight: 600 }}
+                            >
+                              Page Notion
+                            </a>
+                          ) : lead.public_token ? (
+                            <a
+                              href={`/a/${lead.public_token}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ color: "var(--primary)" }}
+                            >
+                              Voir l&apos;audit
+                            </a>
+                          ) : (
+                            <span style={{ color: "var(--muted)" }}>—</span>
+                          )}
+                        </td>
                         <td style={td}>
                           <span style={statusPill(lead.status)}>
                             {STATUS_LABEL[lead.status] || lead.status}

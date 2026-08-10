@@ -243,6 +243,7 @@ class ProcessAuditLeadTest(unittest.TestCase):
         with patch.object(audit_report.db, "get_audit_lead", return_value=lead), \
              patch.object(audit_report.db, "update_audit_lead", side_effect=lambda _id, patch_: updates.append(patch_)), \
              patch.object(audit_report, "generate_full_audit", return_value=audit_report.normalize_audit({})), \
+             patch.object(audit_report.notion_pages, "create_audit_page_safe", return_value=None), \
              patch.object(audit_report.mailer, "enabled", return_value=False):
             audit_report.process_audit_lead("lead-1", "https://calendly.test")
         self.assertEqual(updates[-1]["status"], "failed")
@@ -266,7 +267,7 @@ class ProcessAuditLeadTest(unittest.TestCase):
         self.assertEqual(updates[-1]["status"], "failed")
         self.assertIn("modèle indisponible", updates[-1]["error_message"])
 
-    def test_successful_send_marks_sent(self):
+    def test_successful_send_marks_sent_and_stores_notion(self):
         lead = {"id": "lead-1", "status": "pending", "email": "a@b.fr", "full_name": "Camille Durand"}
         updates: list[dict] = []
         sent: list[tuple] = []
@@ -274,13 +275,25 @@ class ProcessAuditLeadTest(unittest.TestCase):
              patch.object(audit_report.db, "update_audit_lead", side_effect=lambda _id, patch_: updates.append(patch_)), \
              patch.object(audit_report.db, "now_iso", return_value="2026-08-08T00:00:00+00:00"), \
              patch.object(audit_report, "generate_full_audit", return_value=audit_report.normalize_audit({"headline": "H"})), \
+             patch.object(audit_report.notion_pages, "create_audit_page_safe", return_value={
+                 "page_id": "abc", "url": "https://www.notion.so/abc", "public_url": "https://clareo.notion.site/abc",
+             }), \
              patch.object(audit_report.mailer, "enabled", return_value=True), \
              patch.object(audit_report.mailer, "send_email", side_effect=lambda *a, **k: sent.append((a, k))):
             audit_report.process_audit_lead("lead-1", "https://calendly.test/15min")
         self.assertEqual(updates[-1]["status"], "sent")
+        self.assertEqual(updates[-1]["notion_url"], "https://clareo.notion.site/abc")
         self.assertEqual(len(sent), 1)
         self.assertIn("https://calendly.test/15min", sent[0][0][2])
 
 
-if __name__ == "__main__":
-    unittest.main()
+class NotionBlocksTest(unittest.TestCase):
+    def test_audit_to_blocks_contains_headline(self):
+        from src import notion_pages
+        blocks = notion_pages.audit_to_blocks(
+            "Camille Durand",
+            audit_report.normalize_audit({"headline": "Coach B2B | LinkedIn", "about": "Texte infos"}),
+        )
+        types = [b["type"] for b in blocks]
+        self.assertIn("heading_2", types)
+        self.assertIn("quote", types)

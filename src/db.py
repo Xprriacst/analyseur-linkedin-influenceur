@@ -207,7 +207,7 @@ def list_audit_leads(limit: int = 100) -> list[dict[str, Any]]:
             .select(
                 "id, created_at, full_name, email, phone, linkedin_url, "
                 "website_url, input_kind, status, error_message, sent_at, "
-                "consent, preview"
+                "consent, preview, notion_url, notion_page_id, public_token"
             )
             .order("created_at", desc=True)
             .limit(max(1, min(int(limit), 500)))
@@ -216,6 +216,28 @@ def list_audit_leads(limit: int = 100) -> list[dict[str, Any]]:
         return list(getattr(res, "data", None) or [])
     except Exception:
         return []
+
+
+def get_audit_lead_by_public_token(token: str) -> dict[str, Any] | None:
+    """Lead d'audit via jeton public (page /a/<token>, sans session)."""
+    if not supabase_enabled() or not admin_enabled() or not token:
+        return None
+    try:
+        res = (
+            admin_client()
+            .table("audit_leads")
+            .select(
+                "id, full_name, email, linkedin_url, status, audit_payload, "
+                "projection, notion_url, public_token, created_at"
+            )
+            .eq("public_token", token.strip())
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
 
 
 # Successful validations are cached in-process: virtually every db helper

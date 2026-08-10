@@ -25,13 +25,18 @@ Trois partis pris qui expliquent la forme du prompt :
 from __future__ import annotations
 
 import json
+import os
+import secrets
 import sys
 import threading
 import urllib.parse
 from html import escape
 from typing import Any
 
-from src import db, mailer
+from src import db, mailer, notion_pages
+
+# Audit complet = Opus 5 (pas Fable : Fable est réservé à la preview légère).
+_AUDIT_MODEL_DEFAULT = "claude-opus-5"
 
 # Catalogue de services proposables. ⚠️ Contenu commercial : à ajuster par l'équipe
 # — le modèle CHOISIT dans cette liste, il n'en ajoute jamais.
@@ -243,7 +248,13 @@ Schéma JSON attendu :
   "services": [{"key": "", "reason": ""}]
 }"""
     )
-    data = _call(system, user, max_tokens=6000, temperature=0.5)
+    model = (
+        os.environ.get("AUDIT_FULL_MODEL", "").strip()
+        or _AUDIT_MODEL_DEFAULT
+    )
+    # Budget large : Opus 5 avec thinking disabled occupe quand même plus
+    # de tokens de sortie qu'un Sonnet sur un audit long.
+    data = _call(system, user, max_tokens=8000, temperature=0.5, model=model)
     return normalize_audit(data)
 
 
@@ -436,8 +447,38 @@ def render_audit_html(
 # --- Orchestration ------------------------------------------------------------
 
 
+def _ensure_public_token(lead: dict[str, Any]) -> str:
+    """Jeton opaque pour la page publique /a/<token> (sans auth)."""
+    existing = (lead.get("public_token") or "").strip()
+    if existing:
+        return existing
+    token = secrets.token_urlsafe(16)
+    db.update_audit_lead(str(lead["id"]), {"public_token": token})
+    return token
+
+
+def _publish_notion(lead: dict[str, Any], audit: dict[str, Any], calendly_url: str) -> dict[str, str]:
+    """Crée la page Notion et renvoie les champs à persister (éventuellement vides)."""
+    created = notion_pages.create_audit_page_safe(
+        lead.get("full_name") or "",
+        audit,
+        email=lead.get("email") or "",
+        phone=lead.get("phone") or "",
+        linkedin_url=lead.get("linkedin_url") or "",
+        calendly_url=calendly_url,
+    )
+    if not created:
+        return {}
+    # Préférer l'URL publique Notion si le parent est publié ; sinon l'URL workspace.
+    share = (created.get("public_url") or "").strip() or (created.get("url") or "").strip()
+    return {
+        "notion_page_id": created.get("page_id") or "",
+        "notion_url": share,
+    }
+
+
 def process_audit_lead(lead_id: str, calendly_url: str = "") -> None:
-    """Génère l'audit complet d'un lead et le lui envoie. Best-effort, tracé en base.
+    """Génère l'audit complet, page Notion, puis e-mail. Best-effort, tracé en base.
 
     Tourne dans un thread de fond : le visiteur est déjà parti sur Calendly quand
     ceci s'exécute. Toute erreur est consignée sur la ligne du lead (`status`,
@@ -452,7 +493,11 @@ def process_audit_lead(lead_id: str, calendly_url: str = "") -> None:
 
     db.update_audit_lead(lead_id, {"status": "generating"})
     try:
+        _ensure_public_token(lead)
+        lead = db.get_audit_lead(lead_id) or lead
+
         audit = generate_full_audit(lead.get("preview"), lead.get("profile"))
+        notion_fields = _publish_notion(lead, audit, calendly_url)
         html = render_audit_html(
             lead.get("full_name") or "",
             audit,
@@ -460,14 +505,12 @@ def process_audit_lead(lead_id: str, calendly_url: str = "") -> None:
             calendly_url,
         )
         if not mailer.enabled():
-            # L'audit est généré et stocké ; il ne manque que le transport. On le
-            # dit explicitement plutôt que de marquer « envoyé » un e-mail qui
-            # n'existe pas — c'est exactement le genre de mensonge de statut qui
-            # fait chercher le bug du mauvais côté.
+            # L'audit (+ Notion) est généré et stocké ; il ne manque que le transport.
             db.update_audit_lead(lead_id, {
                 "status": "failed",
                 "audit_payload": audit,
                 "error_message": "RESEND_API_KEY absent : audit généré mais non envoyé.",
+                **{k: v for k, v in notion_fields.items() if v},
             })
             return
         mailer.send_email(
@@ -481,6 +524,7 @@ def process_audit_lead(lead_id: str, calendly_url: str = "") -> None:
             "audit_payload": audit,
             "error_message": None,
             "sent_at": db.now_iso(),
+            **{k: v for k, v in notion_fields.items() if v},
         })
     except Exception as exc:
         print(f"[audit-lead] génération/envoi impossible ({lead_id}) : {exc}", file=sys.stderr)

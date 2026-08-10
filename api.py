@@ -829,8 +829,32 @@ def admin_audit_leads(
             "consent": row.get("consent"),
             "niche": preview.get("niche"),
             "followers": preview.get("followers"),
+            "notion_url": row.get("notion_url"),
+            "public_token": row.get("public_token"),
         })
     return {"count": len(leads), "leads": leads}
+
+
+@app.get("/public/audit/{token}")
+def public_audit(token: str) -> dict[str, Any]:
+    """Audit complet en lecture seule via jeton opaque — accessible sans compte."""
+    lead = db.get_audit_lead_by_public_token(token)
+    if not lead or not lead.get("audit_payload"):
+        raise HTTPException(status_code=404, detail="Audit introuvable.")
+    from src.audit_report import render_audit_html
+
+    html = render_audit_html(
+        lead.get("full_name") or "",
+        lead.get("audit_payload") or {},
+        lead.get("projection"),
+        AUDIT_CALENDLY_URL,
+    )
+    return {
+        "full_name": lead.get("full_name"),
+        "notion_url": lead.get("notion_url"),
+        "created_at": lead.get("created_at"),
+        "html": html,
+    }
 
 
 @app.get("/me/analyses/{analysis_id}")

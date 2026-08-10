@@ -50,19 +50,18 @@ def _model() -> str:
 # les paramètres d'échantillonnage : envoyer `temperature` (ou top_p/top_k)
 # renvoie une erreur 400. On ne le transmet donc qu'aux modèles plus anciens
 # (dont Sonnet 4.6, qui accepte encore `temperature`).
-_NO_SAMPLING_TAGS = ("opus-4-7", "opus-4-8", "sonnet-5", "fable", "mythos")
+_NO_SAMPLING_TAGS = ("opus-4-7", "opus-4-8", "opus-5", "sonnet-5", "fable", "mythos")
 
 
 def _accepts_temperature(model: str) -> bool:
     return not any(tag in model for tag in _NO_SAMPLING_TAGS)
 
 
-# Sonnet 5 active la « réflexion adaptative » quand le paramètre `thinking` est
-# omis, et les tokens de réflexion sont décomptés de `max_tokens` : la réponse
-# JSON attendue peut alors être tronquée (symptôme : « Unterminated string »
-# sur les analyses). On coupe donc la réflexion sur les appels structurés ;
-# le chat de l'Assistant (chat_stream) la conserve.
-_ADAPTIVE_THINKING_TAGS = ("sonnet-5",)
+# Sonnet 5 / Opus 5 : réflexion adaptative active par défaut quand `thinking`
+# est omis, tokens décomptés de `max_tokens` → JSON tronqué possible. On coupe
+# la réflexion sur les appels structurés ; le chat (chat_stream) la conserve.
+# Opus 5 : `thinking: disabled` n'est accepté qu'avec effort ≤ high (défaut).
+_ADAPTIVE_THINKING_TAGS = ("sonnet-5", "opus-5")
 
 
 def thinking_kwargs(model: str) -> dict[str, Any]:
@@ -1076,9 +1075,9 @@ Schéma JSON attendu :
   }
 }"""
     )
-    # Modèle surchargeable pour cet appel seul (test Fable 5 vs Sonnet 5 sur la
-    # qualité de l'accroche). ⚠️ Fable/Mythos : la réflexion est toujours active
-    # et décomptée de max_tokens — d'où un budget large, sinon JSON tronqué.
+    # Modèle surchargeable pour cet appel seul (preview /start).
+    # Défaut = ANTHROPIC_MODEL. Sur Render : ONBOARDING_PREVIEW_MODEL=claude-opus-5
+    # (plus Fable : trop cher pour cet appel). Thinking désactivé via thinking_kwargs.
     model = os.environ.get("ONBOARDING_PREVIEW_MODEL", "").strip() or None
     try:
         data = _call(system, user, max_tokens=4000, temperature=0.4, model=model)
