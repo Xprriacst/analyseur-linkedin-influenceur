@@ -2277,9 +2277,17 @@ LEAD_JOB_STALE_MINUTES = 40
 
 
 def create_lead_collection_job(
-    access_token: str, source_id: str, post_url: str, max_comments: int
+    access_token: str,
+    source_id: str,
+    post_url: str,
+    max_comments: int,
+    kind: str = "comments",
 ) -> dict | None:
-    """Crée un job de collecte `queued`. Retourne la ligne créée."""
+    """Crée un job de collecte `queued`. Retourne la ligne créée.
+
+    `kind` : 'comments' (commentateurs d'un post) ou 'search' (profils d'un lien
+    de recherche LinkedIn) — c'est lui qui aiguille le thread de fond.
+    """
     user = get_user(access_token)
     if not user:
         return None
@@ -2290,6 +2298,7 @@ def create_lead_collection_job(
         "source_id": source_id,
         "post_url": post_url,
         "max_comments": int(max_comments),
+        "kind": kind,
     }
     resp = db.table("lead_collection_jobs").insert(row).execute()
     return resp.data[0] if resp.data else None
@@ -5171,8 +5180,15 @@ def add_lead_source(
     trigger_keyword: str | None = None,
     total_comments: int | None = None,
     origin: str = "manual",
+    kind: str = "post",
+    search_total: int | None = None,
 ) -> dict | None:
-    """Crée une source de prospection (RLS scope)."""
+    """Crée une source de prospection (RLS scope).
+
+    `kind` : 'post' (commentateurs d'un post concurrent) ou 'search' (profils
+    d'un lien de recherche LinkedIn) — dans ce dernier cas `post_url` porte
+    l'URL de recherche (cf. migration 0062).
+    """
     if not supabase_enabled():
         return None
     user = get_user(access_token)
@@ -5184,6 +5200,7 @@ def add_lead_source(
         "post_url": post_url,
         "is_lead_magnet": is_lead_magnet,
         "origin": origin,
+        "kind": kind,
     }
     if author:
         row["author"] = author
@@ -5193,6 +5210,8 @@ def add_lead_source(
         row["trigger_keyword"] = trigger_keyword
     if total_comments is not None:
         row["total_comments"] = total_comments
+    if search_total is not None:
+        row["search_total"] = search_total
     resp = db.table("lead_sources").insert(row).execute()
     return resp.data[0] if resp.data else None
 
@@ -5344,6 +5363,10 @@ def save_leads(access_token: str, source: dict, commenters: list[dict]) -> dict:
                     "reaction_count": int(c.get("reaction_count") or 0),
                     "signals": [_signal(c)],
                     "signal_count": 1,
+                    # La recherche LinkedIn (0062) renvoie déjà l'identifiant
+                    # interne du prospect : le stocker ici évite un appel de
+                    # résolution de profil au moment de l'invitation.
+                    **({"provider_id": c["provider_id"]} if c.get("provider_id") else {}),
                 }
             )
             continue
@@ -5352,17 +5375,25 @@ def save_leads(access_token: str, source: dict, commenters: list[dict]) -> dict:
             skipped += 1  # déjà vu sur cette source (dédup personne + source)
             continue
         signals.append(_signal(c))
-        db.table("leads").update(
-            {
-                "signals": signals,
-                "signal_count": len(signals),
-                "source_id": source.get("id"),
-                "comment_text": c.get("comment_text"),
-                "commented_at": c.get("commented_at"),
-                "reaction_count": int(c.get("reaction_count") or 0),
-                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            }
-        ).eq("id", row["id"]).execute()
+        update_fields = {
+            "signals": signals,
+            "signal_count": len(signals),
+            "source_id": source.get("id"),
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        # Le commentaire affiché en liste n'est écrasé que par un VRAI commentaire.
+        # Un lead issu d'une recherche LinkedIn (0062) n'en porte pas : le laisser
+        # écrire `None` effacerait le commentaire qui a justifié le lead — le
+        # signal le plus parlant de la fiche — sans aucune erreur visible.
+        if c.get("comment_text"):
+            update_fields["comment_text"] = c.get("comment_text")
+            update_fields["commented_at"] = c.get("commented_at")
+            update_fields["reaction_count"] = int(c.get("reaction_count") or 0)
+        # Jamais écrasé par une valeur vide : un lead déjà résolu (invitation
+        # envoyée) garde son provider_id même si la source suivante ne le porte pas.
+        if c.get("provider_id"):
+            update_fields["provider_id"] = c["provider_id"]
+        db.table("leads").update(update_fields).eq("id", row["id"]).execute()
         ids_by_url[c["profile_url"]] = row["id"]
         updated += 1
 

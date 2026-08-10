@@ -432,3 +432,97 @@ def normalize_message(message: dict[str, Any]) -> dict[str, Any]:
         "from_me": from_me,
         "created_at": _pick(message, "timestamp", "created_at", "date"),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Recherche de profils (import d'un lien de recherche LinkedIn)
+# --------------------------------------------------------------------------- #
+
+# Unipile ne restitue pas plus que ce que LinkedIn accepte de rendre : 1000
+# profils par requête de recherche classique, 2500 en Sales Navigator — même
+# quand l'UI annonce davantage de résultats. Au-delà, il faut affiner la
+# recherche, pas paginer plus loin.
+SEARCH_HARD_CAP = 1000
+SEARCH_SALES_NAVIGATOR_CAP = 2500
+
+
+def search_page(
+    account_id: str,
+    *,
+    url: str | None = None,
+    body: dict | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Une page de résultats de recherche LinkedIn.
+
+    `url` = lien de recherche collé par le client (recherche classique, Sales
+    Navigator, recherche sauvegardée ou liste de leads) : Unipile le parse
+    lui-même, on n'a donc AUCUN paramètre de recherche à reconstruire nous-mêmes
+    (les URLs LinkedIn portent des identifiants opaques — `geoUrn`, facettes
+    Sales Navigator — qu'on ne saurait pas retraduire de façon fiable).
+
+    Retourne la réponse brute {items, paging, cursor}.
+    """
+    if not account_id:
+        raise UnipileError("account_id requis pour lancer une recherche.")
+    payload: dict[str, Any] = dict(body or {})
+    if url:
+        payload["url"] = url
+    if not payload:
+        raise UnipileError("Recherche vide : fournis une URL ou des paramètres.")
+    params: dict[str, Any] = {"account_id": account_id}
+    if cursor:
+        params["cursor"] = cursor
+    if limit:
+        params["limit"] = int(limit)
+    # Une page de recherche peut être lente côté LinkedIn : on laisse plus de
+    # marge que le défaut (30 s) sans pour autant bloquer indéfiniment.
+    return _request("POST", "/linkedin/search", params=params, body=payload, timeout=90)
+
+
+def normalize_search_profile(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Réduit un résultat de recherche à un prospect exploitable, ou None.
+
+    Schéma tolérant (cf. entête du module) : selon l'API (classic / sales
+    navigator / recruiter) le nom arrive entier (`name`) ou en deux morceaux, et
+    l'URL publique sous plusieurs clés. On exige une URL de profil OU un
+    identifiant public — sans l'un des deux, le prospect n'est ni dédoublonnable
+    ni contactable, donc inutilisable.
+    """
+    if not isinstance(item, dict):
+        return None
+    identifier = _pick(item, "public_identifier", "public_id", "username")
+    profile_url = _pick(item, "public_profile_url", "profile_url", "linkedin_url", "url")
+    if not profile_url and identifier:
+        profile_url = f"https://www.linkedin.com/in/{identifier}"
+    if not profile_url:
+        return None
+
+    name = _pick_display_name(item, "name", "full_name", "display_name")
+    if not name:
+        first = _pick(item, "first_name", "firstName") or ""
+        last = _pick(item, "last_name", "lastName") or ""
+        name = f"{first} {last}".strip() or None
+
+    location = _pick(item, "location", "geo_region", "region")
+    if isinstance(location, dict):
+        location = _pick(location, "name", "label", "text")
+
+    return {
+        "name": name,
+        "headline": (_pick(item, "headline", "title", "subtitle") or None),
+        "profile_url": str(profile_url),
+        "provider_id": _pick(item, "provider_id", "member_id", "id"),
+        "location": str(location) if isinstance(location, str) and location.strip() else None,
+    }
+
+
+def search_total_count(page: dict[str, Any] | None) -> int | None:
+    """Total annoncé par LinkedIn pour cette recherche (None si absent)."""
+    paging = (page or {}).get("paging") if isinstance(page, dict) else None
+    total = _pick(paging, "total_count", "total") if isinstance(paging, dict) else None
+    try:
+        return int(total) if total is not None else None
+    except (TypeError, ValueError):
+        return None
