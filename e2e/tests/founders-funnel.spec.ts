@@ -133,7 +133,7 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
   await page.getByRole("button", { name: /Premiers clients/ }).click();
   await page.getByRole("button", { name: "Je suis un builder, pas un marketeur" }).click();
   await page.getByRole("button", { name: "Je lance dans le silence" }).click();
-  await page.getByRole("button", { name: /Voir ce que je peux gagner/ }).click();
+  await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();
 
   // Les montants sont annoncés pour ce qu'ils sont : de l'ARR signé.
   await expect(page.getByText("Nouvel ARR signé par mois")).toBeVisible();
@@ -209,7 +209,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
-    await page.getByRole("button", { name: /Voir ce que je peux gagner/ }).click();
+    await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();
 
     // Un écran de mise en scène en panne ne doit pas coûter le prospect : on
     // atterrit sur la création de compte, pas sur un écran vide ni sur /start.
