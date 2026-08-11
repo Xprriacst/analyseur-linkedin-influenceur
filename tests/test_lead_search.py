@@ -155,11 +155,13 @@ class CollectSearchProfilesTest(unittest.TestCase):
     def test_paginates_until_cursor_exhausted(self):
         pages = [_page(["a", "b"], cursor="c1", total=42), _page(["c"], cursor=None)]
         with patch("src.unipile.search_page", side_effect=pages) as sp:
-            leads, total = lead_search.collect_search_profiles("acc", "https://x", 100)
+            leads, total, _dropped = lead_search.collect_search_profiles("acc", "https://x", 100)
         self.assertEqual([l["profile_url"].rsplit("/", 1)[-1] for l in leads], ["a", "b", "c"])
         self.assertEqual(total, 42)
         # Le curseur de la page 1 est bien réinjecté dans l'appel suivant.
         self.assertEqual(sp.call_args_list[1].kwargs["cursor"], "c1")
+        # `api` est obligatoire côté Unipile : sans lui la recherche revient vide.
+        self.assertEqual(sp.call_args_list[0].kwargs["body"]["api"], "classic")
 
     def test_stops_at_requested_volume_mid_page(self):
         # 2 pages de 20 profils, 25 demandés : on rend exactement 25 et on
@@ -171,14 +173,14 @@ class CollectSearchProfilesTest(unittest.TestCase):
             _page(["never"], cursor="c3"),
         ]
         with patch("src.unipile.search_page", side_effect=pages) as sp:
-            leads, _ = lead_search.collect_search_profiles("acc", "https://x", 25)
+            leads, _t, _d = lead_search.collect_search_profiles("acc", "https://x", 25)
         self.assertEqual(len(leads), 25)
         self.assertEqual(sp.call_count, 2)
 
     def test_dedups_across_pages(self):
         pages = [_page(["a", "b"], cursor="c1"), _page(["b", "c"], cursor=None)]
         with patch("src.unipile.search_page", side_effect=pages):
-            leads, _ = lead_search.collect_search_profiles("acc", "https://x", 100)
+            leads, _t, _d = lead_search.collect_search_profiles("acc", "https://x", 100)
         self.assertEqual(len(leads), 3)
 
     def test_stops_when_a_page_brings_nothing_new(self):
@@ -187,13 +189,13 @@ class CollectSearchProfilesTest(unittest.TestCase):
         # un compte.
         looping = [_page(["a"], cursor="same") for _ in range(10)]
         with patch("src.unipile.search_page", side_effect=looping) as sp:
-            leads, _ = lead_search.collect_search_profiles("acc", "https://x", 100)
+            leads, _t, _d = lead_search.collect_search_profiles("acc", "https://x", 100)
         self.assertEqual(len(leads), 1)
         self.assertEqual(sp.call_count, 2)
 
     def test_empty_first_page_is_not_an_error(self):
         with patch("src.unipile.search_page", return_value={"items": []}):
-            leads, total = lead_search.collect_search_profiles("acc", "https://x", 100)
+            leads, total, _dropped = lead_search.collect_search_profiles("acc", "https://x", 100)
         self.assertEqual(leads, [])
         self.assertIsNone(total)
 
@@ -216,6 +218,7 @@ class CollectAndPersistSearchTest(unittest.TestCase):
             result = lead_search.collect_and_persist_search("tok", {"id": "s1", "post_url": "u"}, 100)
 
         self.assertEqual(result["profiles_count"], 1)
+        self.assertEqual(result["dropped_filters"], [])
         self.assertEqual(result["search_total"], 7)
         self.assertIsNone(result["credits"])
         # Gratuit : la recherche passe par le compte du client (forfait Unipile).
@@ -286,3 +289,52 @@ class LeadJobRoutingTest(unittest.TestCase):
         search, comments = self._run({"id": "j1", "source_id": "s1", "max_comments": 100})
         search.assert_called_once()
         comments.assert_not_called()
+
+
+class BuildSearchRequestTest(unittest.TestCase):
+    """L'URL doit être TRADUITE en requête Unipile, pas passée telle quelle.
+
+    `api` est obligatoire, et le passage d'URL brute n'est documenté que pour
+    Sales Navigator : une recherche classique envoyée dans `{"url": …}` renvoie
+    200 avec zéro résultat, sans erreur — un import « terminé, 0 profil »
+    indiscernable d'une recherche réellement vide (vécu en prod).
+    """
+
+    def test_classic_search_becomes_parameters(self):
+        body, dropped = lead_search.build_search_request(
+            "https://www.linkedin.com/search/results/people/?keywords=pharmacien%20titulaire"
+        )
+        self.assertEqual(body["api"], "classic")
+        self.assertEqual(body["category"], "people")
+        self.assertEqual(body["keywords"], "pharmacien titulaire")
+        self.assertNotIn("url", body)
+        self.assertEqual(dropped, [])
+
+    def test_maps_location_and_network_distance(self):
+        body, _ = lead_search.build_search_request(
+            "https://www.linkedin.com/search/results/people/?keywords=CTO"
+            "&geoUrn=%5B%22105015875%22%5D&network=%5B%22S%22%2C%22O%22%5D"
+        )
+        self.assertEqual(body["location"], ["105015875"])
+        self.assertEqual(body["network_distance"], [2, 3])
+
+    def test_reports_filters_it_cannot_transmit(self):
+        # Silence interdit : un filtre perdu donnerait une liste plus large que
+        # celle que le client a paramétrée, sans qu'il le sache.
+        _, dropped = lead_search.build_search_request(
+            "https://www.linkedin.com/search/results/people/?keywords=CTO"
+            "&currentCompany=%5B%221234%22%5D&titleFreeText=CTO"
+        )
+        self.assertIn("entreprise actuelle", dropped)
+        self.assertIn("intitulé de poste", dropped)
+
+    def test_sales_navigator_keeps_the_url(self):
+        body, dropped = lead_search.build_search_request(
+            "https://www.linkedin.com/sales/search/people?query=abc"
+        )
+        self.assertEqual(body, {"api": "sales_navigator", "url": "https://www.linkedin.com/sales/search/people?query=abc"})
+        self.assertEqual(dropped, [])
+
+    def test_recruiter_url(self):
+        body, _ = lead_search.build_search_request("https://www.linkedin.com/talent/search?x=1")
+        self.assertEqual(body["api"], "recruiter")
