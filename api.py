@@ -208,6 +208,9 @@ class AuditProjectionRequest(BaseModel):
     followers: int = Field(default=0, ge=0, le=100_000_000)
     connections: int = Field(default=0, ge=0, le=100_000_000)
     posts_count: int = Field(default=0, ge=0, le=100_000)
+    # Grille de paliers à utiliser : « default » (prestation, /start) ou « saas »
+    # (ACV, /founders). Valeur inconnue ⇒ repli sur « default » côté module.
+    audience: str = Field(default="default", max_length=20)
 
 
 class AuditLeadRequest(BaseModel):
@@ -686,6 +689,7 @@ def onboarding_projection(payload: AuditProjectionRequest) -> dict[str, Any]:
         followers=payload.followers,
         connections=payload.connections,
         posts_count=payload.posts_count,
+        audience=payload.audience,
     )
 
 
@@ -2849,6 +2853,10 @@ def me_credits(token: str = Depends(require_token)) -> dict[str, Any]:
 class BillingCheckoutRequest(BaseModel):
     success_url: str = Field(..., max_length=2000)
     cancel_url: str = Field(..., max_length=2000)
+    # Demande d'essai gratuit (tunnel /founders). Simple DEMANDE : c'est le serveur
+    # qui décide de l'accorder ou non — un compte qui a déjà eu un abonnement ne
+    # peut pas s'en offrir un second en rappelant la route avec ce drapeau.
+    trial: bool = False
 
 
 class BillingPortalRequest(BaseModel):
@@ -2857,14 +2865,24 @@ class BillingPortalRequest(BaseModel):
 
 def _billing_state(subscription: dict | None) -> dict[str, Any]:
     """Vue publique de l'abonnement (jamais d'identifiants Stripe côté client)."""
-    status = (subscription or {}).get("status")
+    row = subscription or {}
+    status = row.get("status")
     return {
         "enabled": stripe_billing.enabled(),
         "subscribed": stripe_billing.is_active(status),
         "status": status,
-        "cancel_at_period_end": bool((subscription or {}).get("cancel_at_period_end")),
-        "current_period_end": (subscription or {}).get("current_period_end"),
-        "has_customer": bool((subscription or {}).get("stripe_customer_id")),
+        "trialing": status == "trialing",
+        "cancel_at_period_end": bool(row.get("cancel_at_period_end")),
+        "current_period_end": row.get("current_period_end"),
+        "has_customer": bool(row.get("stripe_customer_id")),
+        # Même règle que la session Checkout, exposée à l'écran : la page d'essai
+        # doit pouvoir dire la vérité AVANT le clic. Promettre 7 jours gratuits à
+        # un ancien abonné qui repart sur un paiement immédiat serait un mensonge
+        # que rien, côté serveur, ne viendrait signaler.
+        "trial_days": stripe_billing.trial_days() if stripe_billing.enabled() else 0,
+        "trial_eligible": bool(
+            stripe_billing.enabled() and stripe_billing.granted_trial_days(row) > 0
+        ),
         "plan": stripe_billing.plan_summary() if stripe_billing.enabled() else None,
     }
 
@@ -2915,14 +2933,32 @@ def billing_plan() -> dict[str, Any]:
     de vente et de se retrouver avec un prix qui ment si le tarif change.
     """
     if not stripe_billing.enabled():
-        return {"enabled": False, "plan": None}
-    return {"enabled": True, "plan": stripe_billing.plan_summary()}
+        return {"enabled": False, "plan": None, "trial_days": 0}
+    return {
+        "enabled": True,
+        "plan": stripe_billing.plan_summary(),
+        "trial_days": stripe_billing.trial_days(),
+    }
 
 
 @app.get("/me/billing")
 def me_billing(token: str = Depends(require_token)) -> dict[str, Any]:
     """État d'abonnement de l'utilisateur (pour la carte « Abonnement » du profil)."""
     return _billing_state(db.get_subscription(token))
+
+
+def _granted_trial_days(user_id: str, requested: bool) -> int:
+    """Jours d'essai réellement accordés à ce compte (0 = paiement immédiat).
+
+    ⚠️ La décision est prise ICI, jamais dans le navigateur : le drapeau `trial`
+    voyage dans une requête que n'importe quel compte peut rejouer. Sans cette
+    garde, un abonné résilié se réoffrirait un mois gratuit à chaque passage.
+    La règle elle-même vit dans `stripe_billing.granted_trial_days` — la même que
+    celle qui alimente `trial_eligible` à l'écran.
+    """
+    if not requested:
+        return 0
+    return stripe_billing.granted_trial_days(db.get_subscription_by_user_admin(user_id))
 
 
 @app.post("/me/billing/checkout")
@@ -2932,16 +2968,20 @@ def me_billing_checkout(
     """Ouvre une session Checkout Stripe (page de paiement hébergée) → URL de redirection."""
     _require_billing()
     user_id, customer_id = _ensure_stripe_customer(token)
+    trial_days = _granted_trial_days(user_id, payload.trial)
     try:
         session = stripe_billing.create_checkout_session(
-            customer_id, user_id, payload.success_url, payload.cancel_url
+            customer_id, user_id, payload.success_url, payload.cancel_url, trial_days=trial_days
         )
     except stripe_billing.StripeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     url = session.get("url")
     if not url:
         raise HTTPException(status_code=502, detail="Stripe n'a pas renvoyé d'URL de paiement.")
-    return {"url": url}
+    # `trial_days` est renvoyé pour que l'écran appelant sache ce qui a VRAIMENT
+    # été accordé : promettre « 7 jours gratuits » sur un bouton qui ouvre un
+    # paiement immédiat serait la pire des pannes silencieuses de ce parcours.
+    return {"url": url, "trial_days": trial_days}
 
 
 @app.post("/me/billing/portal")
@@ -3017,6 +3057,48 @@ def _webhook_user_id(obj: dict[str, Any], customer_id: str | None) -> str | None
     return (row or {}).get("user_id")
 
 
+def _apply_trial_start(
+    user_id: str, customer_id: str | None, subscription_id: str, event_id: str
+) -> dict[str, Any] | None:
+    """Crédite et enregistre un abonnement qui démarre en essai. None si ce n'en est pas un.
+
+    Stripe reste la seule horloge de l'essai : on n'écrit aucune date d'expiration
+    maison, on recopie son statut (`trialing`) et sa fin de période. Le jour où
+    l'essai se transforme, `invoice.paid` reprend la main et remet le solde à neuf.
+    """
+    try:
+        subscription = stripe_billing.get_subscription(subscription_id)
+    except stripe_billing.StripeError:
+        # Statut inconnu ⇒ on ne crédite pas. Le prochain événement d'abonnement
+        # (ou `invoice.paid`) rattrapera l'état ; créditer dans le doute serait
+        # offrir un forfait à un paiement dont on ignore tout.
+        return None
+    fields = stripe_billing.normalize_subscription(subscription)
+    if fields.get("status") != "trialing":
+        return None
+
+    credits = stripe_billing.trial_credits()
+    new_balance = db.set_credits_admin(
+        user_id, credits, action="trial_start",
+        description=f"essai gratuit démarré — {credits} crédits",
+    )
+    db.upsert_subscription_admin(
+        user_id,
+        stripe_customer_id=customer_id,
+        stripe_subscription_id=subscription_id,
+        status=fields["status"],
+        price_id=fields["price_id"],
+        current_period_end=fields["current_period_end"],
+        cancel_at_period_end=fields["cancel_at_period_end"],
+    )
+    if new_balance is None:
+        # Même posture que `invoice.paid` : l'événement est dépublié pour que
+        # Stripe le rejoue, plutôt qu'un essai sans crédits qui passe inaperçu.
+        db.delete_billing_event_admin(event_id)
+        raise HTTPException(status_code=500, detail="Crédits d'essai non appliqués — rejouer.")
+    return {"ok": True, "trial": True, "credits": new_balance}
+
+
 @app.post("/stripe/webhooks")
 async def stripe_webhook(request: Request) -> dict[str, Any]:
     """Webhook Stripe : source de vérité de l'abonnement et des crédits.
@@ -3062,6 +3144,17 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
         db.upsert_subscription_admin(
             user_id, stripe_customer_id=customer_id, stripe_subscription_id=subscription_id
         )
+        # ⚠️ Exception à la règle ci-dessus : un abonnement qui démarre par un ESSAI
+        # ne produit aucune facture payée avant le 8ᵉ jour. Si on attendait
+        # `invoice.paid`, le fondateur entrerait dans son essai avec les seuls
+        # crédits de bienvenue — un « essai » qui s'arrête au bout de quelques
+        # générations, sans le moindre message d'erreur.
+        if subscription_id:
+            trial_state = _apply_trial_start(
+                user_id, customer_id, subscription_id, event.get("id") or ""
+            )
+            if trial_state:
+                return trial_state
         return {"ok": True}
 
     if event_type == "invoice.paid":
