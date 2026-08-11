@@ -68,6 +68,55 @@ DEAL_BANDS: list[dict[str, Any]] = [
 ]
 DEFAULT_DEAL_BAND = "mid"
 
+# Paliers du tunnel fondateurs SaaS (/founders). Ce ne sont PAS les mêmes paliers
+# habillés autrement : un éditeur SaaS ne raisonne pas en prix de prestation mais
+# en **ACV** — ce que rapporte un client sur douze mois. Un plan à 99 €/mois vaut
+# donc ~1 200 € ici, là où la grille générique le rangerait dans « moins de
+# 1 000 € » et sous-estimerait le compte d'un facteur 2.
+#
+# ⚠️ Le montant projeté avec ces paliers est donc de l'**ARR signé**, pas du
+# chiffre encaissé le mois même. C'est écrit dans les hypothèses ET dans le
+# libellé affiché — sans quoi l'écran promettrait douze fois trop.
+SAAS_DEAL_BANDS: list[dict[str, Any]] = [
+    {"key": "self_serve", "label": "Moins de 1 200 € / an", "value": 700},
+    {"key": "smb", "label": "1 200 à 6 000 € / an", "value": 3600},
+    {"key": "midmarket", "label": "6 000 à 25 000 € / an", "value": 15000},
+    {"key": "enterprise", "label": "Plus de 25 000 € / an", "value": 40000},
+]
+DEFAULT_SAAS_DEAL_BAND = "smb"
+
+# Un jeu de paliers par audience de tunnel. `default` = /start (prestataires,
+# coachs, agences), `saas` = /founders.
+AUDIENCES: dict[str, dict[str, Any]] = {
+    "default": {
+        "bands": DEAL_BANDS,
+        "default_band": DEFAULT_DEAL_BAND,
+        "deal_label": "Ton panier moyen",
+        "revenue_label": "Chiffre d'affaires mensuel supplémentaire",
+        "extra_assumption": None,
+    },
+    "saas": {
+        "bands": SAAS_DEAL_BANDS,
+        "default_band": DEFAULT_SAAS_DEAL_BAND,
+        "deal_label": "Ton ACV moyen (ce que rapporte un client sur 12 mois)",
+        "revenue_label": "Nouvel ARR signé par mois",
+        "extra_assumption": (
+            "Montants exprimés en ARR signé (valeur annuelle des contrats fermés "
+            "dans le mois), pas en encaissement du mois."
+        ),
+    },
+}
+
+
+def audience_config(audience: str | None = None) -> dict[str, Any]:
+    """Configuration de paliers d'une audience — repli silencieux sur `default`.
+
+    Repli plutôt que 400 : une audience inconnue (faute de frappe dans une URL de
+    campagne, vieille page en cache) doit dégrader vers l'écran générique, pas
+    faire disparaître les chiffres du tunnel.
+    """
+    return AUDIENCES.get((audience or "").strip().lower() or "default", AUDIENCES["default"])
+
 
 def _round_nice(value: float) -> int:
     """Arrondit à un palier lisible — un « 1 247 € » sonne faux sur une projection.
@@ -161,7 +210,7 @@ def project_gains(
     }
 
 
-def assumptions(deal_label: str | None = None) -> list[str]:
+def assumptions(deal_label: str | None = None, audience: str | None = None) -> list[str]:
     """Les hypothèses, telles qu'elles doivent être affichées sous les chiffres.
 
     Elles ne sont pas décoratives : sans elles, la projection devient une promesse
@@ -176,6 +225,9 @@ def assumptions(deal_label: str | None = None) -> list[str]:
         f"{int(REPLY_RATE_LOW * 100)} à {int(REPLY_RATE_HIGH * 100)} % de réponses, "
         f"{int(CLOSING_RATE_LOW * 100)} à {int(CLOSING_RATE_HIGH * 100)} % de signatures.",
     ]
+    extra = audience_config(audience).get("extra_assumption")
+    if extra:
+        lines.append(extra)
     if deal_label:
         lines.append(f"Panier moyen retenu : {deal_label}.")
     lines.append("Fourchettes indicatives observées sur des profils comparables — pas une garantie de résultat.")
@@ -186,6 +238,7 @@ def project_all_bands(
     followers: int = 0,
     connections: int = 0,
     posts_count: int = 0,
+    audience: str | None = None,
 ) -> dict[str, Any]:
     """Projections pour TOUS les paliers de panier, en un seul aller-retour.
 
@@ -193,9 +246,15 @@ def project_all_bands(
     précalculer évite à la fois un appel réseau par clic et une seconde
     implémentation de la formule côté navigateur (qui divergerait de celle utilisée
     pour l'e-mail d'audit à la première retouche).
+
+    `audience` choisit la grille de paliers (`default` = prestation, `saas` = ACV).
+    Les libellés partent avec la réponse pour la même raison que le calcul : un
+    front qui écrirait « chiffre d'affaires » au-dessus de montants calculés en ARR
+    mentirait sans qu'aucun test serveur ne s'en aperçoive.
     """
+    config = audience_config(audience)
     bands = []
-    for band in DEAL_BANDS:
+    for band in config["bands"]:
         bands.append({
             "key": band["key"],
             "label": band["label"],
@@ -206,6 +265,11 @@ def project_all_bands(
                 posts_count=posts_count,
                 deal_value=band["value"],
             ),
-            "assumptions": assumptions(band["label"]),
+            "assumptions": assumptions(band["label"], audience=audience),
         })
-    return {"default_band": DEFAULT_DEAL_BAND, "bands": bands}
+    return {
+        "default_band": config["default_band"],
+        "deal_label": config["deal_label"],
+        "revenue_label": config["revenue_label"],
+        "bands": bands,
+    }

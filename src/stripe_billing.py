@@ -26,6 +26,12 @@ BASE_URL = "https://api.stripe.com/v1"
 # consommés d'un mois sur l'autre).
 DEFAULT_PLAN_CREDITS = 1000
 
+# Essai gratuit du tunnel fondateurs (/founders) : la carte est demandée à
+# l'entrée, rien n'est prélevé pendant l'essai, l'abonnement démarre tout seul
+# ensuite. Stripe tient l'horloge — l'app n'a aucune date d'expiration à surveiller
+# ni aucun accès à refermer à la main.
+DEFAULT_TRIAL_DAYS = 7
+
 # Fenêtre de tolérance sur l'horodatage de la signature du webhook (rejeu tardif).
 WEBHOOK_TOLERANCE_S = 300
 
@@ -58,6 +64,59 @@ def plan_credits() -> int:
     except ValueError:
         return DEFAULT_PLAN_CREDITS
     return value if value > 0 else DEFAULT_PLAN_CREDITS
+
+
+def trial_days() -> int:
+    """Durée de l'essai gratuit, en jours (0 = essai désactivé).
+
+    Stripe refuse un essai de plus de 730 jours ; on borne largement avant pour
+    qu'une variable d'env mal saisie ne crée pas un abonnement gratuit à vie.
+    """
+    raw = os.environ.get("STRIPE_TRIAL_DAYS")
+    try:
+        value = int(raw) if raw else DEFAULT_TRIAL_DAYS
+    except ValueError:
+        return DEFAULT_TRIAL_DAYS
+    return max(0, min(value, 90))
+
+
+def trial_credits() -> int:
+    """Crédits accordés au démarrage de l'essai.
+
+    Par défaut ceux du forfait : un essai qui ne permet pas d'aller au bout d'une
+    analyse puis d'une génération ne démontre rien. Surchargeable
+    (`STRIPE_TRIAL_CREDITS`) si l'exposition devient un sujet.
+    """
+    raw = os.environ.get("STRIPE_TRIAL_CREDITS")
+    try:
+        value = int(raw) if raw else 0
+    except ValueError:
+        return plan_credits()
+    return value if value > 0 else plan_credits()
+
+
+def granted_trial_days(subscription: dict[str, Any] | None, requested: bool = True) -> int:
+    """Jours d'essai auxquels ce compte a droit (0 = paiement immédiat).
+
+    Règle unique, écrite ici et nulle part ailleurs : **un essai n'est accordé
+    qu'à un compte qui n'a jamais eu d'abonnement**. Elle sert à deux endroits qui
+    doivent dire exactement la même chose — l'écran (« 7 jours gratuits ») et la
+    session Checkout réellement ouverte. Deux implémentations finiraient par
+    diverger, et l'écart s'appellerait « le bouton promet un essai, Stripe
+    présente une facture ».
+
+    `stripe_customer_id` seul ne compte pas : il est posé dès la première visite
+    de la page de paiement, avant tout abonnement.
+    """
+    if not requested:
+        return 0
+    days = trial_days()
+    if days <= 0:
+        return 0
+    row = subscription or {}
+    if row.get("status") or row.get("stripe_subscription_id"):
+        return 0
+    return days
 
 
 def _tax_enabled() -> bool:
@@ -131,9 +190,17 @@ def create_customer(user_id: str, email: str | None) -> dict[str, Any]:
 
 
 def create_checkout_session(
-    customer_id: str, user_id: str, success_url: str, cancel_url: str
+    customer_id: str,
+    user_id: str,
+    success_url: str,
+    cancel_url: str,
+    trial_days: int | None = None,
 ) -> dict[str, Any]:
-    """Session Checkout en mode abonnement (page de paiement hébergée par Stripe)."""
+    """Session Checkout en mode abonnement (page de paiement hébergée par Stripe).
+
+    `trial_days` > 0 ⇒ essai gratuit : la carte est enregistrée, rien n'est
+    prélevé avant la fin de l'essai, puis l'abonnement démarre seul.
+    """
     payload: dict[str, Any] = {
         "mode": "subscription",
         "customer": customer_id,
@@ -148,6 +215,17 @@ def create_checkout_session(
         "subscription_data": {"metadata": {"user_id": user_id}},
         "allow_promotion_codes": True,  # comptes internes/démo : code promo 100 %
     }
+    if trial_days and trial_days > 0:
+        payload["subscription_data"]["trial_period_days"] = int(trial_days)
+        # Carte exigée dès l'entrée (`payment_method_collection: always`) ET essai
+        # annulé si elle disparaît d'ici la fin : sans ces deux réglages, Stripe
+        # peut créer un abonnement sans moyen de paiement, qui tombe en `unpaid`
+        # au 8ᵉ jour — l'app le lirait encore comme un accès légitime alors que
+        # rien ne sera jamais encaissé.
+        payload["payment_method_collection"] = "always"
+        payload["subscription_data"]["trial_settings"] = {
+            "end_behavior": {"missing_payment_method": "cancel"}
+        }
     if _tax_enabled():
         payload["automatic_tax"] = {"enabled": True}
         payload["customer_update"] = {"address": "auto"}
