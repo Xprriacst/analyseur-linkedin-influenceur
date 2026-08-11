@@ -29,6 +29,7 @@ import {
   Lock,
   Mail,
   MessageSquare,
+  Rocket,
   Sparkles,
   Target,
   Users,
@@ -83,9 +84,10 @@ export type OnbBand = {
 
 // --- Onboarding « Cible » : wizard accueil → scan → analyse → confirmation ---
 //
-// Sur la landing (`leadFunnel`), le parcours ne s'arrête pas à la confirmation :
-// il enchaîne sur les gains projetés, une simulation « avant / après », puis
-// l'échange audit complet ↔ coordonnées, et se termine sur la prise de rendez-vous.
+// Sur les tunnels de landing, le parcours ne s'arrête pas à la confirmation : il
+// enchaîne sur les gains projetés puis une simulation « avant / après ». Il se
+// termine soit sur l'échange audit complet ↔ coordonnées (/start), soit sur le
+// démarrage de l'essai gratuit (/founders).
 type OnbStep =
   | "intro"
   | "scanning"
@@ -133,6 +135,107 @@ const ONB_INDUSTRY_OPTIONS: OnbOption[] = [
   { label: "Conseil & Services", match: ["conseil", "service", "consulting", "cabinet"] },
   { label: "E-commerce", match: ["e-commerce", "ecommerce", "retail", "boutique"] },
 ];
+
+// --- Variante « fondateurs SaaS » (/founders) --------------------------------
+//
+// Ce ne sont PAS les mêmes questions traduites : un fondateur de SaaS ne se
+// reconnaît ni dans « Coachs & consultants » ni dans « Des prestations
+// sur-mesure ». Des chips où personne ne se retrouve poussent tout le monde vers
+// « Autre », et le profil éditorial reparti en texte libre perd la qualification
+// que ces écrans existent pour produire.
+
+const ONB_SAAS_AUDIENCE_OPTIONS: OnbOption[] = [
+  { label: "Fondateurs & CEO de SaaS", match: ["fondateur", "founder", "ceo", "saas"] },
+  { label: "CTO & équipes tech", match: ["cto", "tech lead", "développeur", "engineering", "dev"] },
+  { label: "Head of Growth / Marketing", match: ["growth", "marketing", "cmo", "acquisition"] },
+  { label: "Product managers", match: ["product", "pm", "produit"] },
+  { label: "Ops & RevOps", match: ["ops", "revops", "opérations"] },
+  { label: "PME en digitalisation", match: ["pme", "tpe", "dirigeant", "digitalisation"] },
+  { label: "Investisseurs & VCs", match: ["investisseur", "vc", "business angel", "fonds"] },
+];
+
+const ONB_SAAS_OFFER_OPTIONS: OnbOption[] = [
+  { label: "Un SaaS en self-serve", match: ["self-serve", "freemium", "abonnement", "plg"] },
+  { label: "Un SaaS vendu en démo", match: ["démo", "demo", "sales", "b2b", "saas", "logiciel"] },
+  { label: "Une API / de l'infra dev", match: ["api", "infra", "sdk", "devtool", "librairie"] },
+  { label: "Une marketplace / plateforme", match: ["marketplace", "plateforme", "place de marché"] },
+  { label: "Un produit IA", match: ["ia", "ai", "llm", "intelligence artificielle", "agent"] },
+  { label: "Du service autour du produit", match: ["service", "intégration", "onboarding", "conseil", "prestation"] },
+];
+
+const ONB_SAAS_OBJECTIVE_OPTIONS: OnbOption[] = [
+  { label: "Générer des démos qualifiées", match: ["démo", "demo", "lead", "prospect", "rendez-vous", "pipeline"] },
+  { label: "Trouver mes premiers clients", match: ["premier client", "traction", "early adopter", "acquisition"] },
+  { label: "Construire ma marque de fondateur", match: ["notoriété", "personal branding", "marque", "visibilité", "audience"] },
+  { label: "Recruter (tech, sales)", match: ["recrut", "talent", "embauche", "hiring", "équipe"] },
+  { label: "Préparer une levée", match: ["levée", "fundraising", "investisseur", "seed", "série a"] },
+  { label: "Fédérer une communauté d'utilisateurs", match: ["communauté", "community", "utilisateurs", "users"] },
+];
+
+const ONB_SAAS_INDUSTRY_OPTIONS: OnbOption[] = [
+  { label: "IA & LLM", match: ["ia", "ai", "llm", "intelligence artificielle", "machine learning"] },
+  { label: "DevTools & infra", match: ["devtool", "infra", "cloud", "api", "engineering"] },
+  { label: "Fintech", match: ["fintech", "paiement", "banque", "finance", "compta"] },
+  { label: "Data & analytics", match: ["data", "analytics", "bi", "reporting"] },
+  { label: "Vertical SaaS (santé, immo, industrie…)", match: ["santé", "immo", "industrie", "vertical", "legal", "retail"] },
+  { label: "Marketing & Growth tech", match: ["marketing", "growth", "crm", "ads"] },
+  { label: "HR tech", match: ["rh", "hr", "recrutement", "talent"] },
+  { label: "Cybersécurité", match: ["cyber", "sécurité", "security", "soc"] },
+];
+
+/** Ce qui change d'une audience de tunnel à l'autre : les chips et les mots. */
+type OnbVariant = {
+  /** Audience envoyée au serveur — décide de la grille de paliers de la projection. */
+  audience: string;
+  introTitle: string;
+  introSubtitle: string;
+  audienceLabel: string;
+  offerLabel: string;
+  objectiveLabel: string;
+  industryLabel: string;
+  gainsTitle: string;
+  gainsIntro: string;
+  audienceOptions: OnbOption[];
+  offerOptions: OnbOption[];
+  objectiveOptions: OnbOption[];
+  industryOptions: OnbOption[];
+};
+
+const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
+  default: {
+    audience: "default",
+    introTitle: "Bienvenue sur Cible",
+    introSubtitle: "Colle ton profil LinkedIn, on prépare tout le reste pour toi.",
+    audienceLabel: "À qui tu t'adresses ?",
+    offerLabel: "Ce que tu proposes",
+    objectiveLabel: "Ton objectif sur LinkedIn",
+    industryLabel: "Ton secteur",
+    gainsTitle: "Ce que tu peux gagner",
+    gainsIntro:
+      "En tenant ton LinkedIn et en prospectant les bonnes personnes, voici ce que donne un trimestre.",
+    audienceOptions: ONB_AUDIENCE_OPTIONS,
+    offerOptions: ONB_OFFER_OPTIONS,
+    objectiveOptions: ONB_OBJECTIVE_OPTIONS,
+    industryOptions: ONB_INDUSTRY_OPTIONS,
+  },
+  saas: {
+    audience: "saas",
+    introTitle: "Le LinkedIn qui remplit ton pipeline",
+    introSubtitle:
+      "Colle ton profil de fondateur : on lit ton positionnement et on te montre ce que ça peut rapporter à ton SaaS.",
+    audienceLabel: "Ton ICP — à qui tu vends ?",
+    offerLabel: "Ce que tu vends",
+    objectiveLabel: "Ce que tu attends de LinkedIn",
+    industryLabel: "Ta catégorie de produit",
+    gainsTitle: "Ce que ça peut rapporter à ton SaaS",
+    gainsIntro:
+      "En publiant régulièrement et en prospectant ton ICP depuis l'app, voici ce que donne un trimestre.",
+    audienceOptions: ONB_SAAS_AUDIENCE_OPTIONS,
+    offerOptions: ONB_SAAS_OFFER_OPTIONS,
+    objectiveOptions: ONB_SAAS_OBJECTIVE_OPTIONS,
+    industryOptions: ONB_SAAS_INDUSTRY_OPTIONS,
+  },
+};
 
 const ONB_SCAN_STEPS = [
   "Lecture de ton profil…",
@@ -195,15 +298,15 @@ function onbJoin(f: OnbField): string {
   return [...f.picks, f.other.trim()].filter(Boolean).join(", ");
 }
 
-function onbInitSel(d: Record<string, string>) {
-  const audience = onbField(d.target_audience, ONB_AUDIENCE_OPTIONS);
+function onbInitSel(d: Record<string, string>, variant: OnbVariant) {
+  const audience = onbField(d.target_audience, variant.audienceOptions);
   return {
     displayName: (d.display_name || "").trim(),
     audienceMode: (audience.picks.length || audience.other ? "niche" : "") as "" | "niche" | "large",
     audience,
-    offer: onbField(d.core_offer, ONB_OFFER_OPTIONS),
-    objective: onbField(d.linkedin_objective, ONB_OBJECTIVE_OPTIONS),
-    industry: onbField(d.industry, ONB_INDUSTRY_OPTIONS),
+    offer: onbField(d.core_offer, variant.offerOptions),
+    objective: onbField(d.linkedin_objective, variant.objectiveOptions),
+    industry: onbField(d.industry, variant.industryOptions),
   };
 }
 
@@ -260,7 +363,9 @@ function OnbChips({ options, field, onChange, placeholder }: {
 
 export default function OnboardingScreen({
   anonymous = false,
-  leadFunnel = false,
+  funnel = "app",
+  variant: variantKey = "default",
+  trialDays = 7,
   onFinish,
   onSkip,
   finishLabel = "C'est parti",
@@ -268,29 +373,53 @@ export default function OnboardingScreen({
   /** true = visiteur sans compte : analyse via la route publique, réponses rendues à l'appelant. */
   anonymous?: boolean;
   /**
-   * true = landing : après les questions, on enchaîne sur les gains projetés et
-   * l'échange « audit complet contre coordonnées » plutôt que sur la création de
-   * compte. Le wizard in-app (compte déjà créé) ne doit jamais voir ces écrans.
+   * Ce qui suit les questions :
+   *  - `app`   : rien de plus — le wizard in-app (compte déjà créé) rend la main.
+   *  - `audit` : gains projetés → simulation → coordonnées → audit par e-mail (/start).
+   *  - `trial` : gains projetés → simulation → essai gratuit (/founders). Pas de
+   *    formulaire de coordonnées : l'e-mail est capturé par la création de compte,
+   *    en demander un ici serait le demander deux fois.
    */
-  leadFunnel?: boolean;
+  funnel?: "app" | "audit" | "trial";
+  /** Jeu de questions et de formulations (`saas` = tunnel fondateurs). */
+  variant?: "default" | "saas";
+  /**
+   * Durée de l'essai annoncée sur le bouton final (`funnel="trial"`).
+   * Elle vient du serveur via l'appelant, jamais d'une constante : un bouton qui
+   * promet 7 jours quand Stripe en accorde 14 (ou zéro) est un mensonge que rien
+   * ne rattrape ensuite.
+   */
+  trialDays?: number;
   /** Reçoit le profil complet. L'appelant décide : enregistrer, ou emmener vers l'inscription. */
   onFinish: (profile: OnboardingProfile) => void | Promise<void>;
   /** « Passer » — l'utilisateur refuse de répondre. */
   onSkip: () => void;
   finishLabel?: string;
 }) {
+  const variant = ONB_VARIANTS[variantKey] || ONB_VARIANTS.default;
+  // Les écrans de projection sont communs aux deux tunnels de landing ; seul ce
+  // qui les suit diffère.
+  const showsProjection = funnel === "audit" || funnel === "trial";
   const [step, setStep] = useState<OnbStep>("intro");
   const [aiInput, setAiInput] = useState("");
   const [error, setError] = useState("");
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [preview, setPreview] = useState<OnboardingPreview | null>(null);
-  const [sel, setSel] = useState(() => onbInitSel({}));
+  const [sel, setSel] = useState(() => onbInitSel({}, variant));
   const [saving, setSaving] = useState(false);
   const [scanIdx, setScanIdx] = useState(0);
 
   // --- Tunnel « audit complet » (landing uniquement) ---
   const [bands, setBands] = useState<OnbBand[]>([]);
-  const [bandKey, setBandKey] = useState<string>("mid");
+  // Renseigné par la réponse du serveur (`default_band`) : les clés de paliers
+  // diffèrent d'une audience à l'autre, en coder une en dur ici ferait retomber
+  // l'écran SaaS sur le premier palier venu.
+  const [bandKey, setBandKey] = useState<string>("");
+  // Libellés des montants, fournis par le serveur avec les paliers : la grille
+  // SaaS raisonne en ARR signé, pas en chiffre d'affaires du mois. Les écrire en
+  // dur côté navigateur les ferait mentir dès que la grille change côté serveur.
+  const [dealLabel, setDealLabel] = useState("Ton panier moyen");
+  const [revenueLabel, setRevenueLabel] = useState("Chiffre d'affaires mensuel supplémentaire");
   const [lead, setLead] = useState({ name: "", email: "", phone: "" });
   const [leadError, setLeadError] = useState("");
   const [calendlyUrl, setCalendlyUrl] = useState("");
@@ -351,7 +480,7 @@ export default function OnboardingScreen({
       const [data] = await Promise.all([fetchDraft, minWait]);
       const d = (data.profile || {}) as Record<string, string>;
       setDraft(d);
-      setSel(onbInitSel(d));
+      setSel(onbInitSel(d, variant));
       const p = data.preview && data.preview.niche && data.preview.summary ? data.preview : null;
       setPreview(p);
       // L'analyse s'affiche sur les DEUX parcours (public /start ET wizard d'un
@@ -404,6 +533,7 @@ export default function OnboardingScreen({
           followers: preview?.followers || 0,
           connections: preview?.connections || 0,
           posts_count: preview?.posts_count || 0,
+          audience: variant.audience,
         }),
       });
       if (!res.ok) throw new Error("projection indisponible");
@@ -412,7 +542,13 @@ export default function OnboardingScreen({
       if (list.length === 0) throw new Error("projection vide");
       setBands(list);
       setBandKey(data?.default_band || list[0].key);
+      if (data?.deal_label) setDealLabel(data.deal_label);
+      if (data?.revenue_label) setRevenueLabel(data.revenue_label);
     } catch {
+      // Projection injoignable : on ne bloque pas le parcours sur un écran de mise
+      // en scène. Le tunnel audit passe au formulaire, le tunnel essai va droit à
+      // la création de compte — dans les deux cas, l'étape utile est atteinte.
+      if (funnel === "trial") { void finish(); return; }
       setStep("lead_form");
     }
   }
@@ -498,8 +634,8 @@ export default function OnboardingScreen({
         {step === "intro" && (
           <div className="onb-screen" key="intro">
             <div className="onb-icon-badge"><Target size={26} /></div>
-            <h1 className="onb-title">Bienvenue sur Cible</h1>
-            <p className="onb-subtitle">Colle ton profil LinkedIn, on prépare tout le reste pour toi.</p>
+            <h1 className="onb-title">{variant.introTitle}</h1>
+            <p className="onb-subtitle">{variant.introSubtitle}</p>
             <div className="onb-input-row">
               <input
                 className="onb-input"
@@ -667,7 +803,7 @@ export default function OnboardingScreen({
             </div>
 
             <div className="onb-block">
-              <label className="onb-block-label">À qui tu t&apos;adresses&nbsp;?</label>
+              <label className="onb-block-label">{variant.audienceLabel}</label>
               <div className="onb-toggle">
                 <button
                   type="button"
@@ -686,7 +822,7 @@ export default function OnboardingScreen({
               </div>
               {sel.audienceMode === "niche" && (
                 <OnbChips
-                  options={ONB_AUDIENCE_OPTIONS}
+                  options={variant.audienceOptions}
                   field={sel.audience}
                   onChange={(v) => up({ audience: v })}
                   placeholder="Ta niche…"
@@ -695,8 +831,8 @@ export default function OnboardingScreen({
             </div>
 
             <div className="onb-block">
-              <label className="onb-block-label">Ce que tu proposes</label>
-              <OnbChips options={ONB_OFFER_OPTIONS} field={sel.offer} onChange={(v) => up({ offer: v })} />
+              <label className="onb-block-label">{variant.offerLabel}</label>
+              <OnbChips options={variant.offerOptions} field={sel.offer} onChange={(v) => up({ offer: v })} />
             </div>
 
             <div className="onb-nav">
@@ -714,13 +850,13 @@ export default function OnboardingScreen({
             <p className="onb-lead">Deux derniers points et c&apos;est parti — ensuite tu crées ton compte.</p>
 
             <div className="onb-block">
-              <label className="onb-block-label">Ton objectif sur LinkedIn</label>
-              <OnbChips options={ONB_OBJECTIVE_OPTIONS} field={sel.objective} onChange={(v) => up({ objective: v })} />
+              <label className="onb-block-label">{variant.objectiveLabel}</label>
+              <OnbChips options={variant.objectiveOptions} field={sel.objective} onChange={(v) => up({ objective: v })} />
             </div>
 
             <div className="onb-block">
-              <label className="onb-block-label">Ton secteur</label>
-              <OnbChips options={ONB_INDUSTRY_OPTIONS} field={sel.industry} onChange={(v) => up({ industry: v })} />
+              <label className="onb-block-label">{variant.industryLabel}</label>
+              <OnbChips options={variant.industryOptions} field={sel.industry} onChange={(v) => up({ industry: v })} />
             </div>
 
             <div className="onb-nav">
@@ -730,11 +866,11 @@ export default function OnboardingScreen({
               <button
                 type="button"
                 className="onb-cta"
-                onClick={leadFunnel ? toGains : finish}
+                onClick={showsProjection ? toGains : finish}
                 disabled={saving}
               >
                 {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />}{" "}
-                {leadFunnel ? "Voir ce que je peux gagner" : finishLabel}
+                {showsProjection ? "Voir ce que je peux gagner" : finishLabel}
               </button>
             </div>
           </div>
@@ -742,10 +878,9 @@ export default function OnboardingScreen({
 
         {step === "gains" && (
           <div className="onb-screen onb-analysis" key="gains">
-            <h2 className="onb-analysis-title">Ce que tu peux gagner</h2>
+            <h2 className="onb-analysis-title">{variant.gainsTitle}</h2>
             <p className="onb-analysis-summary" style={{ opacity: 0.8 }}>
-              En tenant ton LinkedIn et en prospectant les bonnes personnes, voici ce que
-              donne un trimestre.
+              {variant.gainsIntro}
             </p>
 
             {!projection ? (
@@ -780,7 +915,7 @@ export default function OnboardingScreen({
                 </div>
 
                 <div className="onb-analysis-block">
-                  <div className="onb-analysis-label">Ton panier moyen</div>
+                  <div className="onb-analysis-label">{dealLabel}</div>
                   <div className="onb-analysis-tags">
                     {bands.map((b) => (
                       <button
@@ -797,7 +932,7 @@ export default function OnboardingScreen({
                 </div>
 
                 <div className="onb-gain-highlight">
-                  <div className="onb-gain-label">Chiffre d&apos;affaires mensuel supplémentaire</div>
+                  <div className="onb-gain-label">{revenueLabel}</div>
                   <div className="onb-gain-money">{fmtRange(projection.revenue_per_month, fmtMoney)}</div>
                 </div>
 
@@ -853,9 +988,27 @@ export default function OnboardingScreen({
               Aucune donnée réelle de ton compte n&apos;est modifiée.
             </div>
 
-            <button type="button" className="onb-analysis-cta" onClick={() => setStep("lead_form")}>
-              Recevoir mon audit complet gratuit
-            </button>
+            {funnel === "trial" ? (
+              <>
+                <button
+                  type="button"
+                  className="onb-analysis-cta"
+                  onClick={finish}
+                  disabled={saving}
+                >
+                  {saving ? <Loader2 size={16} className="spinning" /> : <Rocket size={16} />}{" "}
+                  Démarrer mes {trialDays} jours gratuits
+                </button>
+                <div className="onb-note" style={{ textAlign: "center" }}>
+                  Accès complet à Cibl pendant {trialDays} jours. Résiliable en un clic
+                  avant la fin — on ne prélève rien d&apos;ici là.
+                </div>
+              </>
+            ) : (
+              <button type="button" className="onb-analysis-cta" onClick={() => setStep("lead_form")}>
+                Recevoir mon audit complet gratuit
+              </button>
+            )}
             <button type="button" className="onb-analysis-skip" onClick={() => setStep("gains")}>
               ← Retour aux chiffres
             </button>

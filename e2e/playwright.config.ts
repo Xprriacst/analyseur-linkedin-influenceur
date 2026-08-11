@@ -27,15 +27,20 @@ export default defineConfig({
   projects: [
     { name: "setup", testMatch: /auth\.setup\.ts/ },
     {
-      // Parcours sans compte : landing + tunnel audit complet de /start
-      // (backend mocké dans les specs — aucun login, aucun coût).
+      // Parcours sans compte : landing, tunnel audit complet de /start et tunnel
+      // fondateurs SaaS de /founders (backend mocké — aucun login, aucun coût).
       name: "public",
-      testMatch: /smoke\.spec\.ts|audit-funnel\.spec\.ts/,
+      testMatch: /smoke\.spec\.ts|audit-funnel\.spec\.ts|founders-funnel\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
     },
     {
       name: "authenticated",
-      testIgnore: [/smoke\.spec\.ts/, /audit-funnel\.spec\.ts/, /cross-user-isolation\.spec\.ts/],
+      testIgnore: [
+        /smoke\.spec\.ts/,
+        /audit-funnel\.spec\.ts/,
+        /founders-funnel\.spec\.ts/,
+        /cross-user-isolation\.spec\.ts/,
+      ],
       dependencies: ["setup"],
       use: {
         ...devices["Desktop Chrome"],

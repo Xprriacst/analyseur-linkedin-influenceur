@@ -1,45 +1,49 @@
 "use client";
 
 /**
- * Parcours d'entrée (/start) — l'ordre est le sujet de cette page.
+ * Tunnel fondateurs SaaS (/founders) — variante de /start pour une autre cible et
+ * une autre promesse de sortie.
  *
- *   onboarding (sans compte) → compte → paiement → app
+ *   onboarding SaaS (sans compte) → compte → essai 7 jours → app
  *
- * On montre le travail AVANT de demander l'e-mail et la carte. D'où deux
- * contraintes qui expliquent tout le code ci-dessous :
+ * Deux différences avec /start, et elles sont volontaires :
  *
- *  1. Les réponses sont recueillies avant qu'un compte existe → elles vivent dans
- *     sessionStorage le temps du parcours. S'il ferme l'onglet avant l'inscription,
- *     c'est perdu — assumé.
- *  2. ⚠️ Le profil DOIT être enregistré avant de partir sur Stripe. Une fois
- *     redirigé, cette page est détruite : ce qui n'est pas parti en base est perdu,
- *     et le client reviendrait payé mais avec un onboarding à refaire — exactement
- *     ce que ce parcours existe pour éviter.
+ *  1. **Les questions ne sont pas les mêmes** (`variant="saas"`) : un fondateur de
+ *     SaaS ne se reconnaît pas dans « Coachs & consultants » ni dans « Des
+ *     prestations sur-mesure », et ses montants se raisonnent en ACV, pas en
+ *     panier de prestation. Des chips où personne ne se retrouve renvoient tout le
+ *     monde vers « Autre » et vident la qualification de son sens.
+ *  2. **La sortie n'est pas la prise de rendez-vous mais l'essai** (`funnel="trial"`) :
+ *     pas de formulaire nom/e-mail/téléphone, l'e-mail est capturé par la création
+ *     de compte. Le demander avant serait le demander deux fois.
  *
- * ⚠️ Si l'inscription échoue APRÈS que le compte a été créé (paiement injoignable),
- * on ne renvoie pas au début : le compte existe, le profil est enregistré, il ne
- * manque que le paiement. On propose donc de reprendre, pas de recommencer.
+ * ⚠️ La réserve de réponses porte une clé DISTINCTE de celle de /start. Les deux
+ * tunnels ne posent pas les mêmes questions : partager la clé ferait ressortir,
+ * dans l'un, des réponses cochées dans les chips de l'autre.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Loader2 } from "lucide-react";
+import { ArrowRight, CheckCircle2, Loader2, Rocket } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
 import OnboardingScreen, { type OnboardingProfile } from "../components/Onboarding";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
 
-/** Les réponses de l'onboarding, le temps d'arriver jusqu'à la création du compte. */
-const PENDING_PROFILE_KEY = "cibl_pending_profile";
+const PENDING_PROFILE_KEY = "cibl_pending_profile_founders";
+
+/** Repli d'affichage si `/billing/plan` est injoignable — le serveur reste l'arbitre. */
+const FALLBACK_TRIAL_DAYS = 7;
 
 type Phase = "onboarding" | "account";
 
-export default function StartPage() {
+export default function FoundersPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>("onboarding");
   const [profile, setProfile] = useState<OnboardingProfile | null>(null);
+  const [trialDays, setTrialDays] = useState(FALLBACK_TRIAL_DAYS);
   const [mode, setMode] = useState<"signup" | "signin">("signup");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -55,6 +59,19 @@ export default function StartPage() {
     })();
   }, [router]);
 
+  // Durée réelle de l'essai, lue côté serveur : le bouton final l'annonce, il ne
+  // doit pas promettre une durée que Stripe n'accorde pas.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/billing/plan`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (typeof data?.trial_days === "number" && data.trial_days > 0) setTrialDays(data.trial_days);
+      } catch { /* repli silencieux sur la valeur par défaut */ }
+    })();
+  }, []);
+
   // Reprise après un rechargement en cours de parcours.
   useEffect(() => {
     try {
@@ -66,14 +83,12 @@ export default function StartPage() {
     } catch { /* parcours reparti de zéro — sans gravité */ }
   }, []);
 
-  /** Fin de l'onboarding : on garde les réponses sous la main et on demande le compte. */
   const onboardingDone = useCallback((p: OnboardingProfile) => {
     setProfile(p);
     try { sessionStorage.setItem(PENDING_PROFILE_KEY, JSON.stringify(p)); } catch { /* ignore */ }
     setPhase("account");
   }, []);
 
-  /** Il refuse de répondre : on demande quand même le compte, profil vide. */
   const onboardingSkipped = useCallback(() => {
     setProfile(null);
     try { sessionStorage.removeItem(PENDING_PROFILE_KEY); } catch { /* ignore */ }
@@ -81,8 +96,9 @@ export default function StartPage() {
   }, []);
 
   /**
-   * Enregistre le profil recueilli avant l'inscription, sur le compte fraîchement créé.
-   * ⚠️ Doit réussir AVANT la redirection Stripe : après, cette page n'existe plus.
+   * Enregistre le profil recueilli avant l'inscription, sur le compte tout juste créé.
+   * ⚠️ Doit réussir AVANT de quitter cette page : une fois partie sur Stripe, elle
+   * n'existe plus et les réponses seraient perdues.
    */
   async function persistProfile() {
     if (!profile) return;
@@ -96,19 +112,14 @@ export default function StartPage() {
         try { sessionStorage.removeItem(PENDING_PROFILE_KEY); } catch { /* ignore */ }
       }
     } catch {
-      // Best effort : mieux vaut un client qui paie et refait son profil qu'un
-      // client bloqué au paiement parce que l'enregistrement a hoqueté.
+      // Best effort, même arbitrage que /start : mieux vaut un compte qui démarre
+      // son essai et refait son profil qu'un compte bloqué ici.
     }
   }
 
-  /**
-   * Compte prêt (session active) → on enregistre le profil, puis direction la page
-   * de paiement. On ne part PAS sur Stripe ici : capturer l'e-mail (le compte) est
-   * une étape à part, l'offre et le paiement se révèlent sur /paiement.
-   */
-  async function toPayment() {
+  async function toTrial() {
     await persistProfile();
-    router.push("/paiement");
+    router.push("/essai");
   }
 
   async function submit(e: React.FormEvent) {
@@ -120,7 +131,7 @@ export default function StartPage() {
       if (mode === "signin") {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        await toPayment();
+        await toTrial();
         return; // redirection en cours — on garde le spinner
       }
 
@@ -133,21 +144,17 @@ export default function StartPage() {
       if (error) throw error;
 
       if (data.session) {
-        await toPayment();
+        await toTrial();
         return;
       }
 
-      // Confirmation d'e-mail activée : pas de session, donc ni enregistrement du
-      // profil ni paiement possibles maintenant. Les réponses restent en réserve.
       setInfo(
-        "Compte créé ! Confirme ton e-mail, puis reviens ici : on enregistre ton profil et on passe au paiement."
+        `Compte créé ! Confirme ton e-mail, puis reviens ici : on enregistre ton profil et on lance tes ${trialDays} jours gratuits.`
       );
       setMode("signin");
       setLoading(false);
     } catch (err: any) {
       const msg = err?.message || "Une erreur est survenue.";
-      // L'e-mail existe déjà : inutile de lui refaire remplir l'onboarding, ses
-      // réponses sont en réserve et seront posées sur son compte à la connexion.
       if (/already registered|already been registered|user already exists/i.test(msg)) {
         setMode("signin");
         setError("Tu as déjà un compte avec cet e-mail. Connecte-toi : on garde tes réponses.");
@@ -162,7 +169,9 @@ export default function StartPage() {
     return (
       <OnboardingScreen
         anonymous
-        funnel="audit"
+        funnel="trial"
+        variant="saas"
+        trialDays={trialDays}
         onFinish={onboardingDone}
         onSkip={onboardingSkipped}
         finishLabel="Continuer"
@@ -183,15 +192,32 @@ export default function StartPage() {
     >
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16, width: "100%" }}>
         <form onSubmit={submit} className="auth-card" style={{ maxWidth: 420, padding: 32, gap: 6 }}>
+          <span
+            style={{
+              alignSelf: "center",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 11px",
+              borderRadius: 20,
+              fontSize: 12,
+              fontWeight: 600,
+              color: "var(--primary)",
+              background: "rgba(70,72,212,0.08)",
+              border: "1px solid rgba(70,72,212,0.18)",
+              marginBottom: 6,
+            }}
+          >
+            <Rocket size={12} /> {trialDays} jours gratuits
+          </span>
+
           <h2 className="auth-title" style={{ fontSize: 22 }}>
-            {mode === "signup" ? "Ton profil est prêt" : "Connecte-toi pour continuer"}
+            {mode === "signup" ? "Crée ton compte fondateur" : "Connecte-toi pour continuer"}
           </h2>
           <p className="auth-sub">
             {mode === "signup"
-              ? profile
-                ? "On a tout ce qu'il faut. Crée ton compte pour le garder — dernière étape juste après."
-                : "Crée ton compte pour continuer."
-              : "On récupère ton profil et on continue."}
+              ? `Dernière étape avant tes ${trialDays} jours d'accès complet.`
+              : "On récupère ton profil et on lance ton essai."}
           </p>
 
           {profile && (
@@ -208,8 +234,8 @@ export default function StartPage() {
             >
               {[
                 profile.display_name && `Profil : ${profile.display_name}`,
-                profile.target_audience && `Cible : ${profile.target_audience}`,
-                profile.core_offer && `Offre : ${profile.core_offer}`,
+                profile.target_audience && `ICP : ${profile.target_audience}`,
+                profile.core_offer && `Produit : ${profile.core_offer}`,
               ]
                 .filter(Boolean)
                 .map((line) => (
@@ -228,7 +254,7 @@ export default function StartPage() {
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="toi@exemple.com"
+            placeholder="toi@ton-saas.com"
             autoComplete="email"
           />
 
@@ -247,7 +273,6 @@ export default function StartPage() {
           {error && <div className="error" style={{ marginTop: 10 }}>{error}</div>}
           {info && <div className="auth-info" style={{ marginTop: 10 }}>{info}</div>}
 
-          {/* display:flex — sinon la flèche du libellé retombe à la ligne. */}
           <button
             className="auth-submit"
             type="submit"

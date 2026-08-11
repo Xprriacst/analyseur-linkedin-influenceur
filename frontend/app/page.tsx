@@ -1673,12 +1673,23 @@ function Sidebar({
                     billing.status.current_period_end
                       ? billing.status.cancel_at_period_end
                         ? `Résiliation programmée : accès jusqu'au ${formatBillingDate(billing.status.current_period_end)}.`
-                        : `Prochain rechargement le ${formatBillingDate(billing.status.current_period_end)}.`
+                        : billing.status.trialing
+                          ? `Essai gratuit : l'abonnement démarre le ${formatBillingDate(billing.status.current_period_end)}. Résiliable d'ici là.`
+                          : `Prochain rechargement le ${formatBillingDate(billing.status.current_period_end)}.`
                       : "Gérer mon abonnement (carte, factures, résiliation)"
                   }
                 >
                   {billing.busy ? <Loader2 size={11} className="spinning" /> : null}
-                  {billing.status.cancel_at_period_end ? "Abonnement : se termine bientôt" : "Abonnement actif"} · Gérer
+                  {/* L'essai est un état à part entière : le montrer comme un
+                      « abonnement actif » ferait découvrir le premier prélèvement
+                      sans prévenir, alors que la date de bascule est connue. */}
+                  {billing.status.cancel_at_period_end
+                    ? "Abonnement : se termine bientôt"
+                    : billing.status.trialing
+                      ? billing.status.current_period_end
+                        ? `Essai gratuit jusqu'au ${formatBillingDate(billing.status.current_period_end)}`
+                        : "Essai gratuit en cours"
+                      : "Abonnement actif"} · Gérer
                 </button>
               ) : (
                 <button
@@ -2761,6 +2772,7 @@ type BillingStatus = {
   enabled: boolean;          // clés Stripe posées côté serveur
   subscribed: boolean;       // abonnement en cours (actif / essai / impayé en cours de relance)
   status: string | null;
+  trialing: boolean;         // essai gratuit en cours (rien n'a encore été prélevé)
   cancel_at_period_end: boolean;
   current_period_end: string | null;
   has_customer: boolean;
