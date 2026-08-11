@@ -28,6 +28,7 @@ import Link from "next/link";
 import { ArrowRight, CheckCircle2, Loader2, Pencil, Rocket } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
 import OnboardingScreen, { type OnboardingProfile } from "../components/Onboarding";
+import { FOUNDERS_MONTHLY_SEATS, FOUNDERS_GUARANTEE_DAYS } from "../lib/founders";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
@@ -51,6 +52,8 @@ export default function FoundersPage() {
   const [phase, setPhase] = useState<Phase>("onboarding");
   const [profile, setProfile] = useState<OnboardingProfile | null>(null);
   const [trialDays, setTrialDays] = useState(FALLBACK_TRIAL_DAYS);
+  // Prix réel du plan (Stripe) pour le cadrage ROI du closing — repli 49 €.
+  const [planPrice, setPlanPrice] = useState(49);
   const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<"signup" | "signin">("signup");
   const [email, setEmail] = useState("");
@@ -76,6 +79,7 @@ export default function FoundersPage() {
         if (!res.ok) return;
         const data = await res.json();
         if (typeof data?.trial_days === "number" && data.trial_days > 0) setTrialDays(data.trial_days);
+        if (typeof data?.plan?.amount === "number" && data.plan.amount > 0) setPlanPrice(data.plan.amount);
       } catch { /* repli silencieux sur la valeur par défaut */ }
     })();
   }, []);
@@ -195,6 +199,9 @@ export default function FoundersPage() {
         funnel="trial"
         variant="saas"
         trialDays={trialDays}
+        planPrice={planPrice}
+        monthlySeats={FOUNDERS_MONTHLY_SEATS}
+        guaranteeDays={FOUNDERS_GUARANTEE_DAYS}
         onFinish={onboardingDone}
         onSkip={onboardingSkipped}
         finishLabel="Continuer"
