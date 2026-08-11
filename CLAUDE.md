@@ -82,6 +82,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-08-11 #7 (dev : Joëlle peut joindre des photos à une idée de post)
+- **Retour d'Alex** : « Joelle peut pas joindre de photos quand elle met une idée de post ». Le réservoir (`IdeaReservoir`, vue `ideas_only` de Joëlle) n'acceptait que du texte — pas de bouton, pas de colonne, pas d'API.
+- **Ce qui change** : bouton **« Joindre des photos »** à l'ajout d'une idée + sur chaque idée déjà en réserve (vignettes, retrait unitaire). Même contrat que Mes contenus (data URL → hébergement Zernio → `media_items`). À la génération depuis le réservoir, les photos rejoignent le post ; le cron d'idée du jour les reprend aussi (si pas de photo d'annonce). Dans la vue **À valider**, Joëlle peut aussi joindre / retirer des photos avant publication (et une image IA n'écrase plus les photos déjà jointes).
+- **Migration 0063** (`media_items` jsonb sur `idea_seeds`) — ⚠️ **PAS appliquée** (MCP Supabase sans droit DDL ici) : **à appliquer sur dev avant le test, sur prod avant la release.** Aucune env var.
+- **Tests** : `tests/test_idea_seed_media.py` (3) + e2e `post-wizard` (le POST embarque bien les images — panne silencieuse sinon).
+
 ### 2026-08-11 #6 (dev : /founders — le tunnel arrête de parler d'un LinkedIn qu'il n'a pas lu)
 - **Retours d'Alex sur dev, tous fondés sur la même faute : on avait changé la SOURCE (le site) sans adapter ce qui la restitue.** Cinq corrections.
 - ⚠️ **Le plus grave — l'analyse affirmait des choses sur un compte jamais lu** : « ta présence LinkedIn est quasi inexistante alors que ton offre parle aux founders… ». Rien dans les sources ne le soutient, et c'est dit à quelqu'un qui poste peut-être tous les jours. **Cause** : le prompt de `draft_onboarding_preview` demandait une « analyse LinkedIn » avec « paragraphe 2 : ce qui stagne » quelles que soient les sources — le modèle comblait le vide. **Fix** : le prompt se dédouble selon `has_linkedin` (présence de `linkedin_apify_profile`/`linkedin_analyzed_profile`) — sans données LinkedIn, **interdiction explicite** de dire quoi que ce soit du compte (existence, activité, qualité), et les paragraphes portent sur le **produit, le message et l'offre**. 3 tests de régression verrouillent les deux branches + la survie du schéma JSON dans la f-string.

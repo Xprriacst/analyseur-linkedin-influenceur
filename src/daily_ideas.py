@@ -64,8 +64,11 @@ def _generate_for_user(user_id: str, today: str) -> bool:
 
     # ALE-156 : si la seed est un lien d'annonce immobilière, on lit l'annonce
     # (image + infos du bien) et on ancre le post dessus, avec la photo rattachée.
+    # Photos jointes manuellement sur la seed (Joëlle) : utilisées si l'annonce
+    # n'en fournit pas, sinon l'annonce prime (c'est la source de vérité du bien).
     image_url = source_url = None
     origin = "seed" if seed else "benchmark"
+    seed_media = (seed.get("media_items") or []) if seed else []
     if seed_text and is_listing_url(seed_text):
         try:
             preview = fetch_listing_preview(seed_text, download_image=False)
@@ -78,6 +81,9 @@ def _generate_for_user(user_id: str, today: str) -> bool:
             # file, et on génère un post benchmark. Le lien défaillant est loggé.
             print(f"  · {user_id}: annonce illisible ({exc}) → post benchmark", file=sys.stderr)
             seed_text = None
+    if not image_url and seed_media:
+        first = seed_media[0] if isinstance(seed_media[0], dict) else {}
+        image_url = (first.get("url") or "").strip() or None
 
     # Commentaire d'orientation saisi par l'utilisateur (annonces) : on l'ajoute
     # au sujet pour guider la génération sans écraser l'annonce elle-même.
