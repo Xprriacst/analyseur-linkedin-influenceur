@@ -1039,6 +1039,16 @@ def draft_onboarding_preview(seed: dict[str, Any]) -> dict[str, Any] | None:
     de chiffres d'engagement absents des sources — les compteurs viennent du
     scrape, pas du modèle.
     """
+    # ⚠️ A-t-on VRAIMENT lu un compte LinkedIn ? Sur le tunnel fondateurs, l'entrée
+    # est le site du SaaS : aucun profil, aucun post. Sans cette distinction, le
+    # modèle comble le vide et affirme des choses invérifiables sur le compte du
+    # prospect (« ta présence LinkedIn est quasi inexistante ») — une phrase que
+    # rien dans les sources ne soutient, dite à quelqu'un qui poste peut-être tous
+    # les jours. C'est le genre de faux qui coûte la crédibilité de tout l'écran.
+    has_linkedin = bool(
+        (seed or {}).get("linkedin_apify_profile") or (seed or {}).get("linkedin_analyzed_profile")
+    )
+
     system = (
         "Tu es un stratège LinkedIn B2B franc et utile. Tu produis une analyse "
         "courte et personnalisée pour accrocher un prospect pendant l'onboarding. "
@@ -1046,23 +1056,44 @@ def draft_onboarding_preview(seed: dict[str, Any]) -> dict[str, Any] | None:
         "chiffre d'engagement, aucune vue, aucun taux. Si un fait manque, tu "
         "restes qualitatif. Réponds UNIQUEMENT en JSON valide, sans markdown."
     )
-    user = (
+    if not has_linkedin:
+        system += (
+            " INTERDICTION ABSOLUE : aucune donnée LinkedIn ne t'est fournie. Tu ne "
+            "dis donc RIEN sur son compte LinkedIn — ni qu'il est inexistant, ni "
+            "qu'il est peu actif, ni ce qu'il y publie, ni la qualité de son profil. "
+            "Tu ne sais pas. Tu analyses ce que tu as sous les yeux : le produit, le "
+            "marché, la promesse, la preuve — et ce que ça permettrait sur LinkedIn."
+        )
+
+    intro = (
         "À partir de ces sources, rédige une analyse LinkedIn personnalisée.\n\n"
+        if has_linkedin else
+        "À partir de ces sources (SITE / PRODUIT uniquement, aucun compte LinkedIn "
+        "analysé), rédige une analyse du positionnement et de ce qu'il permettrait "
+        "sur LinkedIn.\n\n"
+    )
+    summary_rule = (
+        "- summary : 2 ou 3 paragraphes COURTS (2-3 phrases chacun), séparés par une ligne vide (\\n\\n). Paragraphe 1 : ce qui marche. Paragraphe 2 : ce qui stagne. Paragraphe 3 : une piste concrète. Ancre-toi sur les posts fournis (formats, sujets, eng. likes/comments/reposts) sans inventer de vues. Pas de pavé : chaque paragraphe doit se lire d'un coup d'œil sur mobile."
+        if has_linkedin else
+        "- summary : 2 ou 3 paragraphes COURTS (2-3 phrases chacun), séparés par une ligne vide (\\n\\n). Paragraphe 1 : ce que le produit a de fort et de racontable (angle, preuve, chiffres présents sur le site). Paragraphe 2 : ce qui manque pour que ça se vende sur LinkedIn — parle du MESSAGE et de l'OFFRE, jamais de son compte. Paragraphe 3 : une piste de contenu concrète, tirée du site. N'écris JAMAIS une phrase du type « ta présence LinkedIn est… » : tu n'as pas cette information."
+    )
+    user = (
+        intro
         + json.dumps({"sources": seed}, ensure_ascii=False, indent=2)
-        + """
+        + f"""
 
 Règles :
 - Français, tutoiement, ton direct (pas corporate).
 - niche : 1 ligne qui résume positionnement + offre (ex. « Founder SaaS B2B, cold call artisans »).
-- summary : 2 ou 3 paragraphes COURTS (2-3 phrases chacun), séparés par une ligne vide (\\n\\n). Paragraphe 1 : ce qui marche. Paragraphe 2 : ce qui stagne. Paragraphe 3 : une piste concrète. Ancre-toi sur les posts fournis (formats, sujets, eng. likes/comments/reposts) sans inventer de vues. Pas de pavé : chaque paragraphe doit se lire d'un coup d'œil sur mobile.
+{summary_rule}
 - hook : 1 phrase d'accroche pour l'écran suivant (ex. « Tu postes sans framework clair… »).
 - hashtags : 3 à 6 hashtags pertinents (avec #).
-- strengths / improvements : exactement 3 items chacun, courts (≤ 12 mots), actionnables.
+- strengths / improvements : exactement 3 items chacun, courts (≤ 12 mots), actionnables. Les « improvements » portent sur le message, l'offre et le contenu à produire — jamais sur l'état d'un compte que tu n'as pas lu.
 - name / headline / handle : déduis-les des sources si possibles, sinon chaîne vide.
 
 Schéma JSON attendu :
-{
-  "preview": {
+{{
+  "preview": {{
     "handle": "",
     "name": "",
     "headline": "",
@@ -1072,8 +1103,8 @@ Schéma JSON attendu :
     "hashtags": ["#Exemple"],
     "strengths": ["…", "…", "…"],
     "improvements": ["…", "…", "…"]
-  }
-}"""
+  }}
+}}"""
     )
     # Modèle surchargeable pour cet appel seul (preview /start).
     # Défaut = ANTHROPIC_MODEL. Sur Render : ONBOARDING_PREVIEW_MODEL=claude-opus-5

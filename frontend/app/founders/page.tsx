@@ -25,7 +25,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Loader2, Rocket } from "lucide-react";
+import { ArrowRight, CheckCircle2, Loader2, Pencil, Rocket } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
 import OnboardingScreen, { type OnboardingProfile } from "../components/Onboarding";
 
@@ -39,11 +39,19 @@ const FALLBACK_TRIAL_DAYS = 7;
 
 type Phase = "onboarding" | "account";
 
+/** Les trois réponses qui pilotent toute la génération — donc corrigeables ici. */
+const PROFILE_FIELDS: { key: string; label: string; placeholder: string }[] = [
+  { key: "display_name", label: "Profil", placeholder: "Ton nom et prénom" },
+  { key: "target_audience", label: "ICP", placeholder: "À qui tu vends" },
+  { key: "core_offer", label: "Produit", placeholder: "Ce que tu vends" },
+];
+
 export default function FoundersPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>("onboarding");
   const [profile, setProfile] = useState<OnboardingProfile | null>(null);
   const [trialDays, setTrialDays] = useState(FALLBACK_TRIAL_DAYS);
+  const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<"signup" | "signin">("signup");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -115,6 +123,21 @@ export default function FoundersPage() {
       // Best effort, même arbitrage que /start : mieux vaut un compte qui démarre
       // son essai et refait son profil qu'un compte bloqué ici.
     }
+  }
+
+  /**
+   * Corrige une réponse avant la création du compte.
+   *
+   * ⚠️ La réserve de session est mise à jour en même temps que l'état : sans ça,
+   * un rechargement de la page (ou le retour depuis Stripe) ressusciterait la
+   * version déduite automatiquement et la correction serait perdue en silence.
+   */
+  function updateProfileField(key: string, value: string) {
+    setProfile((prev) => {
+      const next = { ...(prev || {}), [key]: value };
+      try { sessionStorage.setItem(PENDING_PROFILE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
   }
 
   async function toTrial() {
@@ -229,21 +252,49 @@ export default function FoundersPage() {
                 background: "var(--surface-low)",
                 border: "1px solid var(--border)",
                 display: "grid",
-                gap: 7,
+                gap: 10,
               }}
             >
-              {[
-                profile.display_name && `Profil : ${profile.display_name}`,
-                profile.target_audience && `ICP : ${profile.target_audience}`,
-                profile.core_offer && `Produit : ${profile.core_offer}`,
-              ]
-                .filter(Boolean)
-                .map((line) => (
-                  <div key={line as string} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13, lineHeight: 1.45 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--muted)" }}>
+                  Ce qu&apos;on a compris
+                </span>
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => setEditing((v) => !v)}
+                  style={{ fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 5 }}
+                >
+                  <Pencil size={12} /> {editing ? "Terminé" : "Modifier"}
+                </button>
+              </div>
+
+              {/* Ces trois réponses partent dans le profil éditorial et servent à
+                  TOUTE la génération ensuite. Une déduction approximative laissée
+                  telle quelle se retrouve dans chaque post produit — d'où
+                  l'édition ici, tant que la correction ne coûte qu'un clic. */}
+              {PROFILE_FIELDS.map(({ key, label, placeholder }) =>
+                editing ? (
+                  <label key={key} style={{ display: "grid", gap: 4 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--muted)" }}>{label}</span>
+                    <textarea
+                      className="auth-input"
+                      rows={key === "display_name" ? 1 : 2}
+                      value={profile[key] || ""}
+                      placeholder={placeholder}
+                      onChange={(e) => updateProfileField(key, e.target.value)}
+                      style={{ fontSize: 13, lineHeight: 1.45, resize: "vertical", minHeight: 34, padding: "8px 10px" }}
+                    />
+                  </label>
+                ) : profile[key] ? (
+                  <div key={key} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13, lineHeight: 1.45 }}>
                     <CheckCircle2 size={14} style={{ color: "var(--primary)", flexShrink: 0, marginTop: 2 }} />
-                    <span style={{ color: "var(--muted)" }}>{line}</span>
+                    <span style={{ color: "var(--muted)" }}>
+                      <strong style={{ fontWeight: 600 }}>{label}</strong> : {profile[key]}
+                    </span>
                   </div>
-                ))}
+                ) : null,
+              )}
             </div>
           )}
 

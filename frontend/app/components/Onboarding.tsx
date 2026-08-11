@@ -24,6 +24,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Globe,
   Linkedin,
   Loader2,
   Lock,
@@ -136,6 +137,13 @@ const ONB_INDUSTRY_OPTIONS: OnbOption[] = [
   { label: "E-commerce", match: ["e-commerce", "ecommerce", "retail", "boutique"] },
 ];
 
+const ONB_SCAN_STEPS = [
+  "Lecture de ton profil…",
+  "Analyse de ton audience…",
+  "Identification de ton offre…",
+  "On peaufine tout ça…",
+];
+
 // --- Variante « fondateurs SaaS » (/founders) --------------------------------
 //
 // Ce ne sont PAS les mêmes questions traduites : un fondateur de SaaS ne se
@@ -199,6 +207,8 @@ type OnbVariant = {
   industryLabel: string;
   gainsTitle: string;
   gainsIntro: string;
+  /** Étapes de l'animation de scan — elles doivent décrire la source RÉELLE. */
+  scanSteps: string[];
   audienceOptions: OnbOption[];
   offerOptions: OnbOption[];
   objectiveOptions: OnbOption[];
@@ -220,6 +230,7 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     gainsTitle: "Ce que tu peux gagner",
     gainsIntro:
       "En tenant ton LinkedIn et en prospectant les bonnes personnes, voici ce que donne un trimestre.",
+    scanSteps: ONB_SCAN_STEPS,
     audienceOptions: ONB_AUDIENCE_OPTIONS,
     offerOptions: ONB_OFFER_OPTIONS,
     objectiveOptions: ONB_OBJECTIVE_OPTIONS,
@@ -242,19 +253,21 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     gainsTitle: "Ce que ça peut rapporter à ton SaaS",
     gainsIntro:
       "En publiant régulièrement et en prospectant ton ICP depuis l'app, voici ce que donne un trimestre.",
+    // On lit un site, pas un profil : annoncer « Lecture de ton profil… » puis
+    // « Analyse de ton audience… » ferait croire qu'on a mesuré un compte
+    // LinkedIn, et rendrait suspect tout ce que l'écran suivant affiche.
+    scanSteps: [
+      "Lecture de ton site…",
+      "On cerne ton produit et ta promesse…",
+      "Identification de ton ICP…",
+      "On peaufine tout ça…",
+    ],
     audienceOptions: ONB_SAAS_AUDIENCE_OPTIONS,
     offerOptions: ONB_SAAS_OFFER_OPTIONS,
     objectiveOptions: ONB_SAAS_OBJECTIVE_OPTIONS,
     industryOptions: ONB_SAAS_INDUSTRY_OPTIONS,
   },
 };
-
-const ONB_SCAN_STEPS = [
-  "Lecture de ton profil…",
-  "Analyse de ton audience…",
-  "Identification de ton offre…",
-  "On peaufine tout ça…",
-];
 
 function fmtCompact(n: number): string {
   if (!n || n < 0) return "—";
@@ -436,6 +449,15 @@ export default function OnboardingScreen({
   const [leadError, setLeadError] = useState("");
   const [calendlyUrl, setCalendlyUrl] = useState("");
 
+  /**
+   * A-t-on lu un vrai compte LinkedIn (photo, abonnés, posts) ou seulement un site ?
+   * Tout ce qui prétend décrire la PERSONNE — avatar, nom de profil, compteurs —
+   * dépend de cette réponse. Un site ne dit rien du compte de son fondateur.
+   */
+  const hasScrapedProfile = !!preview && (
+    !!preview.avatar_url || preview.followers > 0 || preview.posts_count > 0
+  );
+
   const band = bands.find((b) => b.key === bandKey) || bands[0] || null;
   const projection = band?.projection || null;
   /**
@@ -464,7 +486,7 @@ export default function OnboardingScreen({
     if (step !== "scanning") return;
     setScanIdx(0);
     const id = setInterval(
-      () => setScanIdx((i) => (i < ONB_SCAN_STEPS.length - 1 ? i + 1 : i)),
+      () => setScanIdx((i) => (i < variant.scanSteps.length - 1 ? i + 1 : i)),
       850,
     );
     return () => clearInterval(id);
@@ -629,7 +651,12 @@ export default function OnboardingScreen({
   const showProgress = step === "page1" || step === "page2";
   // Écrans qui gagnent à respirer sur grand écran (grilles et colonnes), par
   // opposition aux écrans de saisie où une colonne étroite reste plus lisible.
-  const isWideStep = step === "gains" || step === "simulation" || step === "lead_form";
+  const isWideStep =
+    step === "analysis" ||
+    step === "analysis_detail" ||
+    step === "gains" ||
+    step === "simulation" ||
+    step === "lead_form";
   const isAnalysis =
     step === "analysis" ||
     step === "analysis_detail" ||
@@ -678,14 +705,20 @@ export default function OnboardingScreen({
 
         {step === "scanning" && (
           <div className="onb-screen onb-scan" key="scan">
-            <div className="onb-orb"><Linkedin size={34} /></div>
-            <div className="onb-scan-status" key={scanIdx}>{ONB_SCAN_STEPS[scanIdx]}</div>
+            <div className="onb-orb">
+              {variantKey === "saas" ? <Globe size={34} /> : <Linkedin size={34} />}
+            </div>
+            <div className="onb-scan-status" key={scanIdx}>{variant.scanSteps[scanIdx]}</div>
           </div>
         )}
 
         {step === "analysis" && preview && (
           <div className="onb-screen onb-analysis" key="analysis">
             <div className="onb-analysis-card onb-analysis-profile">
+              {/* ⚠️ Pas d'avatar quand rien n'a été scrapé : une pastille d'initiales
+                  sur un nom de produit (« ? », « TP ») ne représente personne et fait
+                  passer l'écran pour un gabarit générique. On ne montre une identité
+                  que si on l'a réellement lue. */}
               {preview.avatar_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -694,13 +727,16 @@ export default function OnboardingScreen({
                   alt=""
                   onError={(e) => { e.currentTarget.style.display = "none"; }}
                 />
-              ) : (
+              ) : hasScrapedProfile ? (
                 <div className="onb-analysis-avatar" aria-hidden>
                   {initials(preview.name, preview.handle)}
                 </div>
+              ) : null}
+              {!hasScrapedProfile && (
+                <div className="onb-analysis-source">Analysé depuis ton site</div>
               )}
-              <div className="onb-analysis-name">{preview.name || "Ton profil"}</div>
-              {preview.handle && (
+              <div className="onb-analysis-name">{preview.name || "Ton produit"}</div>
+              {hasScrapedProfile && preview.handle && (
                 <div className="onb-analysis-handle">@{preview.handle.replace(/^@+/, "")}</div>
               )}
               {preview.headline && (
@@ -767,28 +803,34 @@ export default function OnboardingScreen({
               </div>
             )}
 
-            <div className="onb-analysis-block">
-              <div className="onb-analysis-label">Points forts</div>
-              <ul className="onb-analysis-list">
-                {preview.strengths.map((s) => (
-                  <li key={s}>
-                    <CheckCircle2 size={16} className="onb-analysis-ok" />
-                    <span>{s}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            {/* Deux colonnes sur desktop : ces deux listes se lisent en vis-à-vis
+                (ce qui va / ce qui manque), pas l'une sous l'autre. */}
+            <div className="onb-analysis-grid">
+              <div className="onb-analysis-block">
+                <div className="onb-analysis-label">Points forts</div>
+                <ul className="onb-analysis-list">
+                  {preview.strengths.map((s) => (
+                    <li key={s}>
+                      <CheckCircle2 size={16} className="onb-analysis-ok" />
+                      <span>{s}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
 
-            <div className="onb-analysis-block">
-              <div className="onb-analysis-label">Points à améliorer</div>
-              <ul className="onb-analysis-list">
-                {preview.improvements.map((s) => (
-                  <li key={s}>
-                    <AlertTriangle size={16} className="onb-analysis-warn" />
-                    <span>{s}</span>
-                  </li>
-                ))}
-              </ul>
+              <div className="onb-analysis-block">
+                <div className="onb-analysis-label">
+                  {hasScrapedProfile ? "Points à améliorer" : "Ce qui manque pour vendre sur LinkedIn"}
+                </div>
+                <ul className="onb-analysis-list">
+                  {preview.improvements.map((s) => (
+                    <li key={s}>
+                      <AlertTriangle size={16} className="onb-analysis-warn" />
+                      <span>{s}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
 
             <button
@@ -987,10 +1029,13 @@ export default function OnboardingScreen({
 
         {step === "simulation" && projection && (
           <div className="onb-screen onb-analysis" key="simulation">
-            <h2 className="onb-analysis-title">Ton profil dans 90 jours</h2>
+            <h2 className="onb-analysis-title">
+              {hasScrapedProfile ? "Ton profil dans 90 jours" : "Ton LinkedIn dans 90 jours"}
+            </h2>
             <p className="onb-analysis-summary" style={{ opacity: 0.8 }}>
-              À gauche ton compte aujourd&apos;hui, à droite la même page une fois la
-              machine lancée.
+              {hasScrapedProfile
+                ? "À gauche ton compte aujourd'hui, à droite la même page une fois la machine lancée."
+                : "À gauche ce qui arrive aujourd'hui, à droite une fois la machine lancée."}
             </p>
 
             <div className="onb-sim-grid">
@@ -998,6 +1043,7 @@ export default function OnboardingScreen({
                 variant="before"
                 caption="Aujourd'hui"
                 preview={preview}
+                identified={hasScrapedProfile}
                 followers={hasAudienceData ? projection.followers_now : null}
                 invites={0}
                 messages={0}
@@ -1007,6 +1053,7 @@ export default function OnboardingScreen({
                 variant="after"
                 caption="Dans 90 jours"
                 preview={preview}
+                identified={hasScrapedProfile}
                 followers={hasAudienceData ? projection.followers_after.high : null}
                 invites={projection.relations_per_month.high}
                 messages={projection.conversations_per_month.high}
@@ -1204,6 +1251,7 @@ function SimCard({
   variant,
   caption,
   preview,
+  identified,
   followers,
   invites,
   messages,
@@ -1212,6 +1260,8 @@ function SimCard({
   variant: "before" | "after";
   caption: string;
   preview: OnboardingPreview | null;
+  /** false = on n'a pas lu le compte : ni photo ni nom, seulement ce qui bouge. */
+  identified: boolean;
   /** `null` = audience inconnue (entrée par le site) : on n'affiche aucun compteur. */
   followers: number | null;
   invites: number;
@@ -1222,14 +1272,17 @@ function SimCard({
   return (
     <div className={"onb-sim-card" + (variant === "after" ? " onb-sim-after" : "")}>
       <div className="onb-sim-caption">{caption}</div>
-      <div className="onb-sim-banner" />
-      {preview?.avatar_url ? (
+      {identified && <div className="onb-sim-banner" />}
+      {/* Sans compte lu, ni photo ni nom : une pastille « TP » sous un titre
+          « Ton profil » ne ressemble au compte de personne. Ce qui compte ici,
+          ce sont les trois lignes qui bougent. */}
+      {identified && (preview?.avatar_url ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img className="onb-sim-avatar onb-sim-avatar-img" src={preview.avatar_url} alt="" />
       ) : (
         <div className="onb-sim-avatar" aria-hidden>{initials(name, preview?.handle || "")}</div>
-      )}
-      <div className="onb-sim-name">{name}</div>
+      ))}
+      {identified && <div className="onb-sim-name">{name}</div>}
       {followers !== null && (
         <div className="onb-sim-followers">{fmtInt(followers)} abonnés</div>
       )}
