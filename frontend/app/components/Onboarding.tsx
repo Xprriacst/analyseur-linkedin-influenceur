@@ -36,6 +36,7 @@ import {
   Users,
 } from "lucide-react";
 import { authHeaders } from "../lib/supabase";
+import { PROOF_INFLUENCERS_ANALYZED, PROOF_POSTS_ANALYZED } from "../lib/founders";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
@@ -96,8 +97,10 @@ type OnbStep =
   | "analysis_detail"
   | "page1"
   | "page2"
+  | "page3"
   | "gains"
   | "simulation"
+  | "pitch"
   | "lead_form"
   | "lead_done";
 type OnbOption = { label: string; match?: string[] };
@@ -189,6 +192,24 @@ const ONB_SAAS_INDUSTRY_OPTIONS: OnbOption[] = [
   { label: "Marketing & Growth tech", match: ["marketing", "growth", "crm", "ads"] },
   { label: "HR tech", match: ["rh", "hr", "recrutement", "talent"] },
   { label: "Cybersécurité", match: ["cyber", "sécurité", "security", "soc"] },
+];
+
+// Qualification fondateur (page3, tunnel SaaS uniquement). Chaque option porte
+// sa raison d'être en sous-titre — le visiteur doit voir POURQUOI on demande,
+// et l'écran de closing lui renvoie ses propres mots (effet miroir : ce sont ses
+// obstacles à lui, pas un argumentaire générique).
+const ONB_SAAS_STAGES: { label: string; hint: string }[] = [
+  { label: "Pre-revenue", hint: "Je construis — pas encore de clients payants" },
+  { label: "Premiers clients", hint: "Du revenu, pas encore de croissance régulière" },
+  { label: "En croissance", hint: "Le product-market fit est là, je cherche le prochain levier" },
+];
+
+const ONB_SAAS_OBSTACLES: string[] = [
+  "Je suis un builder, pas un marketeur",
+  "Pas le temps de créer du contenu",
+  "Je ne sais pas quoi raconter",
+  "Ma prospection ne scale pas",
+  "Je lance dans le silence",
 ];
 
 /** Ce qui change d'une audience de tunnel à l'autre : les chips et les mots. */
@@ -391,6 +412,9 @@ export default function OnboardingScreen({
   funnel = "app",
   variant: variantKey = "default",
   trialDays = 7,
+  planPrice = 49,
+  monthlySeats = 0,
+  guaranteeDays = 0,
   onFinish,
   onSkip,
   finishLabel = "C'est parti",
@@ -415,6 +439,12 @@ export default function OnboardingScreen({
    * ne rattrape ensuite.
    */
   trialDays?: number;
+  /** Prix mensuel affiché dans le cadrage ROI — vient de Stripe via l'appelant. */
+  planPrice?: number;
+  /** Places ouvertes par mois (engagement réel, cf. lib/founders.ts). 0 = masqué. */
+  monthlySeats?: number;
+  /** Jours de garantie « satisfait ou remboursé » après l'essai. 0 = masqué. */
+  guaranteeDays?: number;
   /** Reçoit le profil complet. L'appelant décide : enregistrer, ou emmener vers l'inscription. */
   onFinish: (profile: OnboardingProfile) => void | Promise<void>;
   /** « Passer » — l'utilisateur refuse de répondre. */
@@ -433,6 +463,11 @@ export default function OnboardingScreen({
   const [sel, setSel] = useState(() => onbInitSel({}, variant));
   const [saving, setSaving] = useState(false);
   const [scanIdx, setScanIdx] = useState(0);
+  // Qualification fondateur (page3, tunnel SaaS) — sert l'effet miroir du
+  // closing. Volontairement hors du profil éditorial : le backend ignorerait
+  // ces clés en silence, autant ne pas prétendre les enregistrer.
+  const [stage, setStage] = useState("");
+  const [obstacles, setObstacles] = useState<string[]>([]);
 
   // --- Tunnel « audit complet » (landing uniquement) ---
   const [bands, setBands] = useState<OnbBand[]>([]);
@@ -648,7 +683,14 @@ export default function OnboardingScreen({
     return () => clearTimeout(id);
   }, [step, calendlyUrl]);
 
-  const showProgress = step === "page1" || step === "page2";
+  const showProgress = step === "page1" || step === "page2" || step === "page3";
+  // Le tunnel SaaS a 3 pages de questions, le tunnel générique 2 : la barre de
+  // progression doit refléter le vrai nombre d'étapes, sinon elle affiche
+  // « 100 % » une page avant la fin.
+  const progressPct =
+    variantKey === "saas"
+      ? step === "page1" ? "33%" : step === "page2" ? "66%" : "100%"
+      : step === "page1" ? "50%" : "100%";
   // Écrans qui gagnent à respirer sur grand écran (grilles et colonnes), par
   // opposition aux écrans de saisie où une colonne étroite reste plus lisible.
   const isWideStep =
@@ -656,12 +698,14 @@ export default function OnboardingScreen({
     step === "analysis_detail" ||
     step === "gains" ||
     step === "simulation" ||
+    step === "pitch" ||
     step === "lead_form";
   const isAnalysis =
     step === "analysis" ||
     step === "analysis_detail" ||
     step === "gains" ||
     step === "simulation" ||
+    step === "pitch" ||
     step === "lead_form" ||
     step === "lead_done";
 
@@ -676,7 +720,7 @@ export default function OnboardingScreen({
       >
         {showProgress && (
           <div className="onb-progress">
-            <div className="onb-progress-fill" style={{ width: step === "page1" ? "50%" : "100%" }} />
+            <div className="onb-progress-fill" style={{ width: progressPct }} />
           </div>
         )}
 
@@ -930,11 +974,81 @@ export default function OnboardingScreen({
               <button
                 type="button"
                 className="onb-cta"
-                onClick={showsProjection ? toGains : finish}
+                onClick={
+                  variantKey === "saas" && showsProjection
+                    ? () => setStep("page3")
+                    : showsProjection ? toGains : finish
+                }
                 disabled={saving}
               >
                 {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />}{" "}
-                {showsProjection ? "Voir ce que je peux gagner" : finishLabel}
+                {variantKey === "saas" && showsProjection
+                  ? "Continuer"
+                  : showsProjection ? "Voir ce que je peux gagner" : finishLabel}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "page3" && (
+          <div className="onb-screen" key="page3">
+            <h2 className="onb-greeting">Dernier point — où tu en es</h2>
+            <p className="onb-lead">
+              Deux questions de plus que d&apos;habitude, parce qu&apos;elles changent le
+              plan : le stade calibre la stratégie, les blocages disent par quoi on
+              commence.
+            </p>
+
+            <div className="onb-block">
+              <label className="onb-block-label">Où en est ton SaaS&nbsp;?</label>
+              <div className="onb-chips" style={{ flexDirection: "column", alignItems: "stretch" }}>
+                {ONB_SAAS_STAGES.map((o) => (
+                  <button
+                    key={o.label}
+                    type="button"
+                    className={"onb-chip" + (stage === o.label ? " selected" : "")}
+                    style={{ textAlign: "left", display: "block" }}
+                    onClick={() => setStage(stage === o.label ? "" : o.label)}
+                  >
+                    <span style={{ fontWeight: 600 }}>{o.label}</span>
+                    <span style={{ display: "block", fontSize: 12, opacity: 0.72, marginTop: 2 }}>
+                      {o.hint}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="onb-block">
+              <label className="onb-block-label">Qu&apos;est-ce qui te bloque le plus&nbsp;?</label>
+              <p className="onb-lead" style={{ margin: "0 0 8px", fontSize: 13 }}>
+                Coche tout ce qui te parle — le plan d&apos;attaque se calibre dessus.
+              </p>
+              <div className="onb-chips">
+                {ONB_SAAS_OBSTACLES.map((label) => (
+                  <button
+                    key={label}
+                    type="button"
+                    className={"onb-chip" + (obstacles.includes(label) ? " selected" : "")}
+                    onClick={() =>
+                      setObstacles((prev) =>
+                        prev.includes(label) ? prev.filter((o) => o !== label) : [...prev, label],
+                      )
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="onb-nav">
+              <button type="button" className="onb-back" onClick={() => setStep("page2")}>
+                <ChevronLeft size={16} /> Retour
+              </button>
+              <button type="button" className="onb-cta" onClick={toGains} disabled={saving}>
+                {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />}{" "}
+                Voir ce que je peux gagner
               </button>
             </div>
           </div>
@@ -1067,21 +1181,9 @@ export default function OnboardingScreen({
             </div>
 
             {funnel === "trial" ? (
-              <>
-                <button
-                  type="button"
-                  className="onb-analysis-cta"
-                  onClick={finish}
-                  disabled={saving}
-                >
-                  {saving ? <Loader2 size={16} className="spinning" /> : <Rocket size={16} />}{" "}
-                  Démarrer mes {trialDays} jours gratuits
-                </button>
-                <div className="onb-note" style={{ textAlign: "center" }}>
-                  Accès complet à Cibl pendant {trialDays} jours. Résiliable en un clic
-                  avant la fin — on ne prélève rien d&apos;ici là.
-                </div>
-              </>
+              <button type="button" className="onb-analysis-cta" onClick={() => setStep("pitch")}>
+                Comment on s&apos;y prend <ChevronRight size={16} />
+              </button>
             ) : (
               <button type="button" className="onb-analysis-cta" onClick={() => setStep("lead_form")}>
                 Recevoir mon audit complet gratuit
@@ -1089,6 +1191,176 @@ export default function OnboardingScreen({
             )}
             <button type="button" className="onb-analysis-skip" onClick={() => setStep("gains")}>
               ← Retour aux chiffres
+            </button>
+          </div>
+        )}
+
+        {step === "pitch" && funnel === "trial" && (
+          <div className="onb-screen onb-analysis" key="pitch">
+            <h2 className="onb-analysis-title">Le vrai goulot, ce n&apos;est pas ton produit</h2>
+
+            {/* Effet miroir : ses propres mots, pas un argumentaire générique.
+                C'est le levier central du funnel de référence (« You're Closer
+                Than You Think ») — il ne marche que si les mots sont les siens. */}
+            {obstacles.length > 0 && (
+              <div className="onb-analysis-card">
+                <p className="onb-analysis-summary">
+                  Tu l&apos;as dit toi-même&nbsp;:{" "}
+                  {obstacles.map((o, i) => (
+                    <span key={o}>
+                      {i > 0 && ", "}
+                      <strong>«&nbsp;{o.toLowerCase()}&nbsp;»</strong>
+                    </span>
+                  ))}
+                  . Ce n&apos;est pas un problème de discipline — c&apos;est un problème de
+                  rôle&nbsp;: un fondateur seul ne peut pas tenir le marketing ET livrer.
+                </p>
+              </div>
+            )}
+
+            <div className="onb-analysis-card">
+              <div className="onb-analysis-label">Le vrai tueur&nbsp;: le changement de casquette</div>
+              <p className="onb-analysis-summary">
+                10x développeur le matin, 0.1x marketeur l&apos;après-midi. Chaque
+                casquette coûte 20 à 30 minutes de refocus — et à la fin de la journée,
+                la seule chose qui a vraiment avancé, c&apos;est le build. Pendant ce
+                temps, ton LinkedIn reste muet et tes lancements partent dans le silence.
+              </p>
+            </div>
+
+            <div className="onb-analysis-grid">
+              <div className="onb-analysis-block">
+                <div className="onb-analysis-label">Cibl s&apos;en charge</div>
+                <ul className="onb-analysis-list">
+                  {[
+                    "Analyse ce qui marche vraiment dans ta catégorie",
+                    "Écrit tes posts dans ta voix, une idée chaque matin",
+                    "Programme et publie aux bons créneaux",
+                    "Repère ton ICP dans les commentaires de tes concurrents",
+                    "Invite et relance aux plafonds de sécurité LinkedIn",
+                  ].map((line) => (
+                    <li key={line}>
+                      <CheckCircle2 size={16} className="onb-analysis-ok" />
+                      <span>{line}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div className="onb-analysis-block">
+                <div className="onb-analysis-label">Tu fais</div>
+                <ul className="onb-analysis-list">
+                  <li>
+                    <CheckCircle2 size={16} className="onb-analysis-ok" />
+                    <span>Valider les posts, répondre à tes prospects.</span>
+                  </li>
+                  <li>
+                    <CheckCircle2 size={16} className="onb-analysis-ok" />
+                    <span>Moins de 15 minutes par jour. C&apos;est tout.</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+
+            {/* Cadrage ROI : pure arithmétique sur l'ACV que LE VISITEUR vient de
+                choisir — pas une promesse de résultat, un ordre de grandeur du
+                rapport coût/enjeu. */}
+            {band && band.deal_value > 0 && (
+              <div className="onb-gain-highlight">
+                <div className="onb-gain-label">Ton investissement vs ton enjeu</div>
+                <div className="onb-gain-money">
+                  {fmtMoney(planPrice)}/mois — un seul client à ton ACV ({fmtMoney(band.deal_value)})
+                  rembourse {fmtInt(Math.max(1, Math.floor(band.deal_value / Math.max(1, planPrice))))} mois
+                </div>
+                <div className="onb-gain-hint" style={{ marginTop: 6 }}>
+                  {Math.floor(band.deal_value / Math.max(1, planPrice)) >= 24
+                    ? `soit plus de ${Math.floor(band.deal_value / Math.max(1, planPrice) / 12)} ans d'abonnement remboursés par une seule signature`
+                    : "des mois d'abonnement remboursés par une seule signature"}
+                </div>
+              </div>
+            )}
+
+            <div className="onb-analysis-card">
+              <div className="onb-analysis-label">Comment ça démarre — sans hype</div>
+              <ul className="onb-analysis-list">
+                <li>
+                  <CheckCircle2 size={16} className="onb-analysis-ok" />
+                  <span>
+                    <strong>Semaines 1-2&nbsp;:</strong> montée en douceur — l&apos;app démarre ta
+                    prospection à 8 actions/jour (puis 15, puis 20&nbsp;: le rythme qui
+                    protège ton compte), pendant que l&apos;analyse de ta catégorie tourne
+                    et que tes premiers posts partent.
+                  </span>
+                </li>
+                <li>
+                  <CheckCircle2 size={16} className="onb-analysis-ok" />
+                  <span>
+                    <strong>Mois 1&nbsp;:</strong> régime de croisière — ~100 invitations par
+                    semaine vers ton ICP, tes premières réponses en inbox.
+                  </span>
+                </li>
+                <li>
+                  <CheckCircle2 size={16} className="onb-analysis-ok" />
+                  <span>
+                    <strong>Mois 3&nbsp;:</strong> les fourchettes que tu viens de voir —
+                    abonnés, conversations, clients — sont calculées sur ce régime-là.
+                  </span>
+                </li>
+              </ul>
+            </div>
+
+            <div className="onb-analysis-card">
+              <div className="onb-analysis-label">Les alternatives, honnêtement</div>
+              {[
+                { name: "Ghostwriter LinkedIn", price: "500 à 2 000 €/mois", note: "il écrit — tu prospectes encore à la main" },
+                { name: "Agence de prospection", price: "1 000 à 3 000 €/mois", note: "souvent sans le contenu, résultats opaques" },
+                { name: "Tout faire toi-même", price: "10 h et + par semaine", note: "c'est exactement le changement de casquette d'au-dessus" },
+              ].map((alt) => (
+                <div key={alt.name} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,.08)", fontSize: 13.5, flexWrap: "wrap" }}>
+                  <strong style={{ minWidth: 170 }}>{alt.name}</strong>
+                  <span style={{ opacity: 0.85 }}>{alt.price}</span>
+                  <span style={{ opacity: 0.6 }}>— {alt.note}</span>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "9px 0 2px", fontSize: 13.5, flexWrap: "wrap" }}>
+                <strong style={{ minWidth: 170 }}>Cibl</strong>
+                <span>{fmtMoney(planPrice)}/mois</span>
+                <span style={{ opacity: 0.75 }}>— contenu + prospection dans la même app, &lt;15 min/jour</span>
+              </div>
+              <div className="onb-gain-hint" style={{ marginTop: 8 }}>
+                Ordres de grandeur constatés sur le marché — pas des devis.
+              </div>
+            </div>
+
+            <div className="onb-note" style={{ textAlign: "center" }}>
+              {PROOF_INFLUENCERS_ANALYZED}+ influenceurs analysés · {fmtInt(PROOF_POSTS_ANALYZED)}+ posts
+              passés au crible par l&apos;app.
+            </div>
+
+            {monthlySeats > 0 && (
+              <div className="onb-note" style={{ textAlign: "center" }}>
+                On ouvre <strong>{monthlySeats} comptes fondateurs par mois</strong> —
+                l&apos;accompagnement du démarrage est encore fait à la main.
+              </div>
+            )}
+
+            <button
+              type="button"
+              className="onb-analysis-cta"
+              onClick={finish}
+              disabled={saving}
+            >
+              {saving ? <Loader2 size={16} className="spinning" /> : <Rocket size={16} />}{" "}
+              Démarrer mes {trialDays} jours gratuits
+            </button>
+            <div className="onb-note" style={{ textAlign: "center" }}>
+              {trialDays} jours d&apos;accès complet, 0&nbsp;€ — résiliable en un clic avant la fin.
+              {guaranteeDays > 0 && (
+                <> Ensuite, <strong>satisfait ou remboursé {guaranteeDays} jours</strong>&nbsp;:
+                le premier mois remboursé sur simple demande.</>
+              )}
+            </div>
+            <button type="button" className="onb-analysis-skip" onClick={() => setStep("simulation")}>
+              ← Retour à la simulation
             </button>
           </div>
         )}
