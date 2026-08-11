@@ -649,22 +649,25 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* --- Preview « Analyse IA » (onboarding public, avant création de compte) --- */
+/* Même palette claire que le wizard (fond blanc + halos indigo) : tout le tunnel
+   se lit dans un seul univers visuel — les écrans de restitution ne basculent
+   plus sur un thème nuit à part. */
 .onb-overlay-analysis {
   background:
-    radial-gradient(900px 520px at 20% -10%, rgba(70,72,212,.45), transparent 55%),
-    radial-gradient(700px 480px at 90% 110%, rgba(93,96,234,.35), transparent 50%),
-    #0f1024;
-  color: #fff;
+    radial-gradient(1100px 600px at 50% -12%, rgba(70,72,212,.12), transparent 60%),
+    radial-gradient(900px 520px at 88% 112%, rgba(70,72,212,.09), transparent 55%),
+    var(--bg, #fff);
 }
-/* Écrans sombres d'analyse : colonne étroite par défaut (mobile-first), élargie
+/* Écrans d'analyse : colonne étroite par défaut (mobile-first), élargie
    sur desktop par la media query plus bas quand l'écran porte `onb-shell-wide`. */
 .onb-shell-analysis { max-width: 420px; }
 .onb-analysis { display: flex; flex-direction: column; gap: 14px; }
 .onb-analysis-card {
-  background: rgba(255,255,255,.06);
-  border: 1px solid rgba(255,255,255,.12);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 18px;
   padding: 18px 18px 16px;
+  box-shadow: 0 10px 28px rgba(27,27,35,.05);
 }
 .onb-analysis-profile { text-align: center; }
 .onb-analysis-avatar {
@@ -678,14 +681,14 @@ a { color: inherit; text-decoration: none; }
 }
 .onb-analysis-avatar-img {
   object-fit: cover;
-  border: 2px solid rgba(255,255,255,.25);
-  background: rgba(255,255,255,.08);
+  border: 2px solid rgba(70,72,212,.2);
+  background: var(--surface-high);
 }
 .onb-analysis-source {
   display: inline-block; margin-bottom: 10px; padding: 4px 11px;
   border-radius: 20px; font-size: 12px; font-weight: 600; letter-spacing: .01em;
-  color: rgba(255,255,255,.82);
-  background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.16);
+  color: var(--primary);
+  background: rgba(70,72,212,.07); border: 1px solid rgba(70,72,212,.18);
 }
 .onb-analysis-name { font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
 .onb-analysis-handle { margin-top: 2px; font-size: 14px; font-weight: 500; opacity: .65; }
@@ -696,7 +699,7 @@ a { color: inherit; text-decoration: none; }
 .onb-analysis-stats {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
   margin-top: 16px; padding-top: 14px;
-  border-top: 1px solid rgba(255,255,255,.12);
+  border-top: 1px solid var(--border);
 }
 .onb-analysis-stats strong { display: block; font-size: 17px; font-weight: 700; }
 .onb-analysis-stats span { display: block; margin-top: 2px; font-size: 12px; opacity: .7; }
@@ -708,7 +711,7 @@ a { color: inherit; text-decoration: none; }
 }
 .onb-analysis-niche {
   margin: 0; font-size: 16px; font-weight: 600; line-height: 1.4;
-  color: #c4c6ff;
+  color: var(--primary);
 }
 .onb-analysis-summary {
   margin: 0; font-size: 14.5px; line-height: 1.65; opacity: .92;
@@ -718,9 +721,9 @@ a { color: inherit; text-decoration: none; }
 .onb-analysis-tags { display: flex; flex-wrap: wrap; gap: 8px; }
 .onb-analysis-tag {
   padding: 7px 12px; border-radius: 999px; font-size: 13px; font-weight: 500;
-  color: #d0d2ff;
-  background: rgba(70,72,212,.28);
-  border: 1px solid rgba(160,164,255,.28);
+  color: var(--primary);
+  background: rgba(70,72,212,.07);
+  border: 1px solid rgba(70,72,212,.2);
 }
 .onb-analysis-list {
   list-style: none; margin: 0; padding: 0;
@@ -729,31 +732,31 @@ a { color: inherit; text-decoration: none; }
 .onb-analysis-list li {
   display: flex; align-items: flex-start; gap: 10px;
   padding: 11px 13px; border-radius: 12px;
-  background: rgba(255,255,255,.05);
-  border: 1px solid rgba(255,255,255,.08);
+  background: var(--surface-low);
+  border: 1px solid var(--border);
   font-size: 14px; line-height: 1.4;
 }
-.onb-analysis-ok { color: #3ecf8e; flex-shrink: 0; margin-top: 1px; }
-.onb-analysis-warn { color: #f0a35a; flex-shrink: 0; margin-top: 1px; }
+.onb-analysis-ok { color: #0e9f6e; flex-shrink: 0; margin-top: 1px; }
+.onb-analysis-warn { color: #d97706; flex-shrink: 0; margin-top: 1px; }
 .onb-analysis-cta {
   margin-top: 8px;
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   width: 100%; height: 50px;
-  border-radius: 999px; border: 1px solid transparent;
+  border-radius: 999px; border: none;
   font-size: 15px; font-weight: 700; color: #fff; cursor: pointer;
-  background:
-    linear-gradient(#171833, #171833) padding-box,
-    linear-gradient(120deg, #6a6cf0, #4648d4, #8b5cf6) border-box;
-  transition: transform .12s, opacity .2s;
+  background: linear-gradient(120deg, var(--primary), #6a6cf0);
+  box-shadow: 0 12px 28px rgba(70,72,212,.3);
+  transition: transform .12s, opacity .2s, box-shadow .2s;
 }
-.onb-analysis-cta:hover { opacity: .95; }
+.onb-analysis-cta:hover { opacity: .94; }
 .onb-analysis-cta:active { transform: scale(.98); }
+.onb-analysis-cta:disabled { opacity: .55; cursor: default; box-shadow: none; }
 .onb-analysis-skip {
   display: block; margin: 4px auto 0;
-  background: none; border: none; color: rgba(255,255,255,.55);
+  background: none; border: none; color: var(--muted);
   font-size: 13px; cursor: pointer;
 }
-.onb-analysis-skip:hover { color: rgba(255,255,255,.85); }
+.onb-analysis-skip:hover { color: var(--ink); }
 
 /* --- Tunnel « audit complet » : gains, simulation, formulaire --------------- */
 
@@ -764,9 +767,9 @@ a { color: inherit; text-decoration: none; }
   margin: 2px 0 4px;
   padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(139,92,246,.12);
-  border: 1px solid rgba(160,140,255,.28);
-  color: #ddd9ff;
+  background: rgba(70,72,212,.05);
+  border: 1px solid rgba(70,72,212,.14);
+  color: #4c4b63;
   font-size: 12.5px; line-height: 1.55;
   display: flex; flex-direction: column; gap: 4px;
 }
@@ -775,35 +778,41 @@ a { color: inherit; text-decoration: none; }
 .onb-gain-card {
   padding: 14px 15px;
   border-radius: 16px;
-  background: rgba(255,255,255,.06);
-  border: 1px solid rgba(255,255,255,.12);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 20px rgba(27,27,35,.04);
 }
 .onb-gain-label { font-size: 12px; opacity: .72; line-height: 1.35; }
 .onb-gain-value { margin-top: 6px; font-size: 20px; font-weight: 800; letter-spacing: -.02em; }
 .onb-gain-hint { margin-top: 3px; font-size: 11.5px; opacity: .6; }
 
+/* Le SEUL bloc qui reste en indigo plein : c'est l'accent de la page (le chiffre
+   qui compte), même rôle que le CTA — tout le reste est clair. */
 .onb-gain-highlight {
   padding: 18px;
   border-radius: 18px;
   text-align: center;
-  background: linear-gradient(145deg, rgba(70,72,212,.55), rgba(139,92,246,.45));
-  border: 1px solid rgba(178,182,255,.35);
-  box-shadow: 0 12px 34px rgba(70,72,212,.32);
+  color: #fff;
+  background: linear-gradient(145deg, #4648d4, #6a5cf0);
+  border: 1px solid rgba(70,72,212,.4);
+  box-shadow: 0 12px 34px rgba(70,72,212,.28);
 }
+.onb-gain-highlight .onb-gain-label { opacity: .85; }
+.onb-gain-highlight .onb-gain-hint { opacity: .75; }
 .onb-gain-money { margin-top: 6px; font-size: 27px; font-weight: 800; letter-spacing: -.025em; }
 
 /* Palier de panier moyen — même famille visuelle que les hashtags de l'analyse. */
 .onb-band {
   padding: 8px 13px; border-radius: 999px;
   font-size: 13px; font-weight: 500; cursor: pointer;
-  color: #d0d2ff;
-  background: rgba(70,72,212,.22);
-  border: 1px solid rgba(160,164,255,.28);
+  color: var(--primary);
+  background: rgba(70,72,212,.06);
+  border: 1px solid rgba(70,72,212,.22);
   transition: background .18s, border-color .18s, color .18s, transform .12s;
 }
-.onb-band:hover { border-color: rgba(190,193,255,.6); }
+.onb-band:hover { border-color: var(--primary); }
 .onb-band:active { transform: scale(.97); }
-.onb-band.selected { background: #5d60ea; border-color: #a3a6ff; color: #fff; font-weight: 600; }
+.onb-band.selected { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
 
 /* Simulation « avant / après ». Deux colonnes même sur mobile : c'est la
    comparaison qui porte le message — empilées, les deux cartes ne se lisent plus
@@ -813,15 +822,15 @@ a { color: inherit; text-decoration: none; }
   position: relative;
   padding: 0 12px 14px;
   border-radius: 16px;
-  background: rgba(255,255,255,.05);
-  border: 1px solid rgba(255,255,255,.12);
+  background: var(--surface);
+  border: 1px solid var(--border);
   overflow: hidden;
   text-align: center;
 }
 .onb-sim-after {
-  border-color: rgba(178,182,255,.5);
-  background: rgba(93,96,234,.16);
-  box-shadow: 0 14px 36px rgba(70,72,212,.3);
+  border-color: rgba(70,72,212,.45);
+  background: rgba(70,72,212,.05);
+  box-shadow: 0 14px 36px rgba(70,72,212,.16);
 }
 .onb-sim-caption {
   padding: 9px 0 8px; font-size: 11.5px; font-weight: 700;
@@ -834,7 +843,7 @@ a { color: inherit; text-decoration: none; }
   border-radius: 50%; display: grid; place-items: center;
   font-size: 14px; font-weight: 700; color: #fff;
   background: linear-gradient(145deg, #4648d4, #7a7cf0);
-  border: 2px solid #171833;
+  border: 2px solid var(--surface);
 }
 .onb-sim-avatar-img { object-fit: cover; }
 .onb-sim-name { margin-top: 7px; font-size: 13px; font-weight: 700; line-height: 1.25; }
@@ -843,7 +852,7 @@ a { color: inherit; text-decoration: none; }
 .onb-sim-row {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 8px; border-radius: 9px;
-  background: rgba(255,255,255,.05);
+  background: var(--surface-low);
   font-size: 11px;
 }
 .onb-sim-row-icon { display: flex; opacity: .7; flex-shrink: 0; }
@@ -851,35 +860,35 @@ a { color: inherit; text-decoration: none; }
 .onb-sim-badge {
   min-width: 20px; padding: 1px 6px; border-radius: 999px;
   font-size: 11px; font-weight: 700; text-align: center;
-  background: rgba(255,255,255,.1); color: rgba(255,255,255,.5);
+  background: var(--surface-high); color: var(--muted);
 }
 .onb-sim-badge.active { background: #e0245e; color: #fff; }
 
-/* Champs de formulaire sur fond sombre — les `.onb-input` du wizard clair
-   deviennent illisibles ici (fond blanc sur fond nuit). */
+/* Champs du formulaire de lead — même famille que `.onb-input` du wizard.
+   (Nom de classe historique : ces champs vivaient sur un thème nuit.) */
 .onb-dark-input {
   width: 100%;
   padding: 12px 14px;
   font-size: 15px;
-  color: #fff;
-  background: rgba(255,255,255,.07);
-  border: 1px solid rgba(255,255,255,.18);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 12px;
   transition: border-color .18s, box-shadow .18s;
 }
-.onb-dark-input::placeholder { color: rgba(255,255,255,.4); }
+.onb-dark-input::placeholder { color: var(--muted); }
 .onb-dark-input:focus {
   outline: none;
-  border-color: #a3a6ff;
-  box-shadow: 0 0 0 4px rgba(122,124,240,.22);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 4px rgba(70,72,212,.12);
 }
 
 .onb-done-badge {
   width: 62px; height: 62px; margin: 6px auto 2px;
   border-radius: 50%; display: grid; place-items: center;
-  color: #3ecf8e;
-  background: rgba(62,207,142,.14);
-  border: 1px solid rgba(62,207,142,.35);
+  color: #0e9f6e;
+  background: rgba(16,185,129,.1);
+  border: 1px solid rgba(16,185,129,.3);
 }
 
 /* --- Aperçu flouté de l'audit (écran formulaire) ---------------------------
@@ -891,8 +900,9 @@ a { color: inherit; text-decoration: none; }
   position: relative;
   border-radius: 18px;
   overflow: hidden;
-  background: rgba(255,255,255,.06);
-  border: 1px solid rgba(255,255,255,.12);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 28px rgba(27,27,35,.05);
 }
 .onb-doc-page {
   padding: 16px 16px 46px;
@@ -903,7 +913,7 @@ a { color: inherit; text-decoration: none; }
 .onb-doc-head { margin-bottom: 14px; }
 .onb-doc-kicker {
   font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
-  color: #b9bcff;
+  color: var(--primary);
 }
 .onb-doc-title {
   margin-top: 3px;
@@ -911,7 +921,7 @@ a { color: inherit; text-decoration: none; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .onb-doc-section + .onb-doc-section { margin-top: 13px; }
-.onb-doc-section-title { font-size: 12.5px; font-weight: 600; color: #e6e4ff; }
+.onb-doc-section-title { font-size: 12.5px; font-weight: 600; color: var(--ink); }
 /* Le flou est porté par le conteneur des lignes, pas par chaque ligne : appliqué
    ligne à ligne, `filter` crée un contexte d'empilement par élément et le rendu
    part en dégradé irrégulier selon le navigateur. */
@@ -924,12 +934,12 @@ a { color: inherit; text-decoration: none; }
 }
 .onb-doc-line {
   display: block; height: 7px; border-radius: 999px;
-  background: linear-gradient(90deg, rgba(255,255,255,.5), rgba(255,255,255,.22));
+  background: linear-gradient(90deg, rgba(27,27,35,.3), rgba(27,27,35,.1));
 }
 /* Fondu vers le bas : la page doit sembler continuer, pas s'arrêter net. */
 .onb-doc-fade {
   position: absolute; inset: auto 0 0 0; height: 130px;
-  background: linear-gradient(180deg, rgba(15,16,36,0), rgba(15,16,36,.86) 62%, #10112a);
+  background: linear-gradient(180deg, rgba(255,255,255,0), rgba(255,255,255,.88) 62%, #fff);
   pointer-events: none;
 }
 .onb-doc-seal {
@@ -938,8 +948,8 @@ a { color: inherit; text-decoration: none; }
   padding: 7px 13px; border-radius: 999px;
   white-space: nowrap;
   font-size: 11.5px; font-weight: 600; color: #fff;
-  background: rgba(70,72,212,.72);
-  border: 1px solid rgba(178,182,255,.45);
+  background: rgba(70,72,212,.9);
+  border: 1px solid rgba(70,72,212,.4);
   backdrop-filter: blur(6px);
 }
 
@@ -947,6 +957,121 @@ a { color: inherit; text-decoration: none; }
    des champs — il est dans le DOM avant eux exprès. */
 .onb-lead-grid { display: grid; gap: 14px; }
 .onb-lead-form { display: flex; flex-direction: column; gap: 14px; }
+
+/* --- Courbe de progression (écran des gains) -------------------------------
+   Une seule série (la trajectoire), tracée sur les chiffres de la projection
+   affichée au-dessus — jamais sur des valeurs d'ambiance. La bande claire est
+   la fourchette basse↔haute, la ligne suit la fourchette haute. */
+.onb-curve-wrap { margin-top: 4px; }
+.onb-curve { display: block; width: 100%; height: auto; }
+.onb-curve-axis {
+  display: flex; justify-content: space-between;
+  margin-top: 6px; font-size: 11.5px; color: var(--muted);
+}
+
+/* --- Questions posées PENDANT le scan (tunnel SaaS) ------------------------
+   L'analyse du site prend de longues secondes : plutôt qu'un spinner muet puis
+   une page de questions en plus, les deux questions de qualification occupent
+   l'attente. */
+.onb-scan-quiz {
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 18px 18px 16px;
+  box-shadow: 0 10px 28px rgba(27,27,35,.05);
+  animation: onb-fade-up .5s cubic-bezier(.16,1,.3,1) both;
+}
+.onb-scan-quiz-kicker {
+  font-size: 11.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--primary); margin-bottom: 10px;
+}
+
+/* --- Closing compact : timeline, alternatives, bandeau d'engagements ------- */
+.onb-timeline { display: flex; flex-direction: column; }
+.onb-timeline-item { display: flex; gap: 12px; }
+.onb-timeline-rail { display: flex; flex-direction: column; align-items: center; width: 14px; flex-shrink: 0; }
+.onb-timeline-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--primary); margin-top: 5px; flex-shrink: 0; }
+.onb-timeline-line { flex: 1; width: 2px; background: rgba(70,72,212,.18); }
+.onb-timeline-body { padding-bottom: 13px; font-size: 13.5px; line-height: 1.45; min-width: 0; }
+.onb-timeline-item:last-child .onb-timeline-body { padding-bottom: 2px; }
+.onb-timeline-when { font-weight: 700; }
+.onb-timeline-what { color: var(--muted); margin-top: 1px; }
+
+.onb-alt-row {
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+  padding: 7px 0; border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+}
+.onb-alt-row:last-of-type { border-bottom: none; }
+.onb-alt-name { min-width: 150px; font-weight: 600; }
+.onb-alt-price { color: var(--ink); }
+.onb-alt-note { color: var(--muted); }
+.onb-alt-row.onb-alt-us { padding-top: 9px; }
+.onb-alt-row.onb-alt-us .onb-alt-name, .onb-alt-row.onb-alt-us .onb-alt-price { color: var(--primary); }
+
+/* Preuve · places · garantie : trois faits, un seul bandeau. auto-fit : places
+   et garantie sont conditionnels (des engagements, pas du décor) — la grille ne
+   doit pas laisser de trou quand l'un d'eux est masqué. */
+.onb-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
+.onb-strip-item {
+  text-align: center; padding: 12px 8px;
+  border-radius: 14px; background: var(--surface-low); border: 1px solid var(--border);
+}
+.onb-strip-value { font-size: 15px; font-weight: 800; letter-spacing: -.01em; }
+.onb-strip-label { margin-top: 3px; font-size: 11.5px; color: var(--muted); line-height: 1.3; }
+@media (max-width: 480px) {
+  .onb-strip { grid-template-columns: 1fr; }
+  .onb-strip-item { display: flex; align-items: baseline; justify-content: center; gap: 8px; text-align: left; padding: 9px 10px; }
+  .onb-strip-label { margin-top: 0; }
+}
+
+/* --- Landing /founders (avant le tunnel) ----------------------------------- */
+.fl-page {
+  min-height: 100vh;
+  color: var(--ink);
+  background:
+    radial-gradient(1100px 600px at 50% -12%, rgba(70,72,212,.12), transparent 60%),
+    radial-gradient(900px 520px at 88% 112%, rgba(70,72,212,.08), transparent 55%),
+    var(--bg, #fff);
+}
+.fl-container { max-width: 820px; margin: 0 auto; padding: 0 20px; }
+.fl-hero { padding: 64px 0 26px; text-align: center; }
+.fl-kicker {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 13px; border-radius: 999px;
+  font-size: 12.5px; font-weight: 600;
+  color: var(--primary); background: rgba(70,72,212,.07); border: 1px solid rgba(70,72,212,.2);
+}
+.fl-h1 {
+  margin: 18px auto 0; max-width: 680px;
+  font-size: 40px; line-height: 1.08; font-weight: 800; letter-spacing: -.025em;
+}
+.fl-h1 em { font-style: normal; color: var(--primary); }
+.fl-sub { margin: 16px auto 0; max-width: 560px; font-size: 16px; line-height: 1.55; color: var(--muted); }
+.fl-cta-row { margin-top: 26px; display: flex; flex-direction: column; align-items: center; gap: 9px; }
+.fl-cta {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 0 30px; height: 52px;
+  border-radius: 999px; border: none; cursor: pointer;
+  font-size: 15.5px; font-weight: 700; color: #fff;
+  background: linear-gradient(120deg, var(--primary), #6a6cf0);
+  box-shadow: 0 12px 28px rgba(70,72,212,.3);
+  transition: transform .12s, opacity .2s;
+}
+.fl-cta:hover { opacity: .94; }
+.fl-cta:active { transform: scale(.98); }
+.fl-cta-hint { font-size: 12.5px; color: var(--muted); }
+.fl-section { padding: 22px 0; }
+.fl-section-title { margin: 0 0 12px; font-size: 23px; font-weight: 800; letter-spacing: -.02em; }
+.fl-stack { display: flex; flex-direction: column; gap: 14px; }
+.fl-footer { padding: 10px 0 46px; text-align: center; }
+@media (max-width: 560px) {
+  .fl-hero { padding: 44px 0 20px; }
+  .fl-h1 { font-size: 30px; }
+  .fl-section-title { font-size: 20px; }
+}
 
 /* --- Desktop : les écrans de restitution respirent ------------------------- */
 /* La colonne de 420 px est taillée pour les écrans de SAISIE. Les gains (4
