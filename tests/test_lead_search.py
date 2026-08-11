@@ -29,7 +29,7 @@ class ValidateSearchUrlTest(unittest.TestCase):
         # la dédup (user_id, post_url) : deux copies de la MÊME recherche
         # donneraient deux sources, donc des leads importés deux fois.
         url = lead_search.validate_search_url("www.linkedin.com/search/results/people/?k=1#zone")
-        self.assertEqual(url, "https://www.linkedin.com/search/results/people?k=1")
+        self.assertEqual(url, "https://www.linkedin.com/search/results/people/?k=1")
 
     def test_all_tab_is_switched_to_people_tab(self):
         # L'onglet « Tous » est l'URL qu'on obtient en tapant dans la barre de
@@ -39,8 +39,11 @@ class ValidateSearchUrlTest(unittest.TestCase):
             "https://www.linkedin.com/search/results/all/?keywords=pharmacien%20titulaire"
             "&origin=TYPEAHEAD_HISTORY&position=0"
         )
-        self.assertTrue(url.startswith("https://www.linkedin.com/search/results/people"))
-        self.assertIn("keywords=pharmacien", url)
+        # Forme canonique de LinkedIn rendue à Unipile : slash final et %20,
+        # pas une variante « équivalente en théorie ».
+        self.assertEqual(
+            url, "https://www.linkedin.com/search/results/people/?keywords=pharmacien%20titulaire"
+        )
         # Paramètres de traçage retirés : ils ne changent pas les résultats mais
         # feraient diverger la clé d'unicité selon l'endroit d'où le lien a été copié.
         self.assertNotIn("origin=", url)
@@ -232,3 +235,54 @@ class CollectAndPersistSearchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeadJobProjectionTest(unittest.TestCase):
+    """Le job de collecte est relu par une projection SQL EXPLICITE.
+
+    Toute colonne qui y manque est lue `None` par le thread, sans erreur. C'est
+    ainsi qu'un import de recherche est parti chercher des « commentaires » via
+    Apify et s'est soldé « terminé, 0 profil » (4ᵉ occurrence du piège après
+    ALE-216, ALE-286 et #387). Ce test échoue si quelqu'un ajoute une colonne
+    au job sans l'ajouter à la projection.
+    """
+
+    def test_every_written_column_is_read_back(self):
+        from src import db
+
+        projected = set(db._LEAD_JOB_COLS.split(","))
+        # Colonnes écrites par `create_lead_collection_job`.
+        written = {"user_id", "status", "source_id", "post_url", "max_comments", "kind"}
+        # `user_id` sert au filtre, pas à la lecture — le reste doit revenir.
+        self.assertEqual(written - {"user_id"} - projected, set())
+        self.assertIn("kind", projected)
+
+
+class LeadJobRoutingTest(unittest.TestCase):
+    """Une source de recherche ne doit JAMAIS partir sur l'actor de commentaires."""
+
+    def _run(self, job):
+        from src import jobs
+
+        with patch("src.db.get_lead_collection_job", return_value=job), \
+             patch("src.db.get_lead_collection_job_status", return_value="running"), \
+             patch("src.db.update_lead_collection_job"), \
+             patch("src.db.get_lead_source", return_value={"id": "s1", "post_url": "u", "kind": "search"}), \
+             patch("src.lead_search.collect_and_persist_search", return_value={"ok": 1}) as search, \
+             patch("src.jobs._collect_and_persist_guarded") as comments:
+            jobs.process_lead_collection_job("tok", "j1")
+        return search, comments
+
+    def test_search_job_takes_the_search_path(self):
+        search, comments = self._run(
+            {"id": "j1", "source_id": "s1", "kind": "search", "max_comments": 100}
+        )
+        search.assert_called_once()
+        comments.assert_not_called()
+
+    def test_source_kind_saves_the_day_when_the_job_kind_is_missing(self):
+        # Exactement le bug vécu : le job relu SANS `kind` (projection incomplète).
+        # La nature de la source doit suffire à ne pas appeler Apify.
+        search, comments = self._run({"id": "j1", "source_id": "s1", "max_comments": 100})
+        search.assert_called_once()
+        comments.assert_not_called()

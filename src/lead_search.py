@@ -85,13 +85,19 @@ _TRACKING_PARAMS = {
 
 
 def _clean_query(query: str) -> str:
-    """Retire les paramètres de traçage, garde tous les critères de recherche."""
+    """Retire les paramètres de traçage, garde tous les critères de recherche.
+
+    ⚠️ Encodage en `%20` (`quote_via=quote`), pas en `+` : c'est Unipile qui
+    parse cette URL, et on lui rend la forme que LinkedIn produit lui-même
+    plutôt qu'une variante équivalente en théorie. Moins on s'éloigne de l'URL
+    copiée par le client, moins on dépend du parseur d'en face.
+    """
     kept = [
         (k, v)
         for k, v in urllib.parse.parse_qsl(query, keep_blank_values=True)
         if k.lower() not in _TRACKING_PARAMS
     ]
-    return urllib.parse.urlencode(kept)
+    return urllib.parse.urlencode(kept, quote_via=urllib.parse.quote)
 
 
 def validate_search_url(raw: str | None) -> str:
@@ -110,12 +116,17 @@ def validate_search_url(raw: str | None) -> str:
     host = (parsed.netloc or "").lower().split(":")[0]
     if not (host == "linkedin.com" or host.endswith(".linkedin.com")):
         raise LeadSearchError("Ce lien n'est pas une URL LinkedIn.")
-    path = (parsed.path or "").rstrip("/").lower()
+
+    # `raw_path` garde la forme exacte de LinkedIn (slash final compris) — c'est
+    # elle qu'on renverra à Unipile ; `path` n'en est que la version normalisée
+    # pour les comparaisons.
+    raw_path = parsed.path or ""
+    path = raw_path.rstrip("/").lower()
 
     # Onglet « Tous » → onglet « Personnes », critères conservés.
     if path.startswith(_ALL_TAB_PATH):
+        raw_path = _PEOPLE_TAB_PATH + raw_path[len(_ALL_TAB_PATH):]
         path = _PEOPLE_TAB_PATH + path[len(_ALL_TAB_PATH):]
-        parsed = parsed._replace(path=path)
 
     for prefix, label in _NON_PEOPLE_PATHS.items():
         if path.startswith(prefix):
@@ -141,7 +152,7 @@ def validate_search_url(raw: str | None) -> str:
         parsed._replace(
             scheme="https",
             netloc=host,
-            path=path,
+            path=raw_path,
             query=_clean_query(parsed.query or ""),
             fragment="",
         )
