@@ -25,10 +25,43 @@ class ValidateSearchUrlTest(unittest.TestCase):
             self.assertTrue(lead_search.validate_search_url(raw).startswith("https://"))
 
     def test_adds_scheme_and_drops_fragment(self):
-        # Le fragment ne sert à rien côté serveur mais casserait la dédup
-        # (user_id, post_url) : deux fois la même recherche = deux sources.
+        # Fragment et slash final ne servent à rien côté serveur mais casseraient
+        # la dédup (user_id, post_url) : deux copies de la MÊME recherche
+        # donneraient deux sources, donc des leads importés deux fois.
         url = lead_search.validate_search_url("www.linkedin.com/search/results/people/?k=1#zone")
-        self.assertEqual(url, "https://www.linkedin.com/search/results/people/?k=1")
+        self.assertEqual(url, "https://www.linkedin.com/search/results/people?k=1")
+
+    def test_all_tab_is_switched_to_people_tab(self):
+        # L'onglet « Tous » est l'URL qu'on obtient en tapant dans la barre de
+        # recherche : le cas le plus courant. On bascule sur « Personnes » en
+        # gardant les critères plutôt que de renvoyer le client faire un clic.
+        url = lead_search.validate_search_url(
+            "https://www.linkedin.com/search/results/all/?keywords=pharmacien%20titulaire"
+            "&origin=TYPEAHEAD_HISTORY&position=0"
+        )
+        self.assertTrue(url.startswith("https://www.linkedin.com/search/results/people"))
+        self.assertIn("keywords=pharmacien", url)
+        # Paramètres de traçage retirés : ils ne changent pas les résultats mais
+        # feraient diverger la clé d'unicité selon l'endroit d'où le lien a été copié.
+        self.assertNotIn("origin=", url)
+        self.assertNotIn("position=", url)
+
+    def test_two_copies_of_the_same_search_give_the_same_key(self):
+        a = lead_search.validate_search_url(
+            "https://www.linkedin.com/search/results/people/?keywords=CTO&origin=GLOBAL_SEARCH_HEADER"
+        )
+        b = lead_search.validate_search_url(
+            "https://www.linkedin.com/search/results/all/?keywords=CTO&origin=TYPEAHEAD_HISTORY&position=3"
+        )
+        self.assertEqual(a, b)
+
+    def test_keeps_opaque_criteria_intact(self):
+        # `geoUrn` porte des identifiants opaques encodés : les perdre ou les
+        # abîmer donnerait une recherche silencieusement différente.
+        url = lead_search.validate_search_url(
+            "https://www.linkedin.com/search/results/people/?geoUrn=%5B%22105015875%22%5D&keywords=CTO"
+        )
+        self.assertIn("geoUrn=%5B%22105015875%22%5D", url)
 
     def test_rejects_non_people_tabs_with_actionable_message(self):
         with self.assertRaises(lead_search.LeadSearchError) as ctx:

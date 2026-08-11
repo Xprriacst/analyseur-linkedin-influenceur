@@ -65,6 +65,34 @@ _NON_PEOPLE_PATHS = {
 
 _PROFILE_SLUG_RE = re.compile(r"/(?:in|pub)/([^/?#]+)", re.IGNORECASE)
 
+# Onglet « Tous » de la recherche LinkedIn. C'est l'URL qu'on obtient en tapant
+# dans la barre de recherche sans cliquer sur un onglet — donc le cas le PLUS
+# courant. Elle mélange personnes, entreprises et posts : on la bascule
+# automatiquement sur l'onglet « Personnes » en gardant les critères, ce que le
+# client ferait à la main de toute façon. La refuser serait techniquement
+# défendable et pratiquement absurde.
+_ALL_TAB_PATH = "/search/results/all"
+_PEOPLE_TAB_PATH = "/search/results/people"
+
+# Paramètres de traçage LinkedIn (d'où vient le clic), sans effet sur les
+# résultats. On les retire : ils feraient diverger la clé d'unicité
+# (user_id, post_url) entre deux copies de la MÊME recherche selon l'endroit
+# d'où elle a été copiée — donc deux sources et des leads dupliqués.
+_TRACKING_PARAMS = {
+    "origin", "position", "sid", "trk", "trackingid", "lipi", "licu",
+    "midtoken", "midsig", "refid", "searchid",
+}
+
+
+def _clean_query(query: str) -> str:
+    """Retire les paramètres de traçage, garde tous les critères de recherche."""
+    kept = [
+        (k, v)
+        for k, v in urllib.parse.parse_qsl(query, keep_blank_values=True)
+        if k.lower() not in _TRACKING_PARAMS
+    ]
+    return urllib.parse.urlencode(kept)
+
 
 def validate_search_url(raw: str | None) -> str:
     """Valide/nettoie une URL de recherche LinkedIn. Lève `LeadSearchError` sinon.
@@ -84,6 +112,11 @@ def validate_search_url(raw: str | None) -> str:
         raise LeadSearchError("Ce lien n'est pas une URL LinkedIn.")
     path = (parsed.path or "").rstrip("/").lower()
 
+    # Onglet « Tous » → onglet « Personnes », critères conservés.
+    if path.startswith(_ALL_TAB_PATH):
+        path = _PEOPLE_TAB_PATH + path[len(_ALL_TAB_PATH):]
+        parsed = parsed._replace(path=path)
+
     for prefix, label in _NON_PEOPLE_PATHS.items():
         if path.startswith(prefix):
             raise LeadSearchError(
@@ -97,12 +130,22 @@ def validate_search_url(raw: str | None) -> str:
         )
     if not any(path.startswith(p) for p in _PEOPLE_SEARCH_PATHS):
         raise LeadSearchError(
-            "Lien de recherche non reconnu. Attendu : une recherche LinkedIn de "
-            "personnes, une recherche Sales Navigator ou une liste de leads."
+            "Lien de recherche non reconnu. Lance ta recherche sur LinkedIn, clique "
+            "l'onglet « Personnes », puis copie le lien de la page de résultats "
+            "(il commence par linkedin.com/search/results/people/). Les recherches "
+            "et listes de leads Sales Navigator marchent aussi."
         )
     # Fragment retiré (jamais transmis au serveur, mais il pollue la clé d'unicité
     # (user_id, post_url) : deux fois la même recherche donnerait deux sources).
-    return urllib.parse.urlunparse(parsed._replace(scheme="https", netloc=host, fragment=""))
+    return urllib.parse.urlunparse(
+        parsed._replace(
+            scheme="https",
+            netloc=host,
+            path=path,
+            query=_clean_query(parsed.query or ""),
+            fragment="",
+        )
+    )
 
 
 def canonical_profile_url(url: str | None) -> str | None:
