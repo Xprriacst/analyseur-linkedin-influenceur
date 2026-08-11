@@ -2,7 +2,8 @@ import { test, expect, type Page } from "@playwright/test";
 
 /**
  * Tunnel fondateurs SaaS (/founders, parcours anonyme) :
- * lien du SaaS → audit léger → questions SaaS → gains en ARR → simulation → essai.
+ * lien du SaaS → audit léger → questions SaaS (dont stade + obstacles) → gains en
+ * ARR → simulation → closing (miroir des obstacles, ROI, roadmap) → essai.
  *
  * Backend entièrement mocké (zéro coût Apify/Claude/Stripe). Ce spec verrouille les
  * trois écarts qui feraient de ce tunnel une copie ratée de /start, tous invisibles
@@ -22,6 +23,9 @@ import { test, expect, type Page } from "@playwright/test";
  *    écrans ne doivent JAMAIS afficher « aujourd'hui 0 » ni « 0 abonnés ». Le
  *    fondateur a un compte, on ne l'a simplement pas mesuré — annoncer zéro
  *    serait un chiffre faux sur son propre compte, en plein argumentaire.
+ * 5. Le closing rend au visiteur SES obstacles (effet miroir) et un ROI calculé
+ *    sur l'ACV qu'il vient de choisir : si l'un des deux se perdait en route,
+ *    l'écran redeviendrait un argumentaire générique — d'apparence normale.
  */
 
 const PREVIEW = {
@@ -122,6 +126,13 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
 
   await expect(page.getByText("Ta catégorie de produit")).toBeVisible();
   await page.getByRole("button", { name: "DevTools & infra" }).click();
+  await page.getByRole("button", { name: "Continuer", exact: true }).click();
+
+  // Page 3 (SaaS uniquement) : stade + obstacles — la matière de l'effet miroir.
+  await expect(page.getByText("Où en est ton SaaS ?")).toBeVisible();
+  await page.getByRole("button", { name: /Premiers clients/ }).click();
+  await page.getByRole("button", { name: "Je suis un builder, pas un marketeur" }).click();
+  await page.getByRole("button", { name: "Je lance dans le silence" }).click();
   await page.getByRole("button", { name: /Voir ce que je peux gagner/ }).click();
 
   // Les montants sont annoncés pour ce qu'ils sont : de l'ARR signé.
@@ -134,6 +145,16 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
   // (4) Aucun compteur d'audience inventé, ni dans les gains ni dans la simulation.
   await expect(page.locator(".onb-sim-grid")).not.toContainText("0 abonnés");
   await expect(page.locator(".onb-screen")).not.toContainText("aujourd'hui 0");
+
+  // Closing : les obstacles COCHÉS reviennent en miroir, le ROI est calculé sur
+  // l'ACV du palier choisi (15 000 € / 49 € ≈ 306 mois), et les engagements
+  // réels (places, garantie) sont écrits.
+  await page.getByRole("button", { name: /Comment on s'y prend/ }).click();
+  await expect(page.getByText(/je suis un builder, pas un marketeur/)).toBeVisible();
+  await expect(page.getByText(/je lance dans le silence/)).toBeVisible();
+  await expect(page.getByText(/un seul client à ton ACV/)).toBeVisible();
+  await expect(page.getByText(/comptes fondateurs par mois/)).toBeVisible();
+  await expect(page.getByText(/satisfait ou remboursé/i)).toBeVisible();
   return { projectionBody: () => projectionBody };
 }
 
@@ -185,6 +206,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
     await page.getByRole("button", { name: "Analyser" }).click();
     await page.getByRole("button", { name: "Voir mon potentiel" }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: /Voir ce que je peux gagner/ }).click();
