@@ -40,6 +40,7 @@ import {
   PlusCircle,
   Trash2,
   RefreshCw,
+  Search,
   Send,
   Settings2,
   Sparkle,
@@ -12913,6 +12914,203 @@ function MyLibraryView({
   );
 }
 
+// ─── Import d'un lien de recherche LinkedIn comme source de leads (0062) ───
+// Le client colle l'URL d'une recherche LinkedIn (onglet « Personnes », Sales
+// Navigator, recherche sauvegardée ou liste de leads) et récupère les profils en
+// leads. Passe par SON compte LinkedIn connecté (Unipile) : gratuit, aucun crédit.
+const LEAD_SEARCH_MIN = 25;
+const LEAD_SEARCH_MAX = 1000;   // plafond dur de LinkedIn, miroir du backend
+const LEAD_SEARCH_DEFAULT = 100;
+
+/** Détail d'erreur API rendu comme texte — un 422 pydantic renvoie une LISTE,
+ *  et la rendre telle quelle ferait planter React (objet en enfant JSX). */
+function apiDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string" && detail.trim()) return detail;
+  return fallback;
+}
+
+function LeadSearchImport({
+  connected,
+  onImported,
+}: {
+  connected: boolean;
+  onImported: () => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState("");
+  const [count, setCount] = useState(LEAD_SEARCH_DEFAULT);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [error, setError] = useState("");
+  const [job, setJob] = useState<LeadCollectionJob | null>(null);
+  const active = !!job && (job.status === "queued" || job.status === "running");
+
+  // Polling non-chevauchant (ALE-271) : replanifié APRÈS chaque réponse, jamais
+  // un setInterval — sur un backend lent (réveil à froid) les requêtes
+  // s'empileraient et affameraient le reste de l'écran.
+  useEffect(() => {
+    if (!job || (job.status !== "queued" && job.status !== "running")) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/lead-collection-jobs/${job.id}`, {
+          headers: await authHeaders(),
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (res.ok) {
+          setJob(data as LeadCollectionJob);
+          if (data.status === "done") {
+            const found = data.result?.comments_count ?? 0;
+            const added = data.result?.leads?.inserted ?? 0;
+            setMsg(
+              found === 0
+                ? "Aucun profil récupéré — la recherche ne rend peut-être plus de résultats. Affine-la et réessaie."
+                : `${found} profil${found > 1 ? "s" : ""} récupéré${found > 1 ? "s" : ""}, dont ${added} nouveau${added > 1 ? "x" : ""} lead${added > 1 ? "s" : ""}.`
+            );
+            await onImported();
+            return;
+          }
+          if (data.status === "error") {
+            setError(apiDetail(data.error, "Import interrompu."));
+            return;
+          }
+          if (data.status === "cancelled") return;
+        }
+      } catch {
+        /* réseau : on retente au tick suivant */
+      }
+      if (!cancelled) timer = setTimeout(tick, 3000);
+    };
+    timer = setTimeout(tick, 3000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [job?.id, job?.status]);
+
+  const clamped = Math.max(LEAD_SEARCH_MIN, Math.min(count, LEAD_SEARCH_MAX));
+
+  const submit = async () => {
+    setError("");
+    setMsg("");
+    setBusy(true);
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-searches`, {
+        method: "POST",
+        headers: { ...(await authHeaders()), "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url.trim(), max_results: clamped }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(apiDetail(data.detail, "Import impossible"));
+      setJob(data.job as LeadCollectionJob);
+      if (data.existing) setMsg("Recherche déjà importée — on récupère les nouveaux profils.");
+    } catch (err: any) {
+      setError(err.message || "Import impossible");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancel = async () => {
+    if (!job) return;
+    try {
+      await fetch(`${DIRECT_API_URL}/me/lead-collection-jobs/${job.id}/cancel`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      setJob({ ...job, status: "cancelled" });
+    } catch {
+      /* non bloquant */
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+          padding: "12px 16px", background: "none", border: "none", cursor: "pointer",
+          font: "inherit", color: "inherit",
+        }}
+      >
+        <ChevronRight size={18} style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+        <Search size={16} style={{ flexShrink: 0 }} />
+        <strong>Importer une recherche LinkedIn</strong>
+        <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12.5, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          — colle le lien, récupère toute la liste de prospects
+        </span>
+      </button>
+
+      {open && (
+        <div style={{ padding: "0 16px 16px", display: "grid", gap: 10 }}>
+          {!connected ? (
+            <p style={{ margin: 0, fontSize: 13, color: "var(--muted)" }}>
+              Connecte d&apos;abord ton compte LinkedIn dans <strong>Mon profil › Connexions</strong> :
+              la recherche est lue depuis ton compte, c&apos;est ce qui la rend gratuite.
+            </p>
+          ) : active ? (
+            <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px", background: "var(--surface-low)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                <Loader2 size={15} className="spinning" />
+                <span>
+                  Récupération de ~{job!.max_comments} profils… Ça peut prendre quelques minutes ; tu peux
+                  quitter cet écran, les leads arriveront dans la liste.
+                </span>
+              </div>
+              <button className="secondary-button" style={{ fontSize: 12.5, marginTop: 10, color: "var(--danger)" }} onClick={cancel}>
+                Annuler l&apos;import
+              </button>
+            </div>
+          ) : (
+            <>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Lien de la recherche
+                <input
+                  type="url"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://www.linkedin.com/search/results/people/?keywords=..."
+                  style={{ fontWeight: 400 }}
+                />
+              </label>
+              <div style={{ display: "grid", gap: 4 }}>
+                <label style={{ fontSize: 13, fontWeight: 600 }}>
+                  Nombre de prospects à récupérer : {clamped}
+                </label>
+                <input
+                  type="range"
+                  min={LEAD_SEARCH_MIN}
+                  max={LEAD_SEARCH_MAX}
+                  step={25}
+                  value={clamped}
+                  onChange={(e) => setCount(Number(e.target.value))}
+                  aria-label="Nombre de prospects à récupérer"
+                />
+                <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+                  Gratuit — aucun crédit. LinkedIn ne rend jamais plus de 1000 profils par recherche,
+                  même s&apos;il en annonce davantage : au-delà, affine ta recherche et réimporte-la.
+                </p>
+              </div>
+              <div>
+                <button type="button" className="primary-button" onClick={submit} disabled={busy || !url.trim()}>
+                  {busy ? <Loader2 size={14} className="spinning" /> : <Users size={14} />}{" "}
+                  {busy ? "Lancement…" : "Importer les prospects"}
+                </button>
+              </div>
+            </>
+          )}
+          {msg && <p style={{ margin: 0, fontSize: 12.5, color: "var(--muted)" }}>{msg}</p>}
+          {error && <div className="error" style={{ marginBottom: 0 }}>{error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── ALE-229 : onglet Prospection — liste des leads + panneau latéral de détail ───
 // V1 volontairement sans import (l'alimentation vient de la veille ALE-227 et de
 // Ma bibliothèque ALE-234). Le ciblage ICP + score (ALE-228) sont ici ; l'envoi
@@ -13386,6 +13584,19 @@ function ProspectingView({
         </div>
       )}
 
+      {/* Import d'une recherche LinkedIn (0062) — la seconde façon d'alimenter la
+          liste, à côté des commentateurs de posts concurrents. */}
+      <LeadSearchImport
+        connected={lnConnected}
+        onImported={async () => {
+          try {
+            setLeads(await loadLeads());
+          } catch {
+            /* la liste se rechargera au prochain passage */
+          }
+        }}
+      />
+
       {/* ALE-284 — Autopilote : le bouton, et à sa droite le schéma de la séquence
           réellement active. Le schéma n'est pas décoratif — c'est le rappel permanent
           de « qu'est-ce que mon autopilote fait, là, maintenant » : les étapes que le
@@ -13429,8 +13640,9 @@ function ProspectingView({
       ) : leads.length === 0 ? (
         <div className="card" style={{ textAlign: "center", padding: 32 }}>
           <p style={{ margin: 0, color: "var(--muted)" }}>
-            Aucun lead pour l&apos;instant. Ils arrivent automatiquement des posts lead-magnet détectés
-            dans <strong>Contenu › Analyses</strong> et de ceux que tu importes dans <strong>Contenu › Ma bibliothèque</strong>
+            Aucun lead pour l&apos;instant. Colle un lien de recherche LinkedIn ci-dessus pour importer
+            toute une liste de prospects — ou laisse-les arriver des posts lead-magnet détectés dans{" "}
+            <strong>Contenu › Analyses</strong> et de ceux que tu importes dans <strong>Contenu › Ma bibliothèque</strong>
             {" "}(bouton « Récupérer les commentateurs »).
           </p>
         </div>

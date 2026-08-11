@@ -29,6 +29,7 @@ from src.pipeline import run_analysis
 from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread, start_lead_collection_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters, lead_collect_credit_cost, effective_max_comments
+from src import lead_search
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
 from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures, IG_TRAMES
 from src.llm import adapt_post_for_x, adapt_post_for_reddit
@@ -3517,6 +3518,32 @@ class LeadTargetingRequest(BaseModel):
     first_message_instructions: str | None = Field(default=None, max_length=4000)
 
 
+class LeadSearchRequest(BaseModel):
+    url: str
+    max_results: int | None = Field(default=None, ge=1, le=lead_search.MAX_RESULTS_CAP)
+
+
+def _create_lead_search_job(token: str, source: dict, max_results: int | None) -> dict[str, Any]:
+    """Lance l'import d'un lien de recherche LinkedIn en tâche de fond.
+
+    Pas de pré-check de solde ni de débit, contrairement à la collecte de
+    commentateurs : la recherche passe par le compte LinkedIn déjà connecté du
+    client (forfait Unipile fixe), elle ne coûte rien à l'appel.
+
+    Tâche de fond pour la même raison que la collecte (ALE-240) : parcourir des
+    centaines de profils prend plusieurs minutes, au-delà du budget d'une
+    requête HTTP — qui expirerait pendant que la recherche continue en silence.
+    """
+    requested = lead_search.effective_max_results(max_results)
+    job = db.create_lead_collection_job(
+        token, source["id"], source["post_url"], requested, kind="search"
+    )
+    if not job:
+        raise HTTPException(status_code=500, detail="Création du job d'import impossible.")
+    start_lead_collection_job_thread(token, job["id"])
+    return job
+
+
 def _create_lead_collection_job(token: str, source: dict, max_comments: int | None) -> dict[str, Any]:
     """Lance une collecte de commentateurs en tâche de fond (ALE-240).
 
@@ -3568,6 +3595,16 @@ def add_me_lead_source(payload: LeadSourceRequest, token: str = Depends(require_
     url = (payload.url or "").strip()
     if not url.lower().startswith(("http://", "https://")):
         raise HTTPException(status_code=422, detail="Colle le lien du post LinkedIn à analyser.")
+    # Une URL de recherche collée ici échouerait sur un « post illisible »
+    # trompeur : on renvoie vers le bon parcours.
+    if "/search/results/" in url or "/sales/" in url:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Ce lien est une recherche LinkedIn, pas un post. Importe-le depuis "
+                "l'onglet Prospection (« Importer une recherche LinkedIn »)."
+            ),
+        )
 
     existing = db.get_lead_source_by_url(token, url)
     if existing:
@@ -3625,7 +3662,42 @@ def collect_me_lead_source(
     source = db.get_lead_source(token, source_id)
     if not source:
         raise HTTPException(status_code=404, detail="Source introuvable.")
-    return _create_lead_collection_job(token, source, payload.max_comments if payload else None)
+    requested = payload.max_comments if payload else None
+    if source.get("kind") == "search":
+        # Relancer une recherche déjà importée : nouveaux profils seulement
+        # (dédup par personne côté `save_leads`).
+        _require_outreach_account(token)
+        return _create_lead_search_job(token, source, requested)
+    return _create_lead_collection_job(token, source, requested)
+
+
+@app.post("/me/lead-searches")
+def add_me_lead_search(payload: LeadSearchRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Importe les profils d'un lien de recherche LinkedIn comme leads.
+
+    Accepte une recherche classique (onglet « Personnes »), Sales Navigator, une
+    recherche sauvegardée ou une liste de leads : Unipile parse l'URL lui-même.
+    Ré-importer la même recherche ne crée pas de doublon de source — on relance
+    la collecte sur la source existante.
+
+    Gratuit (aucun crédit) : la recherche passe par le compte LinkedIn connecté
+    du client. Renvoie {source, job} ; le frontend suit le job par polling.
+    """
+    _require_outreach_account(token)
+    try:
+        url = lead_search.validate_search_url(payload.url)
+    except lead_search.LeadSearchError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    source = db.get_lead_source_by_url(token, url)
+    existing = bool(source)
+    if not source:
+        source = db.add_lead_source(token, url, kind="search", origin="manual")
+    if not source:
+        raise HTTPException(status_code=400, detail="Impossible d'enregistrer la recherche.")
+
+    job = _create_lead_search_job(token, source, payload.max_results)
+    return {"source": source, "job": job, "existing": existing}
 
 
 @app.get("/me/lead-collection-jobs")
