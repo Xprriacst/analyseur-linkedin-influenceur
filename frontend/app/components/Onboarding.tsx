@@ -984,7 +984,7 @@ export default function OnboardingScreen({
                 {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />}{" "}
                 {variantKey === "saas" && showsProjection
                   ? "Continuer"
-                  : showsProjection ? "Voir ce que je peux gagner" : finishLabel}
+                  : showsProjection ? "Voir ce que je pourrais gagner" : finishLabel}
               </button>
             </div>
           </div>
@@ -1048,7 +1048,7 @@ export default function OnboardingScreen({
               </button>
               <button type="button" className="onb-cta" onClick={toGains} disabled={saving}>
                 {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />}{" "}
-                Voir ce que je peux gagner
+                Voir ce que je pourrais gagner
               </button>
             </div>
           </div>
