@@ -190,6 +190,117 @@ def effective_max_results(requested: int | None) -> int:
     return max(MIN_MAX_RESULTS, min(n, MAX_RESULTS_CAP))
 
 
+# --------------------------------------------------------------------------- #
+# Traduction d'une URL de recherche en requête Unipile
+# --------------------------------------------------------------------------- #
+#
+# ⚠️ `api` est OBLIGATOIRE côté Unipile, et le passage d'URL brute n'est
+# documenté qu'avec des exemples Sales Navigator. Une URL de recherche CLASSIQUE
+# envoyée seule dans `{"url": …}` ne lève aucune erreur : Unipile répond 200 en
+# ~1 s avec `items: []` et `total_count: 0` — un import « terminé, 0 profil »
+# indiscernable d'une recherche réellement vide. D'où la traduction explicite
+# ci-dessous pour les recherches classiques.
+
+_CLASSIC_NETWORK = {"F": 1, "S": 2, "O": 3}   # 1er / 2e / 3e+ niveau
+
+# Facettes de la recherche classique qu'on sait transmettre à Unipile.
+_MAPPED_CLASSIC_PARAMS = {"keywords", "geourn", "network"}
+
+# Facettes connues qu'on ne sait PAS transmettre. On ne les ignore pas en
+# silence : le client doit savoir que son filtre « France » n'est pas parti,
+# sinon il reçoit des prospects du monde entier en croyant l'avoir restreint.
+_CLASSIC_FILTER_LABELS = {
+    "currentcompany": "entreprise actuelle",
+    "pastcompany": "entreprise passée",
+    "industry": "secteur",
+    "industrycompanyvertical": "secteur",
+    "titlefreetext": "intitulé de poste",
+    "schoolfilter": "école",
+    "schoolfreetext": "école",
+    "servicecategory": "services proposés",
+    "connectionof": "relations d'une personne",
+    "followerof": "abonnés d'une page",
+    "profilelanguage": "langue du profil",
+    "firstname": "prénom",
+    "lastname": "nom",
+}
+
+
+def _sales_or_recruiter_api(path: str) -> str | None:
+    """`api` Unipile pour les chemins Sales Navigator / Recruiter, sinon None."""
+    if path.startswith("/sales"):
+        return "sales_navigator"
+    if path.startswith("/talent"):
+        return "recruiter"
+    return None
+
+
+def build_search_request(search_url: str) -> tuple[dict[str, Any], list[str]]:
+    """Corps de requête Unipile pour une URL de recherche, + filtres non transmis.
+
+    - Sales Navigator / Recruiter : on passe l'URL telle quelle (forme documentée),
+      avec son `api`.
+    - Recherche classique : on traduit l'URL en paramètres (`api`/`category`/
+      `keywords`…), parce que l'URL brute y est ignorée sans erreur.
+    """
+    parsed = urllib.parse.urlparse(search_url)
+    path = (parsed.path or "").rstrip("/").lower()
+
+    api = _sales_or_recruiter_api(path)
+    if api:
+        return {"api": api, "url": search_url}, []
+
+    params = urllib.parse.parse_qs(parsed.query or "")
+    lowered = {k.lower(): v for k, v in params.items()}
+
+    body: dict[str, Any] = {"api": "classic", "category": "people"}
+    keywords = " ".join(v.strip() for v in lowered.get("keywords", []) if v.strip())
+    if keywords:
+        body["keywords"] = keywords
+
+    # `geoUrn=["105015875"]` → identifiants de localisation LinkedIn.
+    locations = _ids_from_urn_param(lowered.get("geourn"))
+    if locations:
+        body["location"] = locations
+
+    # `network=["F","S"]` → distances réseau.
+    distances = sorted(
+        {
+            _CLASSIC_NETWORK[code]
+            for raw in lowered.get("network", [])
+            for code in _split_bracketed(raw)
+            if code in _CLASSIC_NETWORK
+        }
+    )
+    if distances:
+        body["network_distance"] = distances
+
+    dropped = sorted(
+        {
+            label
+            for key, label in _CLASSIC_FILTER_LABELS.items()
+            if key in lowered and key not in _MAPPED_CLASSIC_PARAMS
+        }
+    )
+    return body, dropped
+
+
+def _split_bracketed(raw: str) -> list[str]:
+    """Découpe une valeur LinkedIn du type `["F","S"]` (ou `F`) en éléments."""
+    return [part.strip().strip('"').strip("'") for part in raw.strip("[]").split(",") if part.strip()]
+
+
+def _ids_from_urn_param(values: list[str] | None) -> list[str]:
+    """Identifiants numériques d'un paramètre `geoUrn`/`industry` LinkedIn."""
+    out: list[str] = []
+    for raw in values or []:
+        for part in _split_bracketed(raw):
+            cleaned = part.rsplit(":", 1)[-1]
+            if cleaned.isdigit():
+                out.append(cleaned)
+    return out
+
+
 def _lead_from_profile(profile: dict[str, Any]) -> dict[str, Any] | None:
     """Prospect normalisé → lead persistable (forme attendue par `db.save_leads`)."""
     url = canonical_profile_url(profile.get("profile_url"))
@@ -210,7 +321,7 @@ def _lead_from_profile(profile: dict[str, Any]) -> dict[str, Any] | None:
 
 def collect_search_profiles(
     account_id: str, search_url: str, max_results: int
-) -> tuple[list[dict[str, Any]], int | None]:
+) -> tuple[list[dict[str, Any]], int | None, list[str]]:
     """Parcourt la recherche page par page jusqu'à `max_results` profils.
 
     Retourne (leads dédoublonnés, total annoncé par LinkedIn). S'arrête dès que
@@ -221,17 +332,28 @@ def collect_search_profiles(
     fait flaguer un compte.
     """
     limit = effective_max_results(max_results)
+    body, dropped = build_search_request(search_url)
     leads: list[dict[str, Any]] = []
     seen: set[str] = set()
     cursor: str | None = None
     total: int | None = None
 
-    for _page in range(_MAX_PAGES):
-        page = unipile.search_page(account_id, url=search_url, cursor=cursor)
+    for page_index in range(_MAX_PAGES):
+        page = unipile.search_page(account_id, body=body, cursor=cursor)
         if total is None:
             total = unipile.search_total_count(page)
         items = page.get("items") if isinstance(page, dict) else None
         if not isinstance(items, list) or not items:
+            if page_index == 0:
+                # Une recherche qui revient vide est indiscernable d'une requête
+                # mal formée : on trace la FORME de la réponse (jamais son
+                # contenu) pour pouvoir trancher sans redéployer.
+                print(
+                    f"[leads] recherche vide — requête {sorted(body)} → "
+                    f"clés réponse {sorted(page) if isinstance(page, dict) else type(page).__name__}, "
+                    f"paging {page.get('paging') if isinstance(page, dict) else None}",
+                    flush=True,
+                )
             break
 
         fresh = 0
@@ -246,13 +368,13 @@ def collect_search_profiles(
             leads.append(lead)
             fresh += 1
             if len(leads) >= limit:
-                return leads, total
+                return leads, total, dropped
 
         cursor = page.get("cursor") if isinstance(page, dict) else None
         if not cursor or fresh == 0:
             break
 
-    return leads, total
+    return leads, total, dropped
 
 
 def collect_and_persist_search(
@@ -276,7 +398,7 @@ def collect_and_persist_search(
             "Aucun compte LinkedIn connecté : connecte-le dans Mon profil pour importer une recherche."
         )
 
-    profiles, total = collect_search_profiles(account_id, source["post_url"], max_results)
+    profiles, total, dropped = collect_search_profiles(account_id, source["post_url"], max_results)
     counts = db.save_leads(access_token, source, profiles)
     _score_leads_for_source(access_token, source, counts)
     fields: dict[str, Any] = {
@@ -297,6 +419,10 @@ def collect_and_persist_search(
         "comments_count": len(profiles),
         "profiles_count": len(profiles),
         "search_total": total,
+        # Filtres de la recherche qu'on n'a pas su transmettre : le client doit
+        # le savoir, sinon il croit avoir restreint sa liste alors qu'elle est
+        # plus large que ce qu'il a paramétré sur LinkedIn.
+        "dropped_filters": dropped,
         "leads": public_counts,
         "credits": None,
     }

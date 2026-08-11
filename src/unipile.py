@@ -456,11 +456,10 @@ def search_page(
 ) -> dict[str, Any]:
     """Une page de résultats de recherche LinkedIn.
 
-    `url` = lien de recherche collé par le client (recherche classique, Sales
-    Navigator, recherche sauvegardée ou liste de leads) : Unipile le parse
-    lui-même, on n'a donc AUCUN paramètre de recherche à reconstruire nous-mêmes
-    (les URLs LinkedIn portent des identifiants opaques — `geoUrn`, facettes
-    Sales Navigator — qu'on ne saurait pas retraduire de façon fiable).
+    ⚠️ `api` est OBLIGATOIRE dans le corps ; le passage d'une URL brute n'est
+    documenté qu'avec des exemples Sales Navigator. Une URL de recherche
+    CLASSIQUE envoyée seule ne lève pas d'erreur : Unipile répond 200 avec zéro
+    résultat. La construction du corps vit dans `lead_search.build_search_request`.
 
     Retourne la réponse brute {items, paging, cursor}.
     """
