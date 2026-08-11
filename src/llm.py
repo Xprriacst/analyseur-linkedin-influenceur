@@ -525,6 +525,105 @@ def _format_reference_posts(reference_posts: list[dict] | None) -> str:
     )
 
 
+# Mémoire posts structurée : chaque post gagne une fiche compacte (sujet / angle
+# / produits cités / accroche) calculée UNE FOIS à sa création (sauvegarde ou
+# programmation — voir db._build_memory_card), au lieu de coller son texte brut
+# tronqué dans le prompt à chaque lecture de la mémoire. Moins de tokens,
+# l'essentiel visible même si l'info utile est en bas du post. Surchargeable par
+# `POST_MEMORY_CARD_MODEL` sur Render ; à défaut on retombe sur ANTHROPIC_MODEL,
+# comme le scoring ICP (_scoring_model).
+_MEMORY_CARD_FIELDS = ("subject", "angle", "products", "hook")
+
+
+def _memory_card_model() -> str:
+    return os.environ.get("POST_MEMORY_CARD_MODEL", _model())
+
+
+def _normalize_memory_card(data: Any) -> dict | None:
+    """Valide/borne la sortie brute du modèle en fiche mémoire compacte.
+
+    Pure — aucun réseau, aucune base. Chaque champ est réduit à quelques mots ;
+    une fiche entièrement vide (rien d'exploitable extrait) redevient None pour
+    que l'appelant retombe sur le texte brut tronqué.
+    """
+    if not isinstance(data, dict):
+        return None
+    card = {
+        "subject": str(data.get("subject") or "").strip()[:100],
+        "angle": str(data.get("angle") or "").strip()[:140],
+        "products": str(data.get("products") or "").strip()[:120],
+        "hook": str(data.get("hook") or "").strip()[:160],
+    }
+    if not any(card.values()):
+        return None
+    return card
+
+
+def build_post_memory_card(post_text: str) -> dict | None:
+    """Fiche mémoire compacte d'UN post, calculée à sa création.
+
+    Appel IA léger et annexe (patron `score_leads`/`extract_post_template`) : ne
+    débite jamais de crédit, n'est appelé qu'une fois par post (à la sauvegarde
+    ou à la programmation — jamais relu depuis la lecture de la mémoire).
+    **Best-effort et fail-safe** : toute erreur (réseau, clé absente, JSON
+    invalide) → None, et le post retombe sur son texte brut tronqué côté lecture
+    (comportement historique, exactement comme les posts créés avant ce lot).
+    """
+    text = (post_text or "").strip()
+    if not text:
+        return None
+    system = (
+        "Tu résumes un post LinkedIn en une fiche mémoire ultra compacte, pour "
+        "qu'une IA se souvienne de l'essentiel sans avoir à relire le post en "
+        "entier. Chaque champ = quelques mots, JAMAIS une phrase complète. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    user = (
+        "Post à résumer :\n\n" + text[:3000]
+        + """
+
+Schéma JSON attendu (champs courts, quelques mots chacun, chaîne vide si rien
+d'applicable) :
+{
+  "subject": "sujet du post en quelques mots",
+  "angle": "l'angle / la thèse défendue, en quelques mots",
+  "products": "produits, offres ou outils cités nommément (chaîne vide si aucun)",
+  "hook": "l'accroche (1ère idée du post), reformulée en quelques mots"
+}"""
+    )
+    try:
+        data = _call(system, user, max_tokens=300, temperature=0.0, model=_memory_card_model())
+    except Exception:
+        return None
+    return _normalize_memory_card(data)
+
+
+def _format_memory_entry(entry: dict) -> str | None:
+    """Rendu compact d'UNE entrée de mémoire — pure, testable sans réseau.
+
+    Fiche structurée (`entry["card"]`) si disponible : nettement moins de
+    tokens que le texte brut. Sinon repli sur le texte tronqué (posts créés
+    avant ce lot, ou dont la fiche n'a pas pu être calculée) — jamais de trou
+    dans la mémoire faute de fiche.
+    """
+    text = str(entry.get("text") or "").strip()
+    if not text:
+        return None
+    bits = [str(b) for b in [entry.get("status"), entry.get("date")] if b]
+    header = f"[{' · '.join(bits)}] " if bits else ""
+    card = entry.get("card")
+    if isinstance(card, dict) and any(card.get(k) for k in _MEMORY_CARD_FIELDS):
+        labels = {
+            "subject": "sujet",
+            "angle": "angle",
+            "products": "produits cités",
+            "hook": "accroche",
+        }
+        parts = [f"{labels[k]}: {card[k]}" for k in _MEMORY_CARD_FIELDS if card.get(k)]
+        return f"- {header}" + " · ".join(parts)
+    return f"- {header}{text[:300]}"
+
+
 def _format_recent_posts(recent_posts: list[dict] | None) -> str:
     """Render the user's own recent posts (memory) for LLM prompts.
 
@@ -535,14 +634,8 @@ def _format_recent_posts(recent_posts: list[dict] | None) -> str:
     """
     if not recent_posts:
         return ""
-    entries = []
-    for post in recent_posts[:12]:
-        text = str(post.get("text") or "").strip()
-        if not text:
-            continue
-        bits = [str(b) for b in [post.get("status"), post.get("date")] if b]
-        header = f"[{' · '.join(bits)}] " if bits else ""
-        entries.append(f"- {header}{text[:300]}")
+    entries = [_format_memory_entry(post) for post in recent_posts[:12]]
+    entries = [e for e in entries if e]
     if not entries:
         return ""
     return (
