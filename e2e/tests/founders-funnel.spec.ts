@@ -2,7 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 
 /**
  * Tunnel fondateurs SaaS (/founders, parcours anonyme) :
- * audit léger → questions SaaS → gains en ARR → simulation 90 jours → essai gratuit.
+ * lien du SaaS → audit léger → questions SaaS → gains en ARR → simulation → essai.
  *
  * Backend entièrement mocké (zéro coût Apify/Claude/Stripe). Ce spec verrouille les
  * trois écarts qui feraient de ce tunnel une copie ratée de /start, tous invisibles
@@ -18,16 +18,21 @@ import { test, expect, type Page } from "@playwright/test";
  * 3. Les questions doivent être celles de la variante SaaS. Des chips où le
  *    visiteur ne se reconnaît pas le poussent vers « Autre » et vident la
  *    qualification que ces écrans existent pour produire.
+ * 4. L'entrée est le SITE du SaaS, donc aucun profil LinkedIn n'est lu : les
+ *    écrans ne doivent JAMAIS afficher « aujourd'hui 0 » ni « 0 abonnés ». Le
+ *    fondateur a un compte, on ne l'a simplement pas mesuré — annoncer zéro
+ *    serait un chiffre faux sur son propre compte, en plein argumentaire.
  */
 
 const PREVIEW = {
-  handle: "lea-fondatrice",
-  name: "Léa Fondatrice",
-  headline: "CEO @ Northstack — analytics pour équipes produit",
+  handle: "",
+  name: "Northstack",
+  headline: "Analytics produit pour équipes SaaS B2B",
   avatar_url: "",
-  posts_count: 12,
-  followers: 2400,
-  connections: 900,
+  // Entrée par le site : aucun scrape de profil, donc aucun compteur d'audience.
+  posts_count: 0,
+  followers: 0,
+  connections: 0,
   niche: "Analytics produit pour équipes SaaS B2B",
   summary: "Premier paragraphe.\n\nDeuxième paragraphe.",
   hook: "Tu parles de ton produit, jamais du problème.",
@@ -44,9 +49,9 @@ function saasBand(key: string, label: string, revenue: [number, number]) {
     label,
     deal_value: 3600,
     projection: {
-      followers_now: 2400,
-      followers_after: range(2900, 3700),
-      followers_gain: range(500, 1300),
+      followers_now: 0,
+      followers_after: range(120, 450),
+      followers_gain: range(120, 450),
       relations_per_month: range(40, 110),
       conversations_per_month: range(5, 20),
       clients_per_month: range(1, 4),
@@ -100,8 +105,8 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
   });
 
   await page.goto("/founders");
-  await page.getByPlaceholder("https://linkedin.com/in/ton-profil")
-    .fill("https://linkedin.com/in/lea-fondatrice");
+  // Premier écran : le lien du SaaS, pas le profil LinkedIn.
+  await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
   await page.getByRole("button", { name: "Analyser" }).click();
 
   // Audit léger (écran 1) puis son détail (écran 2).
@@ -126,7 +131,9 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
   await expect(page.locator(".onb-gain-money")).toContainText("15 000");
   await page.locator(".onb-screen").getByRole("button", { name: "Continuer", exact: true }).click();
 
-  await expect(page.locator(".onb-sim-grid")).toContainText("2 400");
+  // (4) Aucun compteur d'audience inventé, ni dans les gains ni dans la simulation.
+  await expect(page.locator(".onb-sim-grid")).not.toContainText("0 abonnés");
+  await expect(page.locator(".onb-screen")).not.toContainText("aujourd'hui 0");
   return { projectionBody: () => projectionBody };
 }
 
@@ -135,13 +142,10 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await mockBackend(page);
     const { projectionBody } = await reachSimulation(page);
 
-    // (1) La grille demandée est bien celle des fondateurs, sur les vrais chiffres.
-    expect(projectionBody()).toMatchObject({
-      followers: 2400,
-      connections: 900,
-      posts_count: 12,
-      audience: "saas",
-    });
+    // (1) La grille demandée est bien celle des fondateurs. Sans scrape de profil,
+    // les compteurs partent à 0 — c'est la projection qui applique ses planchers,
+    // et c'est bien « audience: saas » qui décide de la grille ACV.
+    expect(projectionBody()).toMatchObject({ audience: "saas" });
 
     // (2) Fin de tunnel : l'essai, avec sa durée annoncée par le serveur — et
     // AUCUN des deux artefacts du tunnel /start.
@@ -178,8 +182,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await page.route("**/onboarding/projection", (route) => route.fulfill({ status: 500, json: {} }));
 
     await page.goto("/founders");
-    await page.getByPlaceholder("https://linkedin.com/in/ton-profil")
-      .fill("https://linkedin.com/in/lea-fondatrice");
+    await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
     await page.getByRole("button", { name: "Analyser" }).click();
     await page.getByRole("button", { name: "Voir mon potentiel" }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();

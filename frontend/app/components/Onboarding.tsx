@@ -189,6 +189,10 @@ type OnbVariant = {
   audience: string;
   introTitle: string;
   introSubtitle: string;
+  /** Ce qu'on demande sur le premier écran — et donc ce qui sera analysé. */
+  introPlaceholder: string;
+  introSkipLabel: string;
+  introError: string;
   audienceLabel: string;
   offerLabel: string;
   objectiveLabel: string;
@@ -206,6 +210,9 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     audience: "default",
     introTitle: "Bienvenue sur Cible",
     introSubtitle: "Colle ton profil LinkedIn, on prépare tout le reste pour toi.",
+    introPlaceholder: "https://linkedin.com/in/ton-profil",
+    introSkipLabel: "Continuer sans LinkedIn",
+    introError: "Colle ton URL LinkedIn (ou une courte description).",
     audienceLabel: "À qui tu t'adresses ?",
     offerLabel: "Ce que tu proposes",
     objectiveLabel: "Ton objectif sur LinkedIn",
@@ -222,7 +229,12 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     audience: "saas",
     introTitle: "Le LinkedIn qui remplit ton pipeline",
     introSubtitle:
-      "Colle ton profil de fondateur : on lit ton positionnement et on te montre ce que ça peut rapporter à ton SaaS.",
+      "Colle le lien de ton SaaS : on lit ton produit, ton marché et ta promesse, puis on te montre ce que LinkedIn peut lui rapporter.",
+    introPlaceholder: "https://ton-saas.com",
+    // Un lien LinkedIn collé ici reste accepté (la détection se fait sur la forme
+    // de l'URL) : on demande le site, on ne refuse pas le profil.
+    introSkipLabel: "Continuer sans site",
+    introError: "Colle le lien de ton SaaS (ou une courte description).",
     audienceLabel: "Ton ICP — à qui tu vends ?",
     offerLabel: "Ce que tu vends",
     objectiveLabel: "Ce que tu attends de LinkedIn",
@@ -426,6 +438,16 @@ export default function OnboardingScreen({
 
   const band = bands.find((b) => b.key === bandKey) || bands[0] || null;
   const projection = band?.projection || null;
+  /**
+   * A-t-on vraiment lu l'audience du compte ?
+   *
+   * ⚠️ Sur le tunnel fondateurs, l'entrée est le site du SaaS : aucun profil
+   * LinkedIn n'est scrapé, donc `followers_now` vaut 0 — ce qui ne veut PAS dire
+   * « ce compte a zéro abonné ». Afficher « aujourd'hui 0 » ou « 0 abonnés » à
+   * quelqu'un qui en a 2 000 serait faux, et c'est le genre d'erreur qui fait
+   * fermer l'onglet. On montre alors le GAIN, jamais un état actuel inventé.
+   */
+  const hasAudienceData = (projection?.followers_now || 0) > 0;
 
   const up = (patch: Partial<ReturnType<typeof onbInitSel>>) =>
     setSel((s) => ({ ...s, ...patch }));
@@ -450,7 +472,7 @@ export default function OnboardingScreen({
 
   async function analyze() {
     const trimmed = aiInput.trim();
-    if (!trimmed) { setError("Colle ton URL LinkedIn (ou une courte description)."); return; }
+    if (!trimmed) { setError(variant.introError); return; }
     setError(""); setStep("scanning");
     try {
       const isLinkedin = inputKind === "linkedin";
@@ -642,7 +664,7 @@ export default function OnboardingScreen({
                 value={aiInput}
                 onChange={(e) => setAiInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") analyze(); }}
-                placeholder="https://linkedin.com/in/ton-profil"
+                placeholder={variant.introPlaceholder}
                 autoFocus
               />
               <button type="button" className="onb-cta" onClick={analyze}>
@@ -650,7 +672,7 @@ export default function OnboardingScreen({
               </button>
             </div>
             {error && <div className="onb-error">{error}</div>}
-            <button type="button" className="onb-skip" onClick={() => setStep("page1")}>Continuer sans LinkedIn</button>
+            <button type="button" className="onb-skip" onClick={() => setStep("page1")}>{variant.introSkipLabel}</button>
           </div>
         )}
 
@@ -891,10 +913,19 @@ export default function OnboardingScreen({
               <>
                 <div className="onb-gain-grid">
                   <div className="onb-gain-card">
-                    <div className="onb-gain-label">Abonnés dans 90 jours</div>
-                    <div className="onb-gain-value">{fmtRange(projection.followers_after, fmtInt)}</div>
+                    <div className="onb-gain-label">
+                      {hasAudienceData ? "Abonnés dans 90 jours" : "Abonnés gagnés en 90 jours"}
+                    </div>
+                    <div className="onb-gain-value">
+                      {fmtRange(
+                        hasAudienceData ? projection.followers_after : projection.followers_gain,
+                        fmtInt,
+                      )}
+                    </div>
                     <div className="onb-gain-hint">
-                      aujourd&apos;hui {fmtInt(projection.followers_now)} · +{fmtRange(projection.followers_gain, fmtInt)}
+                      {hasAudienceData
+                        ? `aujourd'hui ${fmtInt(projection.followers_now)} · +${fmtRange(projection.followers_gain, fmtInt)}`
+                        : "en publiant ~3 fois par semaine"}
                     </div>
                   </div>
                   <div className="onb-gain-card">
@@ -967,7 +998,7 @@ export default function OnboardingScreen({
                 variant="before"
                 caption="Aujourd'hui"
                 preview={preview}
-                followers={projection.followers_now}
+                followers={hasAudienceData ? projection.followers_now : null}
                 invites={0}
                 messages={0}
                 offers={0}
@@ -976,7 +1007,7 @@ export default function OnboardingScreen({
                 variant="after"
                 caption="Dans 90 jours"
                 preview={preview}
-                followers={projection.followers_after.high}
+                followers={hasAudienceData ? projection.followers_after.high : null}
                 invites={projection.relations_per_month.high}
                 messages={projection.conversations_per_month.high}
                 offers={projection.clients_per_month.high}
@@ -1181,7 +1212,8 @@ function SimCard({
   variant: "before" | "after";
   caption: string;
   preview: OnboardingPreview | null;
-  followers: number;
+  /** `null` = audience inconnue (entrée par le site) : on n'affiche aucun compteur. */
+  followers: number | null;
   invites: number;
   messages: number;
   offers: number;
@@ -1198,7 +1230,9 @@ function SimCard({
         <div className="onb-sim-avatar" aria-hidden>{initials(name, preview?.handle || "")}</div>
       )}
       <div className="onb-sim-name">{name}</div>
-      <div className="onb-sim-followers">{fmtInt(followers)} abonnés</div>
+      {followers !== null && (
+        <div className="onb-sim-followers">{fmtInt(followers)} abonnés</div>
+      )}
       <div className="onb-sim-rows">
         <SimRow icon={<Users size={14} />} label="Invitations reçues" value={invites} />
         <SimRow icon={<MessageSquare size={14} />} label="Messages non lus" value={messages} />
