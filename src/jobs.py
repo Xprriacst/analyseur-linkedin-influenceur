@@ -505,7 +505,11 @@ def _collect_and_persist_guarded(access_token: str, source: dict, max_comments: 
 
 
 def process_lead_collection_job(access_token: str, job_id: str) -> None:
-    """Collecte les commentateurs d'un post en arrière-plan (ALE-240).
+    """Collecte les leads d'une source en arrière-plan (ALE-240).
+
+    Deux natures de source, aiguillées par `job["kind"]` : les commentateurs d'un
+    post concurrent ('comments', Apify, facturé au volume) et les profils d'un
+    lien de recherche LinkedIn ('search', Unipile, gratuit).
 
     Idempotent quant à l'annulation : si le job a été annulé avant/pendant le
     scrape, on n'écrit jamais `done` par-dessus. Le débit n'a lieu qu'à la
@@ -524,9 +528,18 @@ def process_lead_collection_job(access_token: str, job_id: str) -> None:
         if not source:
             raise RuntimeError("Source de prospection introuvable.")
 
-        result = _collect_and_persist_guarded(
-            access_token, source, int(job.get("max_comments") or 0)
-        )
+        if job.get("kind") == "search":
+            # Import d'un lien de recherche LinkedIn (0062) : profils lus via le
+            # compte connecté du client (Unipile), sans débit de crédits.
+            from src.lead_search import collect_and_persist_search
+
+            result = collect_and_persist_search(
+                access_token, source, int(job.get("max_comments") or 0)
+            )
+        else:
+            result = _collect_and_persist_guarded(
+                access_token, source, int(job.get("max_comments") or 0)
+            )
 
         # Annulé pendant le scrape ? On respecte l'annulation (jamais de `done`).
         if db.get_lead_collection_job_status(access_token, job_id) == "cancelled":
