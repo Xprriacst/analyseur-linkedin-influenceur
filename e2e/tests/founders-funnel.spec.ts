@@ -128,6 +128,9 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
   await expect(page.getByText("Qu'est-ce qui te bloque le plus ?")).toBeVisible();
   await page.getByRole("button", { name: "Je suis un builder, pas un marketeur" }).click();
   await page.getByRole("button", { name: "Je lance dans le silence" }).click();
+  // « Autre » : le blocage dans SES mots — il doit revenir tel quel au closing.
+  await page.getByRole("button", { name: "Autre", exact: true }).click();
+  await page.getByPlaceholder("Dis-le avec tes mots…").fill("Mon marché est ultra saturé");
   await page.getByRole("button", { name: "Continuer", exact: true }).click();
 
   // Audit léger (écran 1) puis son détail (écran 2).
@@ -164,6 +167,8 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
   await page.getByRole("button", { name: /Comment on s'y prend/ }).click();
   await expect(page.getByText(/je suis un builder, pas un marketeur/)).toBeVisible();
   await expect(page.getByText(/je lance dans le silence/)).toBeVisible();
+  // Le texte libre « Autre » fait partie du miroir, au même titre que les chips.
+  await expect(page.getByText(/mon marché est ultra saturé/)).toBeVisible();
   await expect(page.getByText(/un seul client à ton ACV/)).toBeVisible();
   await expect(page.getByText(/comptes fondateurs par mois/)).toBeVisible();
   await expect(page.getByText(/satisfait ou remboursé/i)).toBeVisible();
