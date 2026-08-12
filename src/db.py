@@ -973,6 +973,12 @@ def save_generated_posts(
             })
     if not rows:
         return variants
+    # Mémoire posts structurée : la fiche (sujet/angle/produits/accroche) est
+    # calculée UNE FOIS ici, à la création — jamais recalculée à chaque lecture
+    # de la mémoire. Best-effort par ligne (row["memory_card"] = None si l'appel
+    # IA échoue, la ligne se sauvegarde quand même avec son texte brut).
+    for row in rows:
+        row["memory_card"] = _build_memory_card(row.get("post") or "")
     resp = db.table("generated_posts").insert(rows).execute()
     return resp.data if resp.data else variants
 
@@ -1010,6 +1016,7 @@ def create_saved_post(
         "post": post_text,
         "platform": platform,
         "saved": True,
+        "memory_card": _build_memory_card(post_text),
     }
     if media_items:
         row["media_items"] = media_items
@@ -1090,6 +1097,26 @@ POST_MEMORY_LIMIT = 12  # entrées max injectées dans un prompt
 POST_MEMORY_TEXT_CAP = 400  # caractères gardés par post côté db (le prompt retronque)
 
 
+def _build_memory_card(text: str) -> dict | None:
+    """Construit la fiche mémoire compacte d'un post (mémoire posts structurée).
+
+    Appelé UNE FOIS, à la CRÉATION du post (sauvegarde ou programmation) —
+    jamais recalculé à chaque lecture de la mémoire ni à chaque changement de
+    statut (généré → sauvegardé → publié). Best-effort et fail-safe : toute
+    erreur (import, réseau, clé Anthropic absente, parsing) → None, et la
+    lecture de la mémoire retombe alors sur le texte brut tronqué — jamais de
+    crédit débité pour cette tâche annexe, jamais de sauvegarde bloquée.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        from src.llm import build_post_memory_card
+        return build_post_memory_card(text)
+    except Exception:
+        return None
+
+
 def _post_memory_key(text: str) -> str:
     """Clé de dédoublonnage : texte normalisé (espaces/casse), préfixe borné."""
     return " ".join(str(text or "").split()).lower()[:160]
@@ -1133,7 +1160,7 @@ def _post_memory_from_client(
         try:
             resp = (
                 db.table("scheduled_posts")
-                .select("post_text, scheduled_at")
+                .select("post_text, scheduled_at, memory_card")
                 .eq("user_id", user_id)
                 .eq("status", "published")
                 .order("scheduled_at", desc=True)
@@ -1148,6 +1175,7 @@ def _post_memory_from_client(
                     "text": text[:POST_MEMORY_TEXT_CAP],
                     "status": "publié",
                     "date": str(row.get("scheduled_at") or "")[:10] or None,
+                    "card": row.get("memory_card"),
                 })
         except Exception:
             pass
@@ -1155,7 +1183,7 @@ def _post_memory_from_client(
     try:
         resp = (
             db.table("generated_posts")
-            .select("post, saved, zernio_post_id, created_at")
+            .select("post, saved, zernio_post_id, created_at, memory_card")
             .eq("user_id", user_id)
             .eq("platform", platform)
             .order("created_at", desc=True)
@@ -1176,6 +1204,7 @@ def _post_memory_from_client(
                 "text": text[:POST_MEMORY_TEXT_CAP],
                 "status": status,
                 "date": str(row.get("created_at") or "")[:10] or None,
+                "card": row.get("memory_card"),
             })
     except Exception:
         pass
@@ -3394,6 +3423,8 @@ def create_scheduled_post(
             "media_items": media_items or [],
             "cross_posts": cross_posts or {},
             "slack_status": "pending" if require_slack else "validated",
+            # Mémoire posts structurée : fiche calculée une fois, à la création.
+            "memory_card": _build_memory_card(post_text),
         })
         .execute()
     )
@@ -4381,6 +4412,8 @@ def create_scheduled_post_admin(
             "scheduled_at": scheduled_at_iso,
             "media_items": [],
             "slack_status": slack_status,
+            # Mémoire posts structurée : fiche calculée une fois, à la création.
+            "memory_card": _build_memory_card(post_text),
         })
         .execute()
     )

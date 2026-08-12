@@ -25,9 +25,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Loader2, Pencil, Rocket } from "lucide-react";
+import { ArrowRight, CheckCircle2, Loader2, Pencil, Rocket, Sparkles } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
-import OnboardingScreen, { type OnboardingProfile } from "../components/Onboarding";
+import OnboardingScreen, {
+  FoundersAlternatives,
+  FoundersSplit,
+  FoundersTimeline,
+  type OnboardingProfile,
+} from "../components/Onboarding";
+import {
+  FOUNDERS_MONTHLY_SEATS,
+  FOUNDERS_GUARANTEE_DAYS,
+  PROOF_INFLUENCERS_ANALYZED,
+  PROOF_POSTS_ANALYZED,
+} from "../lib/founders";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
@@ -37,7 +48,7 @@ const PENDING_PROFILE_KEY = "cibl_pending_profile_founders";
 /** Repli d'affichage si `/billing/plan` est injoignable — le serveur reste l'arbitre. */
 const FALLBACK_TRIAL_DAYS = 7;
 
-type Phase = "onboarding" | "account";
+type Phase = "landing" | "onboarding" | "account";
 
 /** Les trois réponses qui pilotent toute la génération — donc corrigeables ici. */
 const PROFILE_FIELDS: { key: string; label: string; placeholder: string }[] = [
@@ -48,9 +59,11 @@ const PROFILE_FIELDS: { key: string; label: string; placeholder: string }[] = [
 
 export default function FoundersPage() {
   const router = useRouter();
-  const [phase, setPhase] = useState<Phase>("onboarding");
+  const [phase, setPhase] = useState<Phase>("landing");
   const [profile, setProfile] = useState<OnboardingProfile | null>(null);
   const [trialDays, setTrialDays] = useState(FALLBACK_TRIAL_DAYS);
+  // Prix réel du plan (Stripe) pour le cadrage ROI du closing — repli 49 €.
+  const [planPrice, setPlanPrice] = useState(49);
   const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<"signup" | "signin">("signup");
   const [email, setEmail] = useState("");
@@ -76,6 +89,7 @@ export default function FoundersPage() {
         if (!res.ok) return;
         const data = await res.json();
         if (typeof data?.trial_days === "number" && data.trial_days > 0) setTrialDays(data.trial_days);
+        if (typeof data?.plan?.amount === "number" && data.plan.amount > 0) setPlanPrice(data.plan.amount);
       } catch { /* repli silencieux sur la valeur par défaut */ }
     })();
   }, []);
@@ -188,6 +202,17 @@ export default function FoundersPage() {
     }
   }
 
+  if (phase === "landing") {
+    return (
+      <FoundersLanding
+        trialDays={trialDays}
+        planPrice={planPrice}
+        onStart={() => setPhase("onboarding")}
+        onSignIn={() => { setMode("signin"); setPhase("account"); }}
+      />
+    );
+  }
+
   if (phase === "onboarding") {
     return (
       <OnboardingScreen
@@ -195,6 +220,9 @@ export default function FoundersPage() {
         funnel="trial"
         variant="saas"
         trialDays={trialDays}
+        planPrice={planPrice}
+        monthlySeats={FOUNDERS_MONTHLY_SEATS}
+        guaranteeDays={FOUNDERS_GUARANTEE_DAYS}
         onFinish={onboardingDone}
         onSkip={onboardingSkipped}
         finishLabel="Continuer"
@@ -351,6 +379,133 @@ export default function FoundersPage() {
         <Link href="/offre" style={{ fontSize: 12.5, color: "var(--muted)" }}>
           ← Retour à la présentation
         </Link>
+      </div>
+    </main>
+  );
+}
+
+/**
+ * Landing /founders — la page de vente AVANT le tunnel (inspirée du funnel
+ * Catalog/zoomgtm fourni par Alex) : promesse → preuve → problème → répartition
+ * des rôles → roadmap honnête → alternatives → prix, et un seul CTA qui lance
+ * l'analyse. L'argumentaire est le MÊME que le closing du tunnel (composants
+ * partagés) : ici la version générique, au closing la version personnalisée
+ * (miroir des obstacles + ROI sur l'ACV choisi).
+ */
+function FoundersLanding({
+  trialDays,
+  planPrice,
+  onStart,
+  onSignIn,
+}: {
+  trialDays: number;
+  planPrice: number;
+  onStart: () => void;
+  onSignIn: () => void;
+}) {
+  return (
+    <main className="fl-page">
+      <div className="fl-container">
+        <header className="fl-hero">
+          <span className="fl-kicker">
+            <Rocket size={13} /> Pour les fondateurs de SaaS
+          </span>
+          <h1 className="fl-h1">
+            Le LinkedIn qui remplit ton pipeline — <em>pendant que tu construis ton produit</em>
+          </h1>
+          <p className="fl-sub">
+            Cibl analyse ta catégorie, écrit tes posts dans ta voix et prospecte ton
+            ICP sous les plafonds de sécurité LinkedIn. Toi, tu valides — moins de
+            15 minutes par jour.
+          </p>
+          <div className="fl-cta-row">
+            <button type="button" className="fl-cta" onClick={onStart}>
+              <Sparkles size={16} /> Analyser mon SaaS
+            </button>
+            <span className="fl-cta-hint">
+              Analyse gratuite en 2 minutes · puis {trialDays} jours d&apos;essai
+            </span>
+          </div>
+        </header>
+
+        <div className="onb-strip">
+          <div className="onb-strip-item">
+            <div className="onb-strip-value">{PROOF_INFLUENCERS_ANALYZED}+ comptes</div>
+            <div className="onb-strip-label">analysés · {PROOF_POSTS_ANALYZED.toLocaleString("fr-FR")}+ posts au crible</div>
+          </div>
+          <div className="onb-strip-item">
+            <div className="onb-strip-value">{FOUNDERS_MONTHLY_SEATS} / mois</div>
+            <div className="onb-strip-label">comptes fondateurs — le démarrage est encore accompagné à la main</div>
+          </div>
+          <div className="onb-strip-item">
+            <div className="onb-strip-value">Satisfait ou remboursé</div>
+            <div className="onb-strip-label">{FOUNDERS_GUARANTEE_DAYS} jours après l&apos;essai</div>
+          </div>
+        </div>
+
+        <section className="fl-section">
+          <h2 className="fl-section-title">Le vrai goulot, ce n&apos;est pas ton produit</h2>
+          <div className="onb-analysis-card">
+            <div className="onb-analysis-label">Le changement de casquette</div>
+            <p className="onb-analysis-summary">
+              10x développeur le matin, 0.1x marketeur l&apos;après-midi. Chaque
+              casquette coûte 20 à 30 minutes de refocus — et à la fin de la journée,
+              la seule chose qui a vraiment avancé, c&apos;est le build. Pendant ce
+              temps, ton LinkedIn reste muet et tes lancements partent dans le silence.
+            </p>
+            <p className="onb-analysis-summary">
+              Ce n&apos;est pas un problème de discipline : un fondateur seul ne peut
+              pas tenir le marketing ET livrer. C&apos;est un problème de rôle — et un
+              rôle, ça se délègue.
+            </p>
+          </div>
+        </section>
+
+        <section className="fl-section">
+          <h2 className="fl-section-title">Qui fait quoi</h2>
+          <FoundersSplit />
+        </section>
+
+        <section className="fl-section">
+          <h2 className="fl-section-title">Comment ça démarre — sans hype</h2>
+          <div className="onb-analysis-card">
+            <FoundersTimeline />
+          </div>
+        </section>
+
+        <section className="fl-section">
+          <h2 className="fl-section-title">Les alternatives, honnêtement</h2>
+          <div className="onb-analysis-card">
+            <FoundersAlternatives planPrice={planPrice} />
+          </div>
+        </section>
+
+        <section className="fl-section">
+          <div className="onb-gain-highlight">
+            <div className="onb-gain-label">Un seul plan, tout compris</div>
+            <div className="onb-gain-money">
+              {planPrice} €/mois — {trialDays} jours gratuits pour commencer
+            </div>
+            <div className="onb-gain-hint" style={{ marginTop: 6 }}>
+              Résiliable en un clic avant la fin de l&apos;essai · satisfait ou
+              remboursé {FOUNDERS_GUARANTEE_DAYS} jours sur le premier mois
+            </div>
+          </div>
+        </section>
+
+        <footer className="fl-footer">
+          <div className="fl-cta-row" style={{ marginTop: 0 }}>
+            <button type="button" className="fl-cta" onClick={onStart}>
+              <Sparkles size={16} /> Analyser mon SaaS
+            </button>
+            <span className="fl-cta-hint">
+              Colle le lien de ton site — on te montre ce que LinkedIn peut lui rapporter.
+            </span>
+            <button type="button" className="link-button" onClick={onSignIn} style={{ fontSize: 12.5, color: "var(--muted)" }}>
+              Déjà un compte&nbsp;? Se connecter
+            </button>
+          </div>
+        </footer>
       </div>
     </main>
   );

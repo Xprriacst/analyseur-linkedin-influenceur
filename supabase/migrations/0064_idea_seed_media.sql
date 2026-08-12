@@ -1,4 +1,5 @@
--- 0063 — Photos jointes aux idées du réservoir.
+-- 0064 — Photos jointes aux idées du réservoir.
+-- (Renumérotée 0063 → 0064 : le 0063 est pris par la mémoire posts structurée, PR #406.)
 --
 -- Joëlle (vue ideas_only) doit pouvoir joindre des photos quand elle ajoute une
 -- idée de post — typiquement les photos d'un bien, en plus ou à la place d'un
