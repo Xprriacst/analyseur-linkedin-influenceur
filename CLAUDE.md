@@ -82,6 +82,11 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-08-12 #4 (dev : /founders — option « Autre » sur la question des obstacles — PR #424)
+- **Retour d'Alex** : la 2ᵉ pop-up du scan (« Qu'est-ce qui te bloque le plus ? ») doit permettre d'indiquer « Autre ». Chip « Autre » qui déplie un champ libre (« Dis-le avec tes mots… »), même patron que les chips ICP/offre.
+- **Le texte libre est restitué tel quel dans le miroir du closing**, au même titre que les chips (`mirrorObstacles` = chips + texte) — c'est même le meilleur carburant de l'effet miroir : littéralement ses mots. Spec e2e étendu : le texte tapé doit réapparaître au closing, sinon le miroir serait amputé en silence. **4/4 verts.** Frontend seul.
+- **Question ouverte posée par Alex (non implémentée, avis rendu)** : faut-il envoyer sur Stripe directement après la création du compte, au lieu de passer par /essai ? Reco : oui pour le parcours nominal (un clic de moins), MAIS (1) l'avertissement « carte demandée, 0 € prélevé » doit alors vivre sur l'écran de compte, (2) un compte **non éligible** à l'essai (`trial_eligible` false) ne doit JAMAIS partir directement sur un Checkout payant — c'est /essai qui porte ce cas, (3) échec du checkout ⇒ repli sur /essai, jamais une impasse. En attente de la décision d'Alex.
+
 ### 2026-08-12 #3 (RELEASE PROD : mémoire posts structurée + photos sur les idées + landing /founders — PR #406 + #413 + #418 → release #420)
 - **Release `dev → main` PR #420** mergée ~16:10 UTC. Delta énuméré avant merge : **3 lots** — #406 (ALE-295, fiche mémoire compacte `{subject, angle, products, hook}` calculée à la création du post), #413 (Joëlle joint des photos à une idée : réservoir + vue À valider + cron idée du jour), et **#418 (landing /founders + tunnel clair) qui n'avait jamais été releasée** — un « pousse sur main » ne livre jamais que le lot du jour, l'énumération l'a montré avant le merge.
 - **Les deux PR étaient en conflit avec `dev`** (releases /founders passées derrière) : #406 remise d'aplomb par merge de `dev` (conflit changelog seul), #413 pareil **+ collision de migration détectée — les deux PR utilisaient le numéro 0063**. Celle de #413 renumérotée **0064** avant merge. ⚠️ #413 (draft Cursor) avait sa migration **appliquée nulle part** (session sans droits DDL) : posée sur dev au merge.
