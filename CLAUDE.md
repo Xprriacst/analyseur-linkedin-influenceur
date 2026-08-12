@@ -82,7 +82,7 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
-### 2026-08-12 #6 (dev : /founders — DA Catalog + closing paywall + FOMO — PR TBD)
+### 2026-08-12 #6 (dev : /founders — DA Catalog + closing paywall + FOMO — PR #429)
 - **Landing** : DA Catalog (fond crème, Outfit, H1 900, illustration au trait, CTA sombre). Porte d'entrée FOMO (« Ton e-mail pour vérifier s'il reste une place », « On onboard ~40 fondateurs / mois », « Places limitées. Ça prend 90 secondes. »). Timeline / prix / ligne Cibl retirés de l'argumentaire long. « Qui fait quoi » → bandeau 2 colonnes Catalog (« 100 % fait pour toi » / « Prêt pour chaque pivot »). Copy goulot en **90 % / 10 %**.
 - **Closing** : paywall 1 écran (témoignage ReShape réel + plan mensuel −40 % 1er mois + CTA sombre + mentions légales). ⚠️ **La remise −40 % est affichée** (`FOUNDERS_FIRST_MONTH_OFF_PCT`) — un coupon / prix d'intro Stripe doit l'honorer, sinon promesse non tenue.
 - **Capacité** : `FOUNDERS_MONTHLY_SEATS` **20 → 40** (décision Alex). Aucune migration, aucune env var. Frontend + e2e.
