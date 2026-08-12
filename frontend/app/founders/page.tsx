@@ -25,12 +25,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Loader2, Pencil, Rocket, Sparkles } from "lucide-react";
+import { Outfit } from "next/font/google";
+import { ArrowRight, CheckCircle2, Loader2, Pencil, Rocket } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
 import OnboardingScreen, {
   FoundersAlternatives,
   FoundersSplit,
-  FoundersTimeline,
   type OnboardingProfile,
 } from "../components/Onboarding";
 import {
@@ -39,6 +39,13 @@ import {
   PROOF_INFLUENCERS_ANALYZED,
   PROOF_POSTS_ANALYZED,
 } from "../lib/founders";
+import FoundersHeroArt from "./FoundersHeroArt";
+
+const outfit = Outfit({
+  subsets: ["latin"],
+  weight: ["500", "600", "700", "800", "900"],
+  variable: "--font-founders",
+});
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
@@ -247,8 +254,6 @@ export default function FoundersPage() {
   if (phase === "landing") {
     return (
       <FoundersLanding
-        trialDays={trialDays}
-        planPrice={planPrice}
         onStart={(gateEmail) => {
           if (gateEmail) {
             setEmail(gateEmail);
@@ -454,21 +459,15 @@ export default function FoundersPage() {
 }
 
 /**
- * Landing /founders — la page de vente AVANT le tunnel (inspirée du funnel
- * Catalog/zoomgtm fourni par Alex) : promesse → preuve → problème → répartition
- * des rôles → roadmap honnête → alternatives → prix, et un seul CTA qui lance
- * l'analyse. L'argumentaire est le MÊME que le closing du tunnel (composants
- * partagés) : ici la version générique, au closing la version personnalisée
- * (miroir des obstacles + ROI sur l'ACV choisi).
+ * Landing /founders — page d'opt-in façon Catalog/zoomgtm : fond clair, H1 900,
+ * kicker uppercase, CTA sombre, illustration au trait. L'argumentaire long reste
+ * en dessous (preuve + problème + rôles + alternatives) ; le premier écran fait
+ * le travail d'entrée.
  */
 function FoundersLanding({
-  trialDays,
-  planPrice,
   onStart,
   onSignIn,
 }: {
-  trialDays: number;
-  planPrice: number;
   /** Entre dans le tunnel — avec l'e-mail capté par la porte d'entrée. */
   onStart: (email: string) => void;
   onSignIn: () => void;
@@ -508,28 +507,30 @@ function FoundersLanding({
   };
 
   return (
-    <main className="fl-page">
+    <main className={`fl-page ${outfit.variable}`}>
       <div className="fl-container">
         <header className="fl-hero">
-          <span className="fl-kicker">
-            <Rocket size={13} /> Pour les fondateurs de SaaS
-          </span>
+          <div className="fl-brand" aria-label="Cibl">
+            <span className="fl-brand-mark" aria-hidden="true" />
+            Cibl
+          </div>
+
+          <p className="fl-eyebrow">Pour les fondateurs de SaaS</p>
+
           <h1 className="fl-h1">
-            Le LinkedIn qui remplit ton pipeline — <em>pendant que tu construis ton produit</em>
+            Le LinkedIn qui remplit ton pipeline — pendant que tu construis ton produit
           </h1>
+
           <p className="fl-sub">
-            Cibl analyse ta catégorie, écrit tes posts dans ta voix et prospecte ton
-            ICP sous les plafonds de sécurité LinkedIn. Toi, tu valides — moins de
-            15 minutes par jour.
+            On écrit tes posts, on prospecte ton ICP. Toi, tu valides — moins d&apos;une minute par jour.
           </p>
 
           <div className="fl-gate">
             <label className="fl-gate-label" htmlFor="founders-gate-email">
-              Ton e-mail — on vérifie qu&apos;il reste une place
+              Ton e-mail pour vérifier s&apos;il reste une place&nbsp;<span aria-hidden="true">*</span>
             </label>
             <p className="fl-gate-hint">
-              On ouvre {FOUNDERS_MONTHLY_SEATS} comptes fondateurs par mois. On te
-              confirme s&apos;il reste un créneau.
+              On onboard ~{FOUNDERS_MONTHLY_SEATS} fondateurs par mois. On te confirme s&apos;il reste un créneau.
             </p>
             <div className="fl-gate-row">
               <input
@@ -542,45 +543,44 @@ function FoundersLanding({
                 onKeyDown={(e) => { if (e.key === "Enter") submitGate(); }}
                 placeholder="toi@ton-saas.com"
                 autoComplete="email"
+                required
               />
               <button type="button" className="fl-cta" onClick={submitGate} disabled={gateSending}>
-                {gateSending ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}{" "}
-                Analyser mon SaaS
+                {gateSending ? <Loader2 size={16} className="spin" /> : null}
+                Vérifier ma place →
               </button>
             </div>
+            <p className="fl-gate-micro">Places limitées. Ça prend 90 secondes.</p>
             {gateError && <div className="fl-gate-error">{gateError}</div>}
-            <span className="fl-cta-hint">
-              Places limitées · analyse gratuite en 2 minutes · puis {trialDays} jours d&apos;essai
-            </span>
           </div>
+
+          <FoundersHeroArt />
         </header>
 
-        <div className="onb-strip">
-          <div className="onb-strip-item">
-            <div className="onb-strip-value">{PROOF_INFLUENCERS_ANALYZED}+ comptes</div>
-            <div className="onb-strip-label">analysés · {PROOF_POSTS_ANALYZED.toLocaleString("fr-FR")}+ posts au crible</div>
+        <div className="fl-proof">
+          <div className="fl-proof-item">
+            <strong>{PROOF_INFLUENCERS_ANALYZED}+</strong>
+            <span>comptes analysés</span>
           </div>
-          <div className="onb-strip-item">
-            <div className="onb-strip-value">{FOUNDERS_MONTHLY_SEATS} / mois</div>
-            <div className="onb-strip-label">comptes fondateurs — le démarrage est encore accompagné à la main</div>
+          <div className="fl-proof-item">
+            <strong>{PROOF_POSTS_ANALYZED.toLocaleString("fr-FR")}+</strong>
+            <span>posts au crible</span>
           </div>
-          <div className="onb-strip-item">
-            <div className="onb-strip-value">Satisfait ou remboursé</div>
-            <div className="onb-strip-label">{FOUNDERS_GUARANTEE_DAYS} jours après l&apos;essai</div>
+          <div className="fl-proof-item">
+            <strong>{FOUNDERS_MONTHLY_SEATS}/mois</strong>
+            <span>places fondateurs</span>
           </div>
         </div>
 
         <section className="fl-section">
           <h2 className="fl-section-title">Le vrai goulot, ce n&apos;est pas ton produit</h2>
-          <div className="onb-analysis-card">
-            <div className="onb-analysis-label">Le changement de casquette</div>
-            <p className="onb-analysis-summary">
-              10x développeur le matin, 0.1x marketeur l&apos;après-midi. Chaque
+          <div className="fl-card">
+            <p className="fl-card-p">
+              90&nbsp;% développeur le matin, 10&nbsp;% marketeur l&apos;après-midi. Chaque
               casquette coûte 20 à 30 minutes de refocus — et à la fin de la journée,
-              la seule chose qui a vraiment avancé, c&apos;est le build. Pendant ce
-              temps, ton LinkedIn reste muet et tes lancements partent dans le silence.
+              seule la build a avancé. Ton LinkedIn reste muet.
             </p>
-            <p className="onb-analysis-summary">
+            <p className="fl-card-p">
               Ce n&apos;est pas un problème de discipline : un fondateur seul ne peut
               pas tenir le marketing ET livrer. C&apos;est un problème de rôle — et un
               rôle, ça se délègue.
@@ -588,50 +588,24 @@ function FoundersLanding({
           </div>
         </section>
 
-        <section className="fl-section">
-          <h2 className="fl-section-title">Qui fait quoi</h2>
+        <section className="fl-section fl-section-benefits">
           <FoundersSplit />
         </section>
 
         <section className="fl-section">
-          <h2 className="fl-section-title">Comment ça démarre — sans hype</h2>
-          <div className="onb-analysis-card">
-            <FoundersTimeline />
-          </div>
-        </section>
-
-        <section className="fl-section">
           <h2 className="fl-section-title">Les alternatives, honnêtement</h2>
-          <div className="onb-analysis-card">
-            <FoundersAlternatives planPrice={planPrice} />
-          </div>
-        </section>
-
-        <section className="fl-section">
-          <div className="onb-gain-highlight">
-            <div className="onb-gain-label">Un seul plan, tout compris</div>
-            <div className="onb-gain-money">
-              {planPrice} €/mois — {trialDays} jours gratuits pour commencer
-            </div>
-            <div className="onb-gain-hint" style={{ marginTop: 6 }}>
-              Résiliable en un clic avant la fin de l&apos;essai · satisfait ou
-              remboursé {FOUNDERS_GUARANTEE_DAYS} jours sur le premier mois
-            </div>
+          <div className="fl-card">
+            <FoundersAlternatives />
           </div>
         </section>
 
         <footer className="fl-footer">
-          <div className="fl-cta-row" style={{ marginTop: 0 }}>
-            <button type="button" className="fl-cta" onClick={focusGate}>
-              <Sparkles size={16} /> Analyser mon SaaS
-            </button>
-            <span className="fl-cta-hint">
-              Colle le lien de ton site — on te montre ce que LinkedIn peut lui rapporter.
-            </span>
-            <button type="button" className="link-button" onClick={onSignIn} style={{ fontSize: 12.5, color: "var(--muted)" }}>
-              Déjà un compte&nbsp;? Se connecter
-            </button>
-          </div>
+          <button type="button" className="fl-cta" onClick={focusGate}>
+            Vérifier ma place →
+          </button>
+          <button type="button" className="fl-signin" onClick={onSignIn}>
+            Déjà un compte&nbsp;? Se connecter
+          </button>
         </footer>
       </div>
     </main>

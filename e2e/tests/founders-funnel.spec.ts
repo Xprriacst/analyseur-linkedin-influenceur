@@ -4,7 +4,7 @@ import { test, expect, type Page } from "@playwright/test";
  * Tunnel fondateurs SaaS (/founders, parcours anonyme) :
  * landing de vente → lien du SaaS → scan (avec stade + obstacles posés PENDANT
  * l'attente) → audit léger → questions SaaS → gains en ARR (avec courbe de
- * progression) → simulation → closing (miroir des obstacles, ROI, roadmap) → essai.
+ * progression) → simulation → closing (témoignage + plan −40 % + CTA) → essai.
  *
  * Backend entièrement mocké (zéro coût Apify/Claude/Stripe). Ce spec verrouille les
  * trois écarts qui feraient de ce tunnel une copie ratée de /start, tous invisibles
@@ -24,9 +24,8 @@ import { test, expect, type Page } from "@playwright/test";
  *    écrans ne doivent JAMAIS afficher « aujourd'hui 0 » ni « 0 abonnés ». Le
  *    fondateur a un compte, on ne l'a simplement pas mesuré — annoncer zéro
  *    serait un chiffre faux sur son propre compte, en plein argumentaire.
- * 5. Le closing rend au visiteur SES obstacles (effet miroir) et un ROI calculé
- *    sur l'ACV qu'il vient de choisir : si l'un des deux se perdait en route,
- *    l'écran redeviendrait un argumentaire générique — d'apparence normale.
+ * 5. Le closing est un paywall minimal (témoignage + une offre à −40 %). S'il
+ *    redevient verbeux (miroir, ROI, garantie…), on perd l'écran unique.
  */
 
 const PREVIEW = {
@@ -102,9 +101,10 @@ async function passGate(page: Page, email = "lea@northstack.io"): Promise<{ lead
     leadBody = route.request().postDataJSON();
     return route.fulfill({ json: { ok: true } });
   });
-  await expect(page.getByText(/on vérifie qu'il reste une place/)).toBeVisible();
+  await expect(page.getByText(/onboard ~\d+ fondateurs par mois/i)).toBeVisible();
+  await expect(page.getByText(/places limitées\. ça prend 90 secondes/i)).toBeVisible();
   await page.getByPlaceholder("toi@ton-saas.com").fill(email);
-  await page.getByRole("button", { name: "Analyser mon SaaS" }).first().click();
+  await page.getByRole("button", { name: /vérifier ma place/i }).first().click();
   return { leadBody: () => leadBody };
 }
 
@@ -129,7 +129,7 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any;
 
   await page.goto("/founders");
   // Landing de vente d'abord : la promesse, puis la porte d'entrée e-mail
-  // (rareté réelle : 20 comptes/mois) qui lance l'analyse.
+  // (rareté réelle : places/mois via FOUNDERS_MONTHLY_SEATS) qui lance l'analyse.
   await expect(page.getByRole("heading", { name: /Le LinkedIn qui remplit ton pipeline/ })).toBeVisible();
   const { leadBody } = await passGate(page);
 
@@ -180,17 +180,16 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any;
   await expect(page.locator(".onb-sim-grid")).not.toContainText("0 abonnés");
   await expect(page.locator(".onb-screen")).not.toContainText("aujourd'hui 0");
 
-  // Closing : les obstacles COCHÉS reviennent en miroir, le ROI est calculé sur
-  // l'ACV du palier choisi (15 000 € / 49 € ≈ 306 mois), et les engagements
-  // réels (places, garantie) sont écrits.
+  // Closing paywall : témoignage + offre −40 % + CTA. Plus de miroir / garantie.
   await page.getByRole("button", { name: /Comment on s'y prend/ }).click();
-  await expect(page.getByText(/je suis un builder, pas un marketeur/)).toBeVisible();
-  await expect(page.getByText(/je lance dans le silence/)).toBeVisible();
-  // Le texte libre « Autre » fait partie du miroir, au même titre que les chips.
-  await expect(page.getByText(/mon marché est ultra saturé/)).toBeVisible();
-  await expect(page.getByText(/un seul client à ton ACV/)).toBeVisible();
-  await expect(page.getByText(/comptes fondateurs par mois/)).toBeVisible();
-  await expect(page.getByText(/satisfait ou remboursé/i)).toBeVisible();
+  await expect(page.getByText(/@reshape_music/)).toBeVisible();
+  await expect(page.getByText(/on a passé les 4k/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choisis ton plan" })).toBeVisible();
+  await expect(page.getByText("Mensuel")).toBeVisible();
+  await expect(page.getByText(/−40/)).toBeVisible();
+  await expect(page.getByText("29,40 €")).toBeVisible();
+  await expect(page.getByText(/prix réduit/i)).toBeVisible();
+  await expect(page.getByText(/satisfait ou remboursé/i)).toHaveCount(0);
   return { projectionBody: () => projectionBody, leadBody };
 }
 
