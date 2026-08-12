@@ -487,6 +487,12 @@ export default function OnboardingScreen({
   // ces clés en silence, autant ne pas prétendre les enregistrer.
   const [stage, setStage] = useState("");
   const [obstacles, setObstacles] = useState<string[]>([]);
+  // « Autre » : le blocage dans SES mots — c'est même le meilleur carburant du
+  // miroir, puisque le closing le lui rendra tel quel.
+  const [obstacleOther, setObstacleOther] = useState("");
+  const [showObstacleOther, setShowObstacleOther] = useState(false);
+  /** Obstacles restitués au closing : les chips cochées + le texte libre. */
+  const mirrorObstacles = [...obstacles, obstacleOther.trim()].filter(Boolean);
 
   // --- Tunnel « audit complet » (landing uniquement) ---
   const [bands, setBands] = useState<OnbBand[]>([]);
@@ -864,7 +870,27 @@ export default function OnboardingScreen({
                         {label}
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      className={"onb-chip" + (showObstacleOther ? " selected" : "")}
+                      onClick={() => {
+                        const next = !showObstacleOther;
+                        setShowObstacleOther(next);
+                        if (!next) setObstacleOther("");
+                      }}
+                    >
+                      Autre
+                    </button>
                   </div>
+                  {showObstacleOther && (
+                    <input
+                      className="onb-other-input"
+                      value={obstacleOther}
+                      onChange={(e) => setObstacleOther(e.target.value)}
+                      placeholder="Dis-le avec tes mots…"
+                      autoFocus
+                    />
+                  )}
                 </div>
 
                 {/* Toujours cliquable : si l'analyse est prête on avance tout de
@@ -1279,10 +1305,10 @@ export default function OnboardingScreen({
                 même idée, les étirer sur deux cartes diluait le coup. */}
             <div className="onb-analysis-card">
               <div className="onb-analysis-label">Le vrai tueur&nbsp;: le changement de casquette</div>
-              {obstacles.length > 0 && (
+              {mirrorObstacles.length > 0 && (
                 <p className="onb-analysis-summary">
                   Tu l&apos;as dit toi-même&nbsp;:{" "}
-                  {obstacles.map((o, i) => (
+                  {mirrorObstacles.map((o, i) => (
                     <span key={o}>
                       {i > 0 && ", "}
                       <strong>«&nbsp;{o.toLowerCase()}&nbsp;»</strong>
