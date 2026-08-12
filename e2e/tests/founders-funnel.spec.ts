@@ -2,7 +2,9 @@ import { test, expect, type Page } from "@playwright/test";
 
 /**
  * Tunnel fondateurs SaaS (/founders, parcours anonyme) :
- * audit léger → questions SaaS → gains en ARR → simulation 90 jours → essai gratuit.
+ * landing de vente → lien du SaaS → scan (avec stade + obstacles posés PENDANT
+ * l'attente) → audit léger → questions SaaS → gains en ARR (avec courbe de
+ * progression) → simulation → closing (miroir des obstacles, ROI, roadmap) → essai.
  *
  * Backend entièrement mocké (zéro coût Apify/Claude/Stripe). Ce spec verrouille les
  * trois écarts qui feraient de ce tunnel une copie ratée de /start, tous invisibles
@@ -18,16 +20,24 @@ import { test, expect, type Page } from "@playwright/test";
  * 3. Les questions doivent être celles de la variante SaaS. Des chips où le
  *    visiteur ne se reconnaît pas le poussent vers « Autre » et vident la
  *    qualification que ces écrans existent pour produire.
+ * 4. L'entrée est le SITE du SaaS, donc aucun profil LinkedIn n'est lu : les
+ *    écrans ne doivent JAMAIS afficher « aujourd'hui 0 » ni « 0 abonnés ». Le
+ *    fondateur a un compte, on ne l'a simplement pas mesuré — annoncer zéro
+ *    serait un chiffre faux sur son propre compte, en plein argumentaire.
+ * 5. Le closing rend au visiteur SES obstacles (effet miroir) et un ROI calculé
+ *    sur l'ACV qu'il vient de choisir : si l'un des deux se perdait en route,
+ *    l'écran redeviendrait un argumentaire générique — d'apparence normale.
  */
 
 const PREVIEW = {
-  handle: "lea-fondatrice",
-  name: "Léa Fondatrice",
-  headline: "CEO @ Northstack — analytics pour équipes produit",
+  handle: "",
+  name: "Northstack",
+  headline: "Analytics produit pour équipes SaaS B2B",
   avatar_url: "",
-  posts_count: 12,
-  followers: 2400,
-  connections: 900,
+  // Entrée par le site : aucun scrape de profil, donc aucun compteur d'audience.
+  posts_count: 0,
+  followers: 0,
+  connections: 0,
   niche: "Analytics produit pour équipes SaaS B2B",
   summary: "Premier paragraphe.\n\nDeuxième paragraphe.",
   hook: "Tu parles de ton produit, jamais du problème.",
@@ -44,9 +54,9 @@ function saasBand(key: string, label: string, revenue: [number, number]) {
     label,
     deal_value: 3600,
     projection: {
-      followers_now: 2400,
-      followers_after: range(2900, 3700),
-      followers_gain: range(500, 1300),
+      followers_now: 0,
+      followers_after: range(120, 450),
+      followers_gain: range(120, 450),
       relations_per_month: range(40, 110),
       conversations_per_month: range(5, 20),
       clients_per_month: range(1, 4),
@@ -100,9 +110,23 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
   });
 
   await page.goto("/founders");
-  await page.getByPlaceholder("https://linkedin.com/in/ton-profil")
-    .fill("https://linkedin.com/in/lea-fondatrice");
+  // Landing de vente d'abord : la promesse, puis le CTA qui lance l'analyse.
+  await expect(page.getByRole("heading", { name: /Le LinkedIn qui remplit ton pipeline/ })).toBeVisible();
+  await page.getByRole("button", { name: "Analyser mon SaaS" }).first().click();
+
+  // Premier écran du tunnel : le lien du SaaS, pas le profil LinkedIn.
+  await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
   await page.getByRole("button", { name: "Analyser" }).click();
+
+  // Pendant le scan : stade + obstacles — la matière de l'effet miroir. Ces
+  // réponses occupent l'attente de l'analyse, elles ne sont plus une page à part.
+  await expect(page.getByText("Où en est ton SaaS ?")).toBeVisible();
+  await page.getByRole("button", { name: /Premiers clients/ }).click();
+  await page.getByRole("button", { name: "Je suis un builder, pas un marketeur" }).click();
+  await page.getByRole("button", { name: "Je lance dans le silence" }).click();
+  // Le bouton ne s'active que quand l'analyse est prête : c'est le clic du
+  // visiteur qui avance, jamais la fin du fetch.
+  await page.getByRole("button", { name: /Voir mon analyse/ }).click();
 
   // Audit léger (écran 1) puis son détail (écran 2).
   await page.getByRole("button", { name: "Voir mon potentiel" }).click();
@@ -117,16 +141,30 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
 
   await expect(page.getByText("Ta catégorie de produit")).toBeVisible();
   await page.getByRole("button", { name: "DevTools & infra" }).click();
-  await page.getByRole("button", { name: /Voir ce que je peux gagner/ }).click();
+  await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();
 
   // Les montants sont annoncés pour ce qu'ils sont : de l'ARR signé.
   await expect(page.getByText("Nouvel ARR signé par mois")).toBeVisible();
   await expect(page.locator(".onb-gain-money")).toContainText("3 600");
+  // La courbe de progression est tracée sur les chiffres de la projection.
+  await expect(page.locator(".onb-curve")).toBeVisible();
   await page.getByRole("button", { name: "6 000 à 25 000 € / an" }).click();
   await expect(page.locator(".onb-gain-money")).toContainText("15 000");
   await page.locator(".onb-screen").getByRole("button", { name: "Continuer", exact: true }).click();
 
-  await expect(page.locator(".onb-sim-grid")).toContainText("2 400");
+  // (4) Aucun compteur d'audience inventé, ni dans les gains ni dans la simulation.
+  await expect(page.locator(".onb-sim-grid")).not.toContainText("0 abonnés");
+  await expect(page.locator(".onb-screen")).not.toContainText("aujourd'hui 0");
+
+  // Closing : les obstacles COCHÉS reviennent en miroir, le ROI est calculé sur
+  // l'ACV du palier choisi (15 000 € / 49 € ≈ 306 mois), et les engagements
+  // réels (places, garantie) sont écrits.
+  await page.getByRole("button", { name: /Comment on s'y prend/ }).click();
+  await expect(page.getByText(/je suis un builder, pas un marketeur/)).toBeVisible();
+  await expect(page.getByText(/je lance dans le silence/)).toBeVisible();
+  await expect(page.getByText(/un seul client à ton ACV/)).toBeVisible();
+  await expect(page.getByText(/comptes fondateurs par mois/)).toBeVisible();
+  await expect(page.getByText(/satisfait ou remboursé/i)).toBeVisible();
   return { projectionBody: () => projectionBody };
 }
 
@@ -135,13 +173,10 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await mockBackend(page);
     const { projectionBody } = await reachSimulation(page);
 
-    // (1) La grille demandée est bien celle des fondateurs, sur les vrais chiffres.
-    expect(projectionBody()).toMatchObject({
-      followers: 2400,
-      connections: 900,
-      posts_count: 12,
-      audience: "saas",
-    });
+    // (1) La grille demandée est bien celle des fondateurs. Sans scrape de profil,
+    // les compteurs partent à 0 — c'est la projection qui applique ses planchers,
+    // et c'est bien « audience: saas » qui décide de la grille ACV.
+    expect(projectionBody()).toMatchObject({ audience: "saas" });
 
     // (2) Fin de tunnel : l'essai, avec sa durée annoncée par le serveur — et
     // AUCUN des deux artefacts du tunnel /start.
@@ -178,13 +213,14 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await page.route("**/onboarding/projection", (route) => route.fulfill({ status: 500, json: {} }));
 
     await page.goto("/founders");
-    await page.getByPlaceholder("https://linkedin.com/in/ton-profil")
-      .fill("https://linkedin.com/in/lea-fondatrice");
+    await page.getByRole("button", { name: "Analyser mon SaaS" }).first().click();
+    await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
     await page.getByRole("button", { name: "Analyser" }).click();
+    await page.getByRole("button", { name: /Voir mon analyse/ }).click();
     await page.getByRole("button", { name: "Voir mon potentiel" }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
-    await page.getByRole("button", { name: /Voir ce que je peux gagner/ }).click();
+    await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();
 
     // Un écran de mise en scène en panne ne doit pas coûter le prospect : on
     // atterrit sur la création de compte, pas sur un écran vide ni sur /start.

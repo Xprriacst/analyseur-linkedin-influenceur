@@ -12976,10 +12976,17 @@ function LeadSearchImport({
           if (data.status === "done") {
             const found = data.result?.comments_count ?? 0;
             const added = data.result?.leads?.inserted ?? 0;
+            // Filtres que le serveur n'a pas su transmettre à LinkedIn. Le taire
+            // donnerait au client une liste plus large que celle qu'il a
+            // paramétrée, sans qu'il puisse s'en apercevoir.
+            const dropped: string[] = data.result?.dropped_filters ?? [];
+            const warn = dropped.length
+              ? ` ⚠️ Filtres non transmis (${dropped.join(", ")}) : la liste est plus large que ta recherche LinkedIn.`
+              : "";
             setMsg(
-              found === 0
+              (found === 0
                 ? "Aucun profil récupéré — la recherche ne rend peut-être plus de résultats. Affine-la et réessaie."
-                : `${found} profil${found > 1 ? "s" : ""} récupéré${found > 1 ? "s" : ""}, dont ${added} nouveau${added > 1 ? "x" : ""} lead${added > 1 ? "s" : ""}.`
+                : `${found} profil${found > 1 ? "s" : ""} récupéré${found > 1 ? "s" : ""}, dont ${added} nouveau${added > 1 ? "x" : ""} lead${added > 1 ? "s" : ""}.`) + warn
             );
             await onImported();
             return;

@@ -528,7 +528,11 @@ def process_lead_collection_job(access_token: str, job_id: str) -> None:
         if not source:
             raise RuntimeError("Source de prospection introuvable.")
 
-        if job.get("kind") == "search":
+        # Aiguillage en ceinture ET bretelles : le `kind` du job, mais AUSSI celui
+        # de la source. Une source de recherche ne peut jamais être collectée par
+        # l'actor de commentaires — se fier au seul job rendait la routine otage
+        # d'une projection SQL (cf. `_LEAD_JOB_COLS`), et l'erreur était muette.
+        if job.get("kind") == "search" or source.get("kind") == "search":
             # Import d'un lien de recherche LinkedIn (0062) : profils lus via le
             # compte connecté du client (Unipile), sans débit de crédits.
             from src.lead_search import collect_and_persist_search

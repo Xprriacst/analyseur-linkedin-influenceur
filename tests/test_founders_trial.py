@@ -184,5 +184,49 @@ class CheckoutTrialPayloadTest(unittest.TestCase):
         )
 
 
+class PreviewWithoutLinkedinTest(unittest.TestCase):
+    """Le tunnel fondateurs n'analyse qu'un SITE : le modèle ne doit rien dire du compte.
+
+    C'est un vrai bug remonté par Alex sur dev : la preview affirmait « ta présence
+    LinkedIn est quasi inexistante » à partir d'un site, sans avoir lu le moindre
+    profil. Faux, invérifiable, et dit au prospect en plein argumentaire.
+    """
+
+    def _prompt_for(self, seed):
+        from unittest.mock import patch
+        from src import llm
+
+        captured = {}
+
+        def fake_call(system, user, **kwargs):
+            captured["system"] = system
+            captured["user"] = user
+            return {"preview": {
+                "niche": "n", "summary": "s",
+                "strengths": ["a"], "improvements": ["b"],
+            }}
+
+        with patch.object(llm, "_call", fake_call):
+            llm.draft_onboarding_preview(seed)
+        return captured
+
+    def test_website_only_forbids_any_claim_about_the_account(self):
+        c = self._prompt_for({"website_public_summary": {"summary": "un saas"}})
+        self.assertIn("INTERDICTION ABSOLUE", c["system"])
+        self.assertIn("aucun compte LinkedIn", c["user"])
+        self.assertIn("ta présence LinkedIn est", c["user"])  # l'exemple à NE PAS écrire
+
+    def test_linkedin_sources_keep_the_original_prompt(self):
+        c = self._prompt_for({"linkedin_apify_profile": {"profile": {"name": "X"}}})
+        self.assertNotIn("INTERDICTION ABSOLUE", c["system"])
+        self.assertIn("Ancre-toi sur les posts fournis", c["user"])
+
+    def test_json_schema_survives_the_formatting(self):
+        """Le schéma est passé dans une f-string : ses accolades doivent survivre."""
+        c = self._prompt_for({"website_public_summary": {"summary": "x"}})
+        self.assertIn('"preview": {', c["user"])
+        self.assertIn('"improvements"', c["user"])
+
+
 if __name__ == "__main__":
     unittest.main()

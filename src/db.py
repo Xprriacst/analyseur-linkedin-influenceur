@@ -2293,8 +2293,15 @@ def reconcile_stale_image_jobs(access_token: str, jobs: list[dict]) -> list[dict
 
 # ── Collecte de commentateurs en tâche de fond (ALE-240) ──────────────────── #
 
+# ⚠️ Projection EXPLICITE : toute colonne absente d'ici est lue `None` par le
+# thread de collecte, sans la moindre erreur. C'est ainsi que `kind` a manqué à
+# sa première mise en service — un import de recherche partait alors chercher les
+# « commentaires » de l'URL via Apify et se soldait « terminé, 0 profil »
+# (4ᵉ occurrence de ce piège après ALE-216, ALE-286 et #387).
+# Ajouter une colonne au job ⇒ l'ajouter ICI. Un test le verrouille
+# (`LeadJobProjectionTest`).
 _LEAD_JOB_COLS = (
-    "id,source_id,post_url,max_comments,status,result,error,created_at,updated_at"
+    "id,source_id,post_url,max_comments,kind,status,result,error,created_at,updated_at"
 )
 
 # Fenêtre de réconciliation propre aux collectes : plus large que les jobs

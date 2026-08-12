@@ -24,6 +24,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Globe,
   Linkedin,
   Loader2,
   Lock,
@@ -35,6 +36,7 @@ import {
   Users,
 } from "lucide-react";
 import { authHeaders } from "../lib/supabase";
+import { PROOF_INFLUENCERS_ANALYZED, PROOF_POSTS_ANALYZED } from "../lib/founders";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
@@ -97,6 +99,7 @@ type OnbStep =
   | "page2"
   | "gains"
   | "simulation"
+  | "pitch"
   | "lead_form"
   | "lead_done";
 type OnbOption = { label: string; match?: string[] };
@@ -134,6 +137,13 @@ const ONB_INDUSTRY_OPTIONS: OnbOption[] = [
   { label: "Développement / Tech", match: ["dev", "développ", "code", "engineering", "no-code", "vibecod", "tech"] },
   { label: "Conseil & Services", match: ["conseil", "service", "consulting", "cabinet"] },
   { label: "E-commerce", match: ["e-commerce", "ecommerce", "retail", "boutique"] },
+];
+
+const ONB_SCAN_STEPS = [
+  "Lecture de ton profil…",
+  "Analyse de ton audience…",
+  "Identification de ton offre…",
+  "On peaufine tout ça…",
 ];
 
 // --- Variante « fondateurs SaaS » (/founders) --------------------------------
@@ -183,18 +193,44 @@ const ONB_SAAS_INDUSTRY_OPTIONS: OnbOption[] = [
   { label: "Cybersécurité", match: ["cyber", "sécurité", "security", "soc"] },
 ];
 
+// Qualification fondateur (tunnel SaaS uniquement), posée PENDANT le scan du
+// site : l'analyse prend de longues secondes, ces deux questions occupent
+// l'attente au lieu d'ajouter une page. Chaque option porte sa raison d'être en
+// sous-titre — le visiteur doit voir POURQUOI on demande, et l'écran de closing
+// lui renvoie ses propres mots (effet miroir : ce sont ses obstacles à lui, pas
+// un argumentaire générique).
+const ONB_SAAS_STAGES: { label: string; hint: string }[] = [
+  { label: "Pre-revenue", hint: "Je construis — pas encore de clients payants" },
+  { label: "Premiers clients", hint: "Du revenu, pas encore de croissance régulière" },
+  { label: "En croissance", hint: "Le product-market fit est là, je cherche le prochain levier" },
+];
+
+const ONB_SAAS_OBSTACLES: string[] = [
+  "Je suis un builder, pas un marketeur",
+  "Pas le temps de créer du contenu",
+  "Je ne sais pas quoi raconter",
+  "Ma prospection ne scale pas",
+  "Je lance dans le silence",
+];
+
 /** Ce qui change d'une audience de tunnel à l'autre : les chips et les mots. */
 type OnbVariant = {
   /** Audience envoyée au serveur — décide de la grille de paliers de la projection. */
   audience: string;
   introTitle: string;
   introSubtitle: string;
+  /** Ce qu'on demande sur le premier écran — et donc ce qui sera analysé. */
+  introPlaceholder: string;
+  introSkipLabel: string;
+  introError: string;
   audienceLabel: string;
   offerLabel: string;
   objectiveLabel: string;
   industryLabel: string;
   gainsTitle: string;
   gainsIntro: string;
+  /** Étapes de l'animation de scan — elles doivent décrire la source RÉELLE. */
+  scanSteps: string[];
   audienceOptions: OnbOption[];
   offerOptions: OnbOption[];
   objectiveOptions: OnbOption[];
@@ -206,6 +242,9 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     audience: "default",
     introTitle: "Bienvenue sur Cible",
     introSubtitle: "Colle ton profil LinkedIn, on prépare tout le reste pour toi.",
+    introPlaceholder: "https://linkedin.com/in/ton-profil",
+    introSkipLabel: "Continuer sans LinkedIn",
+    introError: "Colle ton URL LinkedIn (ou une courte description).",
     audienceLabel: "À qui tu t'adresses ?",
     offerLabel: "Ce que tu proposes",
     objectiveLabel: "Ton objectif sur LinkedIn",
@@ -213,6 +252,7 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     gainsTitle: "Ce que tu peux gagner",
     gainsIntro:
       "En tenant ton LinkedIn et en prospectant les bonnes personnes, voici ce que donne un trimestre.",
+    scanSteps: ONB_SCAN_STEPS,
     audienceOptions: ONB_AUDIENCE_OPTIONS,
     offerOptions: ONB_OFFER_OPTIONS,
     objectiveOptions: ONB_OBJECTIVE_OPTIONS,
@@ -222,7 +262,12 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     audience: "saas",
     introTitle: "Le LinkedIn qui remplit ton pipeline",
     introSubtitle:
-      "Colle ton profil de fondateur : on lit ton positionnement et on te montre ce que ça peut rapporter à ton SaaS.",
+      "Colle le lien de ton SaaS : on lit ton produit, ton marché et ta promesse, puis on te montre ce que LinkedIn peut lui rapporter.",
+    introPlaceholder: "https://ton-saas.com",
+    // Un lien LinkedIn collé ici reste accepté (la détection se fait sur la forme
+    // de l'URL) : on demande le site, on ne refuse pas le profil.
+    introSkipLabel: "Continuer sans site",
+    introError: "Colle le lien de ton SaaS (ou une courte description).",
     audienceLabel: "Ton ICP — à qui tu vends ?",
     offerLabel: "Ce que tu vends",
     objectiveLabel: "Ce que tu attends de LinkedIn",
@@ -230,19 +275,21 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     gainsTitle: "Ce que ça peut rapporter à ton SaaS",
     gainsIntro:
       "En publiant régulièrement et en prospectant ton ICP depuis l'app, voici ce que donne un trimestre.",
+    // On lit un site, pas un profil : annoncer « Lecture de ton profil… » puis
+    // « Analyse de ton audience… » ferait croire qu'on a mesuré un compte
+    // LinkedIn, et rendrait suspect tout ce que l'écran suivant affiche.
+    scanSteps: [
+      "Lecture de ton site…",
+      "On cerne ton produit et ta promesse…",
+      "Identification de ton ICP…",
+      "On peaufine tout ça…",
+    ],
     audienceOptions: ONB_SAAS_AUDIENCE_OPTIONS,
     offerOptions: ONB_SAAS_OFFER_OPTIONS,
     objectiveOptions: ONB_SAAS_OBJECTIVE_OPTIONS,
     industryOptions: ONB_SAAS_INDUSTRY_OPTIONS,
   },
 };
-
-const ONB_SCAN_STEPS = [
-  "Lecture de ton profil…",
-  "Analyse de ton audience…",
-  "Identification de ton offre…",
-  "On peaufine tout ça…",
-];
 
 function fmtCompact(n: number): string {
   if (!n || n < 0) return "—";
@@ -366,6 +413,9 @@ export default function OnboardingScreen({
   funnel = "app",
   variant: variantKey = "default",
   trialDays = 7,
+  planPrice = 49,
+  monthlySeats = 0,
+  guaranteeDays = 0,
   onFinish,
   onSkip,
   finishLabel = "C'est parti",
@@ -390,6 +440,12 @@ export default function OnboardingScreen({
    * ne rattrape ensuite.
    */
   trialDays?: number;
+  /** Prix mensuel affiché dans le cadrage ROI — vient de Stripe via l'appelant. */
+  planPrice?: number;
+  /** Places ouvertes par mois (engagement réel, cf. lib/founders.ts). 0 = masqué. */
+  monthlySeats?: number;
+  /** Jours de garantie « satisfait ou remboursé » après l'essai. 0 = masqué. */
+  guaranteeDays?: number;
   /** Reçoit le profil complet. L'appelant décide : enregistrer, ou emmener vers l'inscription. */
   onFinish: (profile: OnboardingProfile) => void | Promise<void>;
   /** « Passer » — l'utilisateur refuse de répondre. */
@@ -408,6 +464,21 @@ export default function OnboardingScreen({
   const [sel, setSel] = useState(() => onbInitSel({}, variant));
   const [saving, setSaving] = useState(false);
   const [scanIdx, setScanIdx] = useState(0);
+  /**
+   * Résultat de l'analyse, en attente d'être appliqué (tunnel SaaS uniquement).
+   *
+   * ⚠️ Sur ce tunnel, l'écran de scan porte les questions de qualification : on
+   * n'arrache JAMAIS l'écran quand l'analyse aboutit — le visiteur est peut-être
+   * en train de cocher. Le résultat attend ici, et c'est SON clic qui avance.
+   */
+  const [scanResult, setScanResult] = useState<
+    { profile: Record<string, string>; preview: OnboardingPreview | null } | null
+  >(null);
+  // Qualification fondateur (pendant le scan, tunnel SaaS) — sert l'effet miroir
+  // du closing. Volontairement hors du profil éditorial : le backend ignorerait
+  // ces clés en silence, autant ne pas prétendre les enregistrer.
+  const [stage, setStage] = useState("");
+  const [obstacles, setObstacles] = useState<string[]>([]);
 
   // --- Tunnel « audit complet » (landing uniquement) ---
   const [bands, setBands] = useState<OnbBand[]>([]);
@@ -424,8 +495,27 @@ export default function OnboardingScreen({
   const [leadError, setLeadError] = useState("");
   const [calendlyUrl, setCalendlyUrl] = useState("");
 
+  /**
+   * A-t-on lu un vrai compte LinkedIn (photo, abonnés, posts) ou seulement un site ?
+   * Tout ce qui prétend décrire la PERSONNE — avatar, nom de profil, compteurs —
+   * dépend de cette réponse. Un site ne dit rien du compte de son fondateur.
+   */
+  const hasScrapedProfile = !!preview && (
+    !!preview.avatar_url || preview.followers > 0 || preview.posts_count > 0
+  );
+
   const band = bands.find((b) => b.key === bandKey) || bands[0] || null;
   const projection = band?.projection || null;
+  /**
+   * A-t-on vraiment lu l'audience du compte ?
+   *
+   * ⚠️ Sur le tunnel fondateurs, l'entrée est le site du SaaS : aucun profil
+   * LinkedIn n'est scrapé, donc `followers_now` vaut 0 — ce qui ne veut PAS dire
+   * « ce compte a zéro abonné ». Afficher « aujourd'hui 0 » ou « 0 abonnés » à
+   * quelqu'un qui en a 2 000 serait faux, et c'est le genre d'erreur qui fait
+   * fermer l'onglet. On montre alors le GAIN, jamais un état actuel inventé.
+   */
+  const hasAudienceData = (projection?.followers_now || 0) > 0;
 
   const up = (patch: Partial<ReturnType<typeof onbInitSel>>) =>
     setSel((s) => ({ ...s, ...patch }));
@@ -442,16 +532,24 @@ export default function OnboardingScreen({
     if (step !== "scanning") return;
     setScanIdx(0);
     const id = setInterval(
-      () => setScanIdx((i) => (i < ONB_SCAN_STEPS.length - 1 ? i + 1 : i)),
+      () => setScanIdx((i) => (i < variant.scanSteps.length - 1 ? i + 1 : i)),
       850,
     );
     return () => clearInterval(id);
   }, [step]);
 
+  /** Applique le brouillon + la preview et avance vers l'écran d'analyse. */
+  function applyScanResult(d: Record<string, string>, p: OnboardingPreview | null) {
+    setDraft(d);
+    setSel(onbInitSel(d, variant));
+    setPreview(p);
+    setStep(p ? "analysis" : "page1");
+  }
+
   async function analyze() {
     const trimmed = aiInput.trim();
-    if (!trimmed) { setError("Colle ton URL LinkedIn (ou une courte description)."); return; }
-    setError(""); setStep("scanning");
+    if (!trimmed) { setError(variant.introError); return; }
+    setError(""); setScanResult(null); setStep("scanning");
     try {
       const isLinkedin = inputKind === "linkedin";
       const isWebsite = inputKind === "website";
@@ -479,13 +577,16 @@ export default function OnboardingScreen({
       })();
       const [data] = await Promise.all([fetchDraft, minWait]);
       const d = (data.profile || {}) as Record<string, string>;
-      setDraft(d);
-      setSel(onbInitSel(d, variant));
       const p = data.preview && data.preview.niche && data.preview.summary ? data.preview : null;
-      setPreview(p);
+      if (variantKey === "saas") {
+        // L'écran de scan porte les questions de qualification : le résultat
+        // attend le clic du visiteur au lieu de lui arracher l'écran des mains.
+        setScanResult({ profile: d, preview: p });
+        return;
+      }
       // L'analyse s'affiche sur les DEUX parcours (public /start ET wizard d'un
       // compte connecté) — sans elle, on saute directement aux questions.
-      setStep(p ? "analysis" : "page1");
+      applyScanResult(d, p);
     } catch (err: any) {
       setError(err?.message || "Analyse impossible");
       setStep("intro");
@@ -605,14 +706,22 @@ export default function OnboardingScreen({
   }, [step, calendlyUrl]);
 
   const showProgress = step === "page1" || step === "page2";
+  const progressPct = step === "page1" ? "50%" : "100%";
   // Écrans qui gagnent à respirer sur grand écran (grilles et colonnes), par
   // opposition aux écrans de saisie où une colonne étroite reste plus lisible.
-  const isWideStep = step === "gains" || step === "simulation" || step === "lead_form";
+  const isWideStep =
+    step === "analysis" ||
+    step === "analysis_detail" ||
+    step === "gains" ||
+    step === "simulation" ||
+    step === "pitch" ||
+    step === "lead_form";
   const isAnalysis =
     step === "analysis" ||
     step === "analysis_detail" ||
     step === "gains" ||
     step === "simulation" ||
+    step === "pitch" ||
     step === "lead_form" ||
     step === "lead_done";
 
@@ -627,7 +736,7 @@ export default function OnboardingScreen({
       >
         {showProgress && (
           <div className="onb-progress">
-            <div className="onb-progress-fill" style={{ width: step === "page1" ? "50%" : "100%" }} />
+            <div className="onb-progress-fill" style={{ width: progressPct }} />
           </div>
         )}
 
@@ -642,7 +751,7 @@ export default function OnboardingScreen({
                 value={aiInput}
                 onChange={(e) => setAiInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") analyze(); }}
-                placeholder="https://linkedin.com/in/ton-profil"
+                placeholder={variant.introPlaceholder}
                 autoFocus
               />
               <button type="button" className="onb-cta" onClick={analyze}>
@@ -650,20 +759,98 @@ export default function OnboardingScreen({
               </button>
             </div>
             {error && <div className="onb-error">{error}</div>}
-            <button type="button" className="onb-skip" onClick={() => setStep("page1")}>Continuer sans LinkedIn</button>
+            <button type="button" className="onb-skip" onClick={() => setStep("page1")}>{variant.introSkipLabel}</button>
           </div>
         )}
 
         {step === "scanning" && (
           <div className="onb-screen onb-scan" key="scan">
-            <div className="onb-orb"><Linkedin size={34} /></div>
-            <div className="onb-scan-status" key={scanIdx}>{ONB_SCAN_STEPS[scanIdx]}</div>
+            <div className="onb-orb">
+              {variantKey === "saas" ? <Globe size={34} /> : <Linkedin size={34} />}
+            </div>
+            <div className="onb-scan-status" key={scanResult ? "done" : scanIdx}>
+              {scanResult ? "Analyse prête ✓" : variant.scanSteps[scanIdx]}
+            </div>
+
+            {/* Tunnel SaaS : la lecture du site prend de longues secondes — ces
+                deux questions occupent l'attente. Le résultat de l'analyse attend
+                en coulisse (`scanResult`) : c'est le clic du visiteur qui avance,
+                jamais la fin du fetch, sinon l'écran lui serait arraché en plein
+                choix. */}
+            {variantKey === "saas" && (
+              <div className="onb-scan-quiz">
+                <div className="onb-scan-quiz-kicker">Pendant que ça tourne — deux questions</div>
+
+                <div className="onb-block">
+                  <label className="onb-block-label">Où en est ton SaaS&nbsp;?</label>
+                  <p className="onb-lead" style={{ margin: "0 0 8px", fontSize: 13 }}>
+                    Le stade calibre la stratégie.
+                  </p>
+                  <div className="onb-chips" style={{ flexDirection: "column", alignItems: "stretch" }}>
+                    {ONB_SAAS_STAGES.map((o) => (
+                      <button
+                        key={o.label}
+                        type="button"
+                        className={"onb-chip" + (stage === o.label ? " selected" : "")}
+                        style={{ textAlign: "left", display: "block" }}
+                        onClick={() => setStage(stage === o.label ? "" : o.label)}
+                      >
+                        <span style={{ fontWeight: 600 }}>{o.label}</span>
+                        <span style={{ display: "block", fontSize: 12, opacity: 0.72, marginTop: 2 }}>
+                          {o.hint}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="onb-block" style={{ marginBottom: 6 }}>
+                  <label className="onb-block-label">Qu&apos;est-ce qui te bloque le plus&nbsp;?</label>
+                  <p className="onb-lead" style={{ margin: "0 0 8px", fontSize: 13 }}>
+                    Coche tout ce qui te parle — le plan d&apos;attaque se calibre dessus.
+                  </p>
+                  <div className="onb-chips">
+                    {ONB_SAAS_OBSTACLES.map((label) => (
+                      <button
+                        key={label}
+                        type="button"
+                        className={"onb-chip" + (obstacles.includes(label) ? " selected" : "")}
+                        onClick={() =>
+                          setObstacles((prev) =>
+                            prev.includes(label) ? prev.filter((o) => o !== label) : [...prev, label],
+                          )
+                        }
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  className="onb-analysis-cta"
+                  disabled={!scanResult}
+                  onClick={() => scanResult && applyScanResult(scanResult.profile, scanResult.preview)}
+                >
+                  {scanResult ? (
+                    <>Voir mon analyse <ChevronRight size={16} /></>
+                  ) : (
+                    <><Loader2 size={16} className="spinning" /> Analyse en cours…</>
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
         {step === "analysis" && preview && (
           <div className="onb-screen onb-analysis" key="analysis">
             <div className="onb-analysis-card onb-analysis-profile">
+              {/* ⚠️ Pas d'avatar quand rien n'a été scrapé : une pastille d'initiales
+                  sur un nom de produit (« ? », « TP ») ne représente personne et fait
+                  passer l'écran pour un gabarit générique. On ne montre une identité
+                  que si on l'a réellement lue. */}
               {preview.avatar_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -672,13 +859,16 @@ export default function OnboardingScreen({
                   alt=""
                   onError={(e) => { e.currentTarget.style.display = "none"; }}
                 />
-              ) : (
+              ) : hasScrapedProfile ? (
                 <div className="onb-analysis-avatar" aria-hidden>
                   {initials(preview.name, preview.handle)}
                 </div>
+              ) : null}
+              {!hasScrapedProfile && (
+                <div className="onb-analysis-source">Analysé depuis ton site</div>
               )}
-              <div className="onb-analysis-name">{preview.name || "Ton profil"}</div>
-              {preview.handle && (
+              <div className="onb-analysis-name">{preview.name || "Ton produit"}</div>
+              {hasScrapedProfile && preview.handle && (
                 <div className="onb-analysis-handle">@{preview.handle.replace(/^@+/, "")}</div>
               )}
               {preview.headline && (
@@ -745,28 +935,34 @@ export default function OnboardingScreen({
               </div>
             )}
 
-            <div className="onb-analysis-block">
-              <div className="onb-analysis-label">Points forts</div>
-              <ul className="onb-analysis-list">
-                {preview.strengths.map((s) => (
-                  <li key={s}>
-                    <CheckCircle2 size={16} className="onb-analysis-ok" />
-                    <span>{s}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            {/* Deux colonnes sur desktop : ces deux listes se lisent en vis-à-vis
+                (ce qui va / ce qui manque), pas l'une sous l'autre. */}
+            <div className="onb-analysis-grid">
+              <div className="onb-analysis-block">
+                <div className="onb-analysis-label">Points forts</div>
+                <ul className="onb-analysis-list">
+                  {preview.strengths.map((s) => (
+                    <li key={s}>
+                      <CheckCircle2 size={16} className="onb-analysis-ok" />
+                      <span>{s}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
 
-            <div className="onb-analysis-block">
-              <div className="onb-analysis-label">Points à améliorer</div>
-              <ul className="onb-analysis-list">
-                {preview.improvements.map((s) => (
-                  <li key={s}>
-                    <AlertTriangle size={16} className="onb-analysis-warn" />
-                    <span>{s}</span>
-                  </li>
-                ))}
-              </ul>
+              <div className="onb-analysis-block">
+                <div className="onb-analysis-label">
+                  {hasScrapedProfile ? "Points à améliorer" : "Ce qui manque pour vendre sur LinkedIn"}
+                </div>
+                <ul className="onb-analysis-list">
+                  {preview.improvements.map((s) => (
+                    <li key={s}>
+                      <AlertTriangle size={16} className="onb-analysis-warn" />
+                      <span>{s}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
 
             <button
@@ -870,7 +1066,7 @@ export default function OnboardingScreen({
                 disabled={saving}
               >
                 {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />}{" "}
-                {showsProjection ? "Voir ce que je peux gagner" : finishLabel}
+                {showsProjection ? "Voir ce que je pourrais gagner" : finishLabel}
               </button>
             </div>
           </div>
@@ -891,10 +1087,19 @@ export default function OnboardingScreen({
               <>
                 <div className="onb-gain-grid">
                   <div className="onb-gain-card">
-                    <div className="onb-gain-label">Abonnés dans 90 jours</div>
-                    <div className="onb-gain-value">{fmtRange(projection.followers_after, fmtInt)}</div>
+                    <div className="onb-gain-label">
+                      {hasAudienceData ? "Abonnés dans 90 jours" : "Abonnés gagnés en 90 jours"}
+                    </div>
+                    <div className="onb-gain-value">
+                      {fmtRange(
+                        hasAudienceData ? projection.followers_after : projection.followers_gain,
+                        fmtInt,
+                      )}
+                    </div>
                     <div className="onb-gain-hint">
-                      aujourd&apos;hui {fmtInt(projection.followers_now)} · +{fmtRange(projection.followers_gain, fmtInt)}
+                      {hasAudienceData
+                        ? `aujourd'hui ${fmtInt(projection.followers_now)} · +${fmtRange(projection.followers_gain, fmtInt)}`
+                        : "en publiant ~3 fois par semaine"}
                     </div>
                   </div>
                   <div className="onb-gain-card">
@@ -912,6 +1117,21 @@ export default function OnboardingScreen({
                     <div className="onb-gain-value">{fmtRange(projection.clients_per_month, fmtInt)}</div>
                     <div className="onb-gain-hint">par mois</div>
                   </div>
+                </div>
+
+                <div className="onb-analysis-card">
+                  <div className="onb-analysis-label">
+                    {hasAudienceData ? "Ton audience sur 90 jours" : "Abonnés gagnés sur 90 jours"}
+                  </div>
+                  <GrowthCurve
+                    start={hasAudienceData ? projection.followers_now : 0}
+                    endLow={hasAudienceData ? projection.followers_after.low : projection.followers_gain.low}
+                    endHigh={hasAudienceData ? projection.followers_after.high : projection.followers_gain.high}
+                    endText={
+                      (hasAudienceData ? "" : "+") +
+                      fmtRange(hasAudienceData ? projection.followers_after : projection.followers_gain, fmtInt)
+                    }
+                  />
                 </div>
 
                 <div className="onb-analysis-block">
@@ -956,10 +1176,13 @@ export default function OnboardingScreen({
 
         {step === "simulation" && projection && (
           <div className="onb-screen onb-analysis" key="simulation">
-            <h2 className="onb-analysis-title">Ton profil dans 90 jours</h2>
+            <h2 className="onb-analysis-title">
+              {hasScrapedProfile ? "Ton profil dans 90 jours" : "Ton LinkedIn dans 90 jours"}
+            </h2>
             <p className="onb-analysis-summary" style={{ opacity: 0.8 }}>
-              À gauche ton compte aujourd&apos;hui, à droite la même page une fois la
-              machine lancée.
+              {hasScrapedProfile
+                ? "À gauche ton compte aujourd'hui, à droite la même page une fois la machine lancée."
+                : "À gauche ce qui arrive aujourd'hui, à droite une fois la machine lancée."}
             </p>
 
             <div className="onb-sim-grid">
@@ -967,7 +1190,8 @@ export default function OnboardingScreen({
                 variant="before"
                 caption="Aujourd'hui"
                 preview={preview}
-                followers={projection.followers_now}
+                identified={hasScrapedProfile}
+                followers={hasAudienceData ? projection.followers_now : null}
                 invites={0}
                 messages={0}
                 offers={0}
@@ -976,7 +1200,8 @@ export default function OnboardingScreen({
                 variant="after"
                 caption="Dans 90 jours"
                 preview={preview}
-                followers={projection.followers_after.high}
+                identified={hasScrapedProfile}
+                followers={hasAudienceData ? projection.followers_after.high : null}
                 invites={projection.relations_per_month.high}
                 messages={projection.conversations_per_month.high}
                 offers={projection.clients_per_month.high}
@@ -989,21 +1214,9 @@ export default function OnboardingScreen({
             </div>
 
             {funnel === "trial" ? (
-              <>
-                <button
-                  type="button"
-                  className="onb-analysis-cta"
-                  onClick={finish}
-                  disabled={saving}
-                >
-                  {saving ? <Loader2 size={16} className="spinning" /> : <Rocket size={16} />}{" "}
-                  Démarrer mes {trialDays} jours gratuits
-                </button>
-                <div className="onb-note" style={{ textAlign: "center" }}>
-                  Accès complet à Cibl pendant {trialDays} jours. Résiliable en un clic
-                  avant la fin — on ne prélève rien d&apos;ici là.
-                </div>
-              </>
+              <button type="button" className="onb-analysis-cta" onClick={() => setStep("pitch")}>
+                Comment on s&apos;y prend <ChevronRight size={16} />
+              </button>
             ) : (
               <button type="button" className="onb-analysis-cta" onClick={() => setStep("lead_form")}>
                 Recevoir mon audit complet gratuit
@@ -1011,6 +1224,111 @@ export default function OnboardingScreen({
             )}
             <button type="button" className="onb-analysis-skip" onClick={() => setStep("gains")}>
               ← Retour aux chiffres
+            </button>
+          </div>
+        )}
+
+        {step === "pitch" && funnel === "trial" && (
+          <div className="onb-screen onb-analysis" key="pitch">
+            <h2 className="onb-analysis-title">Le vrai goulot, ce n&apos;est pas ton produit</h2>
+
+            {/* Effet miroir : ses propres mots, pas un argumentaire générique.
+                C'est le levier central du funnel de référence (« You're Closer
+                Than You Think ») — il ne marche que si les mots sont les siens.
+                Une seule carte : le miroir et le récit de la casquette portent la
+                même idée, les étirer sur deux cartes diluait le coup. */}
+            <div className="onb-analysis-card">
+              <div className="onb-analysis-label">Le vrai tueur&nbsp;: le changement de casquette</div>
+              {obstacles.length > 0 && (
+                <p className="onb-analysis-summary">
+                  Tu l&apos;as dit toi-même&nbsp;:{" "}
+                  {obstacles.map((o, i) => (
+                    <span key={o}>
+                      {i > 0 && ", "}
+                      <strong>«&nbsp;{o.toLowerCase()}&nbsp;»</strong>
+                    </span>
+                  ))}
+                  . Pas un problème de discipline — un problème de rôle.
+                </p>
+              )}
+              <p className="onb-analysis-summary">
+                10x développeur le matin, 0.1x marketeur l&apos;après-midi&nbsp;: chaque
+                bascule coûte 20 à 30 minutes de refocus. Le build avance — ton
+                LinkedIn reste muet.
+              </p>
+            </div>
+
+            <FoundersSplit />
+
+            {/* Cadrage ROI : pure arithmétique sur l'ACV que LE VISITEUR vient de
+                choisir — pas une promesse de résultat, un ordre de grandeur du
+                rapport coût/enjeu. */}
+            {band && band.deal_value > 0 && (
+              <div className="onb-gain-highlight">
+                <div className="onb-gain-label">Ton investissement vs ton enjeu</div>
+                <div className="onb-gain-money">
+                  {fmtMoney(planPrice)}/mois — un seul client à ton ACV ({fmtMoney(band.deal_value)})
+                  rembourse {fmtInt(Math.max(1, Math.floor(band.deal_value / Math.max(1, planPrice))))} mois
+                </div>
+                <div className="onb-gain-hint" style={{ marginTop: 6 }}>
+                  {Math.floor(band.deal_value / Math.max(1, planPrice)) >= 24
+                    ? `soit plus de ${Math.floor(band.deal_value / Math.max(1, planPrice) / 12)} ans d'abonnement remboursés par une seule signature`
+                    : "des mois d'abonnement remboursés par une seule signature"}
+                </div>
+              </div>
+            )}
+
+            <div className="onb-analysis-card">
+              <div className="onb-analysis-label">Comment ça démarre — sans hype</div>
+              <FoundersTimeline />
+            </div>
+
+            <div className="onb-analysis-card">
+              <div className="onb-analysis-label">Les alternatives, honnêtement</div>
+              <FoundersAlternatives planPrice={planPrice} />
+            </div>
+
+            {/* Preuve · places · garantie : trois faits, un seul bandeau — les
+                empiler en trois encarts noyait chacun d'eux. */}
+            <div className="onb-strip">
+              <div className="onb-strip-item">
+                <div className="onb-strip-value">{PROOF_INFLUENCERS_ANALYZED}+ comptes</div>
+                <div className="onb-strip-label">
+                  analysés · {fmtInt(PROOF_POSTS_ANALYZED)}+ posts au crible
+                </div>
+              </div>
+              {monthlySeats > 0 && (
+                <div className="onb-strip-item">
+                  <div className="onb-strip-value">{monthlySeats} / mois</div>
+                  <div className="onb-strip-label">
+                    comptes fondateurs par mois — le démarrage est encore accompagné à la main
+                  </div>
+                </div>
+              )}
+              {guaranteeDays > 0 && (
+                <div className="onb-strip-item">
+                  <div className="onb-strip-value">Satisfait ou remboursé</div>
+                  <div className="onb-strip-label">
+                    {guaranteeDays} jours après l&apos;essai — premier mois remboursé sur demande
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <button
+              type="button"
+              className="onb-analysis-cta"
+              onClick={finish}
+              disabled={saving}
+            >
+              {saving ? <Loader2 size={16} className="spinning" /> : <Rocket size={16} />}{" "}
+              Démarrer mes {trialDays} jours gratuits
+            </button>
+            <div className="onb-note" style={{ textAlign: "center" }}>
+              {trialDays} jours d&apos;accès complet, 0&nbsp;€ — résiliable en un clic avant la fin.
+            </div>
+            <button type="button" className="onb-analysis-skip" onClick={() => setStep("simulation")}>
+              ← Retour à la simulation
             </button>
           </div>
         )}
@@ -1173,6 +1491,7 @@ function SimCard({
   variant,
   caption,
   preview,
+  identified,
   followers,
   invites,
   messages,
@@ -1181,7 +1500,10 @@ function SimCard({
   variant: "before" | "after";
   caption: string;
   preview: OnboardingPreview | null;
-  followers: number;
+  /** false = on n'a pas lu le compte : ni photo ni nom, seulement ce qui bouge. */
+  identified: boolean;
+  /** `null` = audience inconnue (entrée par le site) : on n'affiche aucun compteur. */
+  followers: number | null;
   invites: number;
   messages: number;
   offers: number;
@@ -1190,19 +1512,218 @@ function SimCard({
   return (
     <div className={"onb-sim-card" + (variant === "after" ? " onb-sim-after" : "")}>
       <div className="onb-sim-caption">{caption}</div>
-      <div className="onb-sim-banner" />
-      {preview?.avatar_url ? (
+      {identified && <div className="onb-sim-banner" />}
+      {/* Sans compte lu, ni photo ni nom : une pastille « TP » sous un titre
+          « Ton profil » ne ressemble au compte de personne. Ce qui compte ici,
+          ce sont les trois lignes qui bougent. */}
+      {identified && (preview?.avatar_url ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img className="onb-sim-avatar onb-sim-avatar-img" src={preview.avatar_url} alt="" />
       ) : (
         <div className="onb-sim-avatar" aria-hidden>{initials(name, preview?.handle || "")}</div>
+      ))}
+      {identified && <div className="onb-sim-name">{name}</div>}
+      {followers !== null && (
+        <div className="onb-sim-followers">{fmtInt(followers)} abonnés</div>
       )}
-      <div className="onb-sim-name">{name}</div>
-      <div className="onb-sim-followers">{fmtInt(followers)} abonnés</div>
       <div className="onb-sim-rows">
         <SimRow icon={<Users size={14} />} label="Invitations reçues" value={invites} />
         <SimRow icon={<MessageSquare size={14} />} label="Messages non lus" value={messages} />
         <SimRow icon={<Briefcase size={14} />} label="Propositions" value={offers} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Blocs de l'argumentaire fondateurs, PARTAGÉS entre le closing du tunnel et la
+ * landing /founders. Une seule source : si l'argument change (plafonds réels du
+ * moteur, prix des alternatives), les deux surfaces changent ensemble — deux
+ * copies auraient fini par se contredire.
+ */
+export function FoundersSplit() {
+  return (
+    <div className="onb-analysis-grid">
+      <div className="onb-analysis-block">
+        <div className="onb-analysis-label">Cibl s&apos;en charge</div>
+        <ul className="onb-analysis-list">
+          {[
+            "Analyse ce qui marche dans ta catégorie",
+            "Écrit tes posts dans ta voix",
+            "Publie aux bons créneaux",
+            "Repère ton ICP chez tes concurrents",
+            "Invite et relance sous les plafonds LinkedIn",
+          ].map((line) => (
+            <li key={line}>
+              <CheckCircle2 size={16} className="onb-analysis-ok" />
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="onb-analysis-block">
+        <div className="onb-analysis-label">Tu fais</div>
+        <ul className="onb-analysis-list">
+          <li>
+            <CheckCircle2 size={16} className="onb-analysis-ok" />
+            <span>Valider les posts, répondre à tes prospects.</span>
+          </li>
+          <li>
+            <CheckCircle2 size={16} className="onb-analysis-ok" />
+            <span>Moins de 15 minutes par jour. C&apos;est tout.</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+/** Roadmap « sans hype » — ancrée sur le warm-up réel du moteur (8→15→20/jour). */
+export function FoundersTimeline() {
+  const steps: { when: string; what: string }[] = [
+    {
+      when: "Semaines 1-2",
+      what: "Montée en douceur : 8 puis 15 puis 20 actions/jour — le rythme qui protège ton compte — pendant que tes premiers posts partent.",
+    },
+    {
+      when: "Mois 1",
+      what: "Régime de croisière : ~100 invitations par semaine vers ton ICP, tes premières réponses en inbox.",
+    },
+    {
+      when: "Mois 3",
+      what: "Les fourchettes affichées — abonnés, conversations, clients — sont calculées sur ce régime-là.",
+    },
+  ];
+  return (
+    <div className="onb-timeline">
+      {steps.map((s, i) => (
+        <div className="onb-timeline-item" key={s.when}>
+          <div className="onb-timeline-rail">
+            <span className="onb-timeline-dot" />
+            {i < steps.length - 1 && <span className="onb-timeline-line" />}
+          </div>
+          <div className="onb-timeline-body">
+            <div className="onb-timeline-when">{s.when}</div>
+            <div className="onb-timeline-what">{s.what}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Comparatif à charge — ordres de grandeur constatés, jamais des devis. */
+export function FoundersAlternatives({ planPrice }: { planPrice: number }) {
+  const alts = [
+    { name: "Ghostwriter LinkedIn", price: "500 à 2 000 €/mois", note: "il écrit — tu prospectes encore à la main" },
+    { name: "Agence de prospection", price: "1 000 à 3 000 €/mois", note: "souvent sans le contenu, résultats opaques" },
+    { name: "Tout faire toi-même", price: "10 h et + par semaine", note: "le changement de casquette, en boucle" },
+  ];
+  return (
+    <>
+      {alts.map((alt) => (
+        <div className="onb-alt-row" key={alt.name}>
+          <span className="onb-alt-name">{alt.name}</span>
+          <span className="onb-alt-price">{alt.price}</span>
+          <span className="onb-alt-note">— {alt.note}</span>
+        </div>
+      ))}
+      <div className="onb-alt-row onb-alt-us">
+        <span className="onb-alt-name">Cibl</span>
+        <span className="onb-alt-price">{fmtMoney(planPrice)}/mois</span>
+        <span className="onb-alt-note">— contenu + prospection dans la même app, &lt;15 min/jour</span>
+      </div>
+      <div className="onb-gain-hint" style={{ marginTop: 8 }}>
+        Ordres de grandeur constatés sur le marché — pas des devis.
+      </div>
+    </>
+  );
+}
+
+/**
+ * Courbe de progression sur 90 jours — la « belle courbe qui grandit ».
+ *
+ * Elle n'invente rien : la bande claire est la fourchette basse↔haute de la
+ * projection affichée juste au-dessus, la ligne suit le MILIEU de la fourchette
+ * (pas la borne haute — tracer l'hypothèse optimiste en trait plein serait
+ * survendre). La forme (départ lent puis accélération) reflète le warm-up réel
+ * du moteur d'envoi : 8 → 15 → 20 actions/jour sur 3 semaines.
+ */
+function GrowthCurve({
+  start,
+  endLow,
+  endHigh,
+  endText,
+}: {
+  start: number;
+  endLow: number;
+  endHigh: number;
+  endText: string;
+}) {
+  const W = 640, H = 190;
+  const pad = { top: 26, right: 12, bottom: 10, left: 12 };
+  const innerW = W - pad.left - pad.right;
+  const innerH = H - pad.top - pad.bottom;
+  const max = Math.max(endHigh, start + 1);
+  const min = start;
+  const y = (v: number) => pad.top + (1 - (v - min) / (max - min)) * innerH;
+  const x = (t: number) => pad.left + t * innerW;
+  // Départ lent (warm-up) puis accélération — exposant > 1 sur t.
+  const value = (t: number, end: number) => start + (end - start) * Math.pow(t, 1.6);
+
+  const N = 32;
+  const pts = (end: number) =>
+    Array.from({ length: N + 1 }, (_, i) => {
+      const t = i / N;
+      return `${x(t).toFixed(1)},${y(value(t, end)).toFixed(1)}`;
+    });
+  const mid = (endLow + endHigh) / 2;
+  const bandPath =
+    `M ${pts(endHigh).join(" L ")} L ${pts(endLow).reverse().join(" L ")} Z`;
+  const midPts = pts(mid);
+  const endX = x(1), endY = y(value(1, mid));
+
+  return (
+    <div className="onb-curve-wrap">
+      <svg
+        className="onb-curve"
+        viewBox={`0 0 ${W} ${H}`}
+        role="img"
+        aria-label={`Projection sur 90 jours : ${endText}`}
+      >
+        {/* Grille discrète — 3 repères, pas d'axe chiffré : les valeurs exactes
+            sont dans les cartes au-dessus, la courbe montre la trajectoire. */}
+        {[0.25, 0.5, 0.75].map((f) => (
+          <line
+            key={f}
+            x1={pad.left} x2={W - pad.right}
+            y1={pad.top + f * innerH} y2={pad.top + f * innerH}
+            stroke="rgba(27,27,35,.07)" strokeWidth="1"
+          />
+        ))}
+        <line
+          x1={pad.left} x2={W - pad.right} y1={pad.top + innerH} y2={pad.top + innerH}
+          stroke="rgba(27,27,35,.14)" strokeWidth="1"
+        />
+        {/* Fourchette basse↔haute */}
+        <path d={bandPath} fill="rgba(70,72,212,.1)" />
+        {/* Trajectoire médiane */}
+        <polyline
+          points={midPts.join(" ")}
+          fill="none" stroke="#4648d4" strokeWidth="2.5"
+          strokeLinecap="round" strokeLinejoin="round"
+        />
+        <circle cx={endX} cy={endY} r="4.5" fill="#4648d4" stroke="#fff" strokeWidth="2" />
+        <text
+          x={endX - 4} y={Math.max(pad.top - 8, endY - 12)}
+          textAnchor="end" fontSize="13.5" fontWeight="700" fill="#1b1b23"
+        >
+          {endText}
+        </text>
+      </svg>
+      <div className="onb-curve-axis">
+        <span>Aujourd&apos;hui</span>
+        <span>Dans 90 jours</span>
       </div>
     </div>
   );

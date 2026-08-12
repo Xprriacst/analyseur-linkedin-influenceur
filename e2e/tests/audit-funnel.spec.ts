@@ -91,7 +91,7 @@ async function reachLeadForm(page: Page): Promise<{ projectionBody: () => any }>
   // Questions de qualification (page1 → page2), pré-remplies par l'analyse.
   await expect(page.getByPlaceholder("Ton nom et prénom")).toHaveValue("Camille Dupont");
   await page.getByRole("button", { name: "Continuer", exact: true }).click();
-  await page.getByRole("button", { name: /Voir ce que je peux gagner/ }).click();
+  await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();
 
   // Gains : le CA affiché suit le palier de panier moyen choisi (c'est le levier
   // de l'écran — s'il ne bougeait pas, la personnalisation serait décorative).

@@ -24,6 +24,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, CreditCard, Loader2, Lock, Rocket } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
+import { FOUNDERS_MONTHLY_SEATS, FOUNDERS_GUARANTEE_DAYS } from "../lib/founders";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
@@ -50,6 +51,12 @@ function timeline(days: number, price: string): { day: string; text: string }[] 
       text: "Tu peux arrêter en un clic depuis ton espace — rien ne sera prélevé.",
     },
     { day: `Jour ${days}`, text: `L'abonnement démarre à ${price}/mois, sauf si tu as arrêté avant.` },
+    {
+      // ⚠️ Engagement commercial (cf. lib/founders.ts) : remboursement MANUEL
+      // via Stripe, sur simple demande. Ne l'afficher que tant qu'on l'honore.
+      day: "Après l'essai",
+      text: `Satisfait ou remboursé pendant ${FOUNDERS_GUARANTEE_DAYS} jours — le premier mois remboursé sur simple demande.`,
+    },
   ];
 }
 
@@ -166,6 +173,22 @@ export default function EssaiPage() {
             }}
           >
             <Rocket size={14} /> {trialDays} jours d&apos;accès complet
+          </span>
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              marginLeft: 10,
+              padding: "6px 14px",
+              borderRadius: 20,
+              fontSize: 13,
+              fontWeight: 700,
+              background: "rgba(255,255,255,0.10)",
+              border: "1px solid rgba(255,255,255,0.22)",
+            }}
+          >
+            {FOUNDERS_MONTHLY_SEATS} comptes fondateurs / mois
           </span>
 
           <h1 style={{ margin: "22px 0 0", fontSize: "clamp(28px, 3.2vw, 40px)", lineHeight: 1.14, letterSpacing: "-0.025em", maxWidth: 560 }}>
