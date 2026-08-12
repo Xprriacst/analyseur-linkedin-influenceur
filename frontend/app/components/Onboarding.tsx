@@ -474,6 +474,14 @@ export default function OnboardingScreen({
   const [scanResult, setScanResult] = useState<
     { profile: Record<string, string>; preview: OnboardingPreview | null } | null
   >(null);
+  /**
+   * Où en est le quiz du scan (tunnel SaaS) : 0 = animation seule (la pop-up
+   * n'apparaît qu'après ~2,5 s — l'animation doit d'abord s'installer), 1 =
+   * question du stade, 2 = question des obstacles, 3 = quiz terminé (retour à
+   * l'animation si l'analyse n'est pas finie — l'avancée devient automatique,
+   * il n'y a plus de choix à protéger).
+   */
+  const [quizIdx, setQuizIdx] = useState(0);
   // Qualification fondateur (pendant le scan, tunnel SaaS) — sert l'effet miroir
   // du closing. Volontairement hors du profil éditorial : le backend ignorerait
   // ces clés en silence, autant ne pas prétendre les enregistrer.
@@ -538,6 +546,25 @@ export default function OnboardingScreen({
     return () => clearInterval(id);
   }, [step]);
 
+  // La pop-up du quiz n'apparaît que ~2,5 s après le lancement : l'animation de
+  // scan doit d'abord raconter ce qui se passe, sinon la question tombe avant
+  // même que « Lecture de ton site… » ait été lu.
+  useEffect(() => {
+    if (step !== "scanning" || variantKey !== "saas") return;
+    const id = setTimeout(() => setQuizIdx((i) => (i === 0 ? 1 : i)), 2500);
+    return () => clearTimeout(id);
+  }, [step, variantKey]);
+
+  // Quiz terminé + analyse prête ⇒ on avance tout seul. C'est le SEUL cas
+  // d'avancée automatique : tant qu'une question est à l'écran, le résultat
+  // attend — on n'arrache pas un choix en cours.
+  useEffect(() => {
+    if (step === "scanning" && variantKey === "saas" && quizIdx === 3 && scanResult) {
+      applyScanResult(scanResult.profile, scanResult.preview);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, quizIdx, scanResult]);
+
   /** Applique le brouillon + la preview et avance vers l'écran d'analyse. */
   function applyScanResult(d: Record<string, string>, p: OnboardingPreview | null) {
     setDraft(d);
@@ -549,7 +576,7 @@ export default function OnboardingScreen({
   async function analyze() {
     const trimmed = aiInput.trim();
     if (!trimmed) { setError(variant.introError); return; }
-    setError(""); setScanResult(null); setStep("scanning");
+    setError(""); setScanResult(null); setQuizIdx(0); setStep("scanning");
     try {
       const isLinkedin = inputKind === "linkedin";
       const isWebsite = inputKind === "website";
@@ -768,20 +795,23 @@ export default function OnboardingScreen({
             <div className="onb-orb">
               {variantKey === "saas" ? <Globe size={34} /> : <Linkedin size={34} />}
             </div>
-            <div className="onb-scan-status" key={scanResult ? "done" : scanIdx}>
-              {scanResult ? "Analyse prête ✓" : variant.scanSteps[scanIdx]}
+            {/* « Analyse prête » ne s'affiche qu'une fois le quiz fini : pendant
+                les questions, le statut continue de raconter le scan — annoncer
+                la fin inciterait à bâcler la réponse en cours. */}
+            <div className="onb-scan-status" key={scanResult && quizIdx >= 3 ? "done" : scanIdx}>
+              {scanResult && quizIdx >= 3 ? "Analyse prête ✓" : variant.scanSteps[scanIdx]}
             </div>
 
-            {/* Tunnel SaaS : la lecture du site prend de longues secondes — ces
-                deux questions occupent l'attente. Le résultat de l'analyse attend
-                en coulisse (`scanResult`) : c'est le clic du visiteur qui avance,
-                jamais la fin du fetch, sinon l'écran lui serait arraché en plein
-                choix. */}
-            {variantKey === "saas" && (
-              <div className="onb-scan-quiz">
-                <div className="onb-scan-quiz-kicker">Pendant que ça tourne — deux questions</div>
+            {/* Tunnel SaaS : la lecture du site prend de longues secondes — deux
+                pop-up successives (une question chacune) occupent l'attente. Le
+                bouton « Continuer » est TOUJOURS cliquable : répondre ne dépend
+                pas de l'analyse. Après la 2ᵉ, si l'analyse n'est pas finie, on
+                revient à l'animation et l'avancée devient automatique. */}
+            {variantKey === "saas" && quizIdx === 1 && (
+              <div className="onb-scan-quiz" key="quiz1">
+                <div className="onb-scan-quiz-kicker">Pendant que ça tourne — question 1/2</div>
 
-                <div className="onb-block">
+                <div className="onb-block" style={{ marginBottom: 6 }}>
                   <label className="onb-block-label">Où en est ton SaaS&nbsp;?</label>
                   <p className="onb-lead" style={{ margin: "0 0 8px", fontSize: 13 }}>
                     Le stade calibre la stratégie.
@@ -803,6 +833,16 @@ export default function OnboardingScreen({
                     ))}
                   </div>
                 </div>
+
+                <button type="button" className="onb-analysis-cta" onClick={() => setQuizIdx(2)}>
+                  Continuer <ChevronRight size={16} />
+                </button>
+              </div>
+            )}
+
+            {variantKey === "saas" && quizIdx === 2 && (
+              <div className="onb-scan-quiz" key="quiz2">
+                <div className="onb-scan-quiz-kicker">Pendant que ça tourne — question 2/2</div>
 
                 <div className="onb-block" style={{ marginBottom: 6 }}>
                   <label className="onb-block-label">Qu&apos;est-ce qui te bloque le plus&nbsp;?</label>
@@ -827,17 +867,17 @@ export default function OnboardingScreen({
                   </div>
                 </div>
 
+                {/* Toujours cliquable : si l'analyse est prête on avance tout de
+                    suite, sinon retour à l'animation — l'effet fera le reste. */}
                 <button
                   type="button"
                   className="onb-analysis-cta"
-                  disabled={!scanResult}
-                  onClick={() => scanResult && applyScanResult(scanResult.profile, scanResult.preview)}
+                  onClick={() => {
+                    setQuizIdx(3);
+                    if (scanResult) applyScanResult(scanResult.profile, scanResult.preview);
+                  }}
                 >
-                  {scanResult ? (
-                    <>Voir mon analyse <ChevronRight size={16} /></>
-                  ) : (
-                    <><Loader2 size={16} className="spinning" /> Analyse en cours…</>
-                  )}
+                  Continuer <ChevronRight size={16} />
                 </button>
               </div>
             )}
@@ -1680,7 +1720,7 @@ function GrowthCurve({
   const mid = (endLow + endHigh) / 2;
   const bandPath =
     `M ${pts(endHigh).join(" L ")} L ${pts(endLow).reverse().join(" L ")} Z`;
-  const midPts = pts(mid);
+  const midPath = `M ${pts(mid).join(" L ")}`;
   const endX = x(1), endY = y(value(1, mid));
 
   return (
@@ -1705,21 +1745,27 @@ function GrowthCurve({
           x1={pad.left} x2={W - pad.right} y1={pad.top + innerH} y2={pad.top + innerH}
           stroke="rgba(27,27,35,.14)" strokeWidth="1"
         />
-        {/* Fourchette basse↔haute */}
-        <path d={bandPath} fill="rgba(70,72,212,.1)" />
-        {/* Trajectoire médiane */}
-        <polyline
-          points={midPts.join(" ")}
+        {/* Fourchette basse↔haute — apparaît quand la ligne a fini de se tracer */}
+        <path className="onb-curve-band" d={bandPath} fill="rgba(70,72,212,.1)" />
+        {/* Trajectoire médiane — se DESSINE à l'arrivée sur l'écran (pathLength
+            normalisé à 1 : le dash-offset anime le tracé quelle que soit la
+            longueur réelle de la courbe). */}
+        <path
+          className="onb-curve-line"
+          d={midPath}
+          pathLength={1}
           fill="none" stroke="#4648d4" strokeWidth="2.5"
           strokeLinecap="round" strokeLinejoin="round"
         />
-        <circle cx={endX} cy={endY} r="4.5" fill="#4648d4" stroke="#fff" strokeWidth="2" />
-        <text
-          x={endX - 4} y={Math.max(pad.top - 8, endY - 12)}
-          textAnchor="end" fontSize="13.5" fontWeight="700" fill="#1b1b23"
-        >
-          {endText}
-        </text>
+        <g className="onb-curve-end">
+          <circle cx={endX} cy={endY} r="4.5" fill="#4648d4" stroke="#fff" strokeWidth="2" />
+          <text
+            x={endX - 4} y={Math.max(pad.top - 8, endY - 12)}
+            textAnchor="end" fontSize="13.5" fontWeight="700" fill="#1b1b23"
+          >
+            {endText}
+          </text>
+        </g>
       </svg>
       <div className="onb-curve-axis">
         <span>Aujourd&apos;hui</span>
