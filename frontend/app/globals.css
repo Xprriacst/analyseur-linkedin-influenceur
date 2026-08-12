@@ -2716,8 +2716,9 @@ a { color: inherit; text-decoration: none; }
 }
 .daily-switch input { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
 
-.daily-add { display: flex; gap: 8px; }
-.daily-add input {
+.daily-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.daily-add input[type="text"],
+.daily-add > input:not([type="file"]) {
   flex: 1;
   padding: 9px 12px;
   border: 1px solid var(--border);

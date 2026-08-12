@@ -2687,12 +2687,18 @@ def list_idea_seeds(access_token: str, limit: int = 200, platform: str = "linked
 
 
 def add_idea_seed(
-    access_token: str, text: str, comment: str | None = None, platform: str = "linkedin"
+    access_token: str,
+    text: str,
+    comment: str | None = None,
+    platform: str = "linkedin",
+    media_items: list[dict] | None = None,
 ) -> dict | None:
     """Add a seed idea to the user's reservoir (scoped by `platform`, ALE-291).
 
     `comment` is an optional orientation note (used for listing-URL seeds) that is
     injected into the prompt at generation time.
+    `media_items` : photos jointes (URLs publiques Zernio), même format que
+    generated_posts — pour que Joëlle puisse joindre des photos à une idée.
     """
     if not supabase_enabled():
         return None
@@ -2703,6 +2709,8 @@ def add_idea_seed(
     row: dict[str, Any] = {"user_id": user["id"], "text": text, "platform": platform}
     if comment:
         row["comment"] = comment
+    if media_items is not None:
+        row["media_items"] = list(media_items)
     # Nouvelle idée = ajoutée en fin du réservoir DE CE RÉSEAU (position max + 1).
     last = (
         db.table("idea_seeds")
@@ -2751,10 +2759,12 @@ def update_idea_seed(
     seed_id: str,
     text: str | None = None,
     comment: str | None = None,
+    media_items: list[dict] | None = None,
 ) -> dict | None:
-    """Edit a seed's text and/or orientation comment (RLS scope user).
+    """Edit a seed's text, orientation comment and/or photos (RLS scope user).
 
-    `text=None` → inchangé ; `comment=None` → inchangé, `comment=""` → effacé.
+    `text=None` → inchangé ; `comment=None` → inchangé, `comment=""` → effacé ;
+    `media_items=None` → inchangé, `media_items=[]` → toutes les photos retirées.
     Returns the updated row or None.
     """
     if not supabase_enabled():
@@ -2767,6 +2777,8 @@ def update_idea_seed(
         updates["text"] = text
     if comment is not None:
         updates["comment"] = comment or None
+    if media_items is not None:
+        updates["media_items"] = list(media_items)
     if not updates:
         return None
     db = client_for_token(access_token)

@@ -3210,6 +3210,8 @@ class IdeaSeedRequest(BaseModel):
     comment: str | None = Field(default=None, max_length=500)
     # ALE-291 : réservoir séparé par réseau (jamais partagé LinkedIn/Instagram).
     platform: str = Field(default="linkedin", max_length=20)
+    # Photos jointes à l'idée (data URL ou URL publique) — hébergées via Zernio.
+    images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
 
 
 class IdeaSeedReorderRequest(BaseModel):
@@ -3245,13 +3247,26 @@ def me_idea_seeds(platform: str = "linkedin", token: str = Depends(require_token
 
 @app.post("/me/idea-seeds")
 def add_me_idea_seed(payload: IdeaSeedRequest, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Add an idea to the user's reservoir (scoped by network, ALE-291)."""
+    """Add an idea to the user's reservoir (scoped by network, ALE-291).
+
+    Accepte des photos jointes (`images`) : hébergées sur Zernio puis stockées
+    en `media_items` sur la seed — Joëlle peut joindre des photos à une idée.
+    """
     if payload.platform == "instagram":
         require_feature(token, "instagram")
     comment = (payload.comment or "").strip() or None
-    seed = db.add_idea_seed(token, payload.text.strip(), comment=comment, platform=payload.platform)
+    media_items, media_error = _saved_post_media_items(payload.images)
+    seed = db.add_idea_seed(
+        token,
+        payload.text.strip(),
+        comment=comment,
+        platform=payload.platform,
+        media_items=media_items or None,
+    )
     if not seed:
         raise HTTPException(status_code=400, detail="Impossible d'enregistrer l'idée.")
+    if media_error:
+        seed["media_error"] = True
     return seed
 
 
@@ -3265,20 +3280,30 @@ class IdeaSeedUpdateRequest(BaseModel):
     text: str | None = Field(default=None, min_length=3, max_length=2000)
     # None = inchangé ; "" = effacer le commentaire d'orientation.
     comment: str | None = Field(default=None, max_length=500)
+    # None = inchangé ; liste (éventuellement vide) = remplace les photos.
+    images: list[LinkedInImageRequest] | None = Field(default=None, max_length=zernio.MAX_LINKEDIN_IMAGES)
 
 
 @app.put("/me/idea-seeds/{seed_id}")
 def update_me_idea_seed(seed_id: str, payload: IdeaSeedUpdateRequest, token: str = Depends(require_token)) -> dict[str, Any]:
-    """Edit an idea's text and/or orientation comment in the reservoir."""
-    if payload.text is None and payload.comment is None:
-        raise HTTPException(status_code=400, detail="Rien à mettre à jour (text ou comment requis).")
+    """Edit an idea's text, orientation comment and/or photos in the reservoir."""
+    if payload.text is None and payload.comment is None and payload.images is None:
+        raise HTTPException(status_code=400, detail="Rien à mettre à jour (text, comment ou images requis).")
     text = payload.text.strip() if payload.text is not None else None
     if text is not None and len(text) < 3:
         raise HTTPException(status_code=422, detail="L'idée doit faire au moins 3 caractères.")
     comment = payload.comment.strip() if payload.comment is not None else None
-    seed = db.update_idea_seed(token, seed_id, text=text, comment=comment)
+    media_items = None
+    media_error = False
+    if payload.images is not None:
+        media_items, media_error = _saved_post_media_items(payload.images)
+    seed = db.update_idea_seed(
+        token, seed_id, text=text, comment=comment, media_items=media_items if payload.images is not None else None
+    )
     if not seed:
-        raise HTTPException(status_code=404, detail="Idée introuvable ou non autorisée.")
+        raise HTTPException(status_code=404, detail="Idée introuvable.")
+    if media_error:
+        seed["media_error"] = True
     return seed
 
 
