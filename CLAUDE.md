@@ -82,6 +82,14 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-08-12 #2 (dev : /founders — quiz du scan en 2 pop-up + apparition différée + courbe animée — PR #421, retours d'Alex sur #418)
+- **Trois retours d'Alex après son test sur dev** : (1) les deux questions du scan en **2 pop-up successives** (une question chacune) et « Continuer » **toujours cliquable** ; (2) la pop-up ne doit apparaître que **2-3 s après** le lancement de l'animation ; (3) la **courbe doit se construire** avec une petite animation.
+- **Machine à états du quiz** (`quizIdx` : 0 animation seule → 1 stade → 2 obstacles → 3 fini) : la pop-up 1 apparaît à ~2,5 s ; chaque « Continuer » avance sans condition ; après la 2ᵉ, si l'analyse n'est pas finie, **retour à l'animation et l'avancée devient automatique** dès que le serveur répond. ⚠️ C'est le SEUL cas d'avancée automatique — tant qu'une question est à l'écran, le résultat attend (`scanResult`), on n'arrache pas un choix en cours. « Analyse prête ✓ » ne s'affiche plus pendant qu'une question est ouverte (annoncer la fin inciterait à bâcler la réponse).
+- ⚠️ **Le chemin « quiz fini avant l'analyse » est verrouillé par un test e2e dédié** (draft mocké à 9 s, plus lent que le quiz) : si l'avancée automatique se perdait dans un refacto, le visiteur resterait **bloqué à jamais sur le spinner** — panne parfaitement silencieuse, invisible sur les mocks rapides des autres specs.
+- **Courbe animée** : la ligne se **trace** (dash-offset sur `pathLength={1}` — le polyline est passé en `<path>`, mieux supporté), puis la bande basse↔haute et le point final apparaissent en fondu ; `prefers-reduced-motion` ⇒ état final direct.
+- **Tests** : build vert · founders-funnel (4 specs) + audit-funnel : **6/6 verts** en local · pop-up 1/2 et 2/2 + courbe (en cours de tracé et finie) vérifiées au navigateur en 1440×900. Frontend seul, aucune migration, aucune env var.
+- **Reste à faire** : re-test d'Alex sur dev (lancer l'analyse → l'animation d'abord, la question à ~2,5 s → deux Continuer → la suite arrive seule).
+
 ### 2026-08-12 #1 (dev : Joëlle peut joindre des photos à une idée de post — PR #413)
 - **Retour d'Alex** : « Joelle peut pas joindre de photos quand elle met une idée de post ». Le réservoir (`IdeaReservoir`, vue `ideas_only` de Joëlle) n'acceptait que du texte — pas de bouton, pas de colonne, pas d'API.
 - **Ce qui change** : bouton **« Joindre des photos »** à l'ajout d'une idée + sur chaque idée déjà en réserve (vignettes, retrait unitaire). Même contrat que Mes contenus (data URL → hébergement Zernio → `media_items`). À la génération depuis le réservoir, les photos rejoignent le post ; le cron d'idée du jour les reprend aussi (si pas de photo d'annonce). Dans la vue **À valider**, Joëlle peut aussi joindre / retirer des photos avant publication (et une image IA n'écrase plus les photos déjà jointes).
