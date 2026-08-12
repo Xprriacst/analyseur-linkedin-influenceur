@@ -88,10 +88,28 @@ async function mockBackend(page: Page) {
       },
     }),
   );
+  await page.route("**/onboarding/founders-lead", (route) => route.fulfill({ json: { ok: true } }));
+}
+
+/**
+ * Passe la porte d'entrée de la landing (e-mail de rareté) et retourne le corps
+ * réellement POSTé — si l'e-mail ne partait pas au serveur, la capture de leads
+ * serait un champ décoratif : aucun visiteur perdu ne serait relançable.
+ */
+async function passGate(page: Page, email = "lea@northstack.io"): Promise<{ leadBody: () => any }> {
+  let leadBody: any = null;
+  await page.route("**/onboarding/founders-lead", (route) => {
+    leadBody = route.request().postDataJSON();
+    return route.fulfill({ json: { ok: true } });
+  });
+  await expect(page.getByText(/on vérifie qu'il reste une place/)).toBeVisible();
+  await page.getByPlaceholder("toi@ton-saas.com").fill(email);
+  await page.getByRole("button", { name: "Analyser mon SaaS" }).first().click();
+  return { leadBody: () => leadBody };
 }
 
 /** Va de la landing jusqu'à la simulation, en exposant le corps reçu par la projection. */
-async function reachSimulation(page: Page): Promise<{ projectionBody: () => any }> {
+async function reachSimulation(page: Page): Promise<{ projectionBody: () => any; leadBody: () => any }> {
   let projectionBody: any = null;
   await page.route("**/onboarding/projection", (route) => {
     projectionBody = route.request().postDataJSON();
@@ -110,9 +128,10 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
   });
 
   await page.goto("/founders");
-  // Landing de vente d'abord : la promesse, puis le CTA qui lance l'analyse.
+  // Landing de vente d'abord : la promesse, puis la porte d'entrée e-mail
+  // (rareté réelle : 20 comptes/mois) qui lance l'analyse.
   await expect(page.getByRole("heading", { name: /Le LinkedIn qui remplit ton pipeline/ })).toBeVisible();
-  await page.getByRole("button", { name: "Analyser mon SaaS" }).first().click();
+  const { leadBody } = await passGate(page);
 
   // Premier écran du tunnel : le lien du SaaS, pas le profil LinkedIn.
   await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
@@ -172,13 +191,17 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
   await expect(page.getByText(/un seul client à ton ACV/)).toBeVisible();
   await expect(page.getByText(/comptes fondateurs par mois/)).toBeVisible();
   await expect(page.getByText(/satisfait ou remboursé/i)).toBeVisible();
-  return { projectionBody: () => projectionBody };
+  return { projectionBody: () => projectionBody, leadBody };
 }
 
 test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
   test("projection en grille SaaS, sortie sur l'essai gratuit et non sur le Calendly", async ({ page }) => {
     await mockBackend(page);
-    const { projectionBody } = await reachSimulation(page);
+    const { projectionBody, leadBody } = await reachSimulation(page);
+
+    // La porte d'entrée a bien envoyé l'e-mail au serveur — sans ça, la capture
+    // de leads serait un champ décoratif.
+    expect(leadBody()).toMatchObject({ email: "lea@northstack.io" });
 
     // (1) La grille demandée est bien celle des fondateurs. Sans scrape de profil,
     // les compteurs partent à 0 — c'est la projection qui applique ses planchers,
@@ -193,9 +216,12 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
 
     await trialCta.click();
 
-    // Écran de compte : l'e-mail est capturé ici, pas dans un formulaire de lead.
+    // Écran de compte : l'e-mail de la porte d'entrée est PRÉ-REMPLI — le
+    // demander deux fois serait avouer qu'on a perdu la première réponse.
     await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
-    await expect(page.getByPlaceholder("toi@ton-saas.com")).toBeVisible();
+    await expect(page.getByPlaceholder("toi@ton-saas.com")).toHaveValue("lea@northstack.io");
+    // Et la carte est annoncée AVANT le départ vers Stripe.
+    await expect(page.getByText(/0\s?€ prélevé pendant tes 7 jours/)).toBeVisible();
     // Le téléphone du tunnel audit ne doit jamais être demandé ici.
     await expect(page.getByPlaceholder("06 12 34 56 78")).toHaveCount(0);
     // Les réponses SaaS sont bien remontées jusqu'à cet écran.
@@ -230,7 +256,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     });
 
     await page.goto("/founders");
-    await page.getByRole("button", { name: "Analyser mon SaaS" }).first().click();
+    await passGate(page);
     await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
     await page.getByRole("button", { name: "Analyser" }).click();
 
@@ -252,7 +278,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await page.route("**/onboarding/projection", (route) => route.fulfill({ status: 500, json: {} }));
 
     await page.goto("/founders");
-    await page.getByRole("button", { name: "Analyser mon SaaS" }).first().click();
+    await passGate(page);
     await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
     await page.getByRole("button", { name: "Analyser" }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();

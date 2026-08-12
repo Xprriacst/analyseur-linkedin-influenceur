@@ -50,6 +50,7 @@ import {
   UserRound,
   Users,
   Camera,
+  Video,
   X,
   XCircle,
   Zap,
@@ -610,6 +611,29 @@ function mergeImageJobs(prev: ImageJob[], fresh: ImageJob[]): ImageJob[] {
     const cached = known.get(j.id);
     return cached?.result?.image_data ? { ...j, result: cached.result } : j;
   });
+}
+
+// 0065 : vidéo avatar IA (HeyGen) — même patron que les jobs d'image, en plus
+// simple : `result` ne porte que des URLs (vidéo re-hébergée + miniature), donc
+// il voyage dans la liste pollée sans étape d'hydratation ni fusion.
+type AvatarVideoJob = {
+  id: string;
+  status: JobStatus;
+  script: string;
+  target_key: string;
+  result?: { video_url?: string; thumbnail_url?: string; duration?: number | null; credits?: number | null } | null;
+  error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+function avatarVideoJobIsActive(j: AvatarVideoJob): boolean {
+  return j.status === "queued" || j.status === "running";
+}
+
+/** Job vidéo avatar le plus récent pour un `target_key` (liste triée récent → ancien). */
+function latestAvatarVideoJobFor(jobs: AvatarVideoJob[], targetKey: string): AvatarVideoJob | null {
+  return jobs.find((j) => j.target_key === targetKey) ?? null;
 }
 
 const ITEM_STATUS_LABELS: Record<ItemStatus, string> = {
@@ -1780,6 +1804,9 @@ function InstagramContentHub({
   // ALE-291 : parcours guidé (pack Reel) — même structure que ContentHub (LinkedIn).
   generationJobs,
   onGenerationJobCreated,
+  // 0065 : vidéos avatar IA (HeyGen) — jobs suivis par Home, comme les images.
+  avatarVideoJobs,
+  onAvatarVideoJobCreated,
 }: {
   tab: ContentTab;
   onTab: (t: ContentTab) => void;
@@ -1794,6 +1821,8 @@ function InstagramContentHub({
   onOpenReport: (markdown: string, name: string) => void;
   generationJobs: GenerationJob[];
   onGenerationJobCreated: (job: GenerationJob) => void;
+  avatarVideoJobs: AvatarVideoJob[];
+  onAvatarVideoJobCreated: (job: AvatarVideoJob) => void;
 }) {
   // ALE-291 : même ordre que Contenu LinkedIn — Générateur, Analyses, Ma bibliothèque.
   const subTabs: { key: ContentTab; label: string; icon: React.ReactNode }[] = [
@@ -1848,6 +1877,8 @@ function InstagramContentHub({
           requireAuth={requireAuth}
           generationJobs={igGenerationJobs}
           onGenerationJobCreated={onGenerationJobCreated}
+          avatarVideoJobs={avatarVideoJobs}
+          onAvatarVideoJobCreated={onAvatarVideoJobCreated}
         />
       ) : (
         <InstagramLibraryView isAuthed={isAuthed} />
@@ -1860,9 +1891,19 @@ function InstagramContentHub({
 // module-level séparé de `_genCache` (LinkedIn) — même patron (ALE-145), mais
 // une pop-up d'édition différente (4 champs au lieu d'un texte de post).
 type IgPackFields = { hook: string; script: string; caption: string; hashtagsText: string };
-const _igGenCache: { edited: Record<string, IgPackFields>; expanded: string | null } = {
+const _igGenCache: {
+  edited: Record<string, IgPackFields>;
+  expanded: string | null;
+  // 0065 : vidéos avatar déjà rattachées à leur ligne (URL Zernio pérenne), et
+  // jobs déjà appliqués — même patron que `_genCache.appliedImageJobIds` : les
+  // retirer à la main ne doit pas les faire réapparaître au poll suivant.
+  avatarVideos: Record<string, { url: string; jobId: string }>;
+  appliedAvatarVideoJobIds: Set<string>;
+} = {
   edited: {},
   expanded: null,
+  avatarVideos: {},
+  appliedAvatarVideoJobIds: new Set<string>(),
 };
 
 // ALE-293 : simple lecture du statut de connexion Instagram (la connexion elle-
@@ -1923,11 +1964,18 @@ function InstagramPublishBlock({
   hashtags,
   igConnected,
   igAccountName,
+  presetVideoUrl,
+  presetVideoName,
 }: {
   caption: string;
   hashtags: string[];
   igConnected: boolean;
   igAccountName: string | null;
+  // 0065 : vidéo déjà prête (ex. rendu avatar IA) — pré-remplit le bloc sans
+  // passer par l'upload manuel. Chaque nouvelle URL n'est appliquée qu'UNE fois
+  // (ref) : « Changer de vidéo » ne doit pas la faire réapparaître aussitôt.
+  presetVideoUrl?: string | null;
+  presetVideoName?: string | null;
 }) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoName, setVideoName] = useState<string | null>(null);
@@ -1935,6 +1983,16 @@ function InstagramPublishBlock({
   const [publishing, setPublishing] = useState(false);
   const [published, setPublished] = useState(false);
   const [error, setError] = useState("");
+  const appliedPresetRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (presetVideoUrl && presetVideoUrl !== appliedPresetRef.current) {
+      appliedPresetRef.current = presetVideoUrl;
+      setVideoUrl(presetVideoUrl);
+      setVideoName(presetVideoName || "Vidéo avatar IA");
+      setPublished(false);
+    }
+  }, [presetVideoUrl, presetVideoName]);
 
   async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -2023,11 +2081,15 @@ function InstagramGenerator({
   requireAuth,
   generationJobs,
   onGenerationJobCreated,
+  avatarVideoJobs,
+  onAvatarVideoJobCreated,
 }: {
   isAuthed: boolean;
   requireAuth: (reason?: string, mode?: AuthMode) => void;
   generationJobs: GenerationJob[];
   onGenerationJobCreated: (job: GenerationJob) => void;
+  avatarVideoJobs: AvatarVideoJob[];
+  onAvatarVideoJobCreated: (job: AvatarVideoJob) => void;
 }) {
   // Les brouillons de wizard (LinkedIn + Instagram) partagent le même store
   // module-level (`_wizardDrafts`) — on ne garde ici que ceux d'Instagram.
@@ -2051,8 +2113,72 @@ function InstagramGenerator({
   const hiddenCount = lines.length - shownLines.length;
   const activeCount = generationJobs.filter(generationJobIsActive).length;
 
+  // 0065 : vidéos avatar rattachées par ligne (URL Zernio) + erreurs de lancement.
+  const [avatarVideos, setAvatarVideos] = useState<Record<string, { url: string; jobId: string }>>(_igGenCache.avatarVideos);
+  const [avatarLaunching, setAvatarLaunching] = useState<string | null>(null);
+  const [avatarErrors, setAvatarErrors] = useState<Record<string, string>>({});
+
   useEffect(() => { _igGenCache.edited = edited; }, [edited]);
   useEffect(() => { _igGenCache.expanded = expanded; }, [expanded]);
+  useEffect(() => { _igGenCache.avatarVideos = avatarVideos; }, [avatarVideos]);
+
+  // Rattachement des rendus terminés à leur ligne (patron `_genCache.appliedImageJobIds`) :
+  // chaque job `done` n'est appliqué qu'une fois — la vidéo rejoint la ligne
+  // même si l'onglet a changé pendant le rendu.
+  useEffect(() => {
+    for (const job of avatarVideoJobs) {
+      if (job.status !== "done" || !job.result?.video_url) continue;
+      if (_igGenCache.appliedAvatarVideoJobIds.has(job.id)) continue;
+      const match = /^reel:(.+)$/.exec(job.target_key);
+      if (!match) continue;
+      _igGenCache.appliedAvatarVideoJobIds.add(job.id);
+      const lineKey = match[1];
+      setAvatarVideos((prev) => ({ ...prev, [lineKey]: { url: job.result!.video_url!, jobId: job.id } }));
+    }
+  }, [avatarVideoJobs]);
+
+  function activeAvatarJobFor(lineKey: string): AvatarVideoJob | null {
+    const job = latestAvatarVideoJobFor(avatarVideoJobs, `reel:${lineKey}`);
+    return job && avatarVideoJobIsActive(job) ? job : null;
+  }
+
+  function failedAvatarJobFor(lineKey: string): AvatarVideoJob | null {
+    const job = latestAvatarVideoJobFor(avatarVideoJobs, `reel:${lineKey}`);
+    return job && job.status === "error" ? job : null;
+  }
+
+  async function generateAvatarVideo(line: PostLine) {
+    const f = fieldsOf(line);
+    // L'avatar lit le hook puis le script, tels qu'affichés — les champs sont
+    // éditables juste au-dessus, c'est là qu'on retire les indications de scène.
+    const script = [f.hook.trim(), f.script.trim()].filter(Boolean).join("\n\n");
+    if (!script) {
+      setAvatarErrors((prev) => ({ ...prev, [line.key]: "Le hook et le script sont vides : rien à faire dire à l'avatar." }));
+      return;
+    }
+    setAvatarLaunching(line.key);
+    setAvatarErrors((prev) => ({ ...prev, [line.key]: "" }));
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/avatar/videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ script, target_key: `reel:${line.key}` }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Lancement de la vidéo avatar impossible");
+      onAvatarVideoJobCreated(data as AvatarVideoJob);
+    } catch (err: any) {
+      setAvatarErrors((prev) => ({ ...prev, [line.key]: err.message || "Lancement impossible" }));
+    } finally {
+      setAvatarLaunching(null);
+    }
+  }
+
+  async function cancelAvatarJob(jobId: string) {
+    try {
+      await fetch(`${DIRECT_API_URL}/me/avatar/videos/${jobId}/cancel`, { method: "POST", headers: await authHeaders() });
+    } catch { /* le polling de Home rattrapera l'état réel */ }
+  }
 
   function fieldsOf(line: PostLine): IgPackFields {
     const v = line.variant;
@@ -2233,12 +2359,48 @@ function InstagramGenerator({
                               {savingPost === key ? <Loader2 size={14} className="spinning" /> : <Bookmark size={14} />}
                               {savedPost === key ? "Sauvegardé ✓" : "Sauvegarder dans Ma bibliothèque"}
                             </button>
+                            <button
+                              className="secondary-button"
+                              disabled={avatarLaunching === key || !!activeAvatarJobFor(key)}
+                              onClick={() => generateAvatarVideo(line)}
+                              title="Ton avatar IA dit le hook puis le script (vidéo 9:16)"
+                            >
+                              {avatarLaunching === key ? <Loader2 size={14} className="spinning" /> : <Video size={14} />}
+                              Générer avec mon avatar IA
+                            </button>
                           </div>
+                          {(() => {
+                            const activeJob = activeAvatarJobFor(key);
+                            const failedJob = failedAvatarJobFor(key);
+                            const launchError = avatarErrors[key];
+                            if (activeJob) {
+                              return (
+                                <div className="role-picker-hint" style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                                  <Loader2 size={13} className="spinning" />
+                                  <span style={{ flex: 1 }}>
+                                    Vidéo avatar en préparation (compte quelques minutes) — tu peux changer d&apos;onglet, elle rejoindra ce reel toute seule.
+                                  </span>
+                                  <button className="icon-button" title="Annuler la vidéo avatar" onClick={() => cancelAvatarJob(activeJob.id)}>
+                                    <XCircle size={14} />
+                                  </button>
+                                </div>
+                              );
+                            }
+                            if (launchError) {
+                              return <div className="error" style={{ marginTop: 8, fontSize: 13 }}>{launchError}</div>;
+                            }
+                            if (failedJob && !avatarVideos[key]) {
+                              return <div className="error" style={{ marginTop: 8, fontSize: 13 }}>Vidéo avatar : {failedJob.error || "échec du rendu"}</div>;
+                            }
+                            return null;
+                          })()}
                           <InstagramPublishBlock
                             caption={f.caption}
                             hashtags={f.hashtagsText.split(/\s+/).map((h) => h.trim()).filter(Boolean)}
                             igConnected={igConnection.connected}
                             igAccountName={igConnection.accountName}
+                            presetVideoUrl={avatarVideos[key]?.url || null}
+                            presetVideoName={avatarVideos[key] ? "Vidéo avatar IA" : null}
                           />
                         </div>
                       )}
@@ -2266,12 +2428,6 @@ function InstagramGenerator({
           desc="Note tes idées de reels quand elles viennent. Génère le pack quand tu veux."
           onGenerate={({ text }) => startWizard(text)}
         />
-      </div>
-
-      {/* Publication et upload vidéo — brique suivante (connexion Instagram Zernio). */}
-      <div className="card" style={{ padding: 16, opacity: 0.7, display: "flex", alignItems: "center", gap: 10, marginTop: 24 }}>
-        <Clock3 size={15} style={{ color: "var(--muted)" }} />
-        <span style={{ fontSize: 12, color: "var(--muted)" }}>Uploader ta vidéo et publier le reel — bientôt disponible.</span>
       </div>
 
       {wizardId && (
@@ -9098,6 +9254,275 @@ function UnipileOutreachConnect({
 // connexions (LinkedIn/X/Slack). ManyChat est le pont d'envoi vers les DM
 // Instagram : clé API + webhook à coller côté ManyChat. C'est une étape de
 // paramétrage ponctuel, d'où sa place dans le profil plutôt que l'Inbox.
+// 0065 : « Mon avatar IA » (HeyGen) — le client crée son photo avatar à partir
+// d'une photo de lui et choisit une voix française ; le pack Reel peut ensuite
+// « Générer avec mon avatar IA ». La ligne vit dans Connexions (patron
+// ManychatConnect), derrière le flag `instagram` côté ProfileView.
+type AvatarStatusPayload = {
+  available: boolean;
+  avatar: { look_id: string; status: string; preview_image_url?: string | null; created_at?: string | null } | null;
+  voice: { voice_id: string; name?: string | null } | null;
+};
+type AvatarVoiceOption = { voice_id: string; name: string; gender?: string | null; preview_audio_url?: string | null };
+
+const AVATAR_PHOTO_MAX_BYTES = 8 * 1024 * 1024;
+
+function AvatarConnect({
+  isAuthed,
+  open,
+  onToggle,
+}: {
+  isAuthed: boolean;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const [status, setStatus] = useState<AvatarStatusPayload | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  // Consentement explicite avant l'upload : HeyGen ne vérifie rien sur un photo
+  // avatar — c'est ici que « c'est bien moi » est affirmé (et nos CGU le portent).
+  const [consent, setConsent] = useState(false);
+  const [voices, setVoices] = useState<AvatarVoiceOption[] | null>(null);
+  const [voiceSaving, setVoiceSaving] = useState(false);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
+
+  async function reload() {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/avatar/status`, { headers: await authHeaders() });
+      if (res.ok) setStatus(await res.json());
+    } catch { /* backend injoignable : on garde l'état connu */ }
+  }
+
+  useEffect(() => {
+    if (!isAuthed) { setStatus(null); setVoices(null); return; }
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  // L'entraînement dure ~1-2 min : on poll le statut tant qu'il est en cours
+  // (c'est ce même endpoint qui relit HeyGen côté serveur).
+  const training = status?.avatar?.status === "processing";
+  useEffect(() => {
+    if (!isAuthed || !training) return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => { await reload(); if (!stop) timer = setTimeout(loop, 5000); };
+    timer = setTimeout(loop, 5000);
+    return () => { stop = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, training]);
+
+  // Les voix ne sont chargées qu'au dépliage, une fois l'avatar créé (paresseux,
+  // comme la FAQ ManyChat).
+  useEffect(() => {
+    if (!open || !isAuthed || voices !== null) return;
+    if (!status?.available || !status?.avatar) return;
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/avatar/voices`, { headers: await authHeaders() });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && Array.isArray(data.voices)) setVoices(data.voices);
+      } catch { /* réessayé au prochain dépliage */ }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, isAuthed, status, voices]);
+
+  async function onPhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError("");
+    if (!file.type.startsWith("image/")) { setError("Choisis une image (JPG, PNG ou WebP)."); return; }
+    if (file.size > AVATAR_PHOTO_MAX_BYTES) { setError("Photo trop volumineuse (8 Mo maximum)."); return; }
+    setBusy(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("Lecture du fichier impossible"));
+        reader.readAsDataURL(file);
+      });
+      const res = await fetch(`${DIRECT_API_URL}/me/avatar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ photo_data_url: dataUrl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Création de l'avatar impossible");
+      setStatus((prev) => ({ available: true, voice: prev?.voice ?? null, avatar: data.avatar }));
+    } catch (err: any) {
+      setError(err.message || "Création de l'avatar impossible");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeAvatar() {
+    if (!window.confirm("Supprimer ton avatar IA ? Tu pourras en recréer un avec une autre photo.")) return;
+    setBusy(true);
+    setError("");
+    try {
+      await fetch(`${DIRECT_API_URL}/me/avatar`, { method: "DELETE", headers: await authHeaders() });
+      setStatus((prev) => (prev ? { ...prev, avatar: null } : prev));
+    } catch { /* le prochain reload rattrapera */ }
+    finally { setBusy(false); }
+  }
+
+  async function chooseVoice(voiceId: string) {
+    const voice = (voices || []).find((v) => v.voice_id === voiceId);
+    if (!voice) return;
+    setVoiceSaving(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/avatar/voice`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ voice_id: voice.voice_id, name: voice.name }),
+      });
+      if (!res.ok) throw new Error("Enregistrement de la voix impossible");
+      setStatus((prev) => (prev ? { ...prev, voice: { voice_id: voice.voice_id, name: voice.name } } : prev));
+    } catch (err: any) {
+      setError(err.message || "Enregistrement de la voix impossible");
+    } finally {
+      setVoiceSaving(false);
+    }
+  }
+
+  const avatar = status?.avatar ?? null;
+  const ready = avatar?.status === "completed";
+  const selectedVoice = status?.voice ?? null;
+  const selectedVoicePreview = (voices || []).find((v) => v.voice_id === selectedVoice?.voice_id)?.preview_audio_url;
+
+  return (
+    <SettingRow
+      icon={<Video size={18} style={{ color: "var(--primary)" }} />}
+      name="Mon avatar IA"
+      why={
+        ready
+          ? selectedVoice
+            ? "Ton avatar dit tes scripts de reels en vidéo — prêt à générer"
+            : "Avatar prêt — choisis sa voix pour pouvoir générer"
+          : "Crée ton clone vidéo à partir d'une photo : il dira tes scripts de reels"
+      }
+      open={open}
+      onToggle={onToggle}
+      right={
+        !status ? null : !status.available ? (
+          <span className="status-pill no">Non configuré</span>
+        ) : ready ? (
+          <span className="status-pill ok"><CheckCircle2 size={14} /> Prêt</span>
+        ) : training ? (
+          <span className="status-pill"><Loader2 size={13} className="spinning" /> En préparation</span>
+        ) : (
+          <span className="status-pill">À créer</span>
+        )
+      }
+    >
+      {!status ? (
+        <p className="role-picker-hint" style={{ margin: 0 }}>Chargement…</p>
+      ) : !status.available ? (
+        <p className="role-picker-hint" style={{ margin: 0 }}>
+          L&apos;avatar IA n&apos;est pas configuré côté serveur (clé API HeyGen manquante).
+        </p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {avatar ? (
+            <div style={{ display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
+              {avatar.preview_image_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={avatar.preview_image_url} alt="Aperçu de ton avatar IA" style={{ width: 96, height: 96, objectFit: "cover", borderRadius: 10, border: "1px solid var(--border)" }} />
+              ) : null}
+              <div style={{ flex: 1, minWidth: 220 }}>
+                {training ? (
+                  <p className="role-picker-hint" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                    <Loader2 size={13} className="spinning" /> Ton avatar est en préparation chez HeyGen (une à deux minutes)…
+                  </p>
+                ) : avatar.status === "failed" ? (
+                  <p className="error" style={{ margin: 0 }}>
+                    L&apos;entraînement a échoué — réessaie avec une photo de face, bien éclairée, sans lunettes de soleil.
+                  </p>
+                ) : (
+                  <p className="role-picker-hint" style={{ margin: 0 }}>
+                    Avatar prêt. Il lit le hook et le script de tes reels en vidéo 9:16 (sous-titres inclus).
+                  </p>
+                )}
+                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                  {avatar.status === "failed" && (
+                    <label className="secondary-button" style={{ display: "inline-flex", cursor: busy ? "wait" : "pointer" }}>
+                      {busy ? <Loader2 size={14} className="spinning" /> : <Camera size={14} />}
+                      Réessayer avec une autre photo
+                      <input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={onPhotoChange} disabled={busy} style={{ display: "none" }} />
+                    </label>
+                  )}
+                  <button className="ghost-button" onClick={removeAvatar} disabled={busy} style={{ fontSize: 12 }}>
+                    <Trash2 size={13} /> Supprimer mon avatar
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <p className="role-picker-hint" style={{ marginTop: 0 }}>
+                Uploade une photo de toi (de face, bien éclairée, fond neutre) : HeyGen en fait un avatar
+                vidéo qui dira tes scripts de reels. Coût unique côté plateforme, aucune donnée LinkedIn utilisée.
+              </p>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 13, marginBottom: 10, cursor: "pointer" }}>
+                <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} style={{ marginTop: 2 }} />
+                <span>Je confirme que cette photo me représente (ou que j&apos;ai l&apos;autorisation de la personne photographiée) et j&apos;autorise la création d&apos;un avatar IA à partir d&apos;elle.</span>
+              </label>
+              <label
+                className="secondary-button"
+                aria-disabled={!consent || busy}
+                style={{ display: "inline-flex", cursor: !consent || busy ? "not-allowed" : "pointer", opacity: !consent || busy ? 0.6 : 1 }}
+              >
+                {busy ? <Loader2 size={14} className="spinning" /> : <Camera size={14} />}
+                {busy ? "Création en cours…" : "Choisir ma photo (JPG/PNG/WebP)"}
+                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={onPhotoChange} disabled={!consent || busy} style={{ display: "none" }} />
+              </label>
+            </div>
+          )}
+
+          {avatar && (
+            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+              <label className="role-picker-label" style={{ display: "block", marginBottom: 6 }}>
+                La voix de ton avatar {selectedVoice?.name ? `· ${selectedVoice.name}` : "(obligatoire pour générer)"}
+              </label>
+              {voices === null ? (
+                <p className="role-picker-hint" style={{ margin: 0 }}>Chargement des voix françaises…</p>
+              ) : voices.length === 0 ? (
+                <p className="role-picker-hint" style={{ margin: 0 }}>Aucune voix disponible pour l&apos;instant — réessaie plus tard.</p>
+              ) : (
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <select
+                    value={selectedVoice?.voice_id || ""}
+                    onChange={(e) => chooseVoice(e.target.value)}
+                    disabled={voiceSaving}
+                    aria-label="Voix de l'avatar"
+                    style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--card)", color: "inherit", maxWidth: 280 }}
+                  >
+                    <option value="" disabled>Choisir une voix française…</option>
+                    {voices.map((v) => (
+                      <option key={v.voice_id} value={v.voice_id}>
+                        {v.name}{v.gender ? ` (${v.gender === "female" ? "femme" : v.gender === "male" ? "homme" : v.gender})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {voiceSaving && <Loader2 size={14} className="spinning" />}
+                  {selectedVoicePreview && (
+                    <audio controls src={selectedVoicePreview} style={{ height: 30, maxWidth: 220 }} />
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {error && <div className="error" style={{ margin: 0, fontSize: 13 }}>{error}</div>}
+        </div>
+      )}
+    </SettingRow>
+  );
+}
+
 function ManychatConnect({
   manychat,
   open,
@@ -11287,6 +11712,16 @@ function ProfileView({
             open={openRow === "manychat"}
             onToggle={() => toggleRow("manychat")}
           />
+
+          {/* 0065 : avatar IA (HeyGen) — même gating que la publication Instagram :
+              le pack Reel (seul consommateur des vidéos) vit derrière ce flag. */}
+          {featureFlags.has("instagram") && (
+            <AvatarConnect
+              isAuthed={isAuthed}
+              open={openRow === "avatar"}
+              onToggle={() => toggleRow("avatar")}
+            />
+          )}
         </div>
       )}
 
@@ -14538,6 +14973,9 @@ export default function Home() {
   // ALE-261 : jobs de génération d'image IA (même principe — vit dans Home pour
   // que fermer la pop-up ou changer d'onglet n'interrompe jamais la génération).
   const [imageJobs, setImageJobs] = useState<ImageJob[]>([]);
+  // 0065 : vidéos avatar IA — suivies dans Home pour que changer d'onglet
+  // n'interrompe jamais le polling (même raison que imageJobs).
+  const [avatarVideoJobs, setAvatarVideoJobs] = useState<AvatarVideoJob[]>([]);
   const [session, setSession] = useState<Session | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authReason, setAuthReason] = useState("");
@@ -14732,6 +15170,24 @@ export default function Home() {
 
   const anyImageJobActive = imageJobs.some(imageJobIsActive);
 
+  // 0065 : jobs vidéo avatar IA (HeyGen) — même patron que les jobs d'image,
+  // sans hydratation (result ne porte que des URLs, il voyage dans la liste).
+  // Un compte sans le flag `instagram` reçoit 404 : la liste reste simplement vide.
+  async function loadAvatarVideoJobs() {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/avatar/videos`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok || !Array.isArray(data?.jobs)) return;
+      setAvatarVideoJobs(data.jobs as AvatarVideoJob[]);
+    } catch { /* ignore */ }
+  }
+
+  function onAvatarVideoJobCreated(job: AvatarVideoJob) {
+    setAvatarVideoJobs((prev) => [job, ...prev]);
+  }
+
+  const anyAvatarVideoJobActive = avatarVideoJobs.some(avatarVideoJobIsActive);
+
   const activeJob = jobs.find(jobIsActive) ?? null;
   const anyJobActive = !!activeJob;
   // ALE-114 : badge de progression par réseau (un job Instagram ne doit pas
@@ -14838,6 +15294,24 @@ export default function Home() {
     return () => { stop = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, anyImageJobActive]);
+
+  // 0065 : premier chargement des jobs vidéo avatar + polling tant qu'un tourne.
+  // Cadence plus lente que les images (8 s) : un rendu HeyGen dure plusieurs minutes.
+  useEffect(() => {
+    if (!isAuthed) { setAvatarVideoJobs([]); return; }
+    loadAvatarVideoJobs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.access_token]);
+
+  useEffect(() => {
+    if (!isAuthed || !anyAvatarVideoJobActive) return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const loop = async () => { await loadAvatarVideoJobs(); if (!stop) timer = setTimeout(loop, 8000); };
+    timer = setTimeout(loop, 8000);
+    return () => { stop = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, anyAvatarVideoJobActive]);
 
   useEffect(() => {
     if (prevJobActiveRef.current && !anyJobActive && isAuthed) {
@@ -15358,6 +15832,8 @@ export default function Home() {
                 }}
                 generationJobs={generationJobs}
                 onGenerationJobCreated={onGenerationJobCreated}
+                avatarVideoJobs={avatarVideoJobs}
+                onAvatarVideoJobCreated={onAvatarVideoJobCreated}
               />
             ) : (
               <InstagramPlaceholder />

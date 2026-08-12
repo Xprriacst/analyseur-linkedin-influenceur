@@ -22,7 +22,7 @@
  * dans l'un, des réponses cochées dans les chips de l'autre.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowRight, CheckCircle2, Loader2, Pencil, Rocket, Sparkles } from "lucide-react";
@@ -44,6 +44,8 @@ const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
 
 const PENDING_PROFILE_KEY = "cibl_pending_profile_founders";
+/** E-mail capté par la porte d'entrée de la landing — pré-remplit la création de compte. */
+const FOUNDERS_EMAIL_KEY = "cibl_founders_email";
 
 /** Repli d'affichage si `/billing/plan` est injoignable — le serveur reste l'arbitre. */
 const FALLBACK_TRIAL_DAYS = 7;
@@ -94,9 +96,12 @@ export default function FoundersPage() {
     })();
   }, []);
 
-  // Reprise après un rechargement en cours de parcours.
+  // Reprise après un rechargement en cours de parcours — y compris l'e-mail de
+  // la porte d'entrée, pour que le compte reste pré-rempli.
   useEffect(() => {
     try {
+      const savedEmail = sessionStorage.getItem(FOUNDERS_EMAIL_KEY);
+      if (savedEmail) setEmail((prev) => prev || savedEmail);
       const raw = sessionStorage.getItem(PENDING_PROFILE_KEY);
       if (raw) {
         setProfile(JSON.parse(raw));
@@ -154,8 +159,45 @@ export default function FoundersPage() {
     });
   }
 
+  /**
+   * Après le compte : direction Stripe DIRECTEMENT quand l'essai est confirmé
+   * éligible — l'écran /essai re-déroulait un argumentaire à quelqu'un de déjà
+   * convaincu, un clic de trop en plein élan (patron des funnels Catalog/Blow Up).
+   *
+   * ⚠️ /essai reste la destination de TOUS les autres cas, et c'est structurel :
+   *  - compte non éligible (`trial_eligible` false) : il doit lire « tu repars
+   *    sur X €/mois » AVANT le Checkout — l'envoyer directement sur un paiement
+   *    immédiat après lui avoir promis des jours gratuits serait la pire panne
+   *    silencieuse de ce parcours ;
+   *  - état de facturation illisible ou checkout en échec : repli, jamais d'impasse.
+   */
   async function toTrial() {
     await persistProfile();
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/billing`, { headers: await authHeaders() });
+      if (res.ok) {
+        const state = await res.json();
+        if (state?.subscribed) { router.push("/"); return; }
+        if (state?.trial_eligible) {
+          const co = await fetch(`${DIRECT_API_URL}/me/billing/checkout`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+            body: JSON.stringify({
+              trial: true,
+              success_url: `${window.location.origin}/?billing=success`,
+              // Abandon sur Stripe : il entre quand même dans l'app avec ses
+              // crédits offerts, profil déjà enregistré (même filet que /essai).
+              cancel_url: `${window.location.origin}/?billing=cancelled`,
+            }),
+          });
+          const data = await co.json().catch(() => ({}));
+          if (co.ok && data?.url) {
+            window.location.href = data.url;
+            return;
+          }
+        }
+      }
+    } catch { /* repli ci-dessous */ }
     router.push("/essai");
   }
 
@@ -207,7 +249,13 @@ export default function FoundersPage() {
       <FoundersLanding
         trialDays={trialDays}
         planPrice={planPrice}
-        onStart={() => setPhase("onboarding")}
+        onStart={(gateEmail) => {
+          if (gateEmail) {
+            setEmail(gateEmail);
+            try { sessionStorage.setItem(FOUNDERS_EMAIL_KEY, gateEmail); } catch { /* ignore */ }
+          }
+          setPhase("onboarding");
+        }}
         onSignIn={() => { setMode("signin"); setPhase("account"); }}
       />
     );
@@ -367,6 +415,27 @@ export default function FoundersPage() {
             )}
           </button>
 
+          {/* L'étape suivante est la page de paiement Stripe : le dire ICI, avant
+              le clic — arriver sur une demande de carte sans avoir été prévenu,
+              juste après avoir tapé un mot de passe, c'est le réflexe « arnaque »
+              assuré. C'est cette note qui permet de sauter l'écran intermédiaire. */}
+          <p
+            style={{
+              margin: "12px 0 0",
+              padding: "10px 12px",
+              borderRadius: 10,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+              color: "var(--muted)",
+              background: "rgba(70,72,212,0.05)",
+              border: "1px solid rgba(70,72,212,0.14)",
+            }}
+          >
+            Ensuite : paiement sécurisé Stripe — ta carte est enregistrée mais{" "}
+            <strong style={{ color: "var(--ink)" }}>0&nbsp;€ prélevé pendant tes {trialDays} jours d&apos;essai</strong>,
+            résiliable en un clic depuis ton espace.
+          </p>
+
           <button
             type="button"
             className="auth-switch"
@@ -400,9 +469,44 @@ function FoundersLanding({
 }: {
   trialDays: number;
   planPrice: number;
-  onStart: () => void;
+  /** Entre dans le tunnel — avec l'e-mail capté par la porte d'entrée. */
+  onStart: (email: string) => void;
   onSignIn: () => void;
 }) {
+  // Porte d'entrée façon Catalog : l'e-mail AVANT le tunnel, avec la vraie
+  // rareté (20 comptes/mois) comme raison d'être. Sans ça, un visiteur qui
+  // ferme l'onglet au milieu du quiz est perdu sans laisser de trace.
+  const [gateEmail, setGateEmail] = useState("");
+  const [gateError, setGateError] = useState("");
+  const [gateSending, setGateSending] = useState(false);
+  const gateRef = useRef<HTMLInputElement>(null);
+
+  async function submitGate() {
+    const v = gateEmail.trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(v)) {
+      setGateError("Indique une adresse e-mail valide.");
+      gateRef.current?.focus();
+      return;
+    }
+    setGateError("");
+    setGateSending(true);
+    // Best-effort assumé : la capture ne doit JAMAIS bloquer l'entrée dans le
+    // tunnel — perdre la trace est moins grave que perdre le visiteur.
+    try {
+      await fetch(`${DIRECT_API_URL}/onboarding/founders-lead`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: v, source: "founders" }),
+      });
+    } catch { /* ignore */ }
+    onStart(v);
+  }
+
+  const focusGate = () => {
+    gateRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(() => gateRef.current?.focus({ preventScroll: true }), 450);
+  };
+
   return (
     <main className="fl-page">
       <div className="fl-container">
@@ -418,12 +522,35 @@ function FoundersLanding({
             ICP sous les plafonds de sécurité LinkedIn. Toi, tu valides — moins de
             15 minutes par jour.
           </p>
-          <div className="fl-cta-row">
-            <button type="button" className="fl-cta" onClick={onStart}>
-              <Sparkles size={16} /> Analyser mon SaaS
-            </button>
+
+          <div className="fl-gate">
+            <label className="fl-gate-label" htmlFor="founders-gate-email">
+              Ton e-mail — on vérifie qu&apos;il reste une place
+            </label>
+            <p className="fl-gate-hint">
+              On ouvre {FOUNDERS_MONTHLY_SEATS} comptes fondateurs par mois. On te
+              confirme s&apos;il reste un créneau.
+            </p>
+            <div className="fl-gate-row">
+              <input
+                id="founders-gate-email"
+                ref={gateRef}
+                className="fl-gate-input"
+                type="email"
+                value={gateEmail}
+                onChange={(e) => setGateEmail(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") submitGate(); }}
+                placeholder="toi@ton-saas.com"
+                autoComplete="email"
+              />
+              <button type="button" className="fl-cta" onClick={submitGate} disabled={gateSending}>
+                {gateSending ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}{" "}
+                Analyser mon SaaS
+              </button>
+            </div>
+            {gateError && <div className="fl-gate-error">{gateError}</div>}
             <span className="fl-cta-hint">
-              Analyse gratuite en 2 minutes · puis {trialDays} jours d&apos;essai
+              Places limitées · analyse gratuite en 2 minutes · puis {trialDays} jours d&apos;essai
             </span>
           </div>
         </header>
@@ -495,7 +622,7 @@ function FoundersLanding({
 
         <footer className="fl-footer">
           <div className="fl-cta-row" style={{ marginTop: 0 }}>
-            <button type="button" className="fl-cta" onClick={onStart}>
+            <button type="button" className="fl-cta" onClick={focusGate}>
               <Sparkles size={16} /> Analyser mon SaaS
             </button>
             <span className="fl-cta-hint">
