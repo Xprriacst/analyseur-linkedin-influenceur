@@ -82,6 +82,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-08-12 #6 (dev : /founders — DA Catalog + closing paywall + FOMO — PR TBD)
+- **Landing** : DA Catalog (fond crème, Outfit, H1 900, illustration au trait, CTA sombre). Porte d'entrée FOMO (« Ton e-mail pour vérifier s'il reste une place », « On onboard ~40 fondateurs / mois », « Places limitées. Ça prend 90 secondes. »). Timeline / prix / ligne Cibl retirés de l'argumentaire long. « Qui fait quoi » → bandeau 2 colonnes Catalog (« 100 % fait pour toi » / « Prêt pour chaque pivot »). Copy goulot en **90 % / 10 %**.
+- **Closing** : paywall 1 écran (témoignage ReShape réel + plan mensuel −40 % 1er mois + CTA sombre + mentions légales). ⚠️ **La remise −40 % est affichée** (`FOUNDERS_FIRST_MONTH_OFF_PCT`) — un coupon / prix d'intro Stripe doit l'honorer, sinon promesse non tenue.
+- **Capacité** : `FOUNDERS_MONTHLY_SEATS` **20 → 40** (décision Alex). Aucune migration, aucune env var. Frontend + e2e.
+- **Reste à faire** : poser le coupon Stripe −40 % 1er mois (test + live) ; test d'Alex sur dev puis release.
+
 ### 2026-08-12 #5 (dev : /founders — porte e-mail sur la landing + compte → Stripe direct — PR #426)
 - **Lot validé par Alex** (reco fin de funnel, après relecture des 46 captures Catalog + du funnel Blow Up qu'il a fournis) : (1) capturer l'e-mail AVANT le tunnel ; (2) supprimer l'écran /essai du parcours nominal.
 - **Porte d'entrée e-mail** sur la landing /founders, avec la rareté réelle comme raison d'être (« on vérifie qu'il reste une place — 20 comptes fondateurs/mois », depuis `FOUNDERS_MONTHLY_SEATS`). Nouvel endpoint **`POST /onboarding/founders-lead`** (e-mail seul) : rangé dans `audit_leads` avec le statut **`founders_optin`** — ⚠️ jamais `pending`, c'est le statut des demandes d'audit —, rate-limité par IP (compteur partagé avec le formulaire d'audit), **best-effort** : un échec d'écriture ne bloque JAMAIS l'entrée dans le tunnel. Relance des abandons possible : `select email, created_at from audit_leads where status='founders_optin'`.
