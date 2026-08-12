@@ -2264,7 +2264,7 @@ function InstagramGenerator({
           isAuthed={isAuthed}
           platform="instagram"
           desc="Note tes idées de reels quand elles viennent. Génère le pack quand tu veux."
-          onGenerate={(text) => startWizard(text)}
+          onGenerate={({ text }) => startWizard(text)}
         />
       </div>
 
@@ -4128,6 +4128,9 @@ function structureName(s: StructureChoice): string {
 const _genCache: {
   appliedImageJobIds: Set<string>;
   appliedListingLineKeys: Set<string>;
+  /** Photos jointes à une idée du réservoir, à rattacher au post généré. */
+  pendingSeedMedia: Array<{ idea: string; urls: string[] }>;
+  appliedSeedMediaLineKeys: Set<string>;
   edited: Record<string, string>;
   images: Record<string, LinkedInImageAttachment[]>;
   expanded: string | null;
@@ -4138,6 +4141,8 @@ const _genCache: {
   // ALE-156 : lignes dont la photo d'annonce a déjà été rattachée — sans ce
   // garde-fou, retirer la photo la ferait réapparaître au rendu suivant.
   appliedListingLineKeys: new Set(),
+  pendingSeedMedia: [],
+  appliedSeedMediaLineKeys: new Set(),
   edited: {},
   images: {},
   expanded: null,
@@ -4167,7 +4172,8 @@ function buildPostLines(jobs: GenerationJob[]): PostLine[] {
   return lines;
 }
 
-/** Réservoir d'idées : ajout, édition, suppression, réordonnancement (ALE-287).
+/** Réservoir d'idées : ajout, édition, suppression, réordonnancement (ALE-287),
+ *  photos jointes (Joëlle / ideas_only).
  *
  * Extrait de DailyIdeasView pour être affiché AUSSI sous la file du Générateur.
  * Une seule implémentation, deux écrans : la vue client (compte `ideas_only`,
@@ -4175,7 +4181,8 @@ function buildPostLines(jobs: GenerationJob[]): PostLine[] {
  * que les deux divergent à la première évolution.
  *
  * L'ordre compte : le cron (idée du jour, posts hebdo) pioche dedans du haut
- * vers le bas — d'où le glisser-déposer.
+ * vers le bas — d'où le glisser-déposer. Photos jointes : même contrat que
+ * Mes contenus (data URL → Zernio → `media_items` en base).
  */
 function IdeaReservoir({
   isAuthed,
@@ -4185,7 +4192,7 @@ function IdeaReservoir({
 }: {
   isAuthed: boolean;
   /** Fourni = un bouton « Générer un post » apparaît sur chaque idée. */
-  onGenerate?: (text: string) => void;
+  onGenerate?: (seed: { text: string; mediaUrls: string[] }) => void;
   desc?: string;
   /** ALE-291 : réservoir séparé par réseau — jamais partagé LinkedIn/Instagram. */
   platform?: "linkedin" | "instagram";
@@ -4193,7 +4200,9 @@ function IdeaReservoir({
   const [seeds, setSeeds] = useState<IdeaSeed[]>([]);
   const [draft, setDraft] = useState("");
   const [draftComment, setDraftComment] = useState("");
+  const [draftImages, setDraftImages] = useState<Array<{ data_url: string; filename: string }>>([]);
   const [adding, setAdding] = useState(false);
+  const [attachingId, setAttachingId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
   // Drag armé uniquement quand on saisit la poignée (le texte reste sélectionnable).
@@ -4202,6 +4211,8 @@ function IdeaReservoir({
   const [editSeedText, setEditSeedText] = useState("");
   const [editSeedComment, setEditSeedComment] = useState("");
   const [savingSeedEdit, setSavingSeedEdit] = useState(false);
+  const draftFileRef = useRef<HTMLInputElement>(null);
+  const seedFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const load = useCallback(async () => {
     if (!isAuthed) { setSeeds([]); return; }
@@ -4214,6 +4225,36 @@ function IdeaReservoir({
 
   useEffect(() => { void load(); }, [load]);
 
+  function seedImagePayload(s: IdeaSeed) {
+    return mediaItemImageUrls(s.media_items).map((url) => ({ url }));
+  }
+
+  function readImageFiles(
+    files: FileList | null,
+    onReady: (added: Array<{ data_url: string; filename: string }>) => void,
+  ) {
+    if (!files?.length) return;
+    const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length !== files.length) {
+      setError("Seuls les fichiers image sont acceptés.");
+    }
+    const readers = imageFiles.map((file) => new Promise<{ data_url: string; filename: string } | null>((resolve) => {
+      if (file.size > 8 * 1024 * 1024) {
+        setError("LinkedIn limite chaque image à 8 Mo.");
+        resolve(null);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === "string" && reader.result ? { data_url: reader.result, filename: file.name } : null);
+      reader.onerror = () => { setError(`Lecture impossible pour ${file.name}.`); resolve(null); };
+      reader.readAsDataURL(file);
+    }));
+    void Promise.all(readers).then((added) => {
+      const fresh = added.filter(Boolean) as Array<{ data_url: string; filename: string }>;
+      if (fresh.length) onReady(fresh);
+    });
+  }
+
   async function addSeed() {
     const text = draft.trim();
     if (text.length < 3) return;
@@ -4223,21 +4264,57 @@ function IdeaReservoir({
     setAdding(true);
     setError("");
     try {
+      const body: Record<string, unknown> = { text, platform };
+      if (comment) body.comment = comment;
+      if (draftImages.length) body.images = draftImages;
       const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify(comment ? { text, comment, platform } : { text, platform }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Ajout impossible");
+      if (data.media_error) setError("Idée enregistrée, mais l'hébergement des photos a échoué — réessaie.");
       setSeeds((prev) => [...prev, data]);
       setDraft("");
       setDraftComment("");
+      setDraftImages([]);
     } catch (err: any) {
       setError(err.message || "Ajout impossible");
     } finally {
       setAdding(false);
     }
+  }
+
+  async function persistSeedImages(s: IdeaSeed, images: Array<{ url?: string; data_url?: string; filename?: string }>) {
+    setAttachingId(s.id);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/idea-seeds/${s.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ images }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Enregistrement des photos impossible.");
+      if (data.media_error) throw new Error("Hébergement des photos impossible, réessaie.");
+      setSeeds((prev) => prev.map((x) => (x.id === s.id ? data : x)));
+    } catch (err: any) {
+      setError(err.message || "Enregistrement des photos impossible.");
+    } finally {
+      setAttachingId(null);
+    }
+  }
+
+  function attachImagesToSeed(s: IdeaSeed, files: FileList | null) {
+    readImageFiles(files, (fresh) => {
+      const images = [...seedImagePayload(s), ...fresh].slice(0, 20);
+      void persistSeedImages(s, images);
+    });
+  }
+
+  function removeSeedImage(s: IdeaSeed, url: string) {
+    void persistSeedImages(s, seedImagePayload(s).filter((m) => m.url !== url));
   }
 
   async function deleteSeed(id: string) {
@@ -4325,10 +4402,55 @@ function IdeaReservoir({
           aria-label="Une idée de post"
           maxLength={2000}
         />
+        <input
+          ref={draftFileRef}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: "none" }}
+          onChange={(e) => {
+            readImageFiles(e.currentTarget.files, (fresh) => {
+              setDraftImages((prev) => [...prev, ...fresh].slice(0, 20));
+            });
+            e.currentTarget.value = "";
+          }}
+        />
+        <button
+          type="button"
+          className="secondary-button"
+          title="Joindre des photos"
+          aria-label="Joindre des photos"
+          onClick={() => draftFileRef.current?.click()}
+          disabled={adding || draftImages.length >= 20}
+          style={{ minHeight: 36, padding: "0 10px" }}
+        >
+          <ImagePlus size={14} />
+          {draftImages.length > 0 ? ` ${draftImages.length}` : ""}
+        </button>
         <button className="primary-button" onClick={addSeed} disabled={adding || draft.trim().length < 3}>
           {adding ? <Loader2 size={14} className="spinning" /> : <PlusCircle size={14} />} Ajouter
         </button>
       </div>
+      {draftImages.length > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+          {draftImages.map((im, i) => (
+            <div key={i} style={{ position: "relative", width: 64, height: 64 }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={im.data_url} alt={im.filename} style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)" }} />
+              <button
+                type="button"
+                className="icon-button"
+                title="Retirer"
+                aria-label={`Retirer ${im.filename}`}
+                onClick={() => setDraftImages((prev) => prev.filter((_, k) => k !== i))}
+                style={{ position: "absolute", top: -6, right: -6, background: "var(--surface)", borderRadius: "50%", width: 22, height: 22, padding: 0 }}
+              >
+                <XCircle size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {/* Champ d'orientation : uniquement quand l'idée saisie est un lien d'annonce. */}
       {/^https?:\/\/\S+$/i.test(draft.trim()) && (
         <input
@@ -4352,6 +4474,7 @@ function IdeaReservoir({
             const isLink = /^https?:\/\/\S+$/i.test((s.text || "").trim());
             const isEditing = editingSeedId === s.id;
             const editIsLink = /^https?:\/\/\S+$/i.test(editSeedText.trim());
+            const mediaUrls = mediaItemImageUrls(s.media_items);
             return (
               <li
                 key={s.id}
@@ -4411,6 +4534,27 @@ function IdeaReservoir({
                   <span className="daily-seed-text">
                     {isLink ? <><Linkedin size={12} style={{ verticalAlign: "-2px", opacity: 0.6 }} /> {s.text}</> : s.text}
                     {s.comment ? <em style={{ display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 }}>↳ orientation : {s.comment}</em> : null}
+                    {mediaUrls.length > 0 && (
+                      <span style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                        {mediaUrls.map((src, i) => (
+                          <span key={i} style={{ position: "relative", display: "inline-block" }}>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={src} alt={`Photo ${i + 1}`} style={{ width: 48, height: 48, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)", display: "block" }} />
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title="Retirer cette photo"
+                              aria-label={`Retirer la photo ${i + 1}`}
+                              onClick={() => removeSeedImage(s, src)}
+                              disabled={attachingId === s.id}
+                              style={{ position: "absolute", top: -6, right: -6, background: "var(--surface)", borderRadius: "50%", width: 20, height: 20, padding: 0 }}
+                            >
+                              <XCircle size={12} />
+                            </button>
+                          </span>
+                        ))}
+                      </span>
+                    )}
                   </span>
                 )}
                 {!isEditing && isLink && !s.used_at ? <span className="daily-seed-tag">annonce</span> : null}
@@ -4423,13 +4567,35 @@ function IdeaReservoir({
                     className="secondary-button"
                     style={{ fontSize: 12, minHeight: 28, padding: "0 10px", flexShrink: 0 }}
                     title="Générer un post à partir de cette idée"
-                    onClick={() => onGenerate(s.text)}
+                    onClick={() => onGenerate({ text: s.text, mediaUrls })}
                   >
                     <Sparkles size={12} /> Générer
                   </button>
                 )}
                 {!isEditing && (
-                  <button className="icon-button" title="Modifier" onClick={() => startSeedEdit(s)}><Pencil size={14} /></button>
+                  <>
+                    <input
+                      ref={(el) => { seedFileRefs.current[s.id] = el; }}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        attachImagesToSeed(s, e.currentTarget.files);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                    <button
+                      className="icon-button"
+                      title="Joindre des photos"
+                      aria-label="Joindre des photos"
+                      disabled={attachingId === s.id || mediaUrls.length >= 20}
+                      onClick={() => seedFileRefs.current[s.id]?.click()}
+                    >
+                      {attachingId === s.id ? <Loader2 size={14} className="spinning" /> : <ImagePlus size={14} />}
+                    </button>
+                    <button className="icon-button" title="Modifier" onClick={() => startSeedEdit(s)}><Pencil size={14} /></button>
+                  </>
                 )}
                 <button className="icon-button" title="Supprimer" onClick={() => deleteSeed(s.id)}><Trash2 size={14} /></button>
               </li>
@@ -5318,6 +5484,24 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lines]);
 
+  // Photos jointes à une idée du réservoir → rattachées au post une fois généré
+  // (match sur le sujet du job = texte de l'idée au lancement).
+  useEffect(() => {
+    for (const line of lines) {
+      if (!line.variant || !line.job.topic) continue;
+      if (_genCache.appliedSeedMediaLineKeys.has(line.key)) continue;
+      const idx = _genCache.pendingSeedMedia.findIndex((p) => p.idea === line.job.topic);
+      if (idx < 0) continue;
+      const pending = _genCache.pendingSeedMedia[idx];
+      _genCache.pendingSeedMedia.splice(idx, 1);
+      _genCache.appliedSeedMediaLineKeys.add(line.key);
+      pending.urls.forEach((url, i) => {
+        attachImage(line.key, url, "upload", `photo-idee-${i + 1}.jpg`, `seed-${line.key}-${i}`);
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lines]);
+
   function activeImageJobFor(key: string): ImageJob | null {
     const job = latestImageJobFor(imageJobs, `variant:${key}`);
     return job && imageJobIsActive(job) ? job : null;
@@ -5818,7 +6002,12 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
         <IdeaReservoir
           isAuthed={isAuthed}
           desc="Note tes idées quand elles viennent. Génère le post quand tu veux — l'idée du jour pioche aussi dedans, de haut en bas."
-          onGenerate={(text) => startWizard(text)}
+          onGenerate={({ text, mediaUrls }) => {
+            if (mediaUrls.length) {
+              _genCache.pendingSeedMedia.push({ idea: text, urls: mediaUrls });
+            }
+            startWizard(text);
+          }}
         />
       </div>
 
@@ -5911,7 +6100,7 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
 
 
 type DailyIdea = { id: string; idea_date: string; idea_markdown: string; seed_id?: string | null; created_at?: string; post_text?: string | null; editorial_role?: string | null; hook_type?: string | null; strategy?: string | null; predicted_lift?: string | null; image_url?: string | null; source_url?: string | null };
-type IdeaSeed = { id: string; text: string; comment?: string | null; used_at?: string | null; created_at?: string };
+type IdeaSeed = { id: string; text: string; comment?: string | null; used_at?: string | null; created_at?: string; media_items?: SavedPostMediaItem[] | null };
 type IdeaLine = { id?: string; line: string; source_type?: string; source_ref?: string; source_url?: string };
 type DailyIdeaCard = Pick<Idea, "title" | "hook" | "hook_type" | "funnel" | "angle" | "why_it_works" | "estimated_lift">;
 
@@ -5983,6 +6172,9 @@ function ClientValidationView({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [doneId, setDoneId] = useState<string | null>(null);
   const [imageModalTarget, setImageModalTarget] = useState<{ kind: "gen" | "sched"; id: string; text: string } | null>(null);
+  const [attachingId, setAttachingId] = useState<string | null>(null);
+  const genFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const schedFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const loadQueue = useCallback(async () => {
     if (!isAuthed) {
@@ -6009,12 +6201,16 @@ function ClientValidationView({
 
   useEffect(() => { void loadQueue(); }, [loadQueue]);
 
-  async function persistGeneratedImage(post: SavedPost, dataUrl: string) {
+  async function persistGeneratedImages(
+    post: SavedPost,
+    images: Array<{ url?: string; data_url?: string; filename?: string }>,
+  ) {
+    setAttachingId(`gen:${post.id}`);
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${post.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ images: [{ data_url: dataUrl, filename: "image-ia.png" }] }),
+        body: JSON.stringify({ images }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Enregistrement de l'image impossible.");
@@ -6022,15 +6218,21 @@ function ClientValidationView({
       setPendingGenerated((prev) => prev.map((p) => (p.id === post.id ? { ...p, media_items: data.media_items || [] } : p)));
     } catch (err: any) {
       setError(err.message || "Enregistrement de l'image impossible.");
+    } finally {
+      setAttachingId(null);
     }
   }
 
-  async function persistScheduledImage(post: ScheduledPost, dataUrl: string) {
+  async function persistScheduledImages(
+    post: ScheduledPost,
+    images: Array<{ url?: string; data_url?: string; filename?: string }>,
+  ) {
+    setAttachingId(`sched:${post.id}`);
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/linkedin/scheduled/${post.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ images: [{ data_url: dataUrl, filename: "image-ia.png" }] }),
+        body: JSON.stringify({ images }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Enregistrement de l'image impossible.");
@@ -6038,11 +6240,42 @@ function ClientValidationView({
       setPendingScheduled((prev) => prev.map((p) => (p.id === post.id ? { ...p, media_items: updated?.media_items ?? p.media_items } : p)));
     } catch (err: any) {
       setError(err.message || "Enregistrement de l'image impossible.");
+    } finally {
+      setAttachingId(null);
     }
+  }
+
+  function validationImagePayload(items?: { url?: string; data_url?: string }[] | null) {
+    return mediaItemImageUrls(items).map((url) => ({ url }));
+  }
+
+  function readValidationImages(
+    files: FileList | null,
+    onReady: (added: Array<{ data_url: string; filename: string }>) => void,
+  ) {
+    if (!files?.length) return;
+    const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length !== files.length) setError("Seuls les fichiers image sont acceptés.");
+    const readers = imageFiles.map((file) => new Promise<{ data_url: string; filename: string } | null>((resolve) => {
+      if (file.size > 8 * 1024 * 1024) {
+        setError("LinkedIn limite chaque image à 8 Mo.");
+        resolve(null);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === "string" && reader.result ? { data_url: reader.result, filename: file.name } : null);
+      reader.onerror = () => { setError(`Lecture impossible pour ${file.name}.`); resolve(null); };
+      reader.readAsDataURL(file);
+    }));
+    void Promise.all(readers).then((added) => {
+      const fresh = added.filter(Boolean) as Array<{ data_url: string; filename: string }>;
+      if (fresh.length) onReady(fresh);
+    });
   }
 
   // Rattache l'image dès que le job `valgen:{id}`/`valsched:{id}` termine, même
   // si la pop-up a été fermée entre-temps (même patron qu'ALE-261 sur les autres écrans).
+  // On APPEND à la liste existante — ne pas écraser les photos déjà jointes.
   useEffect(() => {
     for (const job of imageJobs) {
       if (job.status !== "done" || !job.result?.image_data) continue;
@@ -6053,12 +6286,18 @@ function ClientValidationView({
         const post = pendingGenerated.find((p) => p.id === genMatch[1]);
         if (!post) continue;
         _validationAppliedImageJobIds.add(job.id);
-        void persistGeneratedImage(post, job.result.image_data);
+        void persistGeneratedImages(post, [
+          ...validationImagePayload(post.media_items),
+          { data_url: job.result.image_data, filename: "image-ia.png" },
+        ]);
       } else if (schedMatch) {
         const post = pendingScheduled.find((p) => p.id === schedMatch[1]);
         if (!post) continue;
         _validationAppliedImageJobIds.add(job.id);
-        void persistScheduledImage(post, job.result.image_data);
+        void persistScheduledImages(post, [
+          ...validationImagePayload(post.media_items),
+          { data_url: job.result.image_data, filename: "image-ia.png" },
+        ]);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -6235,12 +6474,22 @@ function ClientValidationView({
                         </p>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 10 }}>
                           {mediaItemImageUrls(p.media_items).map((src, i) => (
-                            <img
-                              key={i}
-                              src={src}
-                              alt={`Image jointe ${i + 1}`}
-                              style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
-                            />
+                            <div key={i} style={{ position: "relative" }}>
+                              <img
+                                src={src}
+                                alt={`Image jointe ${i + 1}`}
+                                style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
+                              />
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                style={{ position: "absolute", top: 6, right: 6, minHeight: 24, padding: "0 6px", fontSize: 11 }}
+                                title="Retirer"
+                                onClick={() => void persistScheduledImages(p, validationImagePayload(p.media_items).filter((m) => m.url !== src))}
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
                           ))}
                         </div>
                       </div>
@@ -6260,6 +6509,26 @@ function ClientValidationView({
                         onClick={() => void rejectScheduled(p.id)}
                       >
                         {busyId === `rej-sched:${p.id}` ? <Loader2 size={14} className="spinning" /> : <XCircle size={14} />} Refuser
+                      </button>
+                      <input
+                        ref={(el) => { schedFileRefs.current[p.id] = el; }}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          readValidationImages(e.currentTarget.files, (fresh) => {
+                            void persistScheduledImages(p, [...validationImagePayload(p.media_items), ...fresh].slice(0, 20));
+                          });
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                      <button
+                        className="secondary-button"
+                        disabled={attachingId === `sched:${p.id}` || mediaItemImageUrls(p.media_items).length >= 20}
+                        onClick={() => schedFileRefs.current[p.id]?.click()}
+                      >
+                        {attachingId === `sched:${p.id}` ? <Loader2 size={14} className="spinning" /> : <ImagePlus size={14} />} Joindre des photos
                       </button>
                       <button
                         className="secondary-button"
@@ -6293,12 +6562,22 @@ function ClientValidationView({
                         </p>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 10 }}>
                           {mediaItemImageUrls(p.media_items).map((src, i) => (
-                            <img
-                              key={i}
-                              src={src}
-                              alt={`Image jointe ${i + 1}`}
-                              style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
-                            />
+                            <div key={i} style={{ position: "relative" }}>
+                              <img
+                                src={src}
+                                alt={`Image jointe ${i + 1}`}
+                                style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
+                              />
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                style={{ position: "absolute", top: 6, right: 6, minHeight: 24, padding: "0 6px", fontSize: 11 }}
+                                title="Retirer"
+                                onClick={() => void persistGeneratedImages(p, validationImagePayload(p.media_items).filter((m) => m.url !== src))}
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
                           ))}
                         </div>
                       </div>
@@ -6319,6 +6598,26 @@ function ClientValidationView({
                         onClick={() => void rejectGenerated(p.id)}
                       >
                         {busyId === `rej-gen:${p.id}` ? <Loader2 size={14} className="spinning" /> : <XCircle size={14} />} Refuser
+                      </button>
+                      <input
+                        ref={(el) => { genFileRefs.current[p.id] = el; }}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          readValidationImages(e.currentTarget.files, (fresh) => {
+                            void persistGeneratedImages(p, [...validationImagePayload(p.media_items), ...fresh].slice(0, 20));
+                          });
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                      <button
+                        className="secondary-button"
+                        disabled={attachingId === `gen:${p.id}` || mediaItemImageUrls(p.media_items).length >= 20}
+                        onClick={() => genFileRefs.current[p.id]?.click()}
+                      >
+                        {attachingId === `gen:${p.id}` ? <Loader2 size={14} className="spinning" /> : <ImagePlus size={14} />} Joindre des photos
                       </button>
                       <button
                         className="secondary-button"
@@ -14647,6 +14946,8 @@ export default function Home() {
       // onglet. Toute clé ajoutée à `_genCache` doit être purgée ici.
       _genCache.appliedImageJobIds = new Set();
       _genCache.appliedListingLineKeys = new Set();
+      _genCache.pendingSeedMedia = [];
+      _genCache.appliedSeedMediaLineKeys = new Set();
       _genCache.edited = {};
       _genCache.images = {};
       _genCache.expanded = null;

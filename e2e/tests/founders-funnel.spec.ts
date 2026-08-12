@@ -2,8 +2,9 @@ import { test, expect, type Page } from "@playwright/test";
 
 /**
  * Tunnel fondateurs SaaS (/founders, parcours anonyme) :
- * lien du SaaS → audit léger → questions SaaS (dont stade + obstacles) → gains en
- * ARR → simulation → closing (miroir des obstacles, ROI, roadmap) → essai.
+ * landing de vente → lien du SaaS → scan (avec stade + obstacles posés PENDANT
+ * l'attente) → audit léger → questions SaaS → gains en ARR (avec courbe de
+ * progression) → simulation → closing (miroir des obstacles, ROI, roadmap) → essai.
  *
  * Backend entièrement mocké (zéro coût Apify/Claude/Stripe). Ce spec verrouille les
  * trois écarts qui feraient de ce tunnel une copie ratée de /start, tous invisibles
@@ -109,9 +110,23 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
   });
 
   await page.goto("/founders");
-  // Premier écran : le lien du SaaS, pas le profil LinkedIn.
+  // Landing de vente d'abord : la promesse, puis le CTA qui lance l'analyse.
+  await expect(page.getByRole("heading", { name: /Le LinkedIn qui remplit ton pipeline/ })).toBeVisible();
+  await page.getByRole("button", { name: "Analyser mon SaaS" }).first().click();
+
+  // Premier écran du tunnel : le lien du SaaS, pas le profil LinkedIn.
   await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
   await page.getByRole("button", { name: "Analyser" }).click();
+
+  // Pendant le scan : stade + obstacles — la matière de l'effet miroir. Ces
+  // réponses occupent l'attente de l'analyse, elles ne sont plus une page à part.
+  await expect(page.getByText("Où en est ton SaaS ?")).toBeVisible();
+  await page.getByRole("button", { name: /Premiers clients/ }).click();
+  await page.getByRole("button", { name: "Je suis un builder, pas un marketeur" }).click();
+  await page.getByRole("button", { name: "Je lance dans le silence" }).click();
+  // Le bouton ne s'active que quand l'analyse est prête : c'est le clic du
+  // visiteur qui avance, jamais la fin du fetch.
+  await page.getByRole("button", { name: /Voir mon analyse/ }).click();
 
   // Audit léger (écran 1) puis son détail (écran 2).
   await page.getByRole("button", { name: "Voir mon potentiel" }).click();
@@ -126,18 +141,13 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
 
   await expect(page.getByText("Ta catégorie de produit")).toBeVisible();
   await page.getByRole("button", { name: "DevTools & infra" }).click();
-  await page.getByRole("button", { name: "Continuer", exact: true }).click();
-
-  // Page 3 (SaaS uniquement) : stade + obstacles — la matière de l'effet miroir.
-  await expect(page.getByText("Où en est ton SaaS ?")).toBeVisible();
-  await page.getByRole("button", { name: /Premiers clients/ }).click();
-  await page.getByRole("button", { name: "Je suis un builder, pas un marketeur" }).click();
-  await page.getByRole("button", { name: "Je lance dans le silence" }).click();
   await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();
 
   // Les montants sont annoncés pour ce qu'ils sont : de l'ARR signé.
   await expect(page.getByText("Nouvel ARR signé par mois")).toBeVisible();
   await expect(page.locator(".onb-gain-money")).toContainText("3 600");
+  // La courbe de progression est tracée sur les chiffres de la projection.
+  await expect(page.locator(".onb-curve")).toBeVisible();
   await page.getByRole("button", { name: "6 000 à 25 000 € / an" }).click();
   await expect(page.locator(".onb-gain-money")).toContainText("15 000");
   await page.locator(".onb-screen").getByRole("button", { name: "Continuer", exact: true }).click();
@@ -203,10 +213,11 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await page.route("**/onboarding/projection", (route) => route.fulfill({ status: 500, json: {} }));
 
     await page.goto("/founders");
+    await page.getByRole("button", { name: "Analyser mon SaaS" }).first().click();
     await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
     await page.getByRole("button", { name: "Analyser" }).click();
+    await page.getByRole("button", { name: /Voir mon analyse/ }).click();
     await page.getByRole("button", { name: "Voir mon potentiel" }).click();
-    await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();

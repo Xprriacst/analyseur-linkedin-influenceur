@@ -226,6 +226,57 @@ test("le réservoir d'idées est sur la page, et chaque idée lance le parcours 
   await expect(modal.getByLabel(/De quoi veux-tu parler/i)).toHaveValue("Le cadrage avant l'outil");
 });
 
+test("réservoir : bouton Joindre des photos visible à l'ajout d'une idée", async ({ page }) => {
+  // Joëlle (et l'agence) doivent pouvoir joindre des photos à une idée — sans
+  // ce bouton, le réservoir n'accepte que du texte.
+  await mockEmptyQueue(page);
+  let postedImages: unknown = null;
+  await page.route("**/me/idea-seeds*", async (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({ contentType: "application/json", body: "[]" });
+    }
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON();
+      postedImages = body.images || null;
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "seed-photo",
+          text: body.text,
+          media_items: [{ type: "image", url: "https://cdn.example/photo.jpg" }],
+          used_at: null,
+        }),
+      });
+    }
+    return route.fallback();
+  });
+
+  await gotoTab(page, "Contenu");
+  await gotoSubTab(page, "Générateur de posts");
+
+  const reservoir = page.locator(".daily-reservoir");
+  await expect(reservoir.getByRole("button", { name: /Joindre des photos/i })).toBeVisible();
+
+  // Ajout avec une photo (data URL factice) : le front doit l'envoyer au serveur.
+  await page.evaluate(() => {
+    const input = document.querySelector(".daily-reservoir input[type=file]") as HTMLInputElement;
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "bien.png", { type: "image/png" });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  // Attendre que la vignette de brouillon apparaisse (FileReader async).
+  await expect(reservoir.locator("img").first()).toBeVisible({ timeout: 5_000 });
+
+  await reservoir.getByLabel(/Une idée de post/i).fill("T3 avec vue mer à Nantes");
+  await reservoir.getByRole("button", { name: /^Ajouter/ }).click();
+  await expect(page.getByText("T3 avec vue mer à Nantes")).toBeVisible();
+  // Le POST a bien embarqué une image (data_url) — sinon la photo serait perdue
+  // en silence et Joëlle croirait l'avoir jointe.
+  await expect.poll(() => postedImages !== null && Array.isArray(postedImages) && (postedImages as unknown[]).length >= 1).toBeTruthy();
+});
+
 test("bibliothèque vide : le parcours propose la structure libre et n'est pas bloqué", async ({ page }) => {
   await mockEmptyQueue(page);
   await page.route("**/me/idea-seeds*", (route) =>
