@@ -646,6 +646,9 @@ a { color: inherit; text-decoration: none; }
   .onb-screen, .onb-chip, .onb-other-input, .onb-scan-status { animation: none !important; }
   .onb-orb::before, .onb-orb::after { animation-duration: 3s; }
   .onb-cta:active, .onb-chip:active { transform: none; }
+  /* Courbe : état final direct, pas de tracé animé. */
+  .onb-curve-line { animation: none !important; stroke-dashoffset: 0; }
+  .onb-curve-band, .onb-curve-end { animation: none !important; opacity: 1; }
 }
 
 /* --- Preview « Analyse IA » (onboarding public, avant création de compte) --- */
@@ -964,6 +967,17 @@ a { color: inherit; text-decoration: none; }
    la fourchette basse↔haute, la ligne suit la fourchette haute. */
 .onb-curve-wrap { margin-top: 4px; }
 .onb-curve { display: block; width: 100%; height: auto; }
+/* La courbe se CONSTRUIT à l'arrivée : la ligne se trace (dash-offset sur un
+   pathLength normalisé à 1), puis la bande et le point final apparaissent. */
+.onb-curve-line {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: onb-curve-draw 1.4s cubic-bezier(.45,0,.25,1) .2s forwards;
+}
+.onb-curve-band { opacity: 0; animation: onb-curve-fade .7s ease 1.1s forwards; }
+.onb-curve-end { opacity: 0; animation: onb-curve-fade .45s ease 1.5s forwards; }
+@keyframes onb-curve-draw { to { stroke-dashoffset: 0; } }
+@keyframes onb-curve-fade { to { opacity: 1; } }
 .onb-curve-axis {
   display: flex; justify-content: space-between;
   margin-top: 6px; font-size: 11.5px; color: var(--muted);

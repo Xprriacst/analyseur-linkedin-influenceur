@@ -118,15 +118,17 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any 
   await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
   await page.getByRole("button", { name: "Analyser" }).click();
 
-  // Pendant le scan : stade + obstacles — la matière de l'effet miroir. Ces
-  // réponses occupent l'attente de l'analyse, elles ne sont plus une page à part.
+  // Pendant le scan : stade puis obstacles, en DEUX pop-up successives — la
+  // matière de l'effet miroir, posée pendant l'attente de l'analyse. La pop-up
+  // n'apparaît qu'après ~2,5 s d'animation (auto-attente Playwright).
   await expect(page.getByText("Où en est ton SaaS ?")).toBeVisible();
   await page.getByRole("button", { name: /Premiers clients/ }).click();
+  await page.getByRole("button", { name: "Continuer", exact: true }).click();
+
+  await expect(page.getByText("Qu'est-ce qui te bloque le plus ?")).toBeVisible();
   await page.getByRole("button", { name: "Je suis un builder, pas un marketeur" }).click();
   await page.getByRole("button", { name: "Je lance dans le silence" }).click();
-  // Le bouton ne s'active que quand l'analyse est prête : c'est le clic du
-  // visiteur qui avance, jamais la fin du fetch.
-  await page.getByRole("button", { name: /Voir mon analyse/ }).click();
+  await page.getByRole("button", { name: "Continuer", exact: true }).click();
 
   // Audit léger (écran 1) puis son détail (écran 2).
   await page.getByRole("button", { name: "Voir mon potentiel" }).click();
@@ -208,6 +210,38 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await expect(page.getByText(/ICP : .*CTO & équipes tech/)).toBeVisible();
   });
 
+  test("quiz fini avant l'analyse : retour à l'animation, puis avancée automatique", async ({ page }) => {
+    await mockBackend(page);
+    // Analyse volontairement plus lente que le quiz : le visiteur doit pouvoir
+    // cliquer « Continuer » sans attendre, retomber sur l'animation, et être
+    // emmené tout seul vers l'analyse quand elle aboutit. Si l'avancée
+    // automatique se perdait, il resterait bloqué à jamais sur le spinner —
+    // panne parfaitement silencieuse.
+    await page.route("**/onboarding/draft", async (route) => {
+      await new Promise((r) => setTimeout(r, 9000));
+      return route.fulfill({
+        json: { profile: { display_name: "Léa Fondatrice" }, preview: PREVIEW },
+      });
+    });
+
+    await page.goto("/founders");
+    await page.getByRole("button", { name: "Analyser mon SaaS" }).first().click();
+    await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
+    await page.getByRole("button", { name: "Analyser" }).click();
+
+    // Les deux pop-up se répondent SANS attendre la fin de l'analyse.
+    await page.getByRole("button", { name: /Premiers clients/ }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+    await page.getByRole("button", { name: "Je lance dans le silence" }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+
+    // Retour à l'animation (l'analyse tourne encore)…
+    await expect(page.locator(".onb-scan-quiz")).toHaveCount(0);
+    await expect(page.locator(".onb-orb")).toBeVisible();
+    // …puis l'écran d'analyse arrive TOUT SEUL quand le serveur répond.
+    await expect(page.getByRole("button", { name: "Voir mon potentiel" })).toBeVisible({ timeout: 15000 });
+  });
+
   test("projection injoignable : le tunnel mène quand même à l'essai", async ({ page }) => {
     await mockBackend(page);
     await page.route("**/onboarding/projection", (route) => route.fulfill({ status: 500, json: {} }));
@@ -216,7 +250,8 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await page.getByRole("button", { name: "Analyser mon SaaS" }).first().click();
     await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
     await page.getByRole("button", { name: "Analyser" }).click();
-    await page.getByRole("button", { name: /Voir mon analyse/ }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Voir mon potentiel" }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
