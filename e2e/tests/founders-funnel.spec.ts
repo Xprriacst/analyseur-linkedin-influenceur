@@ -240,6 +240,39 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await expect(page.getByText(/ICP : .*CTO & équipes tech/)).toBeVisible();
   });
 
+  test("mots de passe différents : aucun compte n'est créé", async ({ page }) => {
+    // Le verrou porte sur l'APPEL, pas sur le message affiché : un compte ouvert
+    // sur un mot de passe mal tapé n'est plus rattrapable dans ce tunnel — le
+    // fondateur enchaîne sur Stripe, laisse sa carte, et se retrouve enfermé
+    // dehors avec pour seule issue un e-mail de réinitialisation.
+    let signups = 0;
+    await page.route("**/auth/v1/signup**", (route) => {
+      signups += 1;
+      return route.fulfill({ status: 200, json: { user: null, session: null } });
+    });
+
+    await mockBackend(page);
+    await reachSimulation(page);
+    await page.getByRole("button", { name: /Démarrer mes 7 jours gratuits/ }).click();
+    await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
+
+    await page.getByPlaceholder("toi@ton-saas.com").fill("lea@northstack.io");
+    await page.getByPlaceholder("••••••••").fill("motdepasse1");
+    await page.getByPlaceholder("Retape ton mot de passe").fill("motdepasse2");
+    await expect(page.getByText("Les deux mots de passe ne sont pas identiques.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Créer mon compte" }).click();
+    await page.waitForTimeout(500);
+    expect(signups).toBe(0);
+
+    // Corrigé : le message tombe et le formulaire repart (l'inscription réelle
+    // n'est pas jouée plus loin — le mock ne rend pas de session).
+    await page.getByPlaceholder("Retape ton mot de passe").fill("motdepasse1");
+    await expect(page.getByText("Les deux mots de passe ne sont pas identiques.")).toHaveCount(0);
+    await page.getByRole("button", { name: "Créer mon compte" }).click();
+    await expect.poll(() => signups).toBe(1);
+  });
+
   test("quiz fini avant l'analyse : retour à l'animation, puis avancée automatique", async ({ page }) => {
     await mockBackend(page);
     // Analyse volontairement plus lente que le quiz : le visiteur doit pouvoir
