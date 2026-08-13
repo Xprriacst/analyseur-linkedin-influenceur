@@ -9849,7 +9849,7 @@ function AutoGrowTextarea({
   );
 }
 
-function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalActiveId = null }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; hideChrome?: boolean; externalActiveId?: string | null }) {
+function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalActiveId = null, onAskAssistant }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; hideChrome?: boolean; externalActiveId?: string | null; onAskAssistant?: (context: string) => void }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
   // Faux tant que le premier /me/ig/conversations n'a pas répondu : évite d'afficher
   // « Aucune conversation » pendant le chargement initial (backend dev lent).
@@ -9888,6 +9888,20 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
   const lastInboundHasDraft = lastInbound ? drafts.some((d) => d.message_id === lastInbound.id) : true;
   const lastInboundAgeMs = lastInbound?.created_at ? Date.now() - new Date(lastInbound.created_at).getTime() : 0;
   const suggestionFailed = !!lastInbound && !lastInboundHasDraft && !pendingDraft && lastInboundAgeMs > 25000;
+
+  // Backlog Notion « Intégrer l'agent IA dans l'inbox » (option A) : contexte
+  // pré-rempli envoyé à l'Assistant IA (même patron que `onRework` — un texte,
+  // pas une action). Nom du contact + derniers messages échangés, assez pour
+  // que le client puisse tout de suite demander « aide-moi à répondre ».
+  function buildIgAskContext(): string {
+    if (!active) return "";
+    const name = active.prospect_name || active.prospect_id;
+    const lines = messages
+      .slice(-8)
+      .map((m) => `${m.role === "in" ? name : "Moi"} : ${m.text}`)
+      .join("\n");
+    return `J'aimerais ton aide pour répondre à cette conversation Instagram avec ${name}.\n\n--- Derniers messages ---\n${lines || "(aucun message pour l'instant)"}\n---\n\nAide-moi à rédiger une réponse adaptée.`;
+  }
 
   // Pastille « nouveau message » par conversation : une conversation est non lue
   // tant que son dernier message est plus récent que la dernière fois qu'on l'a
@@ -10244,16 +10258,30 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
                     : "fenêtre 24 h ouverte"}
                 </span>
               </div>
-              {/* Autopilot temporairement grisé : chaque réponse reste validée à la main. */}
-              <button
-                className="secondary-button"
-                onClick={toggleMode}
-                disabled
-                title="L'autopilot sera bientôt disponible"
-                style={{ fontSize: 12, opacity: 0.5, cursor: "not-allowed" }}
-              >
-                🤖 Autopilot — bientôt
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {onAskAssistant && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => onAskAssistant(buildIgAskContext())}
+                    title="Ouvrir cette conversation dans l'Assistant IA pour t'aider à répondre"
+                    style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 6 }}
+                  >
+                    <MessageSquare size={13} />
+                    Demander à l&apos;Assistant
+                  </button>
+                )}
+                {/* Autopilot temporairement grisé : chaque réponse reste validée à la main. */}
+                <button
+                  className="secondary-button"
+                  onClick={toggleMode}
+                  disabled
+                  title="L'autopilot sera bientôt disponible"
+                  style={{ fontSize: 12, opacity: 0.5, cursor: "not-allowed" }}
+                >
+                  🤖 Autopilot — bientôt
+                </button>
+              </div>
             </header>
 
             <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -10377,7 +10405,7 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
 }
 
 // ALE-244 : fil LinkedIn (messages Unipile lus en direct) pour l'Inbox unifiée.
-function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: OutreachQuota; onQuota: (q: OutreachQuota) => void }) {
+function LinkedInThread({ chat, quota, onQuota, onAskAssistant }: { chat: OutreachChat; quota?: OutreachQuota; onQuota: (q: OutreachQuota) => void; onAskAssistant?: (context: string) => void }) {
   const [messages, setMessages] = useState<OutreachMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [reply, setReply] = useState("");
@@ -10458,11 +10486,39 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
     finally { setBusy(false); }
   }
 
+  // Backlog Notion « Intégrer l'agent IA dans l'inbox » (option A) : contexte
+  // pré-rempli envoyé à l'Assistant IA (même patron que `onRework` — un texte,
+  // pas une action). Nom du contact + derniers messages échangés + lien du
+  // profil LinkedIn du lead quand Unipile le fournit.
+  function buildLnAskContext(): string {
+    const name = chat.name || "ce contact LinkedIn";
+    const lines = messages
+      .slice(-8)
+      .map((m) => `${m.from_me ? "Moi" : name} : ${m.text}`)
+      .join("\n");
+    const leadLine = chat.provider_url ? `\nProfil LinkedIn : ${chat.provider_url}` : "";
+    return `J'aimerais ton aide pour répondre à cette conversation LinkedIn avec ${name}.${leadLine}\n\n--- Derniers messages ---\n${lines || "(aucun message pour l'instant)"}\n---\n\nAide-moi à rédiger une réponse adaptée.`;
+  }
+
   return (
     <section className="card" style={{ display: "flex", flexDirection: "column", minHeight: 0, padding: 0, height: "100%" }}>
-      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
-        <Linkedin size={15} style={{ color: "#0a66c2", flexShrink: 0 }} />
-        {chat.name || "Conversation LinkedIn"}
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <Linkedin size={15} style={{ color: "#0a66c2", flexShrink: 0 }} />
+          {chat.name || "Conversation LinkedIn"}
+        </span>
+        {onAskAssistant && (
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => onAskAssistant(buildLnAskContext())}
+            title="Ouvrir cette conversation dans l'Assistant IA pour t'aider à répondre"
+            style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0, fontWeight: 500 }}
+          >
+            <MessageSquare size={13} />
+            Demander à l&apos;Assistant
+          </button>
+        )}
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
         {loading && messages.length === 0 ? (
@@ -10558,7 +10614,7 @@ function reconcileById<T>(prev: T[], next: T[], keyOf: (x: T) => string): T[] {
   return merged;
 }
 
-function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; initialSelect?: { network: InboxNetwork; id: string; nonce: number } | null }) {
+function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect, onAskAssistant }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; initialSelect?: { network: InboxNetwork; id: string; nonce: number } | null; onAskAssistant?: (context: string) => void }) {
   const outreach = useLinkedInOutreach(isAuthed);
   const lnConnected = !!outreach.status?.connected;
   const [igConvs, setIgConvs] = useState<IgConversation[]>([]);
@@ -10718,13 +10774,14 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
         </aside>
         <div style={{ minHeight: 0 }}>
           {selectedIg ? (
-            <IgInbox key="ig-thread" isAuthed={isAuthed} requireAuth={requireAuth} userId={userId} hideChrome externalActiveId={selectedIg.id} />
+            <IgInbox key="ig-thread" isAuthed={isAuthed} requireAuth={requireAuth} userId={userId} hideChrome externalActiveId={selectedIg.id} onAskAssistant={onAskAssistant} />
           ) : selectedLn ? (
             <LinkedInThread
               key={`ln:${selectedLn.id}`}
               chat={selectedLn}
               quota={outreach.status?.quota}
               onQuota={(q) => outreach.setStatus((p) => (p ? { ...p, quota: q } : p))}
+              onAskAssistant={onAskAssistant}
             />
           ) : (
             <div className="card" style={{ height: "100%", display: "flex" }}>
@@ -10737,7 +10794,7 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
   );
 }
 
-function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { post: string; nonce: number } | null; imageJobs: ImageJob[]; onImageJobCreated: (job: ImageJob) => void }) {
+function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { post: string; nonce: number; prompt?: string } | null; imageJobs: ImageJob[]; onImageJobCreated: (job: ImageJob) => void }) {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -10801,11 +10858,15 @@ function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
-  // Démarre une nouvelle conversation quand un seed de post est fourni depuis le Générateur.
+  // Démarre une nouvelle conversation quand un seed est fourni depuis un autre
+  // écran (Générateur/Idée du jour/Mes contenus → onRework, ou Inbox → backlog
+  // Notion « Intégrer l'agent IA dans l'inbox »). `prompt`, s'il est fourni,
+  // remplace le message d'ouverture par défaut (contexte de conversation plutôt
+  // que « voici un post à améliorer »).
   useEffect(() => {
     if (!seed?.post || !isAuthed) return;
     newConversation();
-    const seedText = `Voici un post que j'ai généré et que j'aimerais améliorer :\n\n---\n${seed.post}\n---`;
+    const seedText = seed.prompt || `Voici un post que j'ai généré et que j'aimerais améliorer :\n\n---\n${seed.post}\n---`;
     // setTimeout pour laisser newConversation() vider l'état avant d'envoyer.
     const t = setTimeout(() => sendMessage(seedText), 50);
     return () => clearTimeout(t);
@@ -14961,7 +15022,7 @@ export default function Home() {
   // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
   const [generatorSeed, setGeneratorSeed] = useState<{ topic: string; nonce: number } | null>(null);
   // Post pré-rempli quand on "retravaille" un variant depuis le Générateur vers l'Agent IA.
-  const [assistantSeed, setAssistantSeed] = useState<{ post: string; nonce: number } | null>(null);
+  const [assistantSeed, setAssistantSeed] = useState<{ post: string; nonce: number; prompt?: string } | null>(null);
   // ALE-245 : conversation à pré-sélectionner dans l'Inbox (depuis un lead).
   const [inboxSelect, setInboxSelect] = useState<{ network: InboxNetwork; id: string; nonce: number } | null>(null);
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
@@ -15807,7 +15868,16 @@ export default function Home() {
         <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA, Inbox IG et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "inbox" ? (
-            <UnifiedInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} initialSelect={inboxSelect} />
+            <UnifiedInbox
+              isAuthed={isAuthed}
+              requireAuth={requireAuth}
+              userId={session?.user?.id ?? null}
+              initialSelect={inboxSelect}
+              onAskAssistant={(context) => {
+                setAssistantSeed({ post: context, nonce: Date.now(), prompt: context });
+                setView("assistant");
+              }}
+            />
           ) : view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
           ) : view === "profile" ? (
