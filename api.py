@@ -4888,6 +4888,12 @@ def me_outreach_draft_approve(
     return {"item": item, "items": db.list_outreach_drafts(token), "engine": _engine_state(token, _require_outreach_account(token))}
 
 
+# Nombre maximum de conversations pour lesquelles on va chercher le participant une par
+# une quand le listing par compte ne l'a pas ramené (borne le temps de réponse de l'Inbox,
+# rafraîchie toutes les 30 s côté client).
+_INBOX_ATTENDEE_LOOKUPS = 12
+
+
 @app.get("/me/linkedin/outreach/chats")
 def me_linkedin_outreach_chats(token: str = Depends(require_token)) -> dict[str, Any]:
     """Conversations LinkedIn du compte connecté (onglet LinkedIn de l'Inbox)."""
@@ -4897,13 +4903,53 @@ def me_linkedin_outreach_chats(token: str = Depends(require_token)) -> dict[str,
     except unipile.UnipileError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     normalized = [unipile.normalize_chat(c) for c in chats]
-    # Nommer les conversations : Unipile ne renvoie pas toujours le participant dans
-    # la liste des chats. Priorité : (1) nom réel fourni par Unipile s'il existe ;
-    # sinon (2) nom du lead retrouvé par son identifiant LinkedIn `attendee_provider_id`
-    # (source fiable — chaque lead contacté a un `provider_id`) ; sinon (3) par
-    # `outreach_chat_id` (rare, rétro-compat) ; sinon (4) fallback générique.
+    # Nommer les conversations. ⚠️ `GET /chats` ne donne, pour une conversation à deux,
+    # que l'identifiant LinkedIn du participant — jamais son nom. Le rattrapage par les
+    # leads ne couvre donc QUE les gens sortis de la prospection : tout le reste de
+    # l'Inbox (messages entrants, recruteurs, relations existantes) restait « Conversation
+    # LinkedIn ». D'où l'appel aux participants du compte, qui porte le vrai nom LinkedIn.
     by_chat, by_provider = db.get_outreach_lead_name_maps(token)
-    unipile.apply_lead_names(normalized, by_provider, by_chat)
+    wanted = {
+        c["attendee_provider_id"]
+        for c in normalized
+        if c.get("attendee_provider_id")
+        and not c.get("attendee_name")
+        and not by_provider.get(c["attendee_provider_id"])
+    }
+    by_attendee: dict[str, str] = {}
+    if wanted:
+        try:
+            by_attendee = unipile.attendee_names(account["unipile_account_id"], wanted=wanted)
+        except unipile.UnipileError as exc:
+            # Best-effort : mieux vaut une Inbox aux noms génériques qu'une Inbox en panne.
+            print(f"[inbox] noms des participants LinkedIn indisponibles : {exc}", flush=True)
+        # Les participants que le listing par compte n'a pas ramenés (compte à gros
+        # historique : ils ne sont pas triés par conversation récente) sont cherchés
+        # conversation par conversation, en nombre borné — les plus récentes d'abord,
+        # ce sont celles que le client a sous les yeux.
+        for chat in normalized[:_INBOX_ATTENDEE_LOOKUPS]:
+            pid = chat.get("attendee_provider_id")
+            if pid not in wanted or pid in by_attendee:
+                continue
+            try:
+                by_attendee.update(unipile.chat_attendee_names(chat["id"]))
+            except unipile.UnipileError:
+                continue
+    unipile.apply_chat_names(
+        normalized,
+        by_attendee=by_attendee,
+        by_lead_provider=by_provider,
+        by_lead_chat=by_chat,
+    )
+    unresolved = sum(1 for c in normalized if c.get("name") == "Conversation LinkedIn")
+    if unresolved:
+        # Trace de diagnostic : sans elle, « ça reste générique » n'a aucune prise. Dit
+        # si le manque vient d'Unipile (0 participant ramené) ou de la correspondance.
+        print(
+            f"[inbox] {unresolved}/{len(normalized)} conversation(s) sans nom "
+            f"({len(by_attendee)} participant(s) ramené(s) pour {len(wanted)} demandé(s))",
+            flush=True,
+        )
     return {"chats": normalized}
 
 
