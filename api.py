@@ -83,6 +83,13 @@ def _cors_origins() -> list[str]:
         "https://lkd-outreach.netlify.app",
         "https://lkd-outreach-dev.netlify.app",
         "https://analyseur-linkedin-influenceur-api-dev.onrender.com",
+        # Sous-domaine cibl.clareo-solutions.fr (déploiement prod, backlog Notion
+        # "Déployer Cibl sur cibl.clareo-solutions.fr", 2026-08-13) : le domaine
+        # personnalisé n'est pas encore attaché côté Netlify au moment de ce
+        # commit (hors de portée des outils de cette session, cf. runbook dans
+        # CLAUDE.md) — posé ici en avance pour que le CORS ne bloque pas le
+        # frontend dès que le domaine sera rattaché au site `lkd-outreach`.
+        "https://cibl.clareo-solutions.fr",
     ]
     extra_origins = [
         origin.strip()
