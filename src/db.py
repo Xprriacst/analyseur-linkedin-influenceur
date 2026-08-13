@@ -820,6 +820,84 @@ def set_zernio_reddit_account(access_token: str, account_id: str | None) -> dict
     return resp.data[0] if resp.data else None
 
 
+def set_heygen_avatar(
+    access_token: str,
+    look_id: str | None,
+    group_id: str | None = None,
+    status: str | None = None,
+    preview_url: str | None = None,
+) -> dict | None:
+    """Persist (or clear) the client's HeyGen photo avatar (0065).
+
+    `look_id=None` = suppression de l'avatar (patron set_zernio_account : un
+    seul setter pour connecter et déconnecter). La voix, choisie séparément,
+    n'est PAS touchée ici — recréer son avatar ne doit pas faire perdre la voix.
+    """
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    row = {
+        "user_id": user["id"],
+        "heygen_avatar_look_id": look_id,
+        "heygen_avatar_group_id": group_id if look_id else None,
+        "heygen_avatar_status": status if look_id else None,
+        "heygen_avatar_preview_url": preview_url if look_id else None,
+        "heygen_avatar_created_at": now if look_id else None,
+        "updated_at": now,
+    }
+    resp = (
+        db.table("user_editorial_profiles")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def update_heygen_avatar_status(
+    access_token: str, status: str, preview_url: str | None = None
+) -> None:
+    """MàJ du seul statut d'entraînement (polling) sans toucher au reste."""
+    user = get_user(access_token)
+    if not user:
+        return
+    db = client_for_token(access_token)
+    fields: dict[str, Any] = {
+        "heygen_avatar_status": status,
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    if preview_url:
+        fields["heygen_avatar_preview_url"] = preview_url
+    (
+        db.table("user_editorial_profiles")
+        .update(fields)
+        .eq("user_id", user["id"])
+        .execute()
+    )
+
+
+def set_heygen_voice(access_token: str, voice_id: str | None, voice_name: str | None = None) -> dict | None:
+    """Persist (or clear) the stock voice the client picked for his avatar."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    row = {
+        "user_id": user["id"],
+        "heygen_voice_id": voice_id,
+        "heygen_voice_name": voice_name if voice_id else None,
+        "updated_at": now,
+    }
+    resp = (
+        db.table("user_editorial_profiles")
+        .upsert(row, on_conflict="user_id")
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
 def get_user_ai_context(access_token: str | None) -> dict[str, Any] | None:
     """Compact profile context consumed by LLM prompts.
 
@@ -1329,6 +1407,12 @@ CREDIT_COSTS: dict[str, int] = {
     "collect_leads": 1,    # par crédit ; le nb débité = nb de commentateurs / N (ALE-239)
     "adapt_x": 2,          # adaptation IA d'un post pour X (ALE-59)
     "adapt_reddit": 3,     # adaptation IA d'un post pour Reddit + suggestion subreddits (ALE-59)
+    # Vidéo avatar IA (HeyGen) : coût réel ~2-3 $ le reel (0,05 $/s en Avatar IV)
+    # ⇒ largement au-dessus du calibrage ~0,006 $/crédit. Valeur de lancement
+    # volontairement basse tant que la feature est réservée aux comptes agence
+    # (flag `instagram`) — À RECALIBRER avant toute ouverture aux clients
+    # (surchargeable sans release via AVATAR_VIDEO_CREDITS).
+    "avatar_video": int(os.environ.get("AVATAR_VIDEO_CREDITS", "100") or 100),
 }
 
 
@@ -2288,6 +2372,155 @@ def reconcile_stale_image_jobs(access_token: str, jobs: list[dict]) -> list[dict
         )
         job["status"] = "error"
         job["error"] = "Génération d'image interrompue (délai dépassé)."
+    return jobs
+
+
+# ── Vidéos avatar IA (HeyGen) en tâche de fond (0065) ─────────────────────── #
+
+# Même patron que image_generation_jobs. Différence assumée : `result` est ici
+# projeté dans la LISTE aussi — il ne porte que des URLs (vidéo re-hébergée
+# Zernio, miniature) et des scalaires, jamais d'octets ni de base64, donc le
+# polling ne fait pas revivre l'OOM du 2026-07-27. Si un jour quelqu'un veut y
+# ranger des bytes : NON — re-héberger et stocker l'URL.
+#
+# ⚠️ Projection EXPLICITE : toute colonne absente d'ici est lue `None` par le
+# thread, sans erreur (5ᵉ occurrence du piège ALE-216/ALE-286/#387/lead-jobs).
+# Ajouter une colonne au job ⇒ l'ajouter ICI. Un test le verrouille
+# (`AvatarJobProjectionTest`).
+_AVATAR_VIDEO_JOB_COLS = (
+    "id,status,script,target_key,avatar_look_id,voice_id,heygen_video_id,"
+    "result,error,created_at,updated_at"
+)
+
+# Fenêtre de réconciliation dédiée : un rendu HeyGen prend ~5-10 min par minute
+# de vidéo (file de rendu côté HeyGen) — la fenêtre de 15 min des images
+# solderait « orphelin » un rendu légitime encore en cours (même raison que
+# LEAD_JOB_STALE_MINUTES). Le thread pousse updated_at à chaque poll (heartbeat),
+# donc 15 min SANS mise à jour signifie bien un thread mort.
+AVATAR_VIDEO_JOB_STALE_MINUTES = 15
+
+
+def create_avatar_video_job(
+    access_token: str,
+    script: str,
+    target_key: str,
+    avatar_look_id: str,
+    voice_id: str,
+) -> dict | None:
+    """Crée un job de rendu vidéo avatar `queued`. Retourne la ligne créée."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    row: dict[str, Any] = {
+        "user_id": user["id"],
+        "status": "queued",
+        "script": script,
+        "target_key": target_key,
+        "avatar_look_id": avatar_look_id,
+        "voice_id": voice_id,
+    }
+    resp = db.table("avatar_video_jobs").insert(row).execute()
+    return resp.data[0] if resp.data else None
+
+
+def get_avatar_video_job(access_token: str, job_id: str) -> dict | None:
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("avatar_video_jobs")
+        .select(_AVATAR_VIDEO_JOB_COLS)
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0] if r.data else None
+
+
+def list_avatar_video_jobs(access_token: str, limit: int = 30) -> list[dict]:
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    r = (
+        db.table("avatar_video_jobs")
+        .select(_AVATAR_VIDEO_JOB_COLS)
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return reconcile_stale_avatar_video_jobs(access_token, r.data or [])
+
+
+def get_avatar_video_job_status(access_token: str, job_id: str) -> str | None:
+    """Statut seul (lecture légère, pour la vérif d'annulation du thread)."""
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    r = (
+        db.table("avatar_video_jobs")
+        .select("status")
+        .eq("id", job_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    return r.data[0]["status"] if r.data else None
+
+
+def update_avatar_video_job(access_token: str, job_id: str, **fields: Any) -> None:
+    db = client_for_token(access_token)
+    fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    db.table("avatar_video_jobs").update(fields).eq("id", job_id).execute()
+
+
+def touch_avatar_video_job(access_token: str, job_id: str) -> None:
+    """Heartbeat du thread pendant le polling HeyGen — repousse la fenêtre de
+    réconciliation sans rien changer d'autre."""
+    update_avatar_video_job(access_token, job_id)
+
+
+def cancel_avatar_video_job(access_token: str, job_id: str) -> dict | None:
+    """Annule un job vidéo s'il est encore `queued`/`running`.
+
+    Jamais de remboursement ici : le débit n'intervient qu'à la complétion
+    réussie (cf. `src.jobs.process_avatar_video_job`). Le rendu déjà lancé chez
+    HeyGen continue et sera facturé par HeyGen — mais le client, lui, ne perd
+    aucun crédit Cibl.
+    """
+    db = client_for_token(access_token)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    (
+        db.table("avatar_video_jobs")
+        .update({"status": "cancelled", "updated_at": now})
+        .eq("id", job_id)
+        .in_("status", ["queued", "running"])
+        .execute()
+    )
+    return get_avatar_video_job(access_token, job_id)
+
+
+def reconcile_stale_avatar_video_jobs(access_token: str, jobs: list[dict]) -> list[dict]:
+    """Solde les jobs vidéo orphelins (thread mort) — appelé au listing. Idempotent."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(minutes=AVATAR_VIDEO_JOB_STALE_MINUTES)
+    for job in jobs:
+        if job.get("status") not in ("queued", "running"):
+            continue
+        job_ts = _parse_ts(job.get("updated_at"))
+        if job_ts is None or job_ts > cutoff:
+            continue
+        update_avatar_video_job(
+            access_token, job["id"], status="error",
+            error="Génération de la vidéo avatar interrompue (délai dépassé).",
+        )
+        job["status"] = "error"
+        job["error"] = "Génération de la vidéo avatar interrompue (délai dépassé)."
     return jobs
 
 

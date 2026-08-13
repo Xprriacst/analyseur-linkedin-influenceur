@@ -486,6 +486,114 @@ def start_image_job_thread(access_token: str, job_id: str) -> None:
     thread.start()
 
 
+# ── Vidéos avatar IA (HeyGen) en tâche de fond (0065) ─────────────────────── #
+
+# Même patron que les images, avec deux différences structurelles :
+# (1) le rendu se fait CHEZ HeyGen (asynchrone de leur côté aussi) — le thread
+#     ne calcule rien, il lance le rendu puis POLL leur API en poussant un
+#     heartbeat en base à chaque passage (sans lui, la réconciliation solderait
+#     « orphelin » un rendu légitime de 10 min) ;
+# (2) l'URL renvoyée par HeyGen est PRÉ-SIGNÉE et expire — la vidéo est
+#     téléchargée immédiatement et re-hébergée sur Zernio, et c'est cette URL
+#     pérenne qui part dans `result`. Publier plus tard ne tombe jamais sur un
+#     lien mort. Jamais d'octets en base (leçon OOM du 2026-07-27).
+# Un rendu prend ~5-10 min par minute de vidéo : le timeout doit rester très
+# au-dessus du pire cas d'un reel de 90 s.
+
+AVATAR_VIDEO_TIMEOUT_S = 1500  # 25 min
+AVATAR_VIDEO_POLL_INTERVAL_S = 12
+
+
+def process_avatar_video_job(access_token: str, job_id: str) -> None:
+    """Rend la vidéo avatar d'un job en arrière-plan, re-héberge, débite au succès.
+
+    Idempotent quant à l'annulation : jamais de `done` par-dessus un `cancelled`,
+    et jamais de débit sur un job annulé (le rendu HeyGen déjà lancé continue et
+    sera facturé par HeyGen, mais aucun crédit Cibl n'est pris).
+    """
+    import time
+
+    from src import heygen, zernio
+
+    job = db.get_avatar_video_job(access_token, job_id)
+    if not job:
+        return
+    if db.get_avatar_video_job_status(access_token, job_id) == "cancelled":
+        return
+
+    db.update_avatar_video_job(access_token, job_id, status="running")
+    try:
+        video_id = job.get("heygen_video_id")
+        if not video_id:
+            video_id = heygen.create_avatar_video(
+                job.get("avatar_look_id") or "",
+                job.get("script") or "",
+                job.get("voice_id") or "",
+                title=f"Cibl reel {job_id[:8]}",
+            )
+            # Persisté tout de suite : si le thread meurt pendant le polling, le
+            # rendu HeyGen reste retrouvable (diagnostic) au lieu d'être perdu.
+            db.update_avatar_video_job(access_token, job_id, heygen_video_id=video_id)
+
+        deadline = time.monotonic() + AVATAR_VIDEO_TIMEOUT_S
+        video: dict | None = None
+        while True:
+            if db.get_avatar_video_job_status(access_token, job_id) == "cancelled":
+                return
+            video = heygen.get_video(video_id)
+            if video["status"] == "completed":
+                break
+            if video["status"] == "failed":
+                raise heygen.HeygenError(video.get("error") or "Rendu HeyGen en échec.")
+            if time.monotonic() > deadline:
+                raise heygen.HeygenError(
+                    "Rendu HeyGen trop long (délai dépassé) — réessaie dans un moment."
+                )
+            db.touch_avatar_video_job(access_token, job_id)  # heartbeat anti-réconciliation
+            time.sleep(AVATAR_VIDEO_POLL_INTERVAL_S)
+
+        source_url = video.get("video_url")
+        if not source_url:
+            raise heygen.HeygenError("Rendu HeyGen terminé mais sans URL de vidéo.")
+        data = heygen.download_video(source_url)
+        hosted_url = zernio.upload_reel_video(
+            f"avatar-reel-{job_id}.mp4", "video/mp4", data
+        )
+        del data  # gros buffer : le lâcher avant les écritures qui suivent
+
+        # Annulé pendant le rendu/re-hébergement ? On respecte l'annulation.
+        if db.get_avatar_video_job_status(access_token, job_id) == "cancelled":
+            return
+
+        ok, balance = db.debit_credits(access_token, "avatar_video")
+        if not ok:
+            print(
+                f"[avatar-job] débit impossible après un rendu réussi (solde {balance}) — vidéo livrée sans débit.",
+                flush=True,
+            )
+        result = {
+            "video_url": hosted_url,
+            "thumbnail_url": video.get("thumbnail_url"),
+            "duration": video.get("duration"),
+            "credits": balance if ok else None,
+        }
+        db.update_avatar_video_job(access_token, job_id, status="done", result=result)
+    except Exception as exc:  # noqa: BLE001 — on isole l'échec d'un job
+        if db.get_avatar_video_job_status(access_token, job_id) == "cancelled":
+            return
+        db.update_avatar_video_job(
+            access_token, job_id, status="error", error=str(exc)[:500]
+        )
+
+
+def start_avatar_video_job_thread(access_token: str, job_id: str) -> None:
+    """Lance le rendu vidéo avatar d'un job dans un thread de fond (non bloquant)."""
+    thread = threading.Thread(
+        target=process_avatar_video_job, args=(access_token, job_id), daemon=True
+    )
+    thread.start()
+
+
 # Garde-fou : durée max d'une collecte. Aligné sur le timeout de l'actor Apify
 # (`lead_finder`, 1500 s) et < LEAD_JOB_STALE_MINUTES pour qu'un run figé libère
 # le thread avant d'être soldé « orphelin ».

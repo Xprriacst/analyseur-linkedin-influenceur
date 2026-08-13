@@ -319,6 +319,85 @@ def list_chats(account_id: str, limit: int = 50) -> list[dict[str, Any]]:
     return [c for c in (items or []) if isinstance(c, dict)]
 
 
+def attendee_names(
+    account_id: str,
+    wanted: set[str] | None = None,
+    *,
+    limit: int = 250,
+    max_pages: int = 4,
+) -> dict[str, str]:
+    """{provider_id: nom LinkedIn} des participants des conversations du compte.
+
+    ⚠️ Pourquoi cet appel existe : `GET /chats` ne renvoie, pour une conversation
+    1-to-1, que l'`attendee_provider_id` — **jamais le nom** (`name` est null, il n'est
+    rempli que pour un groupe ou un objet d'InMail). Sans ce complément, toute
+    conversation avec quelqu'un qui n'est pas un lead de notre base s'affiche
+    « Conversation LinkedIn » : c'est le cas de la majorité de l'Inbox (messages
+    entrants, recruteurs, relations existantes), qui n'est jamais passée par la
+    prospection.
+
+    `wanted` = identifiants qu'on cherche : dès qu'ils sont tous trouvés on arrête de
+    paginer (en pratique une seule page). Sans lui, on ramène `max_pages` pages au plus
+    — un compte ancien peut avoir des milliers de participants, on ne va pas au bout.
+    """
+    if not account_id:
+        return {}
+    todo = {str(p) for p in (wanted or set()) if p}
+    out: dict[str, str] = {}
+    cursor: str | None = None
+    for _ in range(max(1, max_pages)):
+        params: dict[str, Any] = {"account_id": account_id, "limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        data = _request("GET", "/chat_attendees", params=params)
+        items = data.get("items") if isinstance(data, dict) else None
+        if items is None and isinstance(data, list):
+            items = data
+        for att in items or []:
+            if not isinstance(att, dict):
+                continue
+            # `is_self` = nous-même dans la conversation : jamais un nom d'interlocuteur.
+            if str(att.get("is_self")) in ("1", "True", "true"):
+                continue
+            pid = _pick(att, "provider_id", "attendee_provider_id")
+            name = _pick_display_name(att, "name", "attendee_name", "display_name")
+            if pid and name and str(pid) not in out:
+                out[str(pid)] = name
+                todo.discard(str(pid))
+        cursor = data.get("cursor") if isinstance(data, dict) else None
+        if not cursor or not items or (wanted is not None and not todo):
+            break
+    return out
+
+
+def chat_attendee_names(chat_id: str) -> dict[str, str]:
+    """{provider_id: nom} des participants d'UNE conversation.
+
+    Complément ciblé de `attendee_names` : le listing par compte ramène les
+    participants de TOUTES les conversations, sans ordre garanti — sur un compte à gros
+    historique, ceux des conversations affichées peuvent se trouver hors des premières
+    pages. On va alors les chercher conversation par conversation, pour celles-là
+    seulement.
+    """
+    if not chat_id:
+        return {}
+    data = _request("GET", f"/chats/{urllib.parse.quote(chat_id)}/attendees")
+    items = data.get("items") if isinstance(data, dict) else None
+    if items is None and isinstance(data, list):
+        items = data
+    out: dict[str, str] = {}
+    for att in items or []:
+        if not isinstance(att, dict):
+            continue
+        if str(att.get("is_self")) in ("1", "True", "true"):
+            continue
+        pid = _pick(att, "provider_id", "attendee_provider_id")
+        name = _pick_display_name(att, "name", "attendee_name", "display_name")
+        if pid and name:
+            out[str(pid)] = name
+    return out
+
+
 def get_chat(chat_id: str) -> dict[str, Any] | None:
     """Métadonnées d'une conversation (dont l'`account_id` propriétaire), ou None."""
     if not chat_id:
@@ -385,40 +464,63 @@ def normalize_chat(chat: dict[str, Any]) -> dict[str, Any]:
     attendee_provider_id = _pick(chat, "attendee_provider_id") or (
         _pick(attendee, "attendee_provider_id", "provider_id") if attendee else None
     )
-    # Nom réel quand Unipile l'a fourni (chat de groupe → `name`/`subject` ; 1-to-1 →
-    # `attendee_name`). Les placeholders `{{…}}` sont rejetés. Sinon None → l'endpoint
-    # nommera par le lead.
-    name = _pick_display_name(chat, "name", "subject") or (
+    # Titre donné par Unipile : rempli pour un GROUPE, et pour un InMail c'est son objet
+    # (« Astek s'intéresse à votre profil ») — pas le nom d'une personne. D'où la
+    # distinction avec `attendee_name` : c'est `apply_chat_names` qui tranche lequel
+    # affiche, selon `is_group`.
+    title = _pick_display_name(chat, "name", "subject")
+    attendee_name = (
         _pick_display_name(attendee, "attendee_name", "name", "display_name") if attendee else None
     )
+    # `type` Unipile : 0 = conversation à deux, 1/2 = groupe. Absent ⇒ traité comme un
+    # 1-to-1 (le repli sur le titre reste en bout de chaîne, rien ne se perd).
+    is_group = str(_pick(chat, "type")) in ("1", "2")
     return {
         "id": _pick(chat, "id", "chat_id"),
-        "name": name,
+        "name": title or attendee_name,
+        "attendee_name": attendee_name,
+        "is_group": is_group,
         "attendee_provider_id": attendee_provider_id,
         "last_message_at": _pick(chat, "timestamp", "last_message_at", "updated_at"),
         "provider_url": _pick(attendee, "attendee_profile_url", "profile_url") if attendee else None,
     }
 
 
-def apply_lead_names(
+def apply_chat_names(
     chats: list[dict[str, Any]],
-    by_provider: dict[str, str],
-    by_chat: dict[str, str],
+    *,
+    by_attendee: dict[str, str],
+    by_lead_provider: dict[str, str],
+    by_lead_chat: dict[str, str],
 ) -> list[dict[str, Any]]:
-    """Nomme chaque conversation (mutation en place) quand Unipile n'a pas fourni de
-    nom réel. Priorité : nom Unipile existant > nom du lead par `attendee_provider_id`
-    (fiable) > nom du lead par `outreach_chat_id` (rétro-compat) > fallback générique.
+    """Nomme chaque conversation (mutation en place).
 
-    Un placeholder (`{{full_name}}`) compte comme « pas de nom » — sans ça, le
-    rattrapage par lead ne tournerait jamais sur ces conversations.
+    Une Inbox liste des personnes : pour une conversation à deux on affiche donc le nom
+    de l'interlocuteur, et le titre Unipile ne sert que de repli — c'est souvent l'objet
+    d'un InMail, voire le libellé de dossier « Other », pas un nom. Un GROUPE, lui,
+    garde son titre : c'est son seul nom.
+
+    Priorité (1-to-1) : participant embarqué dans le chat > `attendee_names` du compte
+    (le seul chemin qui nomme quelqu'un qui n'est PAS un lead de la base) > nom du lead
+    par `attendee_provider_id` > nom du lead par `outreach_chat_id` (rétro-compat) >
+    titre Unipile > fallback générique.
+
+    Un placeholder (`{{full_name}}`) compte partout comme « pas de nom » — sans ça, il
+    bloquerait toute la chaîne et s'afficherait tel quel.
     """
     for chat in chats:
-        if usable_display_name(chat.get("name")) is None:
-            chat["name"] = (
-                usable_display_name(by_provider.get(chat.get("attendee_provider_id")))
-                or usable_display_name(by_chat.get(chat.get("id")))
-                or "Conversation LinkedIn"
-            )
+        pid = chat.get("attendee_provider_id")
+        person = (
+            usable_display_name(chat.get("attendee_name"))
+            or usable_display_name(by_attendee.get(pid))
+            or usable_display_name(by_lead_provider.get(pid))
+            or usable_display_name(by_lead_chat.get(chat.get("id")))
+        )
+        title = usable_display_name(chat.get("name"))
+        if chat.get("is_group"):
+            chat["name"] = title or person or "Conversation LinkedIn"
+        else:
+            chat["name"] = person or title or "Conversation LinkedIn"
     return chats
 
 

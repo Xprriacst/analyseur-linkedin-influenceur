@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing
+from src import heygen
 from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
 from src import audit_projection, mailer
@@ -27,7 +28,7 @@ from src.audit_report import start_audit_email_thread
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
-from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread, start_lead_collection_job_thread
+from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread, start_lead_collection_job_thread, start_avatar_video_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters, lead_collect_credit_cost, effective_max_comments
 from src import lead_search
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
@@ -230,6 +231,18 @@ class AuditLeadRequest(BaseModel):
     preview: dict[str, Any] | None = None
     profile: dict[str, Any] | None = None
     projection: dict[str, Any] | None = None
+
+
+class FoundersLeadRequest(BaseModel):
+    """Opt-in e-mail du tunnel fondateurs (/founders) — l'e-mail seul, AVANT le tunnel.
+
+    Volontairement minimal : le visiteur n'a encore rien vu, lui demander plus
+    qu'un e-mail à ce stade ferait fuir. Le reste (nom, profil) arrive avec la
+    création de compte en fin de tunnel.
+    """
+
+    email: str = Field(min_length=5, max_length=200)
+    source: str | None = Field(default=None, max_length=40)
 
 
 @app.get("/health")
@@ -758,6 +771,51 @@ def onboarding_audit_lead(payload: AuditLeadRequest, request: Request) -> dict[s
     return {"ok": True, "lead_id": lead_id, "calendly_url": AUDIT_CALENDLY_URL}
 
 
+@app.post("/onboarding/founders-lead")
+def onboarding_founders_lead(payload: FoundersLeadRequest, request: Request) -> dict[str, Any]:
+    """Opt-in e-mail de la landing /founders — capture AVANT le tunnel.
+
+    Sans ça, un visiteur qui ferme l'onglet au milieu du quiz ou devant le prix
+    est perdu sans laisser de trace. Rangé dans `audit_leads` (statut
+    `founders_optin`) : c'est le même vivier de prospects, et la table est déjà
+    service-role only. Aucun e-mail n'est envoyé, aucune génération lancée —
+    c'est un opt-in, pas une demande d'audit.
+    """
+    _rate_limit_ip(
+        request,
+        _audit_lead_hits,
+        _audit_lead_lock,
+        _AUDIT_LEAD_MAX,
+        "Trop de demandes depuis cette connexion. Réessaie dans une heure.",
+    )
+
+    email = (payload.email or "").strip().lower()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="Adresse e-mail invalide.")
+
+    # Re-soumission (double-clic, retour sur la landing) : pas de doublon, mais
+    # on répond OK — du point de vue du visiteur son geste a abouti, et c'est vrai.
+    if db.find_recent_audit_lead(email):
+        return {"ok": True, "duplicate": True}
+
+    try:
+        db.insert_audit_lead({
+            "full_name": "",
+            "email": email,
+            "phone": "",
+            "input_kind": (payload.source or "founders_optin").strip()[:20] or "founders_optin",
+            "consent": False,
+            "ip_hash": _client_ip_hash(request),
+            "status": "founders_optin",
+        })
+    except Exception as exc:
+        # Best-effort assumé : l'opt-in ne doit JAMAIS bloquer l'entrée dans le
+        # tunnel — perdre la trace est moins grave que perdre le visiteur.
+        print(f"[founders-lead] enregistrement impossible pour {email} : {exc}", file=sys.stderr)
+
+    return {"ok": True}
+
+
 def _notify_internal_audit_lead(
     full_name: str, email: str, phone: str, payload: AuditLeadRequest
 ) -> None:
@@ -1163,6 +1221,218 @@ def me_instagram_publish(
         raise HTTPException(status_code=502, detail=f"Publication Instagram impossible : {exc}") from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post}
+
+
+# ── 0065 : Avatar IA (HeyGen) — l'avatar du client + vidéos de reels ─────────
+# Le client crée SON photo avatar depuis Mon profil → Connexions (une photo
+# suffit — le consentement « c'est bien moi » est porté par l'UI/CGU, HeyGen
+# n'en exige pas sur ce type d'avatar), choisit une voix française stock, puis
+# le pack Reel gagne « Générer avec mon avatar IA » : un job de fond rend la
+# vidéo 9:16 chez HeyGen, la re-héberge sur Zernio (l'URL HeyGen expire) et la
+# ligne du pack la récupère par target_key — même patron que les images.
+# Derrière le flag `instagram` (comptes agence) tant que le coût par vidéo
+# (~2-3 $ chez HeyGen) n'a pas de calibrage crédits définitif.
+
+
+class AvatarCreateRequest(BaseModel):
+    # data URL (upload direct, plafond aligné sur les photos de soi) OU URL
+    # publique https (ex. une photo déjà hébergée par « Mes photos »).
+    photo_data_url: Optional[str] = Field(default=None, min_length=32, max_length=12_000_000)
+    photo_url: Optional[str] = Field(default=None, min_length=8, max_length=2000)
+    name: Optional[str] = Field(default=None, max_length=120)
+
+
+class AvatarVoiceRequest(BaseModel):
+    voice_id: str = Field(..., min_length=1, max_length=200)
+    name: Optional[str] = Field(default=None, max_length=200)
+
+
+class AvatarVideoJobRequest(BaseModel):
+    script: str = Field(..., min_length=1, max_length=heygen.MAX_SCRIPT_CHARS)
+    target_key: str = Field(..., min_length=1, max_length=200)
+
+
+def _avatar_status_payload(profile: dict[str, Any]) -> dict[str, Any]:
+    avatar = None
+    if profile.get("heygen_avatar_look_id"):
+        avatar = {
+            "look_id": profile.get("heygen_avatar_look_id"),
+            "status": profile.get("heygen_avatar_status") or "processing",
+            "preview_image_url": profile.get("heygen_avatar_preview_url"),
+            "created_at": profile.get("heygen_avatar_created_at"),
+        }
+    voice = None
+    if profile.get("heygen_voice_id"):
+        voice = {
+            "voice_id": profile.get("heygen_voice_id"),
+            "name": profile.get("heygen_voice_name"),
+        }
+    return {"available": heygen.enabled(), "avatar": avatar, "voice": voice}
+
+
+@app.get("/me/avatar/status")
+def me_avatar_status(token: str = Depends(require_token)) -> dict[str, Any]:
+    """État de l'avatar IA du client (+ rafraîchit l'entraînement en cours)."""
+    require_feature(token, "instagram")
+    profile = db.get_editorial_profile(token) or {}
+    look_id = profile.get("heygen_avatar_look_id")
+    # Un avatar encore en entraînement : on relit le statut chez HeyGen à chaque
+    # passage (c'est CE endpoint que le front poll) — best-effort, une panne
+    # HeyGen ne casse pas l'affichage de l'état connu.
+    if look_id and profile.get("heygen_avatar_status") == "processing" and heygen.enabled():
+        try:
+            look = heygen.get_avatar_look(look_id)
+            if look["status"] != "processing":
+                db.update_heygen_avatar_status(
+                    token, look["status"], preview_url=look.get("preview_image_url")
+                )
+                profile["heygen_avatar_status"] = look["status"]
+                if look.get("preview_image_url"):
+                    profile["heygen_avatar_preview_url"] = look["preview_image_url"]
+        except heygen.HeygenError:
+            pass
+    return _avatar_status_payload(profile)
+
+
+@app.post("/me/avatar")
+def me_avatar_create(payload: AvatarCreateRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Crée le photo avatar HeyGen du client à partir de sa photo."""
+    require_feature(token, "instagram")
+    if not heygen.enabled():
+        raise HTTPException(status_code=400, detail="HEYGEN_API_KEY manquant côté serveur.")
+    source = (payload.photo_data_url or payload.photo_url or "").strip()
+    if not source:
+        raise HTTPException(status_code=422, detail="Photo manquante (data URL ou URL publique).")
+    profile = db.get_editorial_profile(token) or {}
+    name = (payload.name or profile.get("display_name") or "Avatar").strip() or "Avatar"
+    try:
+        avatar = heygen.create_photo_avatar(name, source)
+    except heygen.HeygenError as exc:
+        raise HTTPException(status_code=502, detail=f"Création de l'avatar impossible : {exc}") from exc
+    db.set_heygen_avatar(
+        token,
+        avatar["look_id"],
+        group_id=avatar.get("group_id"),
+        status=avatar.get("status") or "processing",
+        preview_url=avatar.get("preview_image_url"),
+    )
+    return {
+        "avatar": {
+            "look_id": avatar["look_id"],
+            "status": avatar.get("status") or "processing",
+            "preview_image_url": avatar.get("preview_image_url"),
+        }
+    }
+
+
+@app.delete("/me/avatar")
+def me_avatar_delete(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Supprime l'avatar côté Cibl (l'entrée HeyGen n'est pas détruite — recréer
+    un avatar en refait simplement un nouveau)."""
+    require_feature(token, "instagram")
+    db.set_heygen_avatar(token, None)
+    return {"ok": True}
+
+
+@app.get("/me/avatar/voices")
+def me_avatar_voices(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Voix stock françaises HeyGen (le client en choisit une pour son avatar)."""
+    require_feature(token, "instagram")
+    if not heygen.enabled():
+        raise HTTPException(status_code=400, detail="HEYGEN_API_KEY manquant côté serveur.")
+    try:
+        return {"voices": heygen.list_voices()}
+    except heygen.HeygenError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/me/avatar/voice")
+def me_avatar_set_voice(payload: AvatarVoiceRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Enregistre la voix choisie pour l'avatar."""
+    require_feature(token, "instagram")
+    db.set_heygen_voice(token, payload.voice_id.strip(), (payload.name or "").strip() or None)
+    return {"ok": True}
+
+
+@app.post("/me/avatar/videos")
+def me_avatar_video_create(payload: AvatarVideoJobRequest, token: str = Depends(require_token)) -> dict[str, Any]:
+    """Lance le rendu d'une vidéo avatar (job de fond) sur le script fourni."""
+    require_feature(token, "instagram")
+    if not heygen.enabled():
+        raise HTTPException(status_code=400, detail="HEYGEN_API_KEY manquant côté serveur.")
+    if not zernio.enabled():
+        # Le job re-héberge la vidéo sur Zernio (l'URL HeyGen expire) : sans
+        # Zernio, la vidéo serait perdue avant la publication — fail closed.
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    look_id = profile.get("heygen_avatar_look_id")
+    if not look_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Aucun avatar IA. Crée-le d'abord dans Mon profil → Connexions → Mon avatar IA.",
+        )
+    if profile.get("heygen_avatar_status") != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail="Ton avatar est encore en préparation — réessaie dans une minute.",
+        )
+    voice_id = profile.get("heygen_voice_id")
+    if not voice_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Choisis d'abord la voix de ton avatar (Mon profil → Connexions → Mon avatar IA).",
+        )
+    script = payload.script.strip()
+    if not script:
+        raise HTTPException(status_code=422, detail="Script vide.")
+
+    # Pré-check fail-closed du solde (même patron que les images) : le débit
+    # n'a lieu qu'à la complétion réussie, mais on ne lance pas un rendu qu'on
+    # sait impossible à débiter.
+    cost = db.CREDIT_COSTS["avatar_video"]
+    try:
+        info = db.get_user_credits(token)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Vérification du solde impossible, réessaie dans un instant ({exc}).",
+        )
+    if info.get("enabled") and info.get("balance", 0) < cost:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Crédits insuffisants (solde : {info.get('balance', 0)}). Une vidéo avatar coûte {cost} crédits.",
+        )
+
+    job = db.create_avatar_video_job(token, script, payload.target_key.strip(), look_id, voice_id)
+    if not job:
+        raise HTTPException(status_code=500, detail="Création du job impossible.")
+    start_avatar_video_job_thread(token, job["id"])
+    return job
+
+
+@app.get("/me/avatar/videos")
+def me_avatar_video_list(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Liste les jobs vidéo avatar (result inclus : URLs seulement, jamais d'octets)."""
+    require_feature(token, "instagram")
+    return {"jobs": db.list_avatar_video_jobs(token)}
+
+
+@app.get("/me/avatar/videos/{job_id}")
+def me_avatar_video_get(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    require_feature(token, "instagram")
+    job = db.get_avatar_video_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job introuvable.")
+    return job
+
+
+@app.post("/me/avatar/videos/{job_id}/cancel")
+def me_avatar_video_cancel(job_id: str, token: str = Depends(require_token)) -> dict[str, Any]:
+    require_feature(token, "instagram")
+    job = db.cancel_avatar_video_job(token, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job introuvable.")
+    return job
 
 
 # ── ALE-96 : Planification LinkedIn ──────────────────────────────────────────
@@ -4618,6 +4888,12 @@ def me_outreach_draft_approve(
     return {"item": item, "items": db.list_outreach_drafts(token), "engine": _engine_state(token, _require_outreach_account(token))}
 
 
+# Nombre maximum de conversations pour lesquelles on va chercher le participant une par
+# une quand le listing par compte ne l'a pas ramené (borne le temps de réponse de l'Inbox,
+# rafraîchie toutes les 30 s côté client).
+_INBOX_ATTENDEE_LOOKUPS = 12
+
+
 @app.get("/me/linkedin/outreach/chats")
 def me_linkedin_outreach_chats(token: str = Depends(require_token)) -> dict[str, Any]:
     """Conversations LinkedIn du compte connecté (onglet LinkedIn de l'Inbox)."""
@@ -4627,13 +4903,53 @@ def me_linkedin_outreach_chats(token: str = Depends(require_token)) -> dict[str,
     except unipile.UnipileError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     normalized = [unipile.normalize_chat(c) for c in chats]
-    # Nommer les conversations : Unipile ne renvoie pas toujours le participant dans
-    # la liste des chats. Priorité : (1) nom réel fourni par Unipile s'il existe ;
-    # sinon (2) nom du lead retrouvé par son identifiant LinkedIn `attendee_provider_id`
-    # (source fiable — chaque lead contacté a un `provider_id`) ; sinon (3) par
-    # `outreach_chat_id` (rare, rétro-compat) ; sinon (4) fallback générique.
+    # Nommer les conversations. ⚠️ `GET /chats` ne donne, pour une conversation à deux,
+    # que l'identifiant LinkedIn du participant — jamais son nom. Le rattrapage par les
+    # leads ne couvre donc QUE les gens sortis de la prospection : tout le reste de
+    # l'Inbox (messages entrants, recruteurs, relations existantes) restait « Conversation
+    # LinkedIn ». D'où l'appel aux participants du compte, qui porte le vrai nom LinkedIn.
     by_chat, by_provider = db.get_outreach_lead_name_maps(token)
-    unipile.apply_lead_names(normalized, by_provider, by_chat)
+    wanted = {
+        c["attendee_provider_id"]
+        for c in normalized
+        if c.get("attendee_provider_id")
+        and not c.get("attendee_name")
+        and not by_provider.get(c["attendee_provider_id"])
+    }
+    by_attendee: dict[str, str] = {}
+    if wanted:
+        try:
+            by_attendee = unipile.attendee_names(account["unipile_account_id"], wanted=wanted)
+        except unipile.UnipileError as exc:
+            # Best-effort : mieux vaut une Inbox aux noms génériques qu'une Inbox en panne.
+            print(f"[inbox] noms des participants LinkedIn indisponibles : {exc}", flush=True)
+        # Les participants que le listing par compte n'a pas ramenés (compte à gros
+        # historique : ils ne sont pas triés par conversation récente) sont cherchés
+        # conversation par conversation, en nombre borné — les plus récentes d'abord,
+        # ce sont celles que le client a sous les yeux.
+        for chat in normalized[:_INBOX_ATTENDEE_LOOKUPS]:
+            pid = chat.get("attendee_provider_id")
+            if pid not in wanted or pid in by_attendee:
+                continue
+            try:
+                by_attendee.update(unipile.chat_attendee_names(chat["id"]))
+            except unipile.UnipileError:
+                continue
+    unipile.apply_chat_names(
+        normalized,
+        by_attendee=by_attendee,
+        by_lead_provider=by_provider,
+        by_lead_chat=by_chat,
+    )
+    unresolved = sum(1 for c in normalized if c.get("name") == "Conversation LinkedIn")
+    if unresolved:
+        # Trace de diagnostic : sans elle, « ça reste générique » n'a aucune prise. Dit
+        # si le manque vient d'Unipile (0 participant ramené) ou de la correspondance.
+        print(
+            f"[inbox] {unresolved}/{len(normalized)} conversation(s) sans nom "
+            f"({len(by_attendee)} participant(s) ramené(s) pour {len(wanted)} demandé(s))",
+            flush=True,
+        )
     return {"chats": normalized}
 
 

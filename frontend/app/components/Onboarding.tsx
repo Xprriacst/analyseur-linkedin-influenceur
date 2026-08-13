@@ -30,13 +30,12 @@ import {
   Lock,
   Mail,
   MessageSquare,
-  Rocket,
   Sparkles,
   Target,
   Users,
 } from "lucide-react";
 import { authHeaders } from "../lib/supabase";
-import { PROOF_INFLUENCERS_ANALYZED, PROOF_POSTS_ANALYZED } from "../lib/founders";
+import { FOUNDERS_FIRST_MONTH_OFF_PCT, FOUNDERS_TESTIMONIAL } from "../lib/founders";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
@@ -309,6 +308,15 @@ function fmtMoney(n: number): string {
   return `${fmtInt(n)} €`;
 }
 
+/** Prix catalogue (peut être décimal : 29,40 €). */
+function fmtPrice(n: number): string {
+  const rounded = Math.round(n * 100) / 100;
+  return `${rounded.toLocaleString("fr-FR", {
+    minimumFractionDigits: Number.isInteger(rounded) ? 0 : 2,
+    maximumFractionDigits: 2,
+  })} €`;
+}
+
 /** Fourchette affichée « bas à haut ». Bornes égales ⇒ une seule valeur. */
 function fmtRange(range: OnbRange | undefined, fmt: (n: number) => string): string {
   if (!range) return "—";
@@ -414,8 +422,8 @@ export default function OnboardingScreen({
   variant: variantKey = "default",
   trialDays = 7,
   planPrice = 49,
-  monthlySeats = 0,
-  guaranteeDays = 0,
+  monthlySeats: _monthlySeats = 0,
+  guaranteeDays: _guaranteeDays = 0,
   onFinish,
   onSkip,
   finishLabel = "C'est parti",
@@ -474,11 +482,25 @@ export default function OnboardingScreen({
   const [scanResult, setScanResult] = useState<
     { profile: Record<string, string>; preview: OnboardingPreview | null } | null
   >(null);
+  /**
+   * Où en est le quiz du scan (tunnel SaaS) : 0 = animation seule (la pop-up
+   * n'apparaît qu'après ~2,5 s — l'animation doit d'abord s'installer), 1 =
+   * question du stade, 2 = question des obstacles, 3 = quiz terminé (retour à
+   * l'animation si l'analyse n'est pas finie — l'avancée devient automatique,
+   * il n'y a plus de choix à protéger).
+   */
+  const [quizIdx, setQuizIdx] = useState(0);
   // Qualification fondateur (pendant le scan, tunnel SaaS) — sert l'effet miroir
   // du closing. Volontairement hors du profil éditorial : le backend ignorerait
   // ces clés en silence, autant ne pas prétendre les enregistrer.
   const [stage, setStage] = useState("");
   const [obstacles, setObstacles] = useState<string[]>([]);
+  // « Autre » : le blocage dans SES mots — c'est même le meilleur carburant du
+  // miroir, puisque le closing le lui rendra tel quel.
+  const [obstacleOther, setObstacleOther] = useState("");
+  const [showObstacleOther, setShowObstacleOther] = useState(false);
+  // Les obstacles restent captés pendant le scan (qualification) — plus restitués
+  // au closing (paywall minimal).
 
   // --- Tunnel « audit complet » (landing uniquement) ---
   const [bands, setBands] = useState<OnbBand[]>([]);
@@ -538,6 +560,25 @@ export default function OnboardingScreen({
     return () => clearInterval(id);
   }, [step]);
 
+  // La pop-up du quiz n'apparaît que ~2,5 s après le lancement : l'animation de
+  // scan doit d'abord raconter ce qui se passe, sinon la question tombe avant
+  // même que « Lecture de ton site… » ait été lu.
+  useEffect(() => {
+    if (step !== "scanning" || variantKey !== "saas") return;
+    const id = setTimeout(() => setQuizIdx((i) => (i === 0 ? 1 : i)), 2500);
+    return () => clearTimeout(id);
+  }, [step, variantKey]);
+
+  // Quiz terminé + analyse prête ⇒ on avance tout seul. C'est le SEUL cas
+  // d'avancée automatique : tant qu'une question est à l'écran, le résultat
+  // attend — on n'arrache pas un choix en cours.
+  useEffect(() => {
+    if (step === "scanning" && variantKey === "saas" && quizIdx === 3 && scanResult) {
+      applyScanResult(scanResult.profile, scanResult.preview);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, quizIdx, scanResult]);
+
   /** Applique le brouillon + la preview et avance vers l'écran d'analyse. */
   function applyScanResult(d: Record<string, string>, p: OnboardingPreview | null) {
     setDraft(d);
@@ -549,7 +590,7 @@ export default function OnboardingScreen({
   async function analyze() {
     const trimmed = aiInput.trim();
     if (!trimmed) { setError(variant.introError); return; }
-    setError(""); setScanResult(null); setStep("scanning");
+    setError(""); setScanResult(null); setQuizIdx(0); setStep("scanning");
     try {
       const isLinkedin = inputKind === "linkedin";
       const isWebsite = inputKind === "website";
@@ -709,12 +750,13 @@ export default function OnboardingScreen({
   const progressPct = step === "page1" ? "50%" : "100%";
   // Écrans qui gagnent à respirer sur grand écran (grilles et colonnes), par
   // opposition aux écrans de saisie où une colonne étroite reste plus lisible.
+  // Paywall closing : colonne un peu plus large que le mobile, centrée.
+  const isPitch = step === "pitch";
   const isWideStep =
     step === "analysis" ||
     step === "analysis_detail" ||
     step === "gains" ||
     step === "simulation" ||
-    step === "pitch" ||
     step === "lead_form";
   const isAnalysis =
     step === "analysis" ||
@@ -731,7 +773,8 @@ export default function OnboardingScreen({
         className={
           "onb-shell" +
           (isAnalysis ? " onb-shell-analysis" : "") +
-          (isWideStep ? " onb-shell-wide" : "")
+          (isWideStep ? " onb-shell-wide" : "") +
+          (isPitch ? " onb-shell-pitch" : "")
         }
       >
         {showProgress && (
@@ -768,20 +811,23 @@ export default function OnboardingScreen({
             <div className="onb-orb">
               {variantKey === "saas" ? <Globe size={34} /> : <Linkedin size={34} />}
             </div>
-            <div className="onb-scan-status" key={scanResult ? "done" : scanIdx}>
-              {scanResult ? "Analyse prête ✓" : variant.scanSteps[scanIdx]}
+            {/* « Analyse prête » ne s'affiche qu'une fois le quiz fini : pendant
+                les questions, le statut continue de raconter le scan — annoncer
+                la fin inciterait à bâcler la réponse en cours. */}
+            <div className="onb-scan-status" key={scanResult && quizIdx >= 3 ? "done" : scanIdx}>
+              {scanResult && quizIdx >= 3 ? "Analyse prête ✓" : variant.scanSteps[scanIdx]}
             </div>
 
-            {/* Tunnel SaaS : la lecture du site prend de longues secondes — ces
-                deux questions occupent l'attente. Le résultat de l'analyse attend
-                en coulisse (`scanResult`) : c'est le clic du visiteur qui avance,
-                jamais la fin du fetch, sinon l'écran lui serait arraché en plein
-                choix. */}
-            {variantKey === "saas" && (
-              <div className="onb-scan-quiz">
-                <div className="onb-scan-quiz-kicker">Pendant que ça tourne — deux questions</div>
+            {/* Tunnel SaaS : la lecture du site prend de longues secondes — deux
+                pop-up successives (une question chacune) occupent l'attente. Le
+                bouton « Continuer » est TOUJOURS cliquable : répondre ne dépend
+                pas de l'analyse. Après la 2ᵉ, si l'analyse n'est pas finie, on
+                revient à l'animation et l'avancée devient automatique. */}
+            {variantKey === "saas" && quizIdx === 1 && (
+              <div className="onb-scan-quiz" key="quiz1">
+                <div className="onb-scan-quiz-kicker">Pendant que ça tourne — question 1/2</div>
 
-                <div className="onb-block">
+                <div className="onb-block" style={{ marginBottom: 6 }}>
                   <label className="onb-block-label">Où en est ton SaaS&nbsp;?</label>
                   <p className="onb-lead" style={{ margin: "0 0 8px", fontSize: 13 }}>
                     Le stade calibre la stratégie.
@@ -804,6 +850,16 @@ export default function OnboardingScreen({
                   </div>
                 </div>
 
+                <button type="button" className="onb-analysis-cta" onClick={() => setQuizIdx(2)}>
+                  Continuer <ChevronRight size={16} />
+                </button>
+              </div>
+            )}
+
+            {variantKey === "saas" && quizIdx === 2 && (
+              <div className="onb-scan-quiz" key="quiz2">
+                <div className="onb-scan-quiz-kicker">Pendant que ça tourne — question 2/2</div>
+
                 <div className="onb-block" style={{ marginBottom: 6 }}>
                   <label className="onb-block-label">Qu&apos;est-ce qui te bloque le plus&nbsp;?</label>
                   <p className="onb-lead" style={{ margin: "0 0 8px", fontSize: 13 }}>
@@ -824,20 +880,40 @@ export default function OnboardingScreen({
                         {label}
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      className={"onb-chip" + (showObstacleOther ? " selected" : "")}
+                      onClick={() => {
+                        const next = !showObstacleOther;
+                        setShowObstacleOther(next);
+                        if (!next) setObstacleOther("");
+                      }}
+                    >
+                      Autre
+                    </button>
                   </div>
+                  {showObstacleOther && (
+                    <input
+                      className="onb-other-input"
+                      value={obstacleOther}
+                      onChange={(e) => setObstacleOther(e.target.value)}
+                      placeholder="Dis-le avec tes mots…"
+                      autoFocus
+                    />
+                  )}
                 </div>
 
+                {/* Toujours cliquable : si l'analyse est prête on avance tout de
+                    suite, sinon retour à l'animation — l'effet fera le reste. */}
                 <button
                   type="button"
                   className="onb-analysis-cta"
-                  disabled={!scanResult}
-                  onClick={() => scanResult && applyScanResult(scanResult.profile, scanResult.preview)}
+                  onClick={() => {
+                    setQuizIdx(3);
+                    if (scanResult) applyScanResult(scanResult.profile, scanResult.preview);
+                  }}
                 >
-                  {scanResult ? (
-                    <>Voir mon analyse <ChevronRight size={16} /></>
-                  ) : (
-                    <><Loader2 size={16} className="spinning" /> Analyse en cours…</>
-                  )}
+                  Continuer <ChevronRight size={16} />
                 </button>
               </div>
             )}
@@ -1228,110 +1304,74 @@ export default function OnboardingScreen({
           </div>
         )}
 
-        {step === "pitch" && funnel === "trial" && (
-          <div className="onb-screen onb-analysis" key="pitch">
-            <h2 className="onb-analysis-title">Le vrai goulot, ce n&apos;est pas ton produit</h2>
-
-            {/* Effet miroir : ses propres mots, pas un argumentaire générique.
-                C'est le levier central du funnel de référence (« You're Closer
-                Than You Think ») — il ne marche que si les mots sont les siens.
-                Une seule carte : le miroir et le récit de la casquette portent la
-                même idée, les étirer sur deux cartes diluait le coup. */}
-            <div className="onb-analysis-card">
-              <div className="onb-analysis-label">Le vrai tueur&nbsp;: le changement de casquette</div>
-              {obstacles.length > 0 && (
-                <p className="onb-analysis-summary">
-                  Tu l&apos;as dit toi-même&nbsp;:{" "}
-                  {obstacles.map((o, i) => (
-                    <span key={o}>
-                      {i > 0 && ", "}
-                      <strong>«&nbsp;{o.toLowerCase()}&nbsp;»</strong>
-                    </span>
-                  ))}
-                  . Pas un problème de discipline — un problème de rôle.
-                </p>
-              )}
-              <p className="onb-analysis-summary">
-                10x développeur le matin, 0.1x marketeur l&apos;après-midi&nbsp;: chaque
-                bascule coûte 20 à 30 minutes de refocus. Le build avance — ton
-                LinkedIn reste muet.
-              </p>
-            </div>
-
-            <FoundersSplit />
-
-            {/* Cadrage ROI : pure arithmétique sur l'ACV que LE VISITEUR vient de
-                choisir — pas une promesse de résultat, un ordre de grandeur du
-                rapport coût/enjeu. */}
-            {band && band.deal_value > 0 && (
-              <div className="onb-gain-highlight">
-                <div className="onb-gain-label">Ton investissement vs ton enjeu</div>
-                <div className="onb-gain-money">
-                  {fmtMoney(planPrice)}/mois — un seul client à ton ACV ({fmtMoney(band.deal_value)})
-                  rembourse {fmtInt(Math.max(1, Math.floor(band.deal_value / Math.max(1, planPrice))))} mois
+        {step === "pitch" && funnel === "trial" && (() => {
+          const offPct = FOUNDERS_FIRST_MONTH_OFF_PCT;
+          const introPrice = Math.round(planPrice * (100 - offPct)) / 100;
+          const perDay = introPrice / 30;
+          return (
+          <div className="onb-screen onb-pitch" key="pitch">
+            {/* Paywall desktop-first : témoignage → 1 offre → CTA → fine print.
+                Pas de miroir / ROI / garantie — trop de blocs bleus, trop de scroll. */}
+            <a
+              className="onb-testimonial"
+              href={FOUNDERS_TESTIMONIAL.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <div className="onb-testimonial-head">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  className="onb-testimonial-avatar"
+                  src={FOUNDERS_TESTIMONIAL.avatar}
+                  alt={FOUNDERS_TESTIMONIAL.name}
+                  width={48}
+                  height={48}
+                />
+                <div className="onb-testimonial-meta">
+                  <div className="onb-testimonial-name">{FOUNDERS_TESTIMONIAL.name}</div>
+                  <div className="onb-testimonial-handle">{FOUNDERS_TESTIMONIAL.handle}</div>
                 </div>
-                <div className="onb-gain-hint" style={{ marginTop: 6 }}>
-                  {Math.floor(band.deal_value / Math.max(1, planPrice)) >= 24
-                    ? `soit plus de ${Math.floor(band.deal_value / Math.max(1, planPrice) / 12)} ans d'abonnement remboursés par une seule signature`
-                    : "des mois d'abonnement remboursés par une seule signature"}
-                </div>
+                <span className="onb-testimonial-stars" aria-hidden="true">★★★★★</span>
               </div>
-            )}
+              <p className="onb-testimonial-quote">«&nbsp;{FOUNDERS_TESTIMONIAL.quote}&nbsp;»</p>
+            </a>
 
-            <div className="onb-analysis-card">
-              <div className="onb-analysis-label">Comment ça démarre — sans hype</div>
-              <FoundersTimeline />
-            </div>
+            <h2 className="onb-pitch-title">Choisis ton plan</h2>
 
-            <div className="onb-analysis-card">
-              <div className="onb-analysis-label">Les alternatives, honnêtement</div>
-              <FoundersAlternatives planPrice={planPrice} />
-            </div>
-
-            {/* Preuve · places · garantie : trois faits, un seul bandeau — les
-                empiler en trois encarts noyait chacun d'eux. */}
-            <div className="onb-strip">
-              <div className="onb-strip-item">
-                <div className="onb-strip-value">{PROOF_INFLUENCERS_ANALYZED}+ comptes</div>
-                <div className="onb-strip-label">
-                  analysés · {fmtInt(PROOF_POSTS_ANALYZED)}+ posts au crible
+            <div className="onb-plan" aria-pressed="true">
+              <span className="onb-plan-radio" aria-hidden="true" />
+              <div className="onb-plan-main">
+                <div className="onb-plan-row">
+                  <span className="onb-plan-name">Mensuel</span>
+                  <span className="onb-plan-badge">−{offPct}&nbsp;%</span>
                 </div>
+                <div className="onb-plan-sub">1er mois après l&apos;essai</div>
               </div>
-              {monthlySeats > 0 && (
-                <div className="onb-strip-item">
-                  <div className="onb-strip-value">{monthlySeats} / mois</div>
-                  <div className="onb-strip-label">
-                    comptes fondateurs par mois — le démarrage est encore accompagné à la main
-                  </div>
-                </div>
-              )}
-              {guaranteeDays > 0 && (
-                <div className="onb-strip-item">
-                  <div className="onb-strip-value">Satisfait ou remboursé</div>
-                  <div className="onb-strip-label">
-                    {guaranteeDays} jours après l&apos;essai — premier mois remboursé sur demande
-                  </div>
-                </div>
-              )}
+              <div className="onb-plan-price">
+                <span className="onb-plan-was">{fmtPrice(planPrice)}</span>
+                <span className="onb-plan-now">{fmtPrice(introPrice)}</span>
+                <span className="onb-plan-day">{fmtPrice(perDay)}&nbsp;/jour</span>
+              </div>
             </div>
 
             <button
               type="button"
-              className="onb-analysis-cta"
+              className="onb-pitch-cta"
               onClick={finish}
               disabled={saving}
             >
-              {saving ? <Loader2 size={16} className="spinning" /> : <Rocket size={16} />}{" "}
+              {saving ? <Loader2 size={16} className="spinning" /> : null}
               Démarrer mes {trialDays} jours gratuits
             </button>
-            <div className="onb-note" style={{ textAlign: "center" }}>
-              {trialDays} jours d&apos;accès complet, 0&nbsp;€ — résiliable en un clic avant la fin.
-            </div>
-            <button type="button" className="onb-analysis-skip" onClick={() => setStep("simulation")}>
-              ← Retour à la simulation
-            </button>
+
+            <p className="onb-pitch-legal">
+              Le prix réduit s&apos;applique à ton premier mois après l&apos;essai.
+              Ton abonnement sera ensuite renouvelé à {fmtPrice(planPrice)}/mois,
+              jusqu&apos;à annulation dans ton compte.
+            </p>
           </div>
-        )}
+          );
+        })()}
 
         {step === "lead_form" && (
           <div className="onb-screen onb-analysis" key="lead_form">
@@ -1537,83 +1577,28 @@ function SimCard({
 
 /**
  * Blocs de l'argumentaire fondateurs, PARTAGÉS entre le closing du tunnel et la
- * landing /founders. Une seule source : si l'argument change (plafonds réels du
- * moteur, prix des alternatives), les deux surfaces changent ensemble — deux
- * copies auraient fini par se contredire.
+ * landing /founders. Une seule source : si l'argument change, les deux surfaces
+ * changent ensemble — deux copies auraient fini par se contredire.
+ *
+ * Format Catalog : titre accent + sous-texte, deux colonnes — pas de listes.
  */
 export function FoundersSplit() {
   return (
-    <div className="onb-analysis-grid">
-      <div className="onb-analysis-block">
-        <div className="onb-analysis-label">Cibl s&apos;en charge</div>
-        <ul className="onb-analysis-list">
-          {[
-            "Analyse ce qui marche dans ta catégorie",
-            "Écrit tes posts dans ta voix",
-            "Publie aux bons créneaux",
-            "Repère ton ICP chez tes concurrents",
-            "Invite et relance sous les plafonds LinkedIn",
-          ].map((line) => (
-            <li key={line}>
-              <CheckCircle2 size={16} className="onb-analysis-ok" />
-              <span>{line}</span>
-            </li>
-          ))}
-        </ul>
+    <div className="fl-benefits">
+      <div className="fl-benefits-col">
+        <div className="fl-benefits-title">100&nbsp;% fait pour toi</div>
+        <div className="fl-benefits-sub">on le fait, tu valides</div>
       </div>
-      <div className="onb-analysis-block">
-        <div className="onb-analysis-label">Tu fais</div>
-        <ul className="onb-analysis-list">
-          <li>
-            <CheckCircle2 size={16} className="onb-analysis-ok" />
-            <span>Valider les posts, répondre à tes prospects.</span>
-          </li>
-          <li>
-            <CheckCircle2 size={16} className="onb-analysis-ok" />
-            <span>Moins de 15 minutes par jour. C&apos;est tout.</span>
-          </li>
-        </ul>
+      <div className="fl-benefits-col">
+        <div className="fl-benefits-title">Prêt pour chaque pivot</div>
+        <div className="fl-benefits-sub">ton audience suit chaque produit que tu lances</div>
       </div>
-    </div>
-  );
-}
-
-/** Roadmap « sans hype » — ancrée sur le warm-up réel du moteur (8→15→20/jour). */
-export function FoundersTimeline() {
-  const steps: { when: string; what: string }[] = [
-    {
-      when: "Semaines 1-2",
-      what: "Montée en douceur : 8 puis 15 puis 20 actions/jour — le rythme qui protège ton compte — pendant que tes premiers posts partent.",
-    },
-    {
-      when: "Mois 1",
-      what: "Régime de croisière : ~100 invitations par semaine vers ton ICP, tes premières réponses en inbox.",
-    },
-    {
-      when: "Mois 3",
-      what: "Les fourchettes affichées — abonnés, conversations, clients — sont calculées sur ce régime-là.",
-    },
-  ];
-  return (
-    <div className="onb-timeline">
-      {steps.map((s, i) => (
-        <div className="onb-timeline-item" key={s.when}>
-          <div className="onb-timeline-rail">
-            <span className="onb-timeline-dot" />
-            {i < steps.length - 1 && <span className="onb-timeline-line" />}
-          </div>
-          <div className="onb-timeline-body">
-            <div className="onb-timeline-when">{s.when}</div>
-            <div className="onb-timeline-what">{s.what}</div>
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
 
 /** Comparatif à charge — ordres de grandeur constatés, jamais des devis. */
-export function FoundersAlternatives({ planPrice }: { planPrice: number }) {
+export function FoundersAlternatives() {
   const alts = [
     { name: "Ghostwriter LinkedIn", price: "500 à 2 000 €/mois", note: "il écrit — tu prospectes encore à la main" },
     { name: "Agence de prospection", price: "1 000 à 3 000 €/mois", note: "souvent sans le contenu, résultats opaques" },
@@ -1628,11 +1613,6 @@ export function FoundersAlternatives({ planPrice }: { planPrice: number }) {
           <span className="onb-alt-note">— {alt.note}</span>
         </div>
       ))}
-      <div className="onb-alt-row onb-alt-us">
-        <span className="onb-alt-name">Cibl</span>
-        <span className="onb-alt-price">{fmtMoney(planPrice)}/mois</span>
-        <span className="onb-alt-note">— contenu + prospection dans la même app, &lt;15 min/jour</span>
-      </div>
       <div className="onb-gain-hint" style={{ marginTop: 8 }}>
         Ordres de grandeur constatés sur le marché — pas des devis.
       </div>
@@ -1680,7 +1660,7 @@ function GrowthCurve({
   const mid = (endLow + endHigh) / 2;
   const bandPath =
     `M ${pts(endHigh).join(" L ")} L ${pts(endLow).reverse().join(" L ")} Z`;
-  const midPts = pts(mid);
+  const midPath = `M ${pts(mid).join(" L ")}`;
   const endX = x(1), endY = y(value(1, mid));
 
   return (
@@ -1705,21 +1685,27 @@ function GrowthCurve({
           x1={pad.left} x2={W - pad.right} y1={pad.top + innerH} y2={pad.top + innerH}
           stroke="rgba(27,27,35,.14)" strokeWidth="1"
         />
-        {/* Fourchette basse↔haute */}
-        <path d={bandPath} fill="rgba(70,72,212,.1)" />
-        {/* Trajectoire médiane */}
-        <polyline
-          points={midPts.join(" ")}
+        {/* Fourchette basse↔haute — apparaît quand la ligne a fini de se tracer */}
+        <path className="onb-curve-band" d={bandPath} fill="rgba(70,72,212,.1)" />
+        {/* Trajectoire médiane — se DESSINE à l'arrivée sur l'écran (pathLength
+            normalisé à 1 : le dash-offset anime le tracé quelle que soit la
+            longueur réelle de la courbe). */}
+        <path
+          className="onb-curve-line"
+          d={midPath}
+          pathLength={1}
           fill="none" stroke="#4648d4" strokeWidth="2.5"
           strokeLinecap="round" strokeLinejoin="round"
         />
-        <circle cx={endX} cy={endY} r="4.5" fill="#4648d4" stroke="#fff" strokeWidth="2" />
-        <text
-          x={endX - 4} y={Math.max(pad.top - 8, endY - 12)}
-          textAnchor="end" fontSize="13.5" fontWeight="700" fill="#1b1b23"
-        >
-          {endText}
-        </text>
+        <g className="onb-curve-end">
+          <circle cx={endX} cy={endY} r="4.5" fill="#4648d4" stroke="#fff" strokeWidth="2" />
+          <text
+            x={endX - 4} y={Math.max(pad.top - 8, endY - 12)}
+            textAnchor="end" fontSize="13.5" fontWeight="700" fill="#1b1b23"
+          >
+            {endText}
+          </text>
+        </g>
       </svg>
       <div className="onb-curve-axis">
         <span>Aujourd&apos;hui</span>
