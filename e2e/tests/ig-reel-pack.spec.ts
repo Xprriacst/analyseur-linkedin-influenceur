@@ -27,7 +27,9 @@ const REEL_JOB_DB_SHAPE = {
         post: "100 outils testés depuis janvier. 6 ont survécu.",
         reel_details: {
           hook: "J'ai testé 100 outils IA depuis le début de l'année.",
-          script: "1. CE QU'ON DIT : ...\n\n2. CE QU'ON MONTRE : ...",
+          // Le script ne porte QUE le texte dit ; ce qu'on montre vit à part.
+          script: "94 ont fini à la poubelle.\nVoilà les 6 qui restent.",
+          shots: ["Plan fixe, regard caméra.", "Texte incrusté : les 6 noms."],
           hashtags: ["#outilsia", "#automatisation"],
         },
       },
@@ -65,9 +67,16 @@ test("le pack reel s'affiche depuis la forme base (post + reel_details)", async 
 
   // Les quatre champs sont remplis — c'est exactement ce qui manquait.
   await expect(page.getByLabel("Hook du reel")).toHaveValue(/testé 100 outils IA/);
-  await expect(page.getByLabel("Script du reel")).toHaveValue(/CE QU'ON DIT/);
+  await expect(page.getByLabel("Script du reel")).toHaveValue(/94 ont fini à la poubelle/);
   await expect(page.getByLabel("Caption du reel")).toHaveValue(/100 outils testés depuis janvier/);
   await expect(page.getByLabel("Hashtags du reel")).toHaveValue("#outilsia #automatisation");
+
+  // Le texte dit et le plan de tournage sont dans DEUX champs distincts : si le
+  // tournage repassait dans le script, l'avatar IA le prononcerait à voix haute.
+  await expect(page.getByLabel("Script du reel")).not.toHaveValue(/Plan fixe/);
+  await expect(page.getByLabel("Plan de tournage du reel")).toHaveValue(
+    "Plan fixe, regard caméra.\nTexte incrusté : les 6 noms.",
+  );
 
   // Le titre de la ligne repliée porte le hook, pas le libellé de repli.
   await expect(page.locator(".post-queue-line").first()).not.toHaveText(/^Pack reel$/);
@@ -86,6 +95,7 @@ test("forme à plat (sauvegarde en échec) : le pack reste lisible", async ({ pa
           post: "",
           hook: "Hook resté à plat",
           script: "Script resté à plat",
+          shots: ["Plan resté à plat"],
           caption: "Caption restée à plat",
           hashtags: ["#plat"],
         },
@@ -96,6 +106,7 @@ test("forme à plat (sauvegarde en échec) : le pack reste lisible", async ({ pa
 
   await expect(page.getByLabel("Hook du reel")).toHaveValue("Hook resté à plat");
   await expect(page.getByLabel("Script du reel")).toHaveValue("Script resté à plat");
+  await expect(page.getByLabel("Plan de tournage du reel")).toHaveValue("Plan resté à plat");
   await expect(page.getByLabel("Caption du reel")).toHaveValue("Caption restée à plat");
   await expect(page.getByLabel("Hashtags du reel")).toHaveValue("#plat");
 });

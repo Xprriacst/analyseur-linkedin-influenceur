@@ -1996,8 +1996,12 @@ REEL_QUALITY_GUARDRAILS = """
 Qualité rédactionnelle obligatoire :
 - Le hook doit être dit/montré dans les 3 PREMIÈRES secondes : une phrase choc, une question ou une scène qui arrête
   le scroll — jamais une intro molle ("Salut, aujourd'hui je vais vous parler de...").
-- Le script doit être RÉALISTE À TOURNER SEUL avec un téléphone : pas de plan impossible, pas de montage complexe
-  imposé. 4 à 7 scènes numérotées, chacune avec CE QU'ON DIT (à l'oral) et CE QU'ON MONTRE (à l'écran).
+- Le champ "script" ne contient QUE le texte prononcé face caméra, prêt à être lu tel quel : aucune indication de
+  tournage, aucun numéro de scène, aucun préfixe du type "CE QU'ON DIT", aucune mention de plan, de cadrage,
+  d'incrustation ou de montage. Une ligne (un court paragraphe) par scène, dans l'ordre.
+- Le champ "shots" porte SÉPARÉMENT les indications de tournage : ce qu'on montre à l'écran (cadrage, geste, cut,
+  texte incrusté), une entrée par scène, dans le même ordre et en même nombre que les lignes du script. Réaliste à
+  tourner seul avec un téléphone : pas de plan impossible, pas de montage complexe imposé. 4 à 7 scènes.
 - La caption reprend/complète le hook en texte, apporte du contexte, se termine par UN SEUL appel à l'action clair
   (commenter, enregistrer, envoyer en DM...).
 - Les hashtags mélangent 2-3 hashtags larges et 3-5 hashtags de niche — jamais les mêmes hashtags génériques recyclés
@@ -2005,6 +2009,98 @@ Qualité rédactionnelle obligatoire :
 - Calque le ton sur le profil éditorial du client. Évite le ton "coach LinkedIn IA" : pas de fausse gravité, pas de
   punchlines isolées, pas de formules recyclées.
 """.strip()
+
+
+# Le script d'un reel est LU TEL QUEL — par le client face caméra, et surtout
+# par son avatar IA (HeyGen lit le champ mot pour mot). Une didascalie qui y
+# reste est donc PRONONCÉE À VOIX HAUTE : la vidéo part avec « plan fixe,
+# cadrage épaules » dans la bouche de l'avatar, sans la moindre erreur nulle
+# part. Le prompt demande la séparation, ces helpers la garantissent — et
+# rattrapent aussi les packs générés AVANT ce changement (leur script contient
+# encore les deux).
+
+# Lignes à jeter du texte parlé : elles ne décrivent que l'image. Volontairement
+# restreint aux marqueurs sans ambiguïté — « Plan B : … » ou « Image de marque :
+# … » sont des phrases que le client peut vraiment dire.
+_SHOT_LINE_RE = re.compile(
+    r"^(?:ce\s+qu[’']?on\s+montre|à\s+l[’']?écran|a\s+l[’']?ecran"
+    r"|visuel|b[-\s]?roll|texte\s+incrust[ée]|incrustation)\s*[:\-–—]",
+    re.IGNORECASE,
+)
+# Même marqueur, mais accolé au texte parlé sur une seule ligne : on coupe là.
+_SHOT_INLINE_RE = re.compile(
+    r"\s*(?:ce\s+qu[’']?on\s+montre|à\s+l[’']?écran|a\s+l[’']?ecran)\s*[:\-–—].*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_SCENE_NUM_RE = re.compile(r"^\s*(?:sc[èe]ne\s*)?\d+\s*[.)\-–—:]\s*", re.IGNORECASE)
+_SPOKEN_LABEL_RE = re.compile(
+    r"^\s*(?:ce\s+qu[’']?on\s+dit|texte\s+dit|voix\s+off|à\s+l[’']?oral|a\s+l[’']?oral)"
+    r"\s*[:\-–—]\s*",
+    re.IGNORECASE,
+)
+_WRAPPING_QUOTES_RE = re.compile(r"^[«\"“”']\s*(.*?)\s*[»\"“”']$", re.DOTALL)
+
+
+def _strip_scene_decorations(line: str) -> str:
+    """Retire numéro de scène, libellé de colonne et guillemets enveloppants."""
+    out = _SCENE_NUM_RE.sub("", line.strip())
+    out = _SPOKEN_LABEL_RE.sub("", out)
+    out = _SCENE_NUM_RE.sub("", out)  # « 1. CE QU'ON DIT : » → numéro puis libellé
+    m = _WRAPPING_QUOTES_RE.match(out.strip())
+    if m and m.group(1).strip():
+        out = m.group(1)
+    return out.strip()
+
+
+def spoken_script(script: str) -> str:
+    """Ne garde que ce qui est réellement prononcé.
+
+    Idempotent : un script déjà propre en ressort identique.
+    """
+    kept: list[str] = []
+    for raw in (script or "").splitlines():
+        line = raw.strip()
+        if not line:
+            # Un saut de ligne entre deux répliques est conservé (respiration),
+            # jamais deux d'affilée en tête.
+            if kept and kept[-1]:
+                kept.append("")
+            continue
+        if _SHOT_LINE_RE.match(line):
+            continue
+        line = _SHOT_INLINE_RE.sub("", line)
+        line = _strip_scene_decorations(line)
+        if line:
+            kept.append(line)
+    while kept and not kept[-1]:
+        kept.pop()
+    return "\n".join(kept).strip()
+
+
+def normalize_shots(value: Any) -> list[str]:
+    """Indications de tournage → liste de chaînes propres (jamais None)."""
+    if isinstance(value, str):
+        items: list[Any] = value.splitlines()
+    elif isinstance(value, list):
+        items = value
+    else:
+        return []
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            # Tolérance de schéma : {"scene": 1, "montre": "..."} et voisins.
+            item = (
+                item.get("shot")
+                or item.get("montre")
+                or item.get("visual")
+                or item.get("text")
+                or ""
+            )
+        line = _SHOT_LINE_RE.sub("", str(item).strip())
+        line = _strip_scene_decorations(line)
+        if line:
+            out.append(line)
+    return out[:12]
 
 
 def generate_instagram_reel_packs(
@@ -2115,7 +2211,8 @@ Schéma JSON attendu (toutes les clés obligatoires) :
     {
       "editorial_role": "le code exact du rôle de ce variant (performance | methodologie | autorite | story | quotidien | opinion | relationnel)",
       "hook": "ce qui est dit/montré dans les 3 premières secondes",
-      "script": "script scène par scène, numéroté, avec CE QU'ON DIT et CE QU'ON MONTRE pour chaque scène",
+      "script": "UNIQUEMENT le texte prononcé, une ligne par scène, sans numéro ni indication de tournage",
+      "shots": ["ce qu'on montre pendant la ligne 1 du script", "ce qu'on montre pendant la ligne 2"],
       "caption": "légende du post, avec un seul appel à l'action en fin",
       "hashtags": ["#exemple1", "#exemple2"]
     }
@@ -2140,8 +2237,10 @@ Schéma JSON attendu (toutes les clés obligatoires) :
         )
         if not v.get("hook"):
             v["hook"] = ""
-        if not v.get("script"):
-            v["script"] = ""
+        # Le texte parlé est nettoyé même si le modèle a bien répondu : c'est la
+        # seule garantie que l'avatar IA ne prononce pas une didascalie.
+        v["script"] = spoken_script(v.get("script") or "")
+        v["shots"] = normalize_shots(v.get("shots"))
         if not v.get("caption"):
             v["caption"] = ""
     return variants

@@ -26,7 +26,8 @@ const REEL_JOB = {
         post: "100 outils testés depuis janvier. 6 ont survécu.",
         reel_details: {
           hook: "J'ai testé 100 outils IA depuis le début de l'année.",
-          script: "1. CE QU'ON DIT : le constat.\n2. CE QU'ON MONTRE : l'écran.",
+          script: "94 ont fini à la poubelle.",
+          shots: ["Plan fixe, regard caméra.", "Texte incrusté à l'écran."],
           hashtags: ["#outilsia"],
         },
       },
@@ -97,10 +98,15 @@ test("le script part au serveur et la vidéo revient pré-remplir la publication
   // de ligne `reel:` — les perdre serait invisible à l'écran.
   await expect.poll(() => videoBody).not.toBeNull();
   expect(videoBody!.script).toContain("J'ai testé 100 outils IA");
-  expect(videoBody!.script).toContain("CE QU'ON MONTRE");
+  expect(videoBody!.script).toContain("94 ont fini à la poubelle");
   expect(videoBody!.target_key).toMatch(/^reel:/);
 
-  // (2) La vidéo revient sur la ligne (polling à 8 s) et pré-remplit le bloc de
+  // (2) Et SURTOUT pas le plan de tournage : HeyGen lit le script mot pour mot,
+  // une didascalie envoyée ici serait prononcée dans la vidéo livrée au client.
+  expect(videoBody!.script).not.toContain("Plan fixe");
+  expect(videoBody!.script).not.toContain("Texte incrusté");
+
+  // (3) La vidéo revient sur la ligne (polling à 8 s) et pré-remplit le bloc de
   // publication avec l'URL pérenne.
   await expect(page.locator(`video[src="${HOSTED_VIDEO_URL}"]`)).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText("Vidéo avatar IA")).toBeVisible();
