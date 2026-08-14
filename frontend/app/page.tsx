@@ -218,9 +218,10 @@ type Variant = {
   // et c'est CETTE forme qui repart au front dans `result.variants`. La forme à
   // plat ne subsiste que si la sauvegarde a échoué (`save_error`), auquel cas
   // le pack doit rester lisible quand même. `packOf()` lit donc les deux.
-  reel_details?: { hook?: string; script?: string; hashtags?: string[] } | null;
+  reel_details?: { hook?: string; script?: string; shots?: string[]; hashtags?: string[] } | null;
   hook?: string;
   script?: string;
+  shots?: string[];
   caption?: string;
   hashtags?: string[];
   trame_id?: string | null;
@@ -252,7 +253,7 @@ type SavedPost = {
   slack_status?: string | null;
   media_items?: SavedPostMediaItem[] | null;
   // ALE-291 : pack Reel Instagram sauvegardé (présent uniquement si platform="instagram").
-  reel_details?: { hook?: string; script?: string; hashtags?: string[] } | null;
+  reel_details?: { hook?: string; script?: string; shots?: string[]; hashtags?: string[] } | null;
 };
 // ALE-59 : version X/Reddit stockée avec un post programmé ; après le passage
 // du cron, l'entrée porte aussi le résultat (status / error par réseau).
@@ -1890,7 +1891,9 @@ function InstagramContentHub({
 // ALE-291 : champs édités d'un pack Reel, indexés par clé de ligne. Cache
 // module-level séparé de `_genCache` (LinkedIn) — même patron (ALE-145), mais
 // une pop-up d'édition différente (4 champs au lieu d'un texte de post).
-type IgPackFields = { hook: string; script: string; caption: string; hashtagsText: string };
+// `script` = UNIQUEMENT le texte prononcé (il est lu tel quel, y compris par
+// l'avatar IA) ; `shotsText` = le plan de tournage, une ligne par scène.
+type IgPackFields = { hook: string; script: string; shotsText: string; caption: string; hashtagsText: string };
 const _igGenCache: {
   edited: Record<string, IgPackFields>;
   expanded: string | null;
@@ -2149,8 +2152,10 @@ function InstagramGenerator({
 
   async function generateAvatarVideo(line: PostLine) {
     const f = fieldsOf(line);
-    // L'avatar lit le hook puis le script, tels qu'affichés — les champs sont
-    // éditables juste au-dessus, c'est là qu'on retire les indications de scène.
+    // L'avatar lit le hook puis le script, tels qu'affichés. Le plan de tournage
+    // (`shotsText`) est délibérément EXCLU : HeyGen lit le texte mot pour mot, une
+    // didascalie envoyée ici serait prononcée dans la vidéo. Le serveur re-filtre
+    // par sécurité (packs d'avant la séparation script / plan de tournage).
     const script = [f.hook.trim(), f.script.trim()].filter(Boolean).join("\n\n");
     if (!script) {
       setAvatarErrors((prev) => ({ ...prev, [line.key]: "Le hook et le script sont vides : rien à faire dire à l'avatar." }));
@@ -2188,6 +2193,7 @@ function InstagramGenerator({
     return edited[line.key] || {
       hook: details?.hook || v?.hook || "",
       script: details?.script || v?.script || "",
+      shotsText: (details?.shots || v?.shots || []).join("\n"),
       caption: v?.post || v?.caption || "",
       hashtagsText: (details?.hashtags || v?.hashtags || []).join(" "),
     };
@@ -2199,7 +2205,8 @@ function InstagramGenerator({
 
   function copyPack(line: PostLine) {
     const f = fieldsOf(line);
-    const text = `Hook : ${f.hook}\n\nScript :\n${f.script}\n\nCaption :\n${f.caption}\n\nHashtags : ${f.hashtagsText}`;
+    const shotsBlock = f.shotsText.trim() ? `\n\nPlan de tournage :\n${f.shotsText}` : "";
+    const text = `Hook : ${f.hook}\n\nScript (texte dit) :\n${f.script}${shotsBlock}\n\nCaption :\n${f.caption}\n\nHashtags : ${f.hashtagsText}`;
     void navigator.clipboard.writeText(text);
     setCopied(line.key);
     setTimeout(() => setCopied((c) => (c === line.key ? null : c)), 1500);
@@ -2212,10 +2219,11 @@ function InstagramGenerator({
     try {
       const f = fieldsOf(line);
       const hashtags = f.hashtagsText.split(/\s+/).map((h) => h.trim()).filter(Boolean);
+      const shots = f.shotsText.split("\n").map((l) => l.trim()).filter(Boolean);
       const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: f.caption, saved: true, reel_details: { hook: f.hook, script: f.script, hashtags } }),
+        body: JSON.stringify({ post: f.caption, saved: true, reel_details: { hook: f.hook, script: f.script, shots, hashtags } }),
       });
       if (res.ok) {
         setSavedPost(line.key);
@@ -2345,8 +2353,11 @@ function InstagramGenerator({
                         <div style={{ padding: "10px 4px 4px" }}>
                           <label className="role-picker-label">Hook (3 premières secondes)</label>
                           <textarea className="variant-text" rows={2} value={f.hook} onChange={(e) => setField(line, "hook", e.target.value)} aria-label="Hook du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
-                          <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Script (scène par scène)</label>
+                          <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Script — ce que tu dis face caméra</label>
                           <textarea className="variant-text" rows={6} value={f.script} onChange={(e) => setField(line, "script", e.target.value)} aria-label="Script du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <p className="role-picker-hint" style={{ marginTop: 4 }}>Uniquement le texte prononcé : c&apos;est ce que tu lis, et ce que ton avatar IA dit mot pour mot.</p>
+                          <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Plan de tournage — ce que tu montres</label>
+                          <textarea className="variant-text" rows={5} value={f.shotsText} onChange={(e) => setField(line, "shotsText", e.target.value)} aria-label="Plan de tournage du reel" placeholder="Une ligne par scène : cadrage, geste, cut, texte incrusté…" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Caption</label>
                           <textarea className="variant-text" rows={4} value={f.caption} onChange={(e) => setField(line, "caption", e.target.value)} aria-label="Caption du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Hashtags</label>
@@ -2479,7 +2490,9 @@ function InstagramLibraryView({ isAuthed }: { isAuthed: boolean }) {
 
   function copyPost(post: SavedPost) {
     const details = post.reel_details;
-    const text = `Hook : ${details?.hook || ""}\n\nScript :\n${details?.script || ""}\n\nCaption :\n${post.post || ""}\n\nHashtags : ${(details?.hashtags || []).join(" ")}`;
+    const shots = details?.shots || [];
+    const shotsBlock = shots.length ? `\n\nPlan de tournage :\n${shots.join("\n")}` : "";
+    const text = `Hook : ${details?.hook || ""}\n\nScript (texte dit) :\n${details?.script || ""}${shotsBlock}\n\nCaption :\n${post.post || ""}\n\nHashtags : ${(details?.hashtags || []).join(" ")}`;
     void navigator.clipboard.writeText(text);
     setCopied(post.id);
     setTimeout(() => setCopied((c) => (c === post.id ? null : c)), 1500);
@@ -2516,7 +2529,8 @@ function InstagramLibraryView({ isAuthed }: { isAuthed: boolean }) {
             {isExpanded && (
               <div style={{ marginTop: 10 }}>
                 {details?.hook && <p style={{ fontSize: 13 }}><strong>Hook :</strong> {details.hook}</p>}
-                {details?.script && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Script :</strong><br />{details.script}</p>}
+                {details?.script && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Script (texte dit) :</strong><br />{details.script}</p>}
+                {!!details?.shots?.length && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Plan de tournage :</strong><br />{details.shots.join("\n")}</p>}
                 {post.post && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Caption :</strong><br />{post.post}</p>}
                 {!!details?.hashtags?.length && <p style={{ fontSize: 13, color: "var(--muted)" }}>{details.hashtags.join(" ")}</p>}
                 <InstagramPublishBlock

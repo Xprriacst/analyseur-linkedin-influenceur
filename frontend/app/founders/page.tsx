@@ -77,6 +77,8 @@ export default function FoundersPage() {
   const [mode, setMode] = useState<"signup" | "signin">("signup");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [password2, setPassword2] = useState("");
+  const password2Ref = useRef<HTMLInputElement>(null);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
@@ -212,6 +214,14 @@ export default function FoundersPage() {
     e.preventDefault();
     setError("");
     setInfo("");
+    // Vérifié AVANT le moindre appel : un compte créé sur un mot de passe mal
+    // tapé n'est plus rattrapable ici, il l'est par la boîte mail. Pas de second
+    // message d'erreur — celui du champ est déjà à l'écran (le champ est
+    // `required`, donc il ne peut pas être vide ici) : on y renvoie, c'est tout.
+    if (mode === "signup" && password !== password2) {
+      password2Ref.current?.focus();
+      return;
+    }
     setLoading(true);
     try {
       if (mode === "signin") {
@@ -402,6 +412,33 @@ export default function FoundersPage() {
             autoComplete={mode === "signup" ? "new-password" : "current-password"}
           />
 
+          {/* Confirmation à la CRÉATION seulement : une faute de frappe sur un
+              mot de passe tapé une seule fois enferme dehors quelqu'un qui vient
+              de laisser sa carte, et la seule sortie est un e-mail de
+              réinitialisation (qui finit parfois en spam). À la connexion, le
+              serveur répond tout de suite — la confirmation n'y sert à rien. */}
+          {mode === "signup" && (
+            <>
+              <label className="auth-label">Confirme ton mot de passe</label>
+              <input
+                ref={password2Ref}
+                className="auth-input"
+                type="password"
+                required
+                minLength={6}
+                value={password2}
+                onChange={(e) => setPassword2(e.target.value)}
+                placeholder="Retape ton mot de passe"
+                autoComplete="new-password"
+              />
+              {password2.length > 0 && password !== password2 && (
+                <span style={{ marginTop: 5, fontSize: 12.5, color: "var(--danger)" }}>
+                  Les deux mots de passe ne sont pas identiques.
+                </span>
+              )}
+            </>
+          )}
+
           {error && <div className="error" style={{ marginTop: 10 }}>{error}</div>}
           {info && <div className="auth-info" style={{ marginTop: 10 }}>{info}</div>}
 
@@ -444,7 +481,7 @@ export default function FoundersPage() {
           <button
             type="button"
             className="auth-switch"
-            onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); setInfo(""); }}
+            onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setPassword2(""); setError(""); setInfo(""); }}
           >
             {mode === "signup" ? "Déjà un compte ? Se connecter" : "Pas de compte ? En créer un"}
           </button>
