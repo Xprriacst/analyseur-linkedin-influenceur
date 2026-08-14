@@ -218,9 +218,10 @@ type Variant = {
   // et c'est CETTE forme qui repart au front dans `result.variants`. La forme à
   // plat ne subsiste que si la sauvegarde a échoué (`save_error`), auquel cas
   // le pack doit rester lisible quand même. `packOf()` lit donc les deux.
-  reel_details?: { hook?: string; script?: string; hashtags?: string[] } | null;
+  reel_details?: { hook?: string; script?: string; shots?: string[]; hashtags?: string[] } | null;
   hook?: string;
   script?: string;
+  shots?: string[];
   caption?: string;
   hashtags?: string[];
   trame_id?: string | null;
@@ -252,7 +253,7 @@ type SavedPost = {
   slack_status?: string | null;
   media_items?: SavedPostMediaItem[] | null;
   // ALE-291 : pack Reel Instagram sauvegardé (présent uniquement si platform="instagram").
-  reel_details?: { hook?: string; script?: string; hashtags?: string[] } | null;
+  reel_details?: { hook?: string; script?: string; shots?: string[]; hashtags?: string[] } | null;
 };
 // ALE-59 : version X/Reddit stockée avec un post programmé ; après le passage
 // du cron, l'entrée porte aussi le résultat (status / error par réseau).
@@ -1601,26 +1602,11 @@ function Sidebar({
                   </React.Fragment>
                 );
               })}
-              {(() => {
-                const locked = !isAuthed;
-                return (
-                  <button
-                    className={`nav-item ${view === "assistant" ? "active" : ""} ${locked ? "locked" : ""}${collapsed ? " nav-item-collapsed" : ""}`}
-                    title={collapsed ? "Agent IA" : undefined}
-                    onClick={() => {
-                      if (locked) {
-                        requireAuth("Crée un compte gratuit pour débloquer l'Agent IA.");
-                        return;
-                      }
-                      onNavigate("assistant");
-                    }}
-                  >
-                    <MessageSquare size={14} />
-                    {!collapsed && <span>Agent IA</span>}
-                    {locked ? <Lock size={12} className="lock-ico" /> : null}
-                  </button>
-                );
-              })()}
+              {/* L'entrée « Agent IA » a disparu de la vue agence : l'assistant
+                  vit désormais DANS l'Inbox, ses conversations dans la même liste
+                  que les prospects (backlog Notion « Intégrer l'agent IA dans
+                  l'inbox »). La vue client `ideas_only` garde son onglet — ces
+                  comptes n'ont pas d'Inbox du tout. */}
               {(() => {
                 const locked = !isAuthed;
                 return (
@@ -1890,7 +1876,9 @@ function InstagramContentHub({
 // ALE-291 : champs édités d'un pack Reel, indexés par clé de ligne. Cache
 // module-level séparé de `_genCache` (LinkedIn) — même patron (ALE-145), mais
 // une pop-up d'édition différente (4 champs au lieu d'un texte de post).
-type IgPackFields = { hook: string; script: string; caption: string; hashtagsText: string };
+// `script` = UNIQUEMENT le texte prononcé (il est lu tel quel, y compris par
+// l'avatar IA) ; `shotsText` = le plan de tournage, une ligne par scène.
+type IgPackFields = { hook: string; script: string; shotsText: string; caption: string; hashtagsText: string };
 const _igGenCache: {
   edited: Record<string, IgPackFields>;
   expanded: string | null;
@@ -2149,8 +2137,10 @@ function InstagramGenerator({
 
   async function generateAvatarVideo(line: PostLine) {
     const f = fieldsOf(line);
-    // L'avatar lit le hook puis le script, tels qu'affichés — les champs sont
-    // éditables juste au-dessus, c'est là qu'on retire les indications de scène.
+    // L'avatar lit le hook puis le script, tels qu'affichés. Le plan de tournage
+    // (`shotsText`) est délibérément EXCLU : HeyGen lit le texte mot pour mot, une
+    // didascalie envoyée ici serait prononcée dans la vidéo. Le serveur re-filtre
+    // par sécurité (packs d'avant la séparation script / plan de tournage).
     const script = [f.hook.trim(), f.script.trim()].filter(Boolean).join("\n\n");
     if (!script) {
       setAvatarErrors((prev) => ({ ...prev, [line.key]: "Le hook et le script sont vides : rien à faire dire à l'avatar." }));
@@ -2188,6 +2178,7 @@ function InstagramGenerator({
     return edited[line.key] || {
       hook: details?.hook || v?.hook || "",
       script: details?.script || v?.script || "",
+      shotsText: (details?.shots || v?.shots || []).join("\n"),
       caption: v?.post || v?.caption || "",
       hashtagsText: (details?.hashtags || v?.hashtags || []).join(" "),
     };
@@ -2199,7 +2190,8 @@ function InstagramGenerator({
 
   function copyPack(line: PostLine) {
     const f = fieldsOf(line);
-    const text = `Hook : ${f.hook}\n\nScript :\n${f.script}\n\nCaption :\n${f.caption}\n\nHashtags : ${f.hashtagsText}`;
+    const shotsBlock = f.shotsText.trim() ? `\n\nPlan de tournage :\n${f.shotsText}` : "";
+    const text = `Hook : ${f.hook}\n\nScript (texte dit) :\n${f.script}${shotsBlock}\n\nCaption :\n${f.caption}\n\nHashtags : ${f.hashtagsText}`;
     void navigator.clipboard.writeText(text);
     setCopied(line.key);
     setTimeout(() => setCopied((c) => (c === line.key ? null : c)), 1500);
@@ -2212,10 +2204,11 @@ function InstagramGenerator({
     try {
       const f = fieldsOf(line);
       const hashtags = f.hashtagsText.split(/\s+/).map((h) => h.trim()).filter(Boolean);
+      const shots = f.shotsText.split("\n").map((l) => l.trim()).filter(Boolean);
       const res = await fetch(`${DIRECT_API_URL}/me/generated-posts/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ post: f.caption, saved: true, reel_details: { hook: f.hook, script: f.script, hashtags } }),
+        body: JSON.stringify({ post: f.caption, saved: true, reel_details: { hook: f.hook, script: f.script, shots, hashtags } }),
       });
       if (res.ok) {
         setSavedPost(line.key);
@@ -2345,8 +2338,11 @@ function InstagramGenerator({
                         <div style={{ padding: "10px 4px 4px" }}>
                           <label className="role-picker-label">Hook (3 premières secondes)</label>
                           <textarea className="variant-text" rows={2} value={f.hook} onChange={(e) => setField(line, "hook", e.target.value)} aria-label="Hook du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
-                          <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Script (scène par scène)</label>
+                          <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Script — ce que tu dis face caméra</label>
                           <textarea className="variant-text" rows={6} value={f.script} onChange={(e) => setField(line, "script", e.target.value)} aria-label="Script du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
+                          <p className="role-picker-hint" style={{ marginTop: 4 }}>Uniquement le texte prononcé : c&apos;est ce que tu lis, et ce que ton avatar IA dit mot pour mot.</p>
+                          <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Plan de tournage — ce que tu montres</label>
+                          <textarea className="variant-text" rows={5} value={f.shotsText} onChange={(e) => setField(line, "shotsText", e.target.value)} aria-label="Plan de tournage du reel" placeholder="Une ligne par scène : cadrage, geste, cut, texte incrusté…" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Caption</label>
                           <textarea className="variant-text" rows={4} value={f.caption} onChange={(e) => setField(line, "caption", e.target.value)} aria-label="Caption du reel" style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }} />
                           <label className="role-picker-label" style={{ marginTop: 10, display: "block" }}>Hashtags</label>
@@ -2479,7 +2475,9 @@ function InstagramLibraryView({ isAuthed }: { isAuthed: boolean }) {
 
   function copyPost(post: SavedPost) {
     const details = post.reel_details;
-    const text = `Hook : ${details?.hook || ""}\n\nScript :\n${details?.script || ""}\n\nCaption :\n${post.post || ""}\n\nHashtags : ${(details?.hashtags || []).join(" ")}`;
+    const shots = details?.shots || [];
+    const shotsBlock = shots.length ? `\n\nPlan de tournage :\n${shots.join("\n")}` : "";
+    const text = `Hook : ${details?.hook || ""}\n\nScript (texte dit) :\n${details?.script || ""}${shotsBlock}\n\nCaption :\n${post.post || ""}\n\nHashtags : ${(details?.hashtags || []).join(" ")}`;
     void navigator.clipboard.writeText(text);
     setCopied(post.id);
     setTimeout(() => setCopied((c) => (c === post.id ? null : c)), 1500);
@@ -2516,7 +2514,8 @@ function InstagramLibraryView({ isAuthed }: { isAuthed: boolean }) {
             {isExpanded && (
               <div style={{ marginTop: 10 }}>
                 {details?.hook && <p style={{ fontSize: 13 }}><strong>Hook :</strong> {details.hook}</p>}
-                {details?.script && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Script :</strong><br />{details.script}</p>}
+                {details?.script && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Script (texte dit) :</strong><br />{details.script}</p>}
+                {!!details?.shots?.length && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Plan de tournage :</strong><br />{details.shots.join("\n")}</p>}
                 {post.post && <p style={{ fontSize: 13, whiteSpace: "pre-wrap" }}><strong>Caption :</strong><br />{post.post}</p>}
                 {!!details?.hashtags?.length && <p style={{ fontSize: 13, color: "var(--muted)" }}>{details.hashtags.join(" ")}</p>}
                 <InstagramPublishBlock
@@ -9849,7 +9848,7 @@ function AutoGrowTextarea({
   );
 }
 
-function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalActiveId = null }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; hideChrome?: boolean; externalActiveId?: string | null }) {
+function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalActiveId = null, onAskAssistant }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; hideChrome?: boolean; externalActiveId?: string | null; onAskAssistant?: (context: string) => void }) {
   const [conversations, setConversations] = useState<IgConversation[]>([]);
   // Faux tant que le premier /me/ig/conversations n'a pas répondu : évite d'afficher
   // « Aucune conversation » pendant le chargement initial (backend dev lent).
@@ -9888,6 +9887,20 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
   const lastInboundHasDraft = lastInbound ? drafts.some((d) => d.message_id === lastInbound.id) : true;
   const lastInboundAgeMs = lastInbound?.created_at ? Date.now() - new Date(lastInbound.created_at).getTime() : 0;
   const suggestionFailed = !!lastInbound && !lastInboundHasDraft && !pendingDraft && lastInboundAgeMs > 25000;
+
+  // Backlog Notion « Intégrer l'agent IA dans l'inbox » (option A) : contexte
+  // pré-rempli envoyé à l'Assistant IA (même patron que `onRework` — un texte,
+  // pas une action). Nom du contact + derniers messages échangés, assez pour
+  // que le client puisse tout de suite demander « aide-moi à répondre ».
+  function buildIgAskContext(): string {
+    if (!active) return "";
+    const name = active.prospect_name || active.prospect_id;
+    const lines = messages
+      .slice(-8)
+      .map((m) => `${m.role === "in" ? name : "Moi"} : ${m.text}`)
+      .join("\n");
+    return `J'aimerais ton aide pour répondre à cette conversation Instagram avec ${name}.\n\n--- Derniers messages ---\n${lines || "(aucun message pour l'instant)"}\n---\n\nAide-moi à rédiger une réponse adaptée.`;
+  }
 
   // Pastille « nouveau message » par conversation : une conversation est non lue
   // tant que son dernier message est plus récent que la dernière fois qu'on l'a
@@ -10244,16 +10257,30 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
                     : "fenêtre 24 h ouverte"}
                 </span>
               </div>
-              {/* Autopilot temporairement grisé : chaque réponse reste validée à la main. */}
-              <button
-                className="secondary-button"
-                onClick={toggleMode}
-                disabled
-                title="L'autopilot sera bientôt disponible"
-                style={{ fontSize: 12, opacity: 0.5, cursor: "not-allowed" }}
-              >
-                🤖 Autopilot — bientôt
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {onAskAssistant && (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => onAskAssistant(buildIgAskContext())}
+                    title="Ouvrir cette conversation dans l'Assistant IA pour t'aider à répondre"
+                    style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 6 }}
+                  >
+                    <MessageSquare size={13} />
+                    Demander à l&apos;Assistant
+                  </button>
+                )}
+                {/* Autopilot temporairement grisé : chaque réponse reste validée à la main. */}
+                <button
+                  className="secondary-button"
+                  onClick={toggleMode}
+                  disabled
+                  title="L'autopilot sera bientôt disponible"
+                  style={{ fontSize: 12, opacity: 0.5, cursor: "not-allowed" }}
+                >
+                  🤖 Autopilot — bientôt
+                </button>
+              </div>
             </header>
 
             <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -10377,7 +10404,7 @@ function IgInbox({ isAuthed, requireAuth, userId, hideChrome = false, externalAc
 }
 
 // ALE-244 : fil LinkedIn (messages Unipile lus en direct) pour l'Inbox unifiée.
-function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: OutreachQuota; onQuota: (q: OutreachQuota) => void }) {
+function LinkedInThread({ chat, quota, onQuota, onAskAssistant }: { chat: OutreachChat; quota?: OutreachQuota; onQuota: (q: OutreachQuota) => void; onAskAssistant?: (context: string) => void }) {
   const [messages, setMessages] = useState<OutreachMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [reply, setReply] = useState("");
@@ -10458,11 +10485,39 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
     finally { setBusy(false); }
   }
 
+  // Backlog Notion « Intégrer l'agent IA dans l'inbox » (option A) : contexte
+  // pré-rempli envoyé à l'Assistant IA (même patron que `onRework` — un texte,
+  // pas une action). Nom du contact + derniers messages échangés + lien du
+  // profil LinkedIn du lead quand Unipile le fournit.
+  function buildLnAskContext(): string {
+    const name = chat.name || "ce contact LinkedIn";
+    const lines = messages
+      .slice(-8)
+      .map((m) => `${m.from_me ? "Moi" : name} : ${m.text}`)
+      .join("\n");
+    const leadLine = chat.provider_url ? `\nProfil LinkedIn : ${chat.provider_url}` : "";
+    return `J'aimerais ton aide pour répondre à cette conversation LinkedIn avec ${name}.${leadLine}\n\n--- Derniers messages ---\n${lines || "(aucun message pour l'instant)"}\n---\n\nAide-moi à rédiger une réponse adaptée.`;
+  }
+
   return (
     <section className="card" style={{ display: "flex", flexDirection: "column", minHeight: 0, padding: 0, height: "100%" }}>
-      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
-        <Linkedin size={15} style={{ color: "#0a66c2", flexShrink: 0 }} />
-        {chat.name || "Conversation LinkedIn"}
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <Linkedin size={15} style={{ color: "#0a66c2", flexShrink: 0 }} />
+          {chat.name || "Conversation LinkedIn"}
+        </span>
+        {onAskAssistant && (
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => onAskAssistant(buildLnAskContext())}
+            title="Ouvrir cette conversation dans l'Assistant IA pour t'aider à répondre"
+            style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0, fontWeight: 500 }}
+          >
+            <MessageSquare size={13} />
+            Demander à l&apos;Assistant
+          </button>
+        )}
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 8 }}>
         {loading && messages.length === 0 ? (
@@ -10542,6 +10597,15 @@ function LinkedInThread({ chat, quota, onQuota }: { chat: OutreachChat; quota?: 
 // l'ouverture le fil et l'envoi s'adaptent au réseau. L'inbox Instagram garde
 // toute sa logique d'agent (réutilisée via IgInbox en mode headless `hideChrome`).
 type InboxNetwork = "instagram" | "linkedin";
+// Backlog Notion « Intégrer l'agent IA dans l'inbox » : les fils de l'Assistant
+// vivent dans la même liste que les prospects. `InboxNetwork` reste le type des
+// vrais réseaux (c'est lui qui voyage depuis Prospection pour pré-sélectionner
+// une conversation) ; seule la LISTE connaît la troisième famille.
+type InboxRowKind = InboxNetwork | "assistant";
+type InboxFilter = "all" | "prospects" | "assistant";
+// Id de la ligne d'un fil Assistant pas encore créé côté serveur (son vrai id
+// n'arrive qu'avec le premier événement `meta` du flux).
+const NEW_ASSISTANT_ROW = "new";
 
 // ALE-248 : réconcilie une liste de conversations fraîchement pollée avec l'état
 // courant plutôt que de tout remplacer. Conserve la RÉFÉRENCE des objets
@@ -10558,15 +10622,20 @@ function reconcileById<T>(prev: T[], next: T[], keyOf: (x: T) => string): T[] {
   return merged;
 }
 
-function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; initialSelect?: { network: InboxNetwork; id: string; nonce: number } | null }) {
+function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect, assistantSeed, imageJobs, onImageJobCreated }: { isAuthed: boolean; requireAuth: (reason?: string) => void; userId: string | null; initialSelect?: { network: InboxNetwork; id: string; nonce: number } | null; assistantSeed?: { post: string; nonce: number } | null; imageJobs: ImageJob[]; onImageJobCreated: (job: ImageJob) => void }) {
   const outreach = useLinkedInOutreach(isAuthed);
   const lnConnected = !!outreach.status?.connected;
   const [igConvs, setIgConvs] = useState<IgConversation[]>([]);
   const [lnChats, setLnChats] = useState<OutreachChat[]>([]);
+  const [chatConvs, setChatConvs] = useState<ChatConversation[]>([]);
   const [igLoaded, setIgLoaded] = useState(false);
   const [lnLoaded, setLnLoaded] = useState(false);
   const [forceReveal, setForceReveal] = useState(false);
-  const [sel, setSel] = useState<{ network: InboxNetwork; id: string } | null>(null);
+  const [sel, setSel] = useState<{ kind: InboxRowKind; id: string } | null>(null);
+  // Fil Assistant ouvert dans le volet droit. `seq` sert de déclencheur de
+  // (re)chargement à `AssistantThread` — sa `key`, elle, reste stable.
+  const [thread, setThread] = useState<{ seq: number; conversationId: string | null; seedPrompt?: string } | null>(null);
+  const [filter, setFilter] = useState<InboxFilter>("all");
 
   // ALE-265 : ne révéler la liste qu'une fois Instagram ET LinkedIn prêts (fini
   // le remplissage en escalier). Gardé sur le statut outreach résolu pour ne pas
@@ -10596,10 +10665,23 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
       if (res.ok) setLnChats((prev) => reconcileById(prev, Array.isArray(data.chats) ? data.chats : [], (c) => c.id));
     } catch { /* non bloquant */ } finally { setLnLoaded(true); }
   }
+  // ⚠️ Les fils de l'Assistant ne sont PAS pollés, contrairement aux prospects :
+  // ils ne bougent que quand c'est TOI qui écris. Un rafraîchissement périodique
+  // n'apporterait rien et risquerait de tomber pendant qu'une réponse s'écrit.
+  // Rechargement à l'ouverture de l'Inbox + à la fin de chaque échange.
+  async function loadChatConvs() {
+    if (!isAuthed) { setChatConvs([]); return; }
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/chat/conversations`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setChatConvs((prev) => reconcileById(prev, Array.isArray(data) ? data : [], (c) => c.id));
+    } catch { /* non bloquant : l'Inbox reste utilisable sans l'historique Assistant */ }
+  }
 
   // Poll IG (6 s, non-chevauchant) — nouvelles conversations sans recharger.
   useEffect(() => {
-    if (!isAuthed) { setIgConvs([]); setLnChats([]); setSel(null); return; }
+    if (!isAuthed) { setIgConvs([]); setLnChats([]); setChatConvs([]); setSel(null); setThread(null); return; }
+    void loadChatConvs();
     let stop = false; let t: ReturnType<typeof setTimeout>;
     const loop = async () => { await loadIg(); if (!stop) t = setTimeout(loop, 6000); };
     loop();
@@ -10621,25 +10703,50 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
   // « Inbox » sur une ligne de lead). Le nonce garantit qu'un même chat
   // re-sélectionne même après avoir fermé le fil.
   useEffect(() => {
-    if (initialSelect) setSel({ network: initialSelect.network, id: initialSelect.id });
+    if (initialSelect) setSel({ kind: initialSelect.network, id: initialSelect.id });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSelect?.nonce]);
 
+  // Ouvre (ou rouvre) un fil Assistant dans le volet droit. `seedPrompt` part
+  // tout seul : contexte d'une conversation de prospect, ou post à retravailler.
+  function openAssistant(conversationId: string | null, seedPrompt?: string) {
+    setThread((t) => ({ seq: (t?.seq ?? 0) + 1, conversationId, seedPrompt }));
+    setSel({ kind: "assistant", id: conversationId ?? NEW_ASSISTANT_ROW });
+  }
+
+  // « Retravailler avec l'Agent IA » depuis un post (Générateur, Ma bibliothèque) :
+  // la destination est désormais l'Inbox, sur un fil Assistant neuf.
+  useEffect(() => {
+    if (!assistantSeed?.post || !isAuthed) return;
+    openAssistant(null, reworkPrompt(assistantSeed.post));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assistantSeed?.nonce]);
+
   const ts = (v?: string | null) => (v ? new Date(v).getTime() : 0);
-  type Row = { network: InboxNetwork; id: string; name: string; time: number; mode?: IgConversation["mode"] };
-  const rows: Row[] = [
-    ...igConvs.map((c) => ({ network: "instagram" as const, id: c.id, name: c.prospect_name || c.prospect_id, time: ts(c.last_message_at), mode: c.mode })),
-    ...lnChats.map((c) => ({ network: "linkedin" as const, id: c.id, name: c.name || "Conversation LinkedIn", time: ts(c.last_message_at) })),
+  type Row = { kind: InboxRowKind; id: string; name: string; time: number; mode?: IgConversation["mode"] };
+  const allRows: Row[] = [
+    ...igConvs.map((c) => ({ kind: "instagram" as const, id: c.id, name: c.prospect_name || c.prospect_id, time: ts(c.last_message_at), mode: c.mode })),
+    ...lnChats.map((c) => ({ kind: "linkedin" as const, id: c.id, name: c.name || "Conversation LinkedIn", time: ts(c.last_message_at) })),
+    ...chatConvs.map((c) => ({ kind: "assistant" as const, id: c.id, name: c.title || "Conversation avec l'Assistant", time: ts(c.updated_at) })),
+    // Fil Assistant en cours de création : il n'existe pas encore côté serveur,
+    // mais il doit avoir sa ligne — sinon le volet droit affiche une conversation
+    // que la liste ignore. Épinglé en tête (temps « maintenant »).
+    ...(thread && !thread.conversationId
+      ? [{ kind: "assistant" as const, id: NEW_ASSISTANT_ROW, name: "Nouvelle conversation", time: Number.MAX_SAFE_INTEGER }]
+      : []),
     // ALE-248 : tri stable — départage les temps égaux (ex. chats LinkedIn sans
-    // last_message_at, tous à 0) par clé réseau:id pour éviter que les lignes
+    // last_message_at, tous à 0) par clé famille:id pour éviter que les lignes
     // sautent à chaque poll.
-  ].sort((a, b) => b.time - a.time || `${a.network}:${a.id}`.localeCompare(`${b.network}:${b.id}`));
+  ].sort((a, b) => b.time - a.time || `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`));
+  const rows = allRows.filter((r) =>
+    filter === "all" ? true : filter === "assistant" ? r.kind === "assistant" : r.kind !== "assistant"
+  );
 
   // Pastille « non lu » unifiée (localStorage par utilisateur, clé network:id).
   const readKey = userId ? `inbox_conv_read:${userId}` : null;
   const [readMap, setReadMap] = useState<Record<string, number>>({});
   const seededRef = useRef(false);
-  const rowKey = (r: { network: InboxNetwork; id: string }) => `${r.network}:${r.id}`;
+  const rowKey = (r: { kind: InboxRowKind; id: string }) => `${r.kind}:${r.id}`;
   useEffect(() => {
     seededRef.current = false;
     if (!readKey) { setReadMap({}); return; }
@@ -10649,13 +10756,13 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
   useEffect(() => {
     if (!readKey || seededRef.current || !loaded) return;
     const seed: Record<string, number> = {};
-    rows.forEach((r) => { seed[rowKey(r)] = r.time; });
+    allRows.forEach((r) => { seed[rowKey(r)] = r.time; });
     seededRef.current = true;
     try { localStorage.setItem(readKey, JSON.stringify(seed)); } catch { /* ignore */ }
     setReadMap(seed);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readKey, loaded, igConvs, lnChats]);
-  const markRead = (r: { network: InboxNetwork; id: string }, time: number) => {
+  const markRead = (r: { kind: InboxRowKind; id: string }, time: number) => {
     setReadMap((prev) => {
       const k = rowKey(r);
       if ((prev[k] || 0) >= time) return prev;
@@ -10664,13 +10771,26 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
       return next;
     });
   };
-  const selKey = sel ? `${sel.network}:${sel.id}` : "";
-  const isUnread = (r: Row) => rowKey(r) !== selKey && r.time > (readMap[rowKey(r)] || 0);
+  const selKey = sel ? `${sel.kind}:${sel.id}` : "";
+  // ⚠️ Pas de pastille rouge sur un fil Assistant. Chez un prospect elle veut
+  // dire « quelqu'un t'attend » ; chez l'Assistant, « la réponse que tu viens de
+  // demander est arrivée ». La même pastille pour les deux banalise le signal et
+  // on finit par ignorer les deux.
+  const isUnread = (r: Row) => r.kind !== "assistant" && rowKey(r) !== selKey && r.time > (readMap[rowKey(r)] || 0);
 
-  function selectRow(r: Row) { setSel({ network: r.network, id: r.id }); markRead(r, r.time); }
+  function selectRow(r: Row) {
+    if (r.kind === "assistant") {
+      if (r.id === NEW_ASSISTANT_ROW) { setSel({ kind: "assistant", id: NEW_ASSISTANT_ROW }); return; }
+      openAssistant(r.id);
+      return;
+    }
+    setSel({ kind: r.kind, id: r.id });
+    markRead(r, r.time);
+  }
 
-  const selectedIg = sel?.network === "instagram" ? igConvs.find((c) => c.id === sel.id) || null : null;
-  const selectedLn = sel?.network === "linkedin" ? lnChats.find((c) => c.id === sel.id) || null : null;
+  const selectedIg = sel?.kind === "instagram" ? igConvs.find((c) => c.id === sel.id) || null : null;
+  const selectedLn = sel?.kind === "linkedin" ? lnChats.find((c) => c.id === sel.id) || null : null;
+  const selectedAssistant = sel?.kind === "assistant" && thread ? thread : null;
 
   if (!isAuthed) {
     return (
@@ -10685,11 +10805,45 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
     <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - var(--header-h) - var(--dev-banner-h) - 40px)", minHeight: 420 }}>
       <div className="ig-inbox" style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 16, flex: 1, minHeight: 0 }}>
         <aside className="card" style={{ padding: 8, overflowY: "auto", minHeight: 0 }}>
-          <p className="eyebrow" style={{ padding: "6px 8px" }}>Conversations</p>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "6px 8px" }}>
+            <p className="eyebrow" style={{ margin: 0 }}>Conversations</p>
+            {/* Porte d'entrée « à froid » de l'Assistant. Sans elle, la
+                disparition de l'onglet Agent IA fermerait la porte : plus aucun
+                moyen de démarrer une discussion sans partir d'un post ou d'un
+                prospect. */}
+            <button
+              className="ghost-button"
+              onClick={() => { setFilter("all"); openAssistant(null); }}
+              title="Démarrer une conversation avec l'Assistant IA"
+              style={{ fontSize: 12 }}
+            >
+              <PlusCircle size={13} /> Assistant
+            </button>
+          </div>
+          <div style={{ display: "flex", gap: 4, padding: "0 8px 8px" }}>
+            {([["all", "Tout"], ["prospects", "Prospects"], ["assistant", "Assistant"]] as [InboxFilter, string][]).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setFilter(key)}
+                aria-pressed={filter === key}
+                style={{
+                  flex: 1, fontSize: 12, fontWeight: filter === key ? 700 : 500, padding: "4px 6px",
+                  borderRadius: 7, cursor: "pointer",
+                  border: `1px solid ${filter === key ? "rgba(70,72,212,0.35)" : "var(--border)"}`,
+                  background: filter === key ? "rgba(70,72,212,0.10)" : "transparent",
+                  color: "var(--ink)",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           {!loaded && <ConvListSkeleton rows={6} />}
           {loaded && rows.length === 0 && (
             <p style={{ padding: 8, fontSize: 13, opacity: 0.7 }}>
-              Aucune conversation pour l&apos;instant. Elles apparaîtront dès qu&apos;un prospect écrit en DM (Instagram) ou après ton premier message à un lead (LinkedIn).
+              {filter === "assistant"
+                ? "Aucune conversation avec l'Assistant. Utilise « + Assistant » pour en démarrer une."
+                : "Aucune conversation pour l'instant. Elles apparaîtront dès qu'un prospect écrit en DM (Instagram) ou après ton premier message à un lead (LinkedIn)."}
             </p>
           )}
           {loaded && rows.map((r) => (
@@ -10704,27 +10858,50 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
                   {isUnread(r) && (
                     <span aria-label="Nouveau message" title="Nouveau message" style={{ width: 8, height: 8, borderRadius: "50%", background: "#e5484d", flex: "0 0 auto" }} />
                   )}
-                  <span title={r.network === "instagram" ? "Instagram" : "LinkedIn"} style={{ display: "inline-flex", flex: "0 0 auto" }}>
-                    {r.network === "instagram"
+                  <span title={r.kind === "instagram" ? "Instagram" : r.kind === "linkedin" ? "LinkedIn" : "Assistant IA"} style={{ display: "inline-flex", flex: "0 0 auto" }}>
+                    {r.kind === "instagram"
                       ? <span style={{ display: "inline-flex", color: "#c13584" }}><InstagramIcon size={13} /></span>
-                      : <Linkedin size={13} style={{ color: "#0a66c2" }} />}
+                      : r.kind === "linkedin"
+                        ? <Linkedin size={13} style={{ color: "#0a66c2" }} />
+                        : <span style={{ display: "inline-flex", color: "var(--primary)" }}><MessageSquare size={13} /></span>}
                   </span>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
                 </span>
-                {r.network === "instagram" && r.mode ? <ConversationModeBadge mode={r.mode} /> : null}
+                {r.kind === "instagram" && r.mode ? <ConversationModeBadge mode={r.mode} /> : null}
               </span>
             </button>
           ))}
         </aside>
         <div style={{ minHeight: 0 }}>
-          {selectedIg ? (
-            <IgInbox key="ig-thread" isAuthed={isAuthed} requireAuth={requireAuth} userId={userId} hideChrome externalActiveId={selectedIg.id} />
+          {selectedAssistant ? (
+            // ⚠️ `key` STABLE : ce composant ne doit jamais être remonté par un
+            // rafraîchissement de la liste (il couperait le flux SSE en cours
+            // d'écriture). C'est `threadSeq` qui pilote le changement de fil.
+            <AssistantThread
+              key="inbox-assistant-thread"
+              isAuthed={isAuthed}
+              requireAuth={requireAuth}
+              threadSeq={selectedAssistant.seq}
+              conversationId={selectedAssistant.conversationId}
+              seedPrompt={selectedAssistant.seedPrompt}
+              imageJobs={imageJobs}
+              onImageJobCreated={onImageJobCreated}
+              embedded
+              onConversationCreated={(id) => {
+                setThread((t) => (t ? { ...t, conversationId: id } : t));
+                setSel({ kind: "assistant", id });
+              }}
+              onExchangeDone={() => void loadChatConvs()}
+            />
+          ) : selectedIg ? (
+            <IgInbox key="ig-thread" isAuthed={isAuthed} requireAuth={requireAuth} userId={userId} hideChrome externalActiveId={selectedIg.id} onAskAssistant={(context) => openAssistant(null, context)} />
           ) : selectedLn ? (
             <LinkedInThread
               key={`ln:${selectedLn.id}`}
               chat={selectedLn}
               quota={outreach.status?.quota}
               onQuota={(q) => outreach.setStatus((p) => (p ? { ...p, quota: q } : p))}
+              onAskAssistant={(context) => openAssistant(null, context)}
             />
           ) : (
             <div className="card" style={{ height: "100%", display: "flex" }}>
@@ -10737,9 +10914,51 @@ function UnifiedInbox({ isAuthed, requireAuth, userId, initialSelect }: { isAuth
   );
 }
 
-function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { post: string; nonce: number } | null; imageJobs: ImageJob[]; onImageJobCreated: (job: ImageJob) => void }) {
-  const [conversations, setConversations] = useState<ChatConversation[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+// Texte d'ouverture d'un fil ouvert depuis un post (« Retravailler avec
+// l'Agent IA »). Partagé par la vue agence (fil dans l'Inbox) et la vue client
+// (onglet Agent IA) — deux formulations divergeraient à la première retouche.
+function reworkPrompt(post: string): string {
+  return `Voici un post que j'ai généré et que j'aimerais améliorer :\n\n---\n${post}\n---`;
+}
+
+// Fil de conversation avec l'Assistant IA — extrait de `Assistant` pour vivre
+// AUSSI dans l'Inbox (backlog Notion « Intégrer l'agent IA dans l'inbox » : en
+// vue agence l'onglet Agent IA disparaît, ses conversations rejoignent la liste
+// de l'Inbox à côté des prospects).
+//
+// ⚠️ Ce composant n'est JAMAIS remonté quand on change de fil : c'est `threadSeq`
+// qui pilote le (re)chargement, et l'appelant lui donne une `key` STABLE. Une
+// `key` qui bouge le remonterait — donc couperait le flux SSE en pleine écriture
+// au premier rafraîchissement de la liste de l'Inbox (qui se recharge seule
+// toutes les 6 s côté Instagram). Panne intermittente, pénible à reproduire.
+//
+// `embedded` = rendu dans le volet droit de l'Inbox : le panneau prend la
+// hauteur de son cadre au lieu de celle de la page, sinon la zone de saisie
+// sort de l'écran.
+function AssistantThread({
+  isAuthed,
+  requireAuth,
+  threadSeq,
+  conversationId,
+  seedPrompt,
+  imageJobs,
+  onImageJobCreated,
+  embedded = false,
+  onConversationCreated,
+  onExchangeDone,
+}: {
+  isAuthed: boolean;
+  requireAuth: (reason?: string) => void;
+  threadSeq: number;
+  conversationId: string | null;
+  seedPrompt?: string;
+  imageJobs: ImageJob[];
+  onImageJobCreated: (job: ImageJob) => void;
+  embedded?: boolean;
+  onConversationCreated?: (id: string) => void;
+  onExchangeDone?: () => void;
+}) {
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(conversationId);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -10751,16 +10970,16 @@ function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }
   const twitter = useTwitter(isAuthed);
   const slack = useSlack(isAuthed);
 
-  async function loadMessages(conversationId: string) {
+  async function loadMessages(id: string) {
     setLoadingHistory(true);
     setError("");
     try {
-      const res = await fetch(`${DIRECT_API_URL}/chat/conversations/${conversationId}/messages`, {
+      const res = await fetch(`${DIRECT_API_URL}/chat/conversations/${id}/messages`, {
         headers: await authHeaders(),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Conversation introuvable");
-      setActiveConversationId(conversationId);
+      setActiveConversationId(id);
       setMessages(data.messages || []);
     } catch (err: any) {
       setError(err.message);
@@ -10769,59 +10988,30 @@ function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }
     }
   }
 
-  async function loadConversations(selectFirst = true) {
-    if (!isAuthed) return;
-    setLoadingHistory(true);
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/chat/conversations`, {
-        headers: await authHeaders(),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Chargement des conversations impossible");
-      const list = Array.isArray(data) ? data : [];
-      setConversations(list);
-      if (selectFirst && list.length && !activeConversationId) {
-        await loadMessages(list[0].id);
-      }
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoadingHistory(false);
-    }
-  }
-
+  // Ouverture / changement de fil, sans remontage. `seedPrompt` (contexte d'une
+  // conversation de prospect, ou post à retravailler) part tout seul.
   useEffect(() => {
-    if (!isAuthed) {
-      setConversations([]);
-      setActiveConversationId(null);
+    if (!isAuthed) return;
+    setError("");
+    setInput("");
+    if (conversationId) {
       setMessages([]);
+      void loadMessages(conversationId);
       return;
     }
-    loadConversations(false);
+    setActiveConversationId(null);
+    setMessages([]);
+    if (seedPrompt) {
+      // setTimeout pour laisser l'état se vider avant l'envoi.
+      const t = setTimeout(() => sendMessage(seedPrompt), 50);
+      return () => clearTimeout(t);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthed]);
-
-  // Démarre une nouvelle conversation quand un seed de post est fourni depuis le Générateur.
-  useEffect(() => {
-    if (!seed?.post || !isAuthed) return;
-    newConversation();
-    const seedText = `Voici un post que j'ai généré et que j'aimerais améliorer :\n\n---\n${seed.post}\n---`;
-    // setTimeout pour laisser newConversation() vider l'état avant d'envoyer.
-    const t = setTimeout(() => sendMessage(seedText), 50);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seed?.nonce]);
+  }, [threadSeq, isAuthed]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, streaming]);
-
-  function newConversation() {
-    setActiveConversationId(null);
-    setMessages([]);
-    setError("");
-    setInput("");
-  }
 
   function appendAssistant(delta: string) {
     setMessages((prev) => {
@@ -10848,6 +11038,9 @@ function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }
     const data = JSON.parse(dataLines.join("\n"));
     if (event === "meta" && data.conversation_id) {
       setActiveConversationId(data.conversation_id);
+      // Le fil vient de naître côté serveur : l'appelant peut enfin l'accrocher
+      // à sa liste (et surligner la bonne ligne) — sans remonter ce composant.
+      onConversationCreated?.(data.conversation_id);
       emitCredits(data.credits);
     } else if (event === "delta") {
       appendAssistant(data.text || "");
@@ -10890,7 +11083,7 @@ function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }
         }
       }
       if (buffer.trim()) handleSseEvent(buffer);
-      await loadConversations(false);
+      onExchangeDone?.();
     } catch (err: any) {
       setError(err.message || "Assistant indisponible.");
     } finally {
@@ -10909,37 +11102,21 @@ function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }
   }
 
   return (
-    <div className="assistant-layout">
-      <aside className="assistant-sidebar card">
-        <div className="assistant-sidebar-header">
-          <p className="eyebrow">Conversations</p>
-          <button className="ghost-button" onClick={newConversation} title="Nouvelle conversation">
-            <PlusCircle size={14} /> Nouveau
-          </button>
-        </div>
-        <div className="assistant-conversation-list">
-          {conversations.length ? conversations.map((conv) => (
-            <button
-              key={conv.id}
-              className={`assistant-conversation ${activeConversationId === conv.id ? "active" : ""}`}
-              onClick={() => loadMessages(conv.id)}
-            >
-              <strong>{conv.title}</strong>
-              <span>{new Date(conv.updated_at).toLocaleDateString("fr-FR")}</span>
-            </button>
-          )) : (
-            <p className="assistant-empty">Aucune conversation enregistrée.</p>
-          )}
-        </div>
-      </aside>
-
-      <section className="assistant-panel card">
-        <div className="section-header">
-          <div>
-            <h2 className="section-title"><MessageSquare size={20} /> Assistant LinkedIn</h2>
-            <p className="section-desc">Itère sur tes idées et brouillons avec mémoire, contexte client et benchmark influenceurs.</p>
+      <section className={`assistant-panel card${embedded ? " assistant-panel-embedded" : ""}`}>
+        {embedded ? (
+          <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ display: "inline-flex", color: "var(--primary)" }}><MessageSquare size={15} /></span>
+            Assistant IA
+            {loadingHistory && <Loader2 size={13} className="spinning" style={{ opacity: 0.6 }} />}
           </div>
-        </div>
+        ) : (
+          <div className="section-header">
+            <div>
+              <h2 className="section-title"><MessageSquare size={20} /> Assistant LinkedIn</h2>
+              <p className="section-desc">Itère sur tes idées et brouillons avec mémoire, contexte client et benchmark influenceurs.</p>
+            </div>
+          </div>
+        )}
 
         <div className="assistant-messages">
           {messages.length === 0 ? (
@@ -10996,8 +11173,95 @@ function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }
             {streaming ? "…" : "Envoyer"}
           </button>
         </div>
-        <p className="role-picker-hint" style={{ marginTop: 8 }}>Astuce : Entrée pour envoyer, Maj + Entrée pour un saut de ligne.</p>
+        <p className="role-picker-hint" style={{ marginTop: 8, ...(embedded ? { padding: "0 16px 12px" } : null) }}>Astuce : Entrée pour envoyer, Maj + Entrée pour un saut de ligne.</p>
       </section>
+  );
+}
+
+// Onglet Agent IA — ne subsiste QUE pour la vue client (`ideas_only`, ex. Joëlle).
+// Ces comptes n'ont pas d'Inbox du tout (ni prospects, ni DM) : leur retirer cet
+// onglet leur supprimerait l'assistant. En vue agence il a disparu au profit des
+// fils Assistant de l'Inbox (backlog Notion « Intégrer l'agent IA dans l'inbox »).
+function Assistant({ isAuthed, requireAuth, seed, imageJobs, onImageJobCreated }: { isAuthed: boolean; requireAuth: (reason?: string) => void; seed?: { post: string; nonce: number; prompt?: string } | null; imageJobs: ImageJob[]; onImageJobCreated: (job: ImageJob) => void }) {
+  const [conversations, setConversations] = useState<ChatConversation[]>([]);
+  const [thread, setThread] = useState<{ seq: number; conversationId: string | null; seedPrompt?: string }>({ seq: 0, conversationId: null });
+  const [activeId, setActiveId] = useState<string | null>(null);
+
+  async function loadConversations() {
+    if (!isAuthed) return;
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/chat/conversations`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (res.ok) setConversations(Array.isArray(data) ? data : []);
+    } catch { /* non bloquant : le fil reste utilisable sans son historique */ }
+  }
+
+  useEffect(() => {
+    if (!isAuthed) { setConversations([]); setActiveId(null); return; }
+    void loadConversations();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
+
+  // Post envoyé depuis un autre écran (« Retravailler avec l'Agent IA »).
+  useEffect(() => {
+    if (!seed?.post || !isAuthed) return;
+    setActiveId(null);
+    setThread((t) => ({ seq: t.seq + 1, conversationId: null, seedPrompt: seed.prompt || reworkPrompt(seed.post) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed?.nonce]);
+
+  function openConversation(id: string | null) {
+    setActiveId(id);
+    setThread((t) => ({ seq: t.seq + 1, conversationId: id, seedPrompt: undefined }));
+  }
+
+  if (!isAuthed) {
+    return (
+      <LockedCard
+        title="Assistant conversationnel"
+        subtitle="Connecte-toi pour garder l'historique et utiliser ton contexte éditorial."
+        onUnlock={() => requireAuth("Crée un compte gratuit pour discuter avec l'assistant.")}
+      />
+    );
+  }
+
+  return (
+    <div className="assistant-layout">
+      <aside className="assistant-sidebar card">
+        <div className="assistant-sidebar-header">
+          <p className="eyebrow">Conversations</p>
+          <button className="ghost-button" onClick={() => openConversation(null)} title="Nouvelle conversation">
+            <PlusCircle size={14} /> Nouveau
+          </button>
+        </div>
+        <div className="assistant-conversation-list">
+          {conversations.length ? conversations.map((conv) => (
+            <button
+              key={conv.id}
+              className={`assistant-conversation ${activeId === conv.id ? "active" : ""}`}
+              onClick={() => openConversation(conv.id)}
+            >
+              <strong>{conv.title}</strong>
+              <span>{new Date(conv.updated_at).toLocaleDateString("fr-FR")}</span>
+            </button>
+          )) : (
+            <p className="assistant-empty">Aucune conversation enregistrée.</p>
+          )}
+        </div>
+      </aside>
+
+      <AssistantThread
+        key="assistant-tab-thread"
+        isAuthed={isAuthed}
+        requireAuth={requireAuth}
+        threadSeq={thread.seq}
+        conversationId={thread.conversationId}
+        seedPrompt={thread.seedPrompt}
+        imageJobs={imageJobs}
+        onImageJobCreated={onImageJobCreated}
+        onConversationCreated={(id) => setActiveId(id)}
+        onExchangeDone={() => void loadConversations()}
+      />
     </div>
   );
 }
@@ -14891,7 +15155,10 @@ function ContentHub({
   if (reservoirOnly) {
     return (
       <div>
-        <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} reservoirOnly imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
+        {/* `onRework` n'était pas transmis : le « Retravailler avec l'Agent IA »
+            du menu ⋯ existait dans le composant mais n'a jamais pu s'afficher,
+            cet écran n'étant plus rendu qu'ici. */}
+        <DailyIdeasView isAuthed={isAuthed} requireAuth={requireAuth} onReuse={onReuse} onRework={onRework} reservoirOnly imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
       </div>
     );
   }
@@ -14961,7 +15228,7 @@ export default function Home() {
   // Sujet pré-rempli quand on "réutilise" une idée/un post depuis Mes contenus.
   const [generatorSeed, setGeneratorSeed] = useState<{ topic: string; nonce: number } | null>(null);
   // Post pré-rempli quand on "retravaille" un variant depuis le Générateur vers l'Agent IA.
-  const [assistantSeed, setAssistantSeed] = useState<{ post: string; nonce: number } | null>(null);
+  const [assistantSeed, setAssistantSeed] = useState<{ post: string; nonce: number; prompt?: string } | null>(null);
   // ALE-245 : conversation à pré-sélectionner dans l'Inbox (depuis un lead).
   const [inboxSelect, setInboxSelect] = useState<{ network: InboxNetwork; id: string; nonce: number } | null>(null);
   const [loadedReport, setLoadedReport] = useState<Report | null>(null);
@@ -15038,6 +15305,14 @@ export default function Home() {
       try { localStorage.setItem("lkd_client_view", next ? "ideas" : "full"); } catch { /* ignore */ }
       return next;
     });
+  }
+
+  // « Retravailler avec l'Agent IA » depuis un post. La destination diffère selon
+  // la vue : l'agence n'a plus d'onglet Agent IA (l'assistant vit dans l'Inbox),
+  // la vue client n'a pas d'Inbox et garde donc son onglet.
+  function reworkWithAssistant(post: string) {
+    setAssistantSeed({ post, nonce: Date.now() });
+    setView(restricted ? "assistant" : "inbox");
   }
 
   // Vue client : navigation verrouillée sur la page idées (LinkedIn → Contenu).
@@ -15807,7 +16082,15 @@ export default function Home() {
         <main className="main" key={session?.user?.id ?? "anon"}>
           {/* Agent IA, Inbox IG et Profil (qui inclut le Tableau de bord) sont indépendants du réseau */}
           {view === "inbox" ? (
-            <UnifiedInbox isAuthed={isAuthed} requireAuth={requireAuth} userId={session?.user?.id ?? null} initialSelect={inboxSelect} />
+            <UnifiedInbox
+              isAuthed={isAuthed}
+              requireAuth={requireAuth}
+              userId={session?.user?.id ?? null}
+              initialSelect={inboxSelect}
+              assistantSeed={assistantSeed}
+              imageJobs={imageJobs}
+              onImageJobCreated={onImageJobCreated}
+            />
           ) : view === "assistant" ? (
             <Assistant isAuthed={isAuthed} requireAuth={requireAuth} seed={assistantSeed} imageJobs={imageJobs} onImageJobCreated={onImageJobCreated} />
           ) : view === "profile" ? (
@@ -15872,10 +16155,7 @@ export default function Home() {
                     setGeneratorSeed({ topic, nonce: Date.now() });
                     setContentTab("generator");
                   }}
-                  onRework={(post) => {
-                    setAssistantSeed({ post, nonce: Date.now() });
-                    setView("assistant");
-                  }}
+                  onRework={reworkWithAssistant}
                 />
               )}
               {view === "prospecting" && (

@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from src import actor_health
 from src.scraper import _client, _default_dataset_id
 from src.usage import track_apify
 
@@ -68,16 +69,26 @@ def fetch_ig_profile(handle: str, use_cache: bool = True) -> dict | None:
             pass
 
     run_input = {"usernames": [handle]}
+    error: str | None = None
     try:
         client = _client()
         run = client.actor(actor).call(run_input=run_input)
         items = list(client.dataset(_default_dataset_id(run)).iterate_items())
     except Exception as exc:
         print(f"[scraper_instagram] fetch_ig_profile({handle}) failed: {exc}")
+        error = str(exc)
         items = []
 
     profile = items[0] if items else {}
     track_apify(actor, 1 if profile else 0, cached=False)
+    actor_health.record_call(
+        actor,
+        ok=(error is None),
+        item_count=len(items),
+        expected_min_items=1,
+        error=error,
+        context="fetch_ig_profile",
+    )
     try:
         cache_file.write_text(json.dumps(profile, ensure_ascii=False, indent=2, default=str))
     except Exception:
@@ -108,15 +119,25 @@ def fetch_ig_reels(handle: str, limit: int = 30, use_cache: bool = True) -> list
         "resultsLimit": limit,
         "skipPinnedPosts": True,
     }
+    error: str | None = None
     try:
         client = _client()
         run = client.actor(actor).call(run_input=run_input)
         items = list(client.dataset(_default_dataset_id(run)).iterate_items())
     except Exception as exc:
         print(f"[scraper_instagram] fetch_ig_reels({handle}) failed: {exc}")
+        error = str(exc)
         items = []
 
     track_apify(actor, len(items), cached=False)
+    actor_health.record_call(
+        actor,
+        ok=(error is None),
+        item_count=len(items),
+        expected_min_items=1,
+        error=error,
+        context="fetch_ig_reels",
+    )
     if items:
         try:
             cache_file.write_text(json.dumps(items, ensure_ascii=False, indent=2, default=str))

@@ -6,7 +6,8 @@ test.describe("Landing publique", () => {
     await page.goto("/");
     await expect(page).toHaveTitle(/Cibl/i);
     // ALE-257 : « Veille » retirée de la nav (fusionnée dans Contenu › Analyses).
-    for (const label of ["Contenu", "Agent IA", "Mon profil"]) {
+    // Backlog Notion : « Agent IA » retiré à son tour — l'assistant vit dans l'Inbox.
+    for (const label of ["Contenu", "Inbox", "Mon profil"]) {
       await expect(page.locator(".nav-item", { hasText: label })).toBeVisible();
     }
   });

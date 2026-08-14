@@ -1029,6 +1029,9 @@ def save_generated_posts(
                 "reel_details": {
                     "hook": hook,
                     "script": variant.get("script") or "",
+                    # Indications de tournage, tenues À PART du texte parlé (le
+                    # script est lu tel quel, y compris par l'avatar IA).
+                    "shots": variant.get("shots") or [],
                     "hashtags": variant.get("hashtags") or [],
                     "trame_id": variant.get("trame_id"),
                 },

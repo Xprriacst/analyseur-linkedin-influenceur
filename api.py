@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from src import actor_health
 from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing
 from src import heygen
 from src import outreach_engine, outreach_autopilot, features
@@ -34,6 +35,7 @@ from src import lead_search
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
 from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures, IG_TRAMES
 from src.llm import adapt_post_for_x, adapt_post_for_reddit
+from src.llm import spoken_script
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
@@ -80,6 +82,7 @@ def _cors_origins() -> list[str]:
         "http://localhost:3002",
         "http://127.0.0.1:3002",
         "https://courageous-strudel-2d8ba3.netlify.app",
+        "https://cibl.clareo-solutions.fr",
         "https://lkd-outreach.netlify.app",
         "https://lkd-outreach-dev.netlify.app",
         "https://analyseur-linkedin-influenceur-api-dev.onrender.com",
@@ -255,6 +258,19 @@ def health() -> dict[str, Any]:
         "supabase": db.supabase_enabled(),
         "service_role": db.admin_enabled(),
     }
+
+
+@app.get("/health/apify")
+def health_apify() -> dict[str, Any]:
+    """État récent des acteurs Apify appelés par ce process (backlog « Surveiller
+    la fiabilité des acteurs Apify »). Pas d'auth (comme /health) : aucune donnée
+    utilisateur, seulement des noms d'acteurs / compteurs / erreurs techniques.
+
+    Fenêtre en mémoire process uniquement (`src/actor_health.py`) — un
+    redémarrage Render la remet à zéro. Pour un historique, greper les logs
+    Render sur `[apify.health]`.
+    """
+    return {"ok": True, **actor_health.summary(), "recent": actor_health.recent_events(50)}
 
 
 @app.get("/me/influencers")
@@ -1382,9 +1398,18 @@ def me_avatar_video_create(payload: AvatarVideoJobRequest, token: str = Depends(
             status_code=400,
             detail="Choisis d'abord la voix de ton avatar (Mon profil → Connexions → Mon avatar IA).",
         )
-    script = payload.script.strip()
-    if not script:
+    raw_script = payload.script.strip()
+    if not raw_script:
         raise HTTPException(status_code=422, detail="Script vide.")
+    # Dernier rempart : HeyGen lit le script mot pour mot. Une indication de
+    # tournage restée dedans (packs d'avant la séparation script/plan de
+    # tournage, ou glissement du modèle) serait PRONONCÉE dans la vidéo.
+    script = spoken_script(raw_script)
+    if not script:
+        raise HTTPException(
+            status_code=422,
+            detail="Ce script ne contient que des indications de tournage — garde le texte à dire.",
+        )
 
     # Pré-check fail-closed du solde (même patron que les images) : le débit
     # n'a lieu qu'à la complétion réussie, mais on ne lance pas un rendu qu'on
@@ -2988,6 +3013,10 @@ def delete_me_generated_post(post_id: str, token: str = Depends(require_token)) 
 class ReelDetailsPayload(BaseModel):
     hook: str = Field(default="", max_length=2000)
     script: str = Field(default="", max_length=8000)
+    # Indications de tournage, séparées du texte parlé. ⚠️ Un champ absent de ce
+    # modèle est accepté puis IGNORÉ en silence par pydantic : sans cette ligne,
+    # le plan de tournage disparaîtrait à la sauvegarde sans aucune erreur.
+    shots: list[str] = Field(default_factory=list, max_length=12)
     hashtags: list[str] = Field(default_factory=list, max_length=30)
 
 
