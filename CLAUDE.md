@@ -4,10 +4,14 @@
 
 | Env | Frontend (Netlify) | Backend (Render, **Francfort**) | Branche git |
 |---|---|---|---|
-| **Prod** | `lkd-outreach.netlify.app` (ID `81f75c05`) | `analyseur-linkedin-influenceur-api-eu.onrender.com` (`srv-d991660k1i2s73dfrbug`, standard) | `main` |
+| **Prod** | **`cibl.clareo-solutions.fr`** (site `lkd-outreach`, ID `81f75c05` — `lkd-outreach.netlify.app` reste servi et redirige) | `analyseur-linkedin-influenceur-api-eu.onrender.com` (`srv-d991660k1i2s73dfrbug`, standard) | `main` |
 | **Dev** | `lkd-outreach-dev.netlify.app` (ID `35a2cf5e`) | `analyseur-linkedin-influenceur-api-dev-eu.onrender.com` (`srv-d990m3l7vvec73esnjhg`, free) | `dev` |
 
 ⚠️ **Le suffixe `-eu` n'est pas un détail** (migration Oregon → Francfort du 2026-07-11, ALE-279). Les **anciens services Oregon sans `-eu`** (`analyseur-linkedin-influenceur-api`, `analyseur-linkedin-influenceur-api-dev`) sont restés **debout mais morts** : ils répondent **502**, pas une erreur DNS. Un `.env.local` (fichier local, jamais touché par la migration) resté sur l'ancienne URL donne donc un **« Failed to fetch » sur toute action serveur** alors que la connexion marche encore (Supabase est appelé en direct, pas via le backend) — symptôme trompeur d'« app connectée mais tout casse ». **Devant un « Failed to fetch » : `curl <BACKEND_URL>/health` AVANT de suspecter le code.** Le backend dev est en plan **free** ⇒ réveil à froid mesuré **~90 s** sur le premier appel.
+
+### Domaine prod `cibl.clareo-solutions.fr` (2026-08-14)
+⚠️ **Le DNS de `clareo-solutions.fr` n'est PAS chez Netlify** : les NS sont chez **IONOS** (`ns*.ui-dns.*`) et le compte Netlify n'a **aucune zone DNS** pour ce domaine (seul `polaris-ai.fr` en a une). Un sous-domaine ne peut donc pas être créé depuis Netlify ni depuis ce dépôt — il faut passer par la console IONOS. L'enregistrement attendu est un **CNAME `cibl` → `lkd-outreach.netlify.app`** (pas un A vers l'IP apex `75.2.60.5`, qui est réservée au domaine racine servi par le site `clareo-landing`).
+⚠️ **Tant que le CNAME n'existe pas, Netlify ne peut pas émettre le certificat** (`ssl: false`) : le domaine répond en erreur SSL, ce qui **ressemble à un déploiement raté alors que le site est déployé et sain**. Vérifier `dig +short cibl.clareo-solutions.fr` avant de suspecter le build.
 
 ### Variables d'env Netlify
 - `BACKEND_URL` → URL Render de l'environnement (server-side, proxy Next.js)
@@ -81,6 +85,15 @@ Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netli
 Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-journal.md` (sur `dev`, entrée la plus récente en haut). Chaque run y consigne : issues traitées + PR + statuts, difficultés rencontrées (erreurs exactes), leçons et états en suspens. **Tout agent qui démarre une routine doit lire les dernières entrées d'abord** ; tout run doit en ajouter une à la fin (seul cas de push direct autorisé sur `dev` : ce fichier de docs uniquement). Prompt de routine de référence : `docs/routine-agent-issues.prompt.md`.
 
 ## Changelog
+
+### 2026-08-14 (PROD : Cibl passe sur son propre domaine `cibl.clareo-solutions.fr` — PR #442)
+- **Demande d'Alex** : servir Cibl sur `cibl.clareo-solutions.fr` au lieu de `lkd-outreach.netlify.app`.
+- **Fait côté serveur** : (1) `cibl.clareo-solutions.fr` posé en **domaine principal** du site Netlify prod `lkd-outreach` (`81f75c05`) — l'ancien `lkd-outreach.netlify.app` reste servi et redirige, donc **aucun lien existant ne casse** ; (2) origine CORS ajoutée dans `api.py` **et** `CORS_ORIGINS=https://cibl.clareo-solutions.fr` posée sur le service Render prod — la variable d'env rend la prod fonctionnelle **immédiatement, sans attendre une release** `dev → main` (qui aurait embarqué #436 et #439 non encore testés par Alex). **Vérifié en réel** : `access-control-allow-origin: https://cibl.clareo-solutions.fr` renvoyé par le backend prod.
+- ⚠️ **La seule action réellement bloquante est le DNS, et elle n'est pas automatisable depuis ce dépôt** : `clareo-solutions.fr` est délégué à **IONOS**, le compte Netlify n'a aucune zone DNS dessus. Il faut créer à la main **CNAME `cibl` → `lkd-outreach.netlify.app`**. Tant qu'il manque, Netlify laisse `ssl: false` et le domaine répond en **erreur de certificat** — symptôme qui **ressemble à un déploiement cassé** alors que le site est en ligne et sain.
+- **Ce qui NE bloque PAS, contrairement à la règle générale « changement de domaine = 3 actions »** : la config **Supabase Auth**. Vérifié dans le code (`signUp` / `signInWithPassword` uniquement — **aucun `redirectTo`, aucun OAuth, aucun magic link**) et en base prod (**33 comptes, 32 confirmés dans la seconde ⇒ confirmation d'e-mail désactivée**). La Site URL ne sert donc qu'aux e-mails de réinitialisation déclenchés au dashboard. **À mettre à jour quand même** (Site URL → `https://cibl.clareo-solutions.fr`, garder l'ancien domaine dans les Redirect URLs le temps de la transition), mais **la connexion marchera sur le nouveau domaine sans y toucher** — ne pas perdre de temps à débugger Supabase si quelque chose casse.
+- **Rien à changer ailleurs** : les URLs de retour Stripe sont construites depuis `window.location.origin` (elles suivent le domaine toutes seules) ; les variables Netlify `BACKEND_URL`/`NEXT_PUBLIC_BACKEND_URL`/Supabase sont inchangées (le backend ne bouge pas) ; aucune migration.
+- ⚠️ **Le MCP Supabase de cette session est scopé sur une autre organisation** (`execute_sql` sur le projet prod → « access denied ») : c'est **l'autre connecteur Supabase** de la session qui a le droit. Et le token du keychain de la **CLI Supabase n'est pas utilisable** sur l'API Management (`JWT could not be decoded`) — la config Auth ne peut donc pas être posée par API depuis ici.
+- **Reste à faire** : le CNAME chez IONOS (Alex), puis attendre le certificat Netlify (quelques minutes après propagation) ; Site URL Supabase ; à terme, recaler `E2E_BASE_URL` de la suite Playwright prod sur le nouveau domaine.
 
 ### 2026-08-13 #3 (dev : le script d'un reel ne porte plus que le texte dit — le tournage passe dans un champ à part, PR #436)
 - **Retour d'Alex** : le script généré mélangeait « CE QU'ON DIT » et « CE QU'ON MONTRE » — il veut que le script soit **juste le texte prononcé**.
