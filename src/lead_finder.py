@@ -16,6 +16,7 @@ import os
 import re
 from typing import Any
 
+from src import actor_health
 from src.scraper import _call_actor, _client, _default_dataset_id
 from src.usage import track_apify
 
@@ -94,8 +95,14 @@ def fetch_post_commenters(
     }
     # Timeout large : la collecte tourne en tâche de fond (ALE-240) et un gros
     # volume (milliers de commentaires) prend plusieurs minutes côté Apify.
-    run = _call_actor(actor, run_input, timeout_secs=1500)
-    items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
+    try:
+        run = _call_actor(actor, run_input, timeout_secs=1500)
+        items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
+    except Exception as exc:
+        actor_health.record_call(
+            actor, ok=False, error=str(exc), context="fetch_post_commenters"
+        )
+        raise
     track_apify(actor, len(items), cached=False)
 
     leads: list[dict[str, Any]] = []
@@ -114,6 +121,16 @@ def fetch_post_commenters(
         leads.append(lead)
 
     leads.sort(key=lambda l: l.get("reaction_count") or 0, reverse=True)
+    # Ce post a passé le pré-filtre `looks_like_lead_magnet` (un CTA à
+    # commenter) — 0 lead ramené alors qu'on en attend est le symptôme exact
+    # de l'incident #407 (run "réussi", résultat vide) : signalé sans lever.
+    actor_health.record_call(
+        actor,
+        ok=True,
+        item_count=len(leads),
+        expected_min_items=1,
+        context="fetch_post_commenters",
+    )
     return leads
 
 

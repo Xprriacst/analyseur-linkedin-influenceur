@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from src import actor_health
 from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing
 from src import heygen
 from src import outreach_engine, outreach_autopilot, features
@@ -256,6 +257,19 @@ def health() -> dict[str, Any]:
         "supabase": db.supabase_enabled(),
         "service_role": db.admin_enabled(),
     }
+
+
+@app.get("/health/apify")
+def health_apify() -> dict[str, Any]:
+    """État récent des acteurs Apify appelés par ce process (backlog « Surveiller
+    la fiabilité des acteurs Apify »). Pas d'auth (comme /health) : aucune donnée
+    utilisateur, seulement des noms d'acteurs / compteurs / erreurs techniques.
+
+    Fenêtre en mémoire process uniquement (`src/actor_health.py`) — un
+    redémarrage Render la remet à zéro. Pour un historique, greper les logs
+    Render sur `[apify.health]`.
+    """
+    return {"ok": True, **actor_health.summary(), "recent": actor_health.recent_events(50)}
 
 
 @app.get("/me/influencers")
