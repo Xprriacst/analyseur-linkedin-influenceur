@@ -11,6 +11,16 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
+/** Inbox sans prospect : isole les tests de l'Assistant du vrai backend. */
+async function mockNoProspects(page: Page) {
+  await page.route("**/me/ig/conversations", (route) =>
+    route.fulfill({ contentType: "application/json", body: JSON.stringify([]) })
+  );
+  await page.route("**/me/linkedin/outreach/status", (route) =>
+    route.fulfill({ contentType: "application/json", body: JSON.stringify({ configured: true, connected: false }) })
+  );
+}
+
 /** Ouvre les deux menus de la première barre d'actions et vérifie leur contenu commun. */
 async function checkActionsBar(page: Page, { expectDelete }: { expectDelete: boolean }) {
   const bar = page.locator(".post-actions-bar").first();
@@ -98,9 +108,12 @@ test("Agent IA : menu Publier + ⋯ sous une réponse (conversation mockée), av
       ] }),
     })
   );
-  await gotoTab(page, "Agent IA");
-  // Au montage, seule la liste est chargée : on ouvre la conversation mockée.
-  await page.getByText("Test ALE-188").click();
+  // L'assistant vit dans l'Inbox (backlog Notion « Intégrer l'agent IA dans
+  // l'inbox ») : ses fils sont des lignes de la liste, à côté des prospects.
+  // Prospects mockés à vide pour que le test ne dépende pas du vrai backend.
+  await mockNoProspects(page);
+  await gotoTab(page, "Inbox");
+  await page.getByRole("button", { name: /Test ALE-188/ }).click();
   await expect(page.getByText("Voici un post de test ALE-188.")).toBeVisible();
   await checkActionsBar(page, { expectDelete: false });
 
@@ -143,8 +156,9 @@ test("Agent IA : édition manuelle du post proposé (éditeur inline, version mo
       ] }),
     })
   );
-  await gotoTab(page, "Agent IA");
-  await page.getByText("Test édition").click();
+  await mockNoProspects(page);
+  await gotoTab(page, "Inbox");
+  await page.getByRole("button", { name: /Test édition/ }).click();
   await expect(page.getByText("Texte proposé par l'agent.")).toBeVisible();
 
   // « Modifier le post » dans le menu « ⋯ » → éditeur inline pré-rempli.
