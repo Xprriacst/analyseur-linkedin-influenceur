@@ -169,10 +169,12 @@ test("Contenu › Générateur : le parcours propose les 3 points de départ (AL
   await expect(modal).toHaveCount(0);
 });
 
-test("onglet Agent IA : interface chat rendue", async ({ page }) => {
-  await gotoTab(page, "Agent IA");
-  // L'onglet doit devenir actif sans rediriger vers l'auth (donc session OK).
-  await expect(page.locator(".nav-item.active", { hasText: "Agent IA" })).toBeVisible();
+test("Inbox : l'assistant s'ouvre depuis la liste des conversations", async ({ page }) => {
+  // L'onglet Agent IA a disparu de la vue agence (backlog Notion « Intégrer
+  // l'agent IA dans l'inbox ») : l'assistant est une conversation de l'Inbox.
+  await gotoTab(page, "Inbox");
+  await page.locator("button[title*='Assistant']").first().click();
+  await expect(page.locator(".assistant-composer textarea")).toBeVisible();
 });
 
 test("Contenu : le sous-onglet « Idée du jour » a disparu de la vue agence (ALE-286)", async ({ page }) => {
