@@ -9,6 +9,7 @@ from urllib.parse import quote, unquote
 
 from apify_client import ApifyClient
 
+from src import actor_health
 from src.usage import track_apify
 
 
@@ -85,7 +86,11 @@ def fetch_post_detail(post_url: str) -> dict[str, Any] | None:
         items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
     except Exception as exc:
         print(f"[scraper] échec scrape post {post_url} via {actor}: {exc}", flush=True)
+        actor_health.record_call(actor, ok=False, error=str(exc), context="fetch_post_detail")
         return None
+    actor_health.record_call(
+        actor, ok=True, item_count=len(items), expected_min_items=1, context="fetch_post_detail"
+    )
     for item in items:
         post = item.get("post") or {}
         text = (post.get("text") or "").strip()
@@ -148,8 +153,12 @@ def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> li
             "limit": limit,
         }
 
-    run = _call_actor(actor, run_input, timeout_secs=300)
-    items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
+    try:
+        run = _call_actor(actor, run_input, timeout_secs=300)
+        items = list(_client().dataset(_default_dataset_id(run)).iterate_items())
+    except Exception as exc:
+        actor_health.record_call(actor, ok=False, error=str(exc), context="fetch_posts")
+        raise
     # Certains actors renvoient un item d'erreur ({"message": ..., "profile_input": ...})
     # au lieu d'un dataset vide : on ne garde que les vrais posts.
     items = [
@@ -157,6 +166,9 @@ def fetch_posts(profile_url: str, limit: int = 30, use_cache: bool = True) -> li
         if isinstance(i, dict) and (i.get("text") or i.get("content") or i.get("full_urn") or i.get("id"))
     ]
     track_apify(actor, len(items), cached=False)
+    actor_health.record_call(
+        actor, ok=True, item_count=len(items), expected_min_items=1, context="fetch_posts"
+    )
 
     if items:  # ne jamais mettre en cache un échec
         cache_file.write_text(json.dumps(items, ensure_ascii=False, indent=2, default=str))
@@ -208,10 +220,17 @@ def fetch_profile(profile_url: str, use_cache: bool = True) -> dict[str, Any] | 
     actor = os.environ.get("APIFY_PROFILE_ACTOR", PROFILE_FALLBACK_ACTOR)
     url = normalize_url(profile_url)
 
-    items = _run_profile_actor(actor, url)
-    if not items and actor != PROFILE_FALLBACK_ACTOR:
-        items = _run_profile_actor(PROFILE_FALLBACK_ACTOR, url)
-        actor = PROFILE_FALLBACK_ACTOR
+    # Repli automatique + tracé (`actor_health`) : c'est le patron introduit
+    # le 2026-06-12 quand harvestapi s'est mis à exiger une approbation de
+    # permissions Apify — désormais généralisé et observable (grep
+    # `[apify.health]` dans les logs Render, ou `GET /health/apify`).
+    items, actor = actor_health.call_with_fallback(
+        actor,
+        lambda a: _run_profile_actor(a, url),
+        fallback_actor=PROFILE_FALLBACK_ACTOR,
+        context="fetch_profile",
+        expected_min_items=1,
+    )
 
     profile = items[0] if items else {}
     track_apify(actor, 1 if profile else 0, cached=False)
