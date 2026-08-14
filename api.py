@@ -81,6 +81,7 @@ def _cors_origins() -> list[str]:
         "http://localhost:3002",
         "http://127.0.0.1:3002",
         "https://courageous-strudel-2d8ba3.netlify.app",
+        "https://cibl.clareo-solutions.fr",
         "https://lkd-outreach.netlify.app",
         "https://lkd-outreach-dev.netlify.app",
         "https://analyseur-linkedin-influenceur-api-dev.onrender.com",
