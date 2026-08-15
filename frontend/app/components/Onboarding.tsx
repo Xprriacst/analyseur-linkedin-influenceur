@@ -35,7 +35,6 @@ import {
   Users,
 } from "lucide-react";
 import { authHeaders } from "../lib/supabase";
-import { FOUNDERS_FIRST_MONTH_OFF_PCT, FOUNDERS_TESTIMONIAL } from "../lib/founders";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
@@ -98,7 +97,6 @@ type OnbStep =
   | "page2"
   | "gains"
   | "simulation"
-  | "pitch"
   | "lead_form"
   | "lead_done";
 type OnbOption = { label: string; match?: string[] };
@@ -346,15 +344,6 @@ function fmtMoney(n: number): string {
   return `${fmtInt(n)} €`;
 }
 
-/** Prix catalogue (peut être décimal : 29,40 €). */
-function fmtPrice(n: number): string {
-  const rounded = Math.round(n * 100) / 100;
-  return `${rounded.toLocaleString("fr-FR", {
-    minimumFractionDigits: Number.isInteger(rounded) ? 0 : 2,
-    maximumFractionDigits: 2,
-  })} €`;
-}
-
 /** Fourchette affichée « bas à haut ». Bornes égales ⇒ une seule valeur. */
 function fmtRange(range: OnbRange | undefined, fmt: (n: number) => string): string {
   if (!range) return "—";
@@ -458,10 +447,6 @@ export default function OnboardingScreen({
   anonymous = false,
   funnel = "app",
   variant: variantKey = "default",
-  trialDays = 7,
-  planPrice = 49,
-  monthlySeats: _monthlySeats = 0,
-  guaranteeDays: _guaranteeDays = 0,
   onFinish,
   onSkip,
   finishLabel = "C'est parti",
@@ -474,24 +459,12 @@ export default function OnboardingScreen({
    *  - `audit` : gains projetés → simulation → coordonnées → audit par e-mail (/start).
    *  - `trial` : gains projetés → simulation → essai gratuit (/founders). Pas de
    *    formulaire de coordonnées : l'e-mail est capturé par la création de compte,
-   *    en demander un ici serait le demander deux fois.
+   *    en demander un ici serait le demander deux fois. Le plan + la création de
+   *    compte vivent sur UN seul écran côté /founders (plus de paywall intermédiaire).
    */
   funnel?: "app" | "audit" | "trial";
   /** Jeu de questions et de formulations (`saas` = tunnel fondateurs). */
   variant?: "default" | "saas";
-  /**
-   * Durée de l'essai annoncée sur le bouton final (`funnel="trial"`).
-   * Elle vient du serveur via l'appelant, jamais d'une constante : un bouton qui
-   * promet 7 jours quand Stripe en accorde 14 (ou zéro) est un mensonge que rien
-   * ne rattrape ensuite.
-   */
-  trialDays?: number;
-  /** Prix mensuel affiché dans le cadrage ROI — vient de Stripe via l'appelant. */
-  planPrice?: number;
-  /** Places ouvertes par mois (engagement réel, cf. lib/founders.ts). 0 = masqué. */
-  monthlySeats?: number;
-  /** Jours de garantie « satisfait ou remboursé » après l'essai. 0 = masqué. */
-  guaranteeDays?: number;
   /** Reçoit le profil complet. L'appelant décide : enregistrer, ou emmener vers l'inscription. */
   onFinish: (profile: OnboardingProfile) => void | Promise<void>;
   /** « Passer » — l'utilisateur refuse de répondre. */
@@ -612,15 +585,18 @@ export default function OnboardingScreen({
   // La pop-up du quiz n'apparaît que ~2,5 s après le lancement : l'animation de
   // scan doit d'abord raconter ce qui se passe, sinon la question tombe avant
   // même que « Lecture de ton site… » ait été lu.
+  // ⚠️ Pas de quiz stade/obstacles quand on a collé un LinkedIn : « Où en est
+  // ton SaaS ? » n'a pas de sens sur un profil perso — on saute droit à
+  // l'analyse (quizIdx déjà à 3 au lancement, cf. analyze()).
   useEffect(() => {
     if (step !== "scanning" || variantKey !== "saas") return;
     const id = setTimeout(() => setQuizIdx((i) => (i === 0 ? 1 : i)), 2500);
     return () => clearTimeout(id);
   }, [step, variantKey]);
 
-  // Quiz terminé + analyse prête ⇒ on avance tout seul. C'est le SEUL cas
-  // d'avancée automatique : tant qu'une question est à l'écran, le résultat
-  // attend — on n'arrache pas un choix en cours.
+  // Quiz terminé (ou sauté) + analyse prête ⇒ on avance tout seul. C'est le
+  // SEUL cas d'avancée automatique : tant qu'une question est à l'écran, le
+  // résultat attend — on n'arrache pas un choix en cours.
   useEffect(() => {
     if (step === "scanning" && variantKey === "saas" && quizIdx === 3 && scanResult) {
       applyScanResult(scanResult.profile, scanResult.preview);
@@ -646,7 +622,11 @@ export default function OnboardingScreen({
       setError("On ne lit pas les pages entreprise — colle ton profil perso (linkedin.com/in/…).");
       return;
     }
-    setError(""); setScanResult(null); setQuizIdx(0); setStep("scanning");
+    // LinkedIn → pas de quiz SaaS (stade / obstacles). Site / texte → quiz
+    // classique (quizIdx 0 → pop-up à 2,5 s). « Où en est ton SaaS ? » n'a pas
+    // de sens quand on vient de coller un profil perso.
+    const skipSaasQuiz = variantKey === "saas" && inputKind === "linkedin";
+    setError(""); setScanResult(null); setQuizIdx(skipSaasQuiz ? 3 : 0); setStep("scanning");
     try {
       const isLinkedin = inputKind === "linkedin";
       const isWebsite = inputKind === "website";
@@ -806,8 +786,6 @@ export default function OnboardingScreen({
   const progressPct = step === "page1" ? "50%" : "100%";
   // Écrans qui gagnent à respirer sur grand écran (grilles et colonnes), par
   // opposition aux écrans de saisie où une colonne étroite reste plus lisible.
-  // Paywall closing : colonne un peu plus large que le mobile, centrée.
-  const isPitch = step === "pitch";
   const isWideStep =
     step === "analysis" ||
     step === "analysis_detail" ||
@@ -819,7 +797,6 @@ export default function OnboardingScreen({
     step === "analysis_detail" ||
     step === "gains" ||
     step === "simulation" ||
-    step === "pitch" ||
     step === "lead_form" ||
     step === "lead_done";
 
@@ -829,8 +806,7 @@ export default function OnboardingScreen({
         className={
           "onb-shell" +
           (isAnalysis ? " onb-shell-analysis" : "") +
-          (isWideStep ? " onb-shell-wide" : "") +
-          (isPitch ? " onb-shell-pitch" : "")
+          (isWideStep ? " onb-shell-wide" : "")
         }
       >
         {showProgress && (
@@ -881,12 +857,11 @@ export default function OnboardingScreen({
               {scanResult && quizIdx >= 3 ? "Analyse prête ✓" : scanSteps[scanIdx]}
             </div>
 
-            {/* Tunnel SaaS : la lecture du site prend de longues secondes — deux
-                pop-up successives (une question chacune) occupent l'attente. Le
-                bouton « Continuer » est TOUJOURS cliquable : répondre ne dépend
-                pas de l'analyse. Après la 2ᵉ, si l'analyse n'est pas finie, on
-                revient à l'animation et l'avancée devient automatique. */}
-            {variantKey === "saas" && quizIdx === 1 && (
+            {/* Tunnel SaaS + entrée site : deux pop-up (stade / obstacles)
+                pendant l'attente. Pas de quiz si LinkedIn collé — « Où en est
+                ton SaaS ? » n'a pas de sens sur un profil. Le bouton Continuer
+                est toujours cliquable ; après la 2ᵉ, avancée auto si prêt. */}
+            {variantKey === "saas" && inputKind !== "linkedin" && quizIdx === 1 && (
               <div className="onb-scan-quiz" key="quiz1">
                 <div className="onb-scan-quiz-kicker">Pendant que ça tourne — question 1/2</div>
 
@@ -919,7 +894,7 @@ export default function OnboardingScreen({
               </div>
             )}
 
-            {variantKey === "saas" && quizIdx === 2 && (
+            {variantKey === "saas" && inputKind !== "linkedin" && quizIdx === 2 && (
               <div className="onb-scan-quiz" key="quiz2">
                 <div className="onb-scan-quiz-kicker">Pendant que ça tourne — question 2/2</div>
 
@@ -1353,8 +1328,11 @@ export default function OnboardingScreen({
             </div>
 
             {funnel === "trial" ? (
-              <button type="button" className="onb-analysis-cta" onClick={() => setStep("pitch")}>
-                Comment on s&apos;y prend <ChevronRight size={16} />
+              // Plan + compte sont désormais UN seul écran (phase account de
+              // /founders) — plus de paywall intermédiaire à re-cliquer.
+              <button type="button" className="onb-analysis-cta" onClick={() => void finish()} disabled={saving}>
+                {saving ? <Loader2 size={16} className="spinning" /> : null}
+                Continuer vers l&apos;essai <ChevronRight size={16} />
               </button>
             ) : (
               <button type="button" className="onb-analysis-cta" onClick={() => setStep("lead_form")}>
@@ -1366,75 +1344,6 @@ export default function OnboardingScreen({
             </button>
           </div>
         )}
-
-        {step === "pitch" && funnel === "trial" && (() => {
-          const offPct = FOUNDERS_FIRST_MONTH_OFF_PCT;
-          const introPrice = Math.round(planPrice * (100 - offPct)) / 100;
-          const perDay = introPrice / 30;
-          return (
-          <div className="onb-screen onb-pitch" key="pitch">
-            {/* Paywall desktop-first : témoignage → 1 offre → CTA → fine print.
-                Pas de miroir / ROI / garantie — trop de blocs bleus, trop de scroll. */}
-            <a
-              className="onb-testimonial"
-              href={FOUNDERS_TESTIMONIAL.url}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <div className="onb-testimonial-head">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  className="onb-testimonial-avatar"
-                  src={FOUNDERS_TESTIMONIAL.avatar}
-                  alt={FOUNDERS_TESTIMONIAL.name}
-                  width={48}
-                  height={48}
-                />
-                <div className="onb-testimonial-meta">
-                  <div className="onb-testimonial-name">{FOUNDERS_TESTIMONIAL.name}</div>
-                  <div className="onb-testimonial-handle">{FOUNDERS_TESTIMONIAL.handle}</div>
-                </div>
-                <span className="onb-testimonial-stars" aria-hidden="true">★★★★★</span>
-              </div>
-              <p className="onb-testimonial-quote">«&nbsp;{FOUNDERS_TESTIMONIAL.quote}&nbsp;»</p>
-            </a>
-
-            <h2 className="onb-pitch-title">Choisis ton plan</h2>
-
-            <div className="onb-plan" aria-pressed="true">
-              <span className="onb-plan-radio" aria-hidden="true" />
-              <div className="onb-plan-main">
-                <div className="onb-plan-row">
-                  <span className="onb-plan-name">Mensuel</span>
-                  <span className="onb-plan-badge">−{offPct}&nbsp;%</span>
-                </div>
-                <div className="onb-plan-sub">1er mois après l&apos;essai</div>
-              </div>
-              <div className="onb-plan-price">
-                <span className="onb-plan-was">{fmtPrice(planPrice)}</span>
-                <span className="onb-plan-now">{fmtPrice(introPrice)}</span>
-                <span className="onb-plan-day">{fmtPrice(perDay)}&nbsp;/jour</span>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              className="onb-pitch-cta"
-              onClick={finish}
-              disabled={saving}
-            >
-              {saving ? <Loader2 size={16} className="spinning" /> : null}
-              Démarrer mes {trialDays} jours gratuits
-            </button>
-
-            <p className="onb-pitch-legal">
-              Le prix réduit s&apos;applique à ton premier mois après l&apos;essai.
-              Ton abonnement sera ensuite renouvelé à {fmtPrice(planPrice)}/mois,
-              jusqu&apos;à annulation dans ton compte.
-            </p>
-          </div>
-          );
-        })()}
 
         {step === "lead_form" && (
           <div className="onb-screen onb-analysis" key="lead_form">
