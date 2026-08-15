@@ -26,6 +26,10 @@ import { test, expect, type Page } from "@playwright/test";
  *    serait un chiffre faux sur son propre compte, en plein argumentaire.
  * 5. Le closing est un paywall minimal (témoignage + une offre à −40 %). S'il
  *    redevient verbeux (miroir, ROI, garantie…), on perd l'écran unique.
+ * 6. Le MÊME champ accepte aussi une page LinkedIn (pas d'onglet séparé) : un
+ *    lien `linkedin.com/in/…` doit partir en `linkedin_url`/`use_apify_linkedin`
+ *    (jamais en `website_url`), et l'écran d'analyse doit alors montrer les
+ *    VRAIS compteurs lus (pas le badge « site » ni « aujourd'hui 0 »).
  */
 
 const PREVIEW = {
@@ -45,16 +49,34 @@ const PREVIEW = {
   improvements: ["Headline floue", "Pas de CTA", "Peu de preuves chiffrées"],
 };
 
+// Entrée par une page LinkedIn : le scrape de profil renvoie de vrais
+// compteurs — c'est ce qui doit apparaître à l'écran au lieu du badge « site ».
+const PREVIEW_LINKEDIN = {
+  handle: "lea-fondatrice",
+  name: "Léa Fondatrice",
+  headline: "Fondatrice @ Northstack — analytics produit pour équipes SaaS B2B",
+  avatar_url: "https://media.licdn.com/dms/image/avatar-lea.jpg",
+  posts_count: 8,
+  followers: 1850,
+  connections: 520,
+  niche: "Analytics produit pour équipes SaaS B2B",
+  summary: "Premier paragraphe.\n\nDeuxième paragraphe.",
+  hook: "Tu parles de ton produit, jamais du problème.",
+  hashtags: ["#SaaS", "#ProductLed"],
+  strengths: ["Ton direct", "Sujets concrets", "Bonne régularité"],
+  improvements: ["Headline floue", "Pas de CTA", "Peu de preuves chiffrées"],
+};
+
 const range = (low: number, high: number) => ({ low, high });
 
-function saasBand(key: string, label: string, revenue: [number, number]) {
+function saasBand(key: string, label: string, revenue: [number, number], followersNow = 0) {
   return {
     key,
     label,
     deal_value: 3600,
     projection: {
-      followers_now: 0,
-      followers_after: range(120, 450),
+      followers_now: followersNow,
+      followers_after: range(followersNow + 120, followersNow + 450),
       followers_gain: range(120, 450),
       relations_per_month: range(40, 110),
       conversations_per_month: range(5, 20),
@@ -323,5 +345,104 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     // Un écran de mise en scène en panne ne doit pas coûter le prospect : on
     // atterrit sur la création de compte, pas sur un écran vide ni sur /start.
     await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
+  });
+
+  test("un lien LinkedIn part en linkedin_url (jamais website_url) et les vrais compteurs s'affichent", async ({
+    page,
+  }) => {
+    // Même champ que le site — pas d'onglet séparé (cf. ticket) : on colle une
+    // page LinkedIn et on vérifie que la détection + le rendu suivent la SOURCE
+    // réellement collée, pas l'URI /founders.
+    let draftBody: any = null;
+    await page.route("**/onboarding/draft", (route) => {
+      draftBody = route.request().postDataJSON();
+      return route.fulfill({
+        json: {
+          profile: { display_name: "Léa Fondatrice", core_offer: "Un SaaS vendu en démo" },
+          preview: PREVIEW_LINKEDIN,
+          sources: { description: false, linkedin_apify: true, website_summary: false },
+        },
+      });
+    });
+    await page.route("**/billing/plan", (route) =>
+      route.fulfill({
+        json: {
+          enabled: true,
+          trial_days: 7,
+          plan: { credits: 1000, amount: 49, currency: "eur", interval: "month" },
+        },
+      }),
+    );
+    await page.route("**/onboarding/projection", (route) =>
+      route.fulfill({
+        json: {
+          default_band: "smb",
+          deal_label: "Ton ACV moyen (ce que rapporte un client sur 12 mois)",
+          revenue_label: "Nouvel ARR signé par mois",
+          bands: [saasBand("smb", "1 200 à 6 000 € / an", [3600, 14400], 1850)],
+        },
+      }),
+    );
+
+    await page.goto("/founders");
+    await expect(page.getByRole("heading", { name: /Le LinkedIn qui remplit ton pipeline/ })).toBeVisible();
+    await passGate(page);
+
+    // Le même champ que le site accepte une page LinkedIn.
+    await page.getByPlaceholder("https://ton-saas.com").fill("https://www.linkedin.com/in/lea-fondatrice/");
+    await page.getByRole("button", { name: "Analyser" }).click();
+
+    // Le quiz est identique quelle que soit la source collée.
+    await expect(page.getByText("Où en est ton SaaS ?")).toBeVisible();
+    await page.getByRole("button", { name: /Premiers clients/ }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+    await expect(page.getByText("Qu'est-ce qui te bloque le plus ?")).toBeVisible();
+    await page.getByRole("button", { name: "Je lance dans le silence" }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+
+    // L'URL part bien en linkedin_url + Apify activé — jamais en website_url.
+    expect(draftBody).toMatchObject({
+      linkedin_url: "https://www.linkedin.com/in/lea-fondatrice/",
+      website_url: "",
+      use_apify_linkedin: true,
+    });
+
+    // Analyse : les vrais compteurs du profil scrapé, pas le badge « site ».
+    await expect(page.getByText("@lea-fondatrice")).toBeVisible();
+    await expect(page.getByText("Analysé depuis ton site")).toHaveCount(0);
+    await expect(page.getByText("Analysé depuis ta description")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Voir mon potentiel" }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+    await page.getByRole("button", { name: "Une cible précise" }).click();
+    await page.getByRole("button", { name: "CTO & équipes tech" }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+    await page.getByRole("button", { name: "DevTools & infra" }).click();
+    await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();
+
+    // Audience réellement lue : la courbe s'ancre sur l'audience mesurée, pas
+    // sur un gain à partir de zéro — et « aujourd'hui 0 » ne doit jamais
+    // apparaître à quelqu'un dont le compte vient d'être lu.
+    await expect(page.getByText("Abonnés dans 90 jours")).toBeVisible();
+    await expect(page.locator(".onb-screen")).not.toContainText("aujourd'hui 0");
+  });
+
+  test("une page entreprise LinkedIn est refusée avec un message actionnable", async ({ page }) => {
+    // linkedin.com/company/… n'est ni un site lisible (login-wall) ni un profil
+    // — le refuser AVANT tout appel serveur évite l'analyse creuse silencieuse.
+    let draftCalled = false;
+    await page.route("**/onboarding/draft", (route) => {
+      draftCalled = true;
+      return route.fulfill({ json: { profile: {}, preview: null } });
+    });
+
+    await page.goto("/founders");
+    await passGate(page);
+    await page.getByPlaceholder("https://ton-saas.com").fill("https://www.linkedin.com/company/northstack/");
+    await page.getByRole("button", { name: "Analyser" }).click();
+
+    await expect(page.getByText(/pages entreprise/i)).toBeVisible();
+    await expect(page.getByText(/linkedin\.com\/in\//)).toBeVisible();
+    expect(draftCalled).toBe(false);
   });
 });
