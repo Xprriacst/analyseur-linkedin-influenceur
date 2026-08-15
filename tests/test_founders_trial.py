@@ -142,15 +142,20 @@ class CheckoutTrialPayloadTest(unittest.TestCase):
 
         with patch.dict(os.environ, {"STRIPE_PRICE_ID": "price_123"}, clear=False):
             with patch.object(stripe_billing, "_request", fake_request):
-                stripe_billing.create_checkout_session(
-                    "cus_1", "user-1", "https://app/ok", "https://app/ko", **kwargs
-                )
+                with patch.object(
+                    stripe_billing, "ensure_intro_coupon", return_value="cibl_first_month_40"
+                ):
+                    stripe_billing.create_checkout_session(
+                        "cus_1", "user-1", "https://app/ok", "https://app/ko", **kwargs
+                    )
         return captured["data"]
 
     def test_without_trial_nothing_changes(self):
         data = self._session()
         self.assertNotIn("trial_period_days", data["subscription_data"])
         self.assertNotIn("payment_method_collection", data)
+        self.assertTrue(data["allow_promotion_codes"])
+        self.assertNotIn("discounts", data)
 
     def test_trial_asks_for_the_card_and_cancels_without_one(self):
         """Sans ces deux réglages, Stripe peut créer un abonnement qui ne sera
@@ -173,6 +178,54 @@ class CheckoutTrialPayloadTest(unittest.TestCase):
     def test_zero_days_is_not_a_trial(self):
         data = self._session(trial_days=0)
         self.assertNotIn("trial_period_days", data["subscription_data"])
+
+    def test_trial_applies_the_intro_coupon_and_drops_promo_codes(self):
+        """Sans ça, Checkout affiche 49 € alors que le tunnel promet 29,40 €.
+
+        Stripe refuse discounts + allow_promotion_codes ensemble : la remise
+        fondateurs est appliquée d'office, le champ CIBLDEMO reste sur /paiement.
+        """
+        data = self._session(trial_days=7)
+        self.assertEqual(data["discounts"], [{"coupon": "cibl_first_month_40"}])
+        self.assertNotIn("allow_promotion_codes", data)
+        pairs = dict(stripe_billing._flatten(data))
+        self.assertEqual(pairs["discounts[0][coupon]"], "cibl_first_month_40")
+
+    def test_intro_amount_is_forty_percent_off(self):
+        self.assertEqual(stripe_billing.intro_amount(49), 29.4)
+        self.assertEqual(stripe_billing.intro_amount(None), None)
+
+    def test_intro_coupon_is_repeating_one_month_not_once(self):
+        """`duration=once` se consomme sur la facture d'essai à 0 €."""
+        captured = {}
+
+        def fake_request(method, path, data=None):
+            captured["method"] = method
+            captured["path"] = path
+            captured["data"] = data
+            if method == "GET":
+                raise stripe_billing.StripeError("Stripe 404 : No such coupon")
+            return {"id": "cibl_first_month_40"}
+
+        with patch.object(stripe_billing, "_request", fake_request):
+            cid = stripe_billing.ensure_intro_coupon()
+        self.assertEqual(cid, "cibl_first_month_40")
+        self.assertEqual(captured["data"]["percent_off"], 40)
+        self.assertEqual(captured["data"]["duration"], "repeating")
+        self.assertEqual(captured["data"]["duration_in_months"], 1)
+        self.assertNotEqual(captured["data"]["duration"], "once")
+
+    def test_intro_coupon_reuses_an_existing_one(self):
+        calls = []
+
+        def fake_request(method, path, data=None):
+            calls.append((method, path))
+            return {"id": "cibl_first_month_40"}
+
+        with patch.object(stripe_billing, "_request", fake_request):
+            cid = stripe_billing.ensure_intro_coupon()
+        self.assertEqual(cid, "cibl_first_month_40")
+        self.assertEqual(calls, [("GET", "/coupons/cibl_first_month_40")])
 
     def test_trial_survives_the_form_encoding(self):
         """Le payload est aplati en `a[b][c]` avant l'envoi : vérifié de bout en bout."""
