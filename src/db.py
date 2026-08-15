@@ -826,12 +826,17 @@ def set_heygen_avatar(
     group_id: str | None = None,
     status: str | None = None,
     preview_url: str | None = None,
+    avatar_type: str | None = None,
 ) -> dict | None:
-    """Persist (or clear) the client's HeyGen photo avatar (0065).
+    """Persist (or clear) the client's HeyGen avatar — photo (0065) ou digital
+    twin (0066), `avatar_type` distingue les deux ('photo' par défaut côté SQL).
 
     `look_id=None` = suppression de l'avatar (patron set_zernio_account : un
     seul setter pour connecter et déconnecter). La voix, choisie séparément,
     n'est PAS touchée ici — recréer son avatar ne doit pas faire perdre la voix.
+    À la suppression, le consentement en attente (le cas échéant) est effacé
+    aussi : un lien/expiration orphelin resterait sinon affiché pour un avatar
+    qui n'existe plus après recréation.
     """
     user = get_user(access_token)
     if not user:
@@ -845,14 +850,39 @@ def set_heygen_avatar(
         "heygen_avatar_status": status if look_id else None,
         "heygen_avatar_preview_url": preview_url if look_id else None,
         "heygen_avatar_created_at": now if look_id else None,
+        "heygen_avatar_type": avatar_type if look_id else None,
         "updated_at": now,
     }
+    if not look_id:
+        row["heygen_consent_url"] = None
+        row["heygen_consent_expires_at"] = None
     resp = (
         db.table("user_editorial_profiles")
         .upsert(row, on_conflict="user_id")
         .execute()
     )
     return resp.data[0] if resp.data else None
+
+
+def set_heygen_consent(access_token: str, consent_url: str | None, expires_at: str | None) -> None:
+    """Persist (or clear) the pending HeyGen consent link for a digital twin
+    avatar (0066). Appelée séparément de `set_heygen_avatar` : une demande de
+    consentement peut être renouvelée (lien expiré) sans recréer l'avatar."""
+    user = get_user(access_token)
+    if not user:
+        return
+    db = client_for_token(access_token)
+    fields = {
+        "heygen_consent_url": consent_url,
+        "heygen_consent_expires_at": expires_at,
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    (
+        db.table("user_editorial_profiles")
+        .update(fields)
+        .eq("user_id", user["id"])
+        .execute()
+    )
 
 
 def update_heygen_avatar_status(
