@@ -3245,6 +3245,17 @@ tr.tr-top3 .tr-rank { color: var(--primary); }
   .gen-hero-button:hover { transform: none; }
 }
 
+/* Variante Instagram du bandeau (Générateur de reels) — même structure que
+   .gen-hero, couleurs de la marque Instagram plutôt que l'indigo LinkedIn.
+   ⚠️ Ne JAMAIS modifier .gen-hero en place pour ça : la classe est partagée
+   avec le Générateur de posts LinkedIn (ContentHub) — surcharger ici via une
+   classe combinée `.gen-hero.gen-hero-instagram` uniquement. */
+.gen-hero.gen-hero-instagram {
+  background: linear-gradient(120deg, #f9ce34 0%, #ee2a7b 52%, #6228d7 100%);
+  box-shadow: 0 14px 34px -16px rgba(238, 42, 123, 0.45);
+}
+.gen-hero.gen-hero-instagram .gen-hero-button { color: #833ab4; }
+
 .post-queue { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .post-queue-row {
   border: 1px solid var(--border); border-radius: 12px;
