@@ -377,6 +377,11 @@ export default function FoundersPage() {
                 <span className="onb-plan-day">{fmtPrice(perDay)}&nbsp;/jour</span>
               </div>
             </div>
+            <p className="onb-pitch-legal onb-account-legal">
+              Le prix réduit s&apos;applique à ton premier mois après l&apos;essai.
+              Ton abonnement sera ensuite renouvelé à {fmtPrice(planPrice)}/mois,
+              jusqu&apos;à annulation dans ton compte.
+            </p>
           </aside>
         )}
 
@@ -436,45 +441,59 @@ export default function FoundersPage() {
             autoComplete="email"
           />
 
-          <label className="auth-label" htmlFor="onb-password">Mot de passe</label>
-          <input
-            id="onb-password"
-            className="auth-input"
-            type="password"
-            required
-            minLength={6}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
-            autoComplete={mode === "signup" ? "new-password" : "current-password"}
-          />
-
-          {/* Confirmation à la CRÉATION seulement : une faute de frappe sur un
-              mot de passe tapé une seule fois enferme dehors quelqu'un qui vient
-              de laisser sa carte, et la seule sortie est un e-mail de
-              réinitialisation (qui finit parfois en spam). À la connexion, le
-              serveur répond tout de suite — la confirmation n'y sert à rien. */}
-          {mode === "signup" && (
+          {mode === "signup" ? (
+            <div className="onb-pass-row">
+              <div className="onb-field">
+                <label className="auth-label" htmlFor="onb-password">Mot de passe</label>
+                <input
+                  id="onb-password"
+                  className="auth-input"
+                  type="password"
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="new-password"
+                />
+              </div>
+              <div className="onb-field">
+                <label className="auth-label" htmlFor="onb-password2">Confirme</label>
+                <input
+                  id="onb-password2"
+                  ref={password2Ref}
+                  className="auth-input"
+                  type="password"
+                  required
+                  minLength={6}
+                  value={password2}
+                  onChange={(e) => setPassword2(e.target.value)}
+                  placeholder="Retape ton mot de passe"
+                  autoComplete="new-password"
+                />
+              </div>
+            </div>
+          ) : (
             <>
-              <label className="auth-label" htmlFor="onb-password2">Confirme ton mot de passe</label>
+              <label className="auth-label" htmlFor="onb-password">Mot de passe</label>
               <input
-                id="onb-password2"
-                ref={password2Ref}
+                id="onb-password"
                 className="auth-input"
                 type="password"
                 required
                 minLength={6}
-                value={password2}
-                onChange={(e) => setPassword2(e.target.value)}
-                placeholder="Retape ton mot de passe"
-                autoComplete="new-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete="current-password"
               />
-              {password2.length > 0 && password !== password2 && (
-                <span className="onb-account-mismatch">
-                  Les deux mots de passe ne sont pas identiques.
-                </span>
-              )}
             </>
+          )}
+
+          {mode === "signup" && password2.length > 0 && password !== password2 && (
+            <span className="onb-account-mismatch">
+              Les deux mots de passe ne sont pas identiques.
+            </span>
           )}
 
           {error && <div className="error" style={{ marginTop: 10 }}>{error}</div>}
@@ -510,14 +529,6 @@ export default function FoundersPage() {
             <strong>0&nbsp;€ prélevé pendant tes {trialDays} jours d&apos;essai</strong>,
             résiliable en un clic depuis ton espace.
           </p>
-
-          {mode === "signup" && (
-            <p className="onb-pitch-legal" style={{ marginTop: 8 }}>
-              Le prix réduit s&apos;applique à ton premier mois après l&apos;essai.
-              Ton abonnement sera ensuite renouvelé à {fmtPrice(planPrice)}/mois,
-              jusqu&apos;à annulation dans ton compte.
-            </p>
-          )}
 
           <button
             type="button"

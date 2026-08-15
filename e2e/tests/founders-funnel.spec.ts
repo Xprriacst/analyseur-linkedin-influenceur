@@ -253,8 +253,8 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     // demander deux fois serait avouer qu'on a perdu la première réponse.
     await expect(page.getByPlaceholder("toi@email.com")).toHaveValue("lea@northstack.io");
     // Prénom / nom extraits du profil analysé — plus de récap ICP/offre.
-    await expect(page.getByLabel("Prénom")).toHaveValue("Léa");
-    await expect(page.getByLabel("Nom")).toHaveValue("Fondatrice");
+    await expect(page.getByLabel("Prénom", { exact: true })).toHaveValue("Léa");
+    await expect(page.getByLabel("Nom", { exact: true })).toHaveValue("Fondatrice");
     await expect(page.getByText("Ce qu'on a compris")).toHaveCount(0);
     await expect(page.getByText(/ICP :/)).toHaveCount(0);
     // Et la carte est annoncée AVANT le départ vers Stripe.
@@ -272,8 +272,8 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     // l'analyse (donc d'un scrape payant) et perdrait sa qualification.
     await page.reload();
     await expect(page.getByRole("heading", { name: "Crée ton compte" })).toBeVisible();
-    await expect(page.getByLabel("Prénom")).toHaveValue("Léa");
-    await expect(page.getByLabel("Nom")).toHaveValue("Fondatrice");
+    await expect(page.getByLabel("Prénom", { exact: true })).toHaveValue("Léa");
+    await expect(page.getByLabel("Nom", { exact: true })).toHaveValue("Fondatrice");
     await expect(page.getByPlaceholder("toi@email.com")).toHaveValue("lea@northstack.io");
   });
 
