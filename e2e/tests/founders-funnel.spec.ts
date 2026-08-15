@@ -2,12 +2,12 @@ import { test, expect, type Page } from "@playwright/test";
 
 /**
  * Tunnel fondateurs SaaS (/founders, parcours anonyme) :
- * landing de vente → lien du SaaS → scan (avec stade + obstacles posés PENDANT
- * l'attente) → audit léger → questions SaaS → gains en ARR (avec courbe de
- * progression) → simulation → closing (témoignage + plan −40 % + CTA) → essai.
+ * landing de vente → site OU LinkedIn → scan (quiz stade+obstacles UNIQUEMENT
+ * si entrée par le site — pas sur un profil LinkedIn) → audit léger → questions
+ * SaaS → gains en ARR → simulation → UN seul écran compte+plan (−40 %) → essai.
  *
  * Backend entièrement mocké (zéro coût Apify/Claude/Stripe). Ce spec verrouille les
- * trois écarts qui feraient de ce tunnel une copie ratée de /start, tous invisibles
+ * écarts qui feraient de ce tunnel une copie ratée de /start, tous invisibles
  * à l'œil nu sur une capture d'écran :
  *
  * 1. La projection doit être demandée avec `audience: "saas"`. Sans ça, l'écran
@@ -24,12 +24,12 @@ import { test, expect, type Page } from "@playwright/test";
  *    écrans ne doivent JAMAIS afficher « aujourd'hui 0 » ni « 0 abonnés ». Le
  *    fondateur a un compte, on ne l'a simplement pas mesuré — annoncer zéro
  *    serait un chiffre faux sur son propre compte, en plein argumentaire.
- * 5. Le closing est un paywall minimal (témoignage + une offre à −40 %). S'il
- *    redevient verbeux (miroir, ROI, garantie…), on perd l'écran unique.
+ * 5. Plan + compte sont UN seul écran (témoignage + offre −40 % + formulaire).
+ *    Un paywall intermédiaire à re-cliquer après la simulation est une page de trop.
  * 6. Le MÊME champ accepte aussi une page LinkedIn (pas d'onglet séparé) : un
  *    lien `linkedin.com/in/…` doit partir en `linkedin_url`/`use_apify_linkedin`
- *    (jamais en `website_url`), et l'écran d'analyse doit alors montrer les
- *    VRAIS compteurs lus (pas le badge « site » ni « aujourd'hui 0 »).
+ *    (jamais en `website_url`), SANS quiz « Où en est ton SaaS ? », et l'écran
+ *    d'analyse doit alors montrer les VRAIS compteurs lus.
  */
 
 const PREVIEW = {
@@ -202,8 +202,9 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any;
   await expect(page.locator(".onb-sim-grid")).not.toContainText("0 abonnés");
   await expect(page.locator(".onb-screen")).not.toContainText("aujourd'hui 0");
 
-  // Closing paywall : témoignage + offre −40 % + CTA. Plus de miroir / garantie.
-  await page.getByRole("button", { name: /Comment on s'y prend/ }).click();
+  // Simulation → UN seul écran compte+plan (plus de paywall intermédiaire).
+  await page.getByRole("button", { name: /Continuer vers l'essai/ }).click();
+  await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
   await expect(page.getByText(/@reshape_music/)).toBeVisible();
   await expect(page.getByText(/on a passé les 4k/i)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Choisis ton plan" })).toBeVisible();
@@ -212,6 +213,8 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any;
   await expect(page.getByText("29,40 €")).toBeVisible();
   await expect(page.getByText(/prix réduit/i)).toBeVisible();
   await expect(page.getByText(/satisfait ou remboursé/i)).toHaveCount(0);
+  // Plus de lien « retour à la présentation » en bas de l'écran compte.
+  await expect(page.getByText(/retour à la présentation/i)).toHaveCount(0);
   return { projectionBody: () => projectionBody, leadBody };
 }
 
@@ -229,17 +232,16 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     // et c'est bien « audience: saas » qui décide de la grille ACV.
     expect(projectionBody()).toMatchObject({ audience: "saas" });
 
-    // (2) Fin de tunnel : l'essai, avec sa durée annoncée par le serveur — et
-    // AUCUN des deux artefacts du tunnel /start.
+    // (2) Fin de tunnel : plan + compte sur le MÊME écran — l'essai, avec sa
+    // durée annoncée par le serveur — et AUCUN des deux artefacts du tunnel /start.
+    await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Choisis ton plan" })).toBeVisible();
     const trialCta = page.getByRole("button", { name: /Démarrer mes 7 jours gratuits/ });
     await expect(trialCta).toBeVisible();
     await expect(page.getByRole("button", { name: /Recevoir mon audit complet gratuit/ })).toHaveCount(0);
 
-    await trialCta.click();
-
     // Écran de compte : l'e-mail de la porte d'entrée est PRÉ-REMPLI — le
     // demander deux fois serait avouer qu'on a perdu la première réponse.
-    await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
     await expect(page.getByPlaceholder("toi@ton-saas.com")).toHaveValue("lea@northstack.io");
     // Et la carte est annoncée AVANT le départ vers Stripe.
     await expect(page.getByText(/0\s?€ prélevé pendant tes 7 jours/)).toBeVisible();
@@ -252,7 +254,6 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
   test("les réponses survivent à un rechargement en cours d'inscription", async ({ page }) => {
     await mockBackend(page);
     await reachSimulation(page);
-    await page.getByRole("button", { name: /Démarrer mes 7 jours gratuits/ }).click();
     await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
 
     // Rechargement : sans la réserve de réponses, le fondateur repartirait de
@@ -275,7 +276,6 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
 
     await mockBackend(page);
     await reachSimulation(page);
-    await page.getByRole("button", { name: /Démarrer mes 7 jours gratuits/ }).click();
     await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
 
     await page.getByPlaceholder("toi@ton-saas.com").fill("lea@northstack.io");
@@ -283,7 +283,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await page.getByPlaceholder("Retape ton mot de passe").fill("motdepasse2");
     await expect(page.getByText("Les deux mots de passe ne sont pas identiques.")).toBeVisible();
 
-    await page.getByRole("button", { name: "Créer mon compte" }).click();
+    await page.getByRole("button", { name: /Démarrer mes 7 jours gratuits/ }).click();
     await page.waitForTimeout(500);
     expect(signups).toBe(0);
 
@@ -291,7 +291,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     // n'est pas jouée plus loin — le mock ne rend pas de session).
     await page.getByPlaceholder("Retape ton mot de passe").fill("motdepasse1");
     await expect(page.getByText("Les deux mots de passe ne sont pas identiques.")).toHaveCount(0);
-    await page.getByRole("button", { name: "Créer mon compte" }).click();
+    await page.getByRole("button", { name: /Démarrer mes 7 jours gratuits/ }).click();
     await expect.poll(() => signups).toBe(1);
   });
 
@@ -392,13 +392,13 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await page.getByPlaceholder("https://ton-saas.com").fill("https://www.linkedin.com/in/lea-fondatrice/");
     await page.getByRole("button", { name: "Analyser" }).click();
 
-    // Le quiz est identique quelle que soit la source collée.
-    await expect(page.getByText("Où en est ton SaaS ?")).toBeVisible();
-    await page.getByRole("button", { name: /Premiers clients/ }).click();
-    await page.getByRole("button", { name: "Continuer", exact: true }).click();
-    await expect(page.getByText("Qu'est-ce qui te bloque le plus ?")).toBeVisible();
-    await page.getByRole("button", { name: "Je lance dans le silence" }).click();
-    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+    // LinkedIn → PAS de quiz SaaS (« Où en est ton SaaS ? » n'a pas de sens sur
+    // un profil perso). L'analyse doit arriver sans ces deux pop-up.
+    await expect(page.getByText("Où en est ton SaaS ?")).toHaveCount(0);
+    await expect(page.getByText("Qu'est-ce qui te bloque le plus ?")).toHaveCount(0);
+
+    // Analyse : les vrais compteurs du profil scrapé, pas le badge « site ».
+    await expect(page.getByRole("button", { name: "Voir mon potentiel" })).toBeVisible({ timeout: 15000 });
 
     // L'URL part bien en linkedin_url + Apify activé — jamais en website_url.
     expect(draftBody).toMatchObject({
@@ -407,7 +407,6 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
       use_apify_linkedin: true,
     });
 
-    // Analyse : les vrais compteurs du profil scrapé, pas le badge « site ».
     await expect(page.getByText("@lea-fondatrice")).toBeVisible();
     await expect(page.getByText("Analysé depuis ton site")).toHaveCount(0);
     await expect(page.getByText("Analysé depuis ta description")).toHaveCount(0);

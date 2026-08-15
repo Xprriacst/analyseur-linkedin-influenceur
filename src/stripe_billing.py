@@ -32,6 +32,13 @@ DEFAULT_PLAN_CREDITS = 1000
 # ni aucun accès à refermer à la main.
 DEFAULT_TRIAL_DAYS = 7
 
+# Remise fondateurs : −40 % sur le PREMIER mois PAYÉ (après l'essai).
+# ⚠️ `duration=once` est un piège avec un essai : Stripe l'applique à la facture
+# d'essai à 0 € et la consomme — le 1er mois réel partirait à 49 €. D'où
+# `repeating` / 1 mois, qui porte sur le premier cycle facturé.
+INTRO_PERCENT_OFF = 40
+DEFAULT_INTRO_COUPON_ID = "cibl_first_month_40"
+
 # Fenêtre de tolérance sur l'horodatage de la signature du webhook (rejeu tardif).
 WEBHOOK_TOLERANCE_S = 300
 
@@ -78,6 +85,62 @@ def trial_days() -> int:
     except ValueError:
         return DEFAULT_TRIAL_DAYS
     return max(0, min(value, 90))
+
+
+def intro_coupon_id() -> str:
+    """Identifiant du coupon 1er mois. Surchargeable si le coupon vit déjà dans Stripe."""
+    return (os.environ.get("STRIPE_INTRO_COUPON_ID") or DEFAULT_INTRO_COUPON_ID).strip()
+
+
+def intro_percent_off() -> int:
+    raw = os.environ.get("STRIPE_INTRO_PERCENT_OFF")
+    try:
+        value = int(raw) if raw else INTRO_PERCENT_OFF
+    except ValueError:
+        return INTRO_PERCENT_OFF
+    return max(0, min(value, 100))
+
+
+def intro_amount(plan_amount: float | None) -> float | None:
+    """29,40 € si le forfait est à 49 € et la remise à 40 %. None si le tarif est illisible."""
+    if plan_amount is None:
+        return None
+    pct = intro_percent_off()
+    if pct <= 0:
+        return round(float(plan_amount), 2)
+    return round(float(plan_amount) * (100 - pct) / 100, 2)
+
+
+def ensure_intro_coupon() -> str:
+    """Crée (ou retrouve) le coupon −40 % / 1er mois payé.
+
+    Idempotent : un 2ᵉ appel retrouve le coupon déjà posé. Un identifiant
+    explicite (`STRIPE_INTRO_COUPON_ID`) court-circuite la création.
+    """
+    cid = intro_coupon_id()
+    if not cid:
+        raise StripeError("Coupon d'intro : identifiant vide.")
+    try:
+        existing = _request("GET", f"/coupons/{urllib.parse.quote(cid)}")
+        if existing.get("id"):
+            return str(existing["id"])
+    except StripeError:
+        pass
+    try:
+        created = _request("POST", "/coupons", {
+            "id": cid,
+            "percent_off": intro_percent_off(),
+            "duration": "repeating",
+            "duration_in_months": 1,
+            "name": "Cibl — 1er mois −40 %",
+            "metadata": {"cibl": "founders_intro"},
+        })
+        return str(created.get("id") or cid)
+    except StripeError as exc:
+        # Course : un autre checkout vient de le créer. On reprend l'id connu.
+        if "already exists" in str(exc).lower() or "duplicate" in str(exc).lower():
+            return cid
+        raise
 
 
 def trial_credits() -> int:
@@ -213,7 +276,6 @@ def create_checkout_session(
         "client_reference_id": user_id,
         "metadata": {"user_id": user_id},
         "subscription_data": {"metadata": {"user_id": user_id}},
-        "allow_promotion_codes": True,  # comptes internes/démo : code promo 100 %
     }
     if trial_days and trial_days > 0:
         payload["subscription_data"]["trial_period_days"] = int(trial_days)
@@ -226,6 +288,12 @@ def create_checkout_session(
         payload["subscription_data"]["trial_settings"] = {
             "end_behavior": {"missing_payment_method": "cancel"}
         }
+        # Stripe refuse `discounts` + `allow_promotion_codes` sur la même session.
+        # L'essai fondateurs APPLIQUE la remise −40 % (29,40 € le 1er mois payé) :
+        # le champ code promo (CIBLDEMO) reste sur le parcours sans essai (/paiement).
+        payload["discounts"] = [{"coupon": ensure_intro_coupon()}]
+    else:
+        payload["allow_promotion_codes"] = True  # comptes internes/démo : code promo 100 %
     if _tax_enabled():
         payload["automatic_tax"] = {"enabled": True}
         payload["customer_update"] = {"address": "auto"}
@@ -257,7 +325,14 @@ def plan_summary() -> dict[str, Any]:
     cached = _PRICE_CACHE.get(pid)
     if cached:
         return cached
-    summary: dict[str, Any] = {"credits": plan_credits(), "amount": None, "currency": None, "interval": None}
+    summary: dict[str, Any] = {
+        "credits": plan_credits(),
+        "amount": None,
+        "currency": None,
+        "interval": None,
+        "intro_percent_off": intro_percent_off(),
+        "intro_amount": None,
+    }
     try:
         price = _request("GET", f"/prices/{urllib.parse.quote(pid)}")
     except StripeError:
@@ -266,6 +341,7 @@ def plan_summary() -> dict[str, Any]:
     summary["amount"] = unit_amount / 100 if isinstance(unit_amount, int) else None
     summary["currency"] = price.get("currency")
     summary["interval"] = (price.get("recurring") or {}).get("interval")
+    summary["intro_amount"] = intro_amount(summary["amount"])
     _PRICE_CACHE[pid] = summary
     return summary
 

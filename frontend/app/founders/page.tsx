@@ -24,7 +24,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { Outfit } from "next/font/google";
 import { ArrowRight, CheckCircle2, Loader2, Pencil, Rocket } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
@@ -35,7 +34,8 @@ import OnboardingScreen, {
 } from "../components/Onboarding";
 import {
   FOUNDERS_MONTHLY_SEATS,
-  FOUNDERS_GUARANTEE_DAYS,
+  FOUNDERS_FIRST_MONTH_OFF_PCT,
+  FOUNDERS_TESTIMONIAL,
   PROOF_INFLUENCERS_ANALYZED,
   PROOF_POSTS_ANALYZED,
 } from "../lib/founders";
@@ -282,16 +282,23 @@ export default function FoundersPage() {
         anonymous
         funnel="trial"
         variant="saas"
-        trialDays={trialDays}
-        planPrice={planPrice}
-        monthlySeats={FOUNDERS_MONTHLY_SEATS}
-        guaranteeDays={FOUNDERS_GUARANTEE_DAYS}
         onFinish={onboardingDone}
         onSkip={onboardingSkipped}
         finishLabel="Continuer"
       />
     );
   }
+
+  const offPct = FOUNDERS_FIRST_MONTH_OFF_PCT;
+  const introPrice = Math.round(planPrice * (100 - offPct)) / 100;
+  const perDay = introPrice / 30;
+  const fmtPrice = (n: number) => {
+    const rounded = Math.round(n * 100) / 100;
+    return `${rounded.toLocaleString("fr-FR", {
+      minimumFractionDigits: Number.isInteger(rounded) ? 0 : 2,
+      maximumFractionDigits: 2,
+    })} €`;
+  };
 
   return (
     <main
@@ -304,8 +311,57 @@ export default function FoundersPage() {
           "radial-gradient(circle at 85% 12%, rgba(70,72,212,0.07) 0%, rgba(70,72,212,0) 42%), var(--surface-low)",
       }}
     >
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16, width: "100%" }}>
-        <form onSubmit={submit} className="auth-card" style={{ maxWidth: 420, padding: 32, gap: 6 }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16, width: "100%", maxWidth: 480 }}>
+        {/* Plan + compte sur le MÊME écran : plus de paywall intermédiaire à
+            re-cliquer après la simulation. Le témoignage et l'offre −40 %
+            vivent ici, juste au-dessus du formulaire. */}
+        {mode === "signup" && (
+          <div className="onb-pitch" style={{ width: "100%", padding: 0 }}>
+            <a
+              className="onb-testimonial"
+              href={FOUNDERS_TESTIMONIAL.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <div className="onb-testimonial-head">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  className="onb-testimonial-avatar"
+                  src={FOUNDERS_TESTIMONIAL.avatar}
+                  alt={FOUNDERS_TESTIMONIAL.name}
+                  width={48}
+                  height={48}
+                />
+                <div className="onb-testimonial-meta">
+                  <div className="onb-testimonial-name">{FOUNDERS_TESTIMONIAL.name}</div>
+                  <div className="onb-testimonial-handle">{FOUNDERS_TESTIMONIAL.handle}</div>
+                </div>
+                <span className="onb-testimonial-stars" aria-hidden="true">★★★★★</span>
+              </div>
+              <p className="onb-testimonial-quote">«&nbsp;{FOUNDERS_TESTIMONIAL.quote}&nbsp;»</p>
+            </a>
+
+            <h2 className="onb-pitch-title">Choisis ton plan</h2>
+
+            <div className="onb-plan" aria-pressed="true">
+              <span className="onb-plan-radio" aria-hidden="true" />
+              <div className="onb-plan-main">
+                <div className="onb-plan-row">
+                  <span className="onb-plan-name">Mensuel</span>
+                  <span className="onb-plan-badge">−{offPct}&nbsp;%</span>
+                </div>
+                <div className="onb-plan-sub">1er mois après l&apos;essai</div>
+              </div>
+              <div className="onb-plan-price">
+                <span className="onb-plan-was">{fmtPrice(planPrice)}</span>
+                <span className="onb-plan-now">{fmtPrice(introPrice)}</span>
+                <span className="onb-plan-day">{fmtPrice(perDay)}&nbsp;/jour</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <form onSubmit={submit} className="auth-card" style={{ maxWidth: 480, width: "100%", padding: 32, gap: 6 }}>
           <span
             style={{
               alignSelf: "center",
@@ -443,16 +499,22 @@ export default function FoundersPage() {
           {info && <div className="auth-info" style={{ marginTop: 10 }}>{info}</div>}
 
           <button
-            className="auth-submit"
+            className={mode === "signup" ? "onb-pitch-cta" : "auth-submit"}
             type="submit"
             disabled={loading}
-            style={{ height: 46, fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+            style={
+              mode === "signup"
+                ? { marginTop: 14 }
+                : { height: 46, fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }
+            }
           >
             {loading ? (
               <Loader2 className="spin" size={16} />
+            ) : mode === "signup" ? (
+              <>Démarrer mes {trialDays} jours gratuits</>
             ) : (
               <>
-                {mode === "signup" ? "Créer mon compte" : "Se connecter"} <ArrowRight size={15} />
+                Se connecter <ArrowRight size={15} />
               </>
             )}
           </button>
@@ -460,7 +522,7 @@ export default function FoundersPage() {
           {/* L'étape suivante est la page de paiement Stripe : le dire ICI, avant
               le clic — arriver sur une demande de carte sans avoir été prévenu,
               juste après avoir tapé un mot de passe, c'est le réflexe « arnaque »
-              assuré. C'est cette note qui permet de sauter l'écran intermédiaire. */}
+              assuré. */}
           <p
             style={{
               margin: "12px 0 0",
@@ -478,6 +540,14 @@ export default function FoundersPage() {
             résiliable en un clic depuis ton espace.
           </p>
 
+          {mode === "signup" && (
+            <p className="onb-pitch-legal" style={{ marginTop: 10 }}>
+              Le prix réduit s&apos;applique à ton premier mois après l&apos;essai.
+              Ton abonnement sera ensuite renouvelé à {fmtPrice(planPrice)}/mois,
+              jusqu&apos;à annulation dans ton compte.
+            </p>
+          )}
+
           <button
             type="button"
             className="auth-switch"
@@ -486,10 +556,6 @@ export default function FoundersPage() {
             {mode === "signup" ? "Déjà un compte ? Se connecter" : "Pas de compte ? En créer un"}
           </button>
         </form>
-
-        <Link href="/offre" style={{ fontSize: 12.5, color: "var(--muted)" }}>
-          ← Retour à la présentation
-        </Link>
       </div>
     </main>
   );
