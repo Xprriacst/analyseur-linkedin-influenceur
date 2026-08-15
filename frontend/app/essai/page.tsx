@@ -3,7 +3,7 @@
 /**
  * Démarrage de l'essai gratuit (/essai) — dernière étape du tunnel fondateurs.
  *
- *   /founders → compte créé → **ici** → Stripe (carte, 0 € prélevé) → app
+ *   /onboarding → compte créé → **ici** → Stripe (carte, 0 € prélevé) → app
  *
  * Le compte existe déjà : cette page ne fait pas d'inscription, elle ouvre la
  * session Checkout en mode essai.
@@ -76,7 +76,7 @@ export default function EssaiPage() {
     (async () => {
       const { data } = await supabase.auth.getSession();
       if (!data.session) {
-        router.replace("/founders");
+        router.replace("/onboarding");
         return;
       }
       try {

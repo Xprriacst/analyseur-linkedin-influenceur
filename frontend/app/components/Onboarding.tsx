@@ -143,31 +143,32 @@ const ONB_SCAN_STEPS = [
   "On peaufine tout ça…",
 ];
 
-// --- Variante « fondateurs SaaS » (/founders) --------------------------------
+// --- Variante builders (/onboarding, alias /founders) ------------------------
 //
-// Ce ne sont PAS les mêmes questions traduites : un fondateur de SaaS ne se
-// reconnaît ni dans « Coachs & consultants » ni dans « Des prestations
-// sur-mesure ». Des chips où personne ne se retrouve poussent tout le monde vers
-// « Autre », et le profil éditorial reparti en texte libre perd la qualification
-// que ces écrans existent pour produire.
+// Chips ICP / offre / secteur qui couvrent le SaaS ET le freelance. Des chips
+// où personne ne se retrouve poussent tout le monde vers « Autre », et le
+// profil éditorial reparti en texte libre perd la qualification que ces
+// écrans existent pour produire.
 
 const ONB_SAAS_AUDIENCE_OPTIONS: OnbOption[] = [
   { label: "Fondateurs & CEO de SaaS", match: ["fondateur", "founder", "ceo", "saas"] },
+  { label: "Freelances & solopreneurs", match: ["freelance", "solo", "indépendant", "consultant indépendant"] },
+  { label: "Dirigeants de PME", match: ["pme", "dirigeant", "tpe", "patron", "gérant", "chef d'entreprise"] },
   { label: "CTO & équipes tech", match: ["cto", "tech lead", "développeur", "engineering", "dev"] },
   { label: "Head of Growth / Marketing", match: ["growth", "marketing", "cmo", "acquisition"] },
+  { label: "Coachs & consultants", match: ["coach", "consultant", "formateur"] },
   { label: "Product managers", match: ["product", "pm", "produit"] },
-  { label: "Ops & RevOps", match: ["ops", "revops", "opérations"] },
-  { label: "PME en digitalisation", match: ["pme", "tpe", "dirigeant", "digitalisation"] },
-  { label: "Investisseurs & VCs", match: ["investisseur", "vc", "business angel", "fonds"] },
+  { label: "PME en digitalisation", match: ["digitalisation"] },
 ];
 
 const ONB_SAAS_OFFER_OPTIONS: OnbOption[] = [
   { label: "Un SaaS en self-serve", match: ["self-serve", "freemium", "abonnement", "plg"] },
   { label: "Un SaaS vendu en démo", match: ["démo", "demo", "sales", "b2b", "saas", "logiciel"] },
+  { label: "Des prestations sur-mesure", match: ["prestation", "sur-mesure", "freelance", "mission"] },
+  { label: "Du conseil / consulting", match: ["conseil", "consulting", "accompagnement", "stratégie", "audit"] },
   { label: "Une API / de l'infra dev", match: ["api", "infra", "sdk", "devtool", "librairie"] },
-  { label: "Une marketplace / plateforme", match: ["marketplace", "plateforme", "place de marché"] },
   { label: "Un produit IA", match: ["ia", "ai", "llm", "intelligence artificielle", "agent"] },
-  { label: "Du service autour du produit", match: ["service", "intégration", "onboarding", "conseil", "prestation"] },
+  { label: "De la formation", match: ["formation", "cours", "coaching", "bootcamp", "masterclass"] },
 ];
 
 const ONB_SAAS_OBJECTIVE_OPTIONS: OnbOption[] = [
@@ -187,6 +188,7 @@ const ONB_SAAS_INDUSTRY_OPTIONS: OnbOption[] = [
   { label: "Vertical SaaS (santé, immo, industrie…)", match: ["santé", "immo", "industrie", "vertical", "legal", "retail"] },
   { label: "Marketing & Growth tech", match: ["marketing", "growth", "crm", "ads"] },
   { label: "HR tech", match: ["rh", "hr", "recrutement", "talent"] },
+  { label: "Conseil & Services", match: ["conseil", "service", "consulting", "cabinet"] },
   { label: "Cybersécurité", match: ["cyber", "sécurité", "security", "soc"] },
 ];
 
@@ -210,7 +212,7 @@ const ONB_SAAS_OBSTACLES: string[] = [
   "Je lance dans le silence",
 ];
 
-// Sur /founders, le premier champ accepte le site du SaaS OU la page LinkedIn —
+// Sur /onboarding, le premier champ accepte le site OU la page LinkedIn —
 // un seul champ, pas d'onglets (cf. `inputKind` plus bas, qui détecte laquelle a
 // été collée). L'animation de scan doit décrire ce qui a VRAIMENT été lu, jamais
 // l'URI de la page ni la variante : ces trois jeux de libellés sont choisis par
@@ -218,7 +220,7 @@ const ONB_SAAS_OBSTACLES: string[] = [
 // 2026-08-11 (l'honnêteté suit les données lues, pas l'endroit où on se trouve).
 const ONB_SAAS_SCAN_STEPS_SITE = [
   "Lecture de ton site…",
-  "On cerne ton produit et ta promesse…",
+  "On cerne ton offre et ta promesse…",
   "Identification de ton ICP…",
   "On peaufine tout ça…",
 ];
@@ -230,7 +232,7 @@ const ONB_SAAS_SCAN_STEPS_LINKEDIN = [
 ];
 const ONB_SAAS_SCAN_STEPS_DESCRIPTION = [
   "Lecture de ta description…",
-  "On cerne ton produit et ta promesse…",
+  "On cerne ton offre et ta promesse…",
   "Identification de ton ICP…",
   "On peaufine tout ça…",
 ];
@@ -301,8 +303,8 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     audience: "saas",
     introTitle: "Le LinkedIn qui remplit ton pipeline",
     introSubtitle:
-      "Colle le lien de ton SaaS ou de ta page LinkedIn : on lit ce que tu as, puis on te montre ce que LinkedIn peut lui rapporter.",
-    introPlaceholder: "https://ton-saas.com  ou  linkedin.com/in/toi",
+      "Colle le lien de ton site ou de ta page LinkedIn : on lit ce que tu as, puis on te montre ce que LinkedIn peut te rapporter.",
+    introPlaceholder: "https://ton-site.com  ou  linkedin.com/in/toi",
     // Un lien LinkedIn collé ici est accepté au même titre qu'un site — un seul
     // champ, pas d'onglets (cf. `inputKind`). On demande les deux, on ne refuse
     // ni l'un ni l'autre.
@@ -311,8 +313,8 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     audienceLabel: "Ton ICP — à qui tu vends ?",
     offerLabel: "Ce que tu vends",
     objectiveLabel: "Ce que tu attends de LinkedIn",
-    industryLabel: "Ta catégorie de produit",
-    gainsTitle: "Ce que ça peut rapporter à ton SaaS",
+    industryLabel: "Ton secteur",
+    gainsTitle: "Ce que ça peut te rapporter",
     gainsIntro:
       "En publiant régulièrement et en prospectant ton ICP depuis l'app, voici ce que donne un trimestre.",
     // Repli par défaut (variant.scanSteps n'est plus utilisé tel quel côté SaaS :
@@ -585,9 +587,9 @@ export default function OnboardingScreen({
   // La pop-up du quiz n'apparaît que ~2,5 s après le lancement : l'animation de
   // scan doit d'abord raconter ce qui se passe, sinon la question tombe avant
   // même que « Lecture de ton site… » ait été lu.
-  // ⚠️ Pas de quiz stade/obstacles quand on a collé un LinkedIn : « Où en est
-  // ton SaaS ? » n'a pas de sens sur un profil perso — on saute droit à
-  // l'analyse (quizIdx déjà à 3 au lancement, cf. analyze()).
+  // ⚠️ Pas de quiz stade/obstacles quand on a collé un LinkedIn : « Où en
+  // es-tu aujourd'hui ? » n'a pas de sens sur un profil perso — on saute
+  // droit à l'analyse (quizIdx déjà à 3 au lancement, cf. analyze()).
   useEffect(() => {
     if (step !== "scanning" || variantKey !== "saas") return;
     const id = setTimeout(() => setQuizIdx((i) => (i === 0 ? 1 : i)), 2500);
@@ -623,7 +625,7 @@ export default function OnboardingScreen({
       return;
     }
     // LinkedIn → pas de quiz SaaS (stade / obstacles). Site / texte → quiz
-    // classique (quizIdx 0 → pop-up à 2,5 s). « Où en est ton SaaS ? » n'a pas
+    // classique (quizIdx 0 → pop-up à 2,5 s). « Où en es-tu aujourd'hui ? » n'a pas
     // de sens quand on vient de coller un profil perso.
     const skipSaasQuiz = variantKey === "saas" && inputKind === "linkedin";
     setError(""); setScanResult(null); setQuizIdx(skipSaasQuiz ? 3 : 0); setStep("scanning");
@@ -858,15 +860,15 @@ export default function OnboardingScreen({
             </div>
 
             {/* Tunnel SaaS + entrée site : deux pop-up (stade / obstacles)
-                pendant l'attente. Pas de quiz si LinkedIn collé — « Où en est
-                ton SaaS ? » n'a pas de sens sur un profil. Le bouton Continuer
+                pendant l'attente. Pas de quiz si LinkedIn collé — « Où en es-tu
+                aujourd'hui ? » n'a pas de sens sur un profil. Le bouton Continuer
                 est toujours cliquable ; après la 2ᵉ, avancée auto si prêt. */}
             {variantKey === "saas" && inputKind !== "linkedin" && quizIdx === 1 && (
               <div className="onb-scan-quiz" key="quiz1">
                 <div className="onb-scan-quiz-kicker">Pendant que ça tourne — question 1/2</div>
 
                 <div className="onb-block" style={{ marginBottom: 6 }}>
-                  <label className="onb-block-label">Où en est ton SaaS&nbsp;?</label>
+                  <label className="onb-block-label">Où en es-tu aujourd&apos;hui&nbsp;?</label>
                   <p className="onb-lead" style={{ margin: "0 0 8px", fontSize: 13 }}>
                     Le stade calibre la stratégie.
                   </p>
@@ -1548,8 +1550,8 @@ function SimCard({
 }
 
 /**
- * Blocs de l'argumentaire fondateurs, PARTAGÉS entre le closing du tunnel et la
- * landing /founders. Une seule source : si l'argument change, les deux surfaces
+ * Blocs de l'argumentaire builders, PARTAGÉS entre le closing du tunnel et la
+ * landing /onboarding. Une seule source : si l'argument change, les deux surfaces
  * changent ensemble — deux copies auraient fini par se contredire.
  *
  * Format Catalog : titre accent + sous-texte, deux colonnes — pas de listes.
@@ -1563,7 +1565,7 @@ export function FoundersSplit() {
       </div>
       <div className="fl-benefits-col">
         <div className="fl-benefits-title">Prêt pour chaque pivot</div>
-        <div className="fl-benefits-sub">ton audience suit chaque produit que tu lances</div>
+        <div className="fl-benefits-sub">ton audience suit chaque offre que tu lances</div>
       </div>
     </div>
   );

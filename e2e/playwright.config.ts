@@ -28,7 +28,7 @@ export default defineConfig({
     { name: "setup", testMatch: /auth\.setup\.ts/ },
     {
       // Parcours sans compte : landing, tunnel audit complet de /start et tunnel
-      // fondateurs SaaS de /founders (backend mocké — aucun login, aucun coût).
+      // d'essai /onboarding (alias /founders — backend mocké, aucun login, aucun coût).
       name: "public",
       testMatch: /smoke\.spec\.ts|audit-funnel\.spec\.ts|founders-funnel\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
