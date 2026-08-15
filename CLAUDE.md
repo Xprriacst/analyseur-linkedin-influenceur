@@ -86,6 +86,11 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-08-15 #6 (RELEASE PROD : écran compte /onboarding compact — PR #455 → release #456)
+- **Release `dev → main` PR #456** mergée ~15:28 UTC. Delta énuméré avant merge : **#455** (écran compte : un plan, prénom/nom, layout 2 colonnes) + **#446** (bandeau reels Instagram, 1 ligne) + **#454** (changelog #453, docs). **Aucune migration, aucune env var, aucun cron.**
+- **Vérifié post-deploy** : Netlify prod live · bundle sans « Choisis ton plan » / `onb-plan-radio` / « Ce qu'on a compris », avec `onb-account` · `/onboarding`, `/founders`, `/`, `/offre`, `/essai`, `/start` en **200** · `lkd-outreach.netlify.app/onboarding` **200** · `/health` prod + proxy `/api/health` OK.
+- **Reste à faire** : test d'Alex en prod (arrivée sur « Crée ton compte » → prénom/nom pré-remplis, tarif sans radio, tout visible sans scroll).
+
 ### 2026-08-15 #5 (dev : écran compte /onboarding — un plan, prénom/nom, plus de scroll)
 - **Retour d'Alex (test prod)** : « Choisis ton plan » + les deux ronds (radio) n'ont plus de sens — il n'y a qu'un plan. Le récap « Ce qu'on a compris » (ICP / offre) encombre. Il veut **juste prénom et nom pré-remplis**, et **tout au même niveau** pour ne plus scroller.
 - **Plan** : plus de titre de choix, plus de radio. Le tarif (−40 %, 29,40 € le 1er mois) reste un **fait** à côté du témoignage.
