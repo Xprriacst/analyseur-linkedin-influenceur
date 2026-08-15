@@ -26,7 +26,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Outfit } from "next/font/google";
-import { ArrowRight, CheckCircle2, Loader2, Pencil, Rocket } from "lucide-react";
+import { ArrowRight, Loader2, Rocket } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
 import OnboardingScreen, {
   FoundersAlternatives,
@@ -60,12 +60,22 @@ const FALLBACK_TRIAL_DAYS = 7;
 
 type Phase = "landing" | "onboarding" | "account";
 
-/** Les trois réponses qui pilotent toute la génération — donc corrigeables ici. */
-const PROFILE_FIELDS: { key: string; label: string; placeholder: string }[] = [
-  { key: "display_name", label: "Profil", placeholder: "Ton nom et prénom" },
-  { key: "target_audience", label: "ICP", placeholder: "À qui tu vends" },
-  { key: "core_offer", label: "Offre", placeholder: "Ce que tu vends" },
-];
+/**
+ * Le profil éditorial ne porte qu'un `display_name`. L'écran compte le
+ * découpe en prénom / nom (champs de formulaire, pas un récap), puis le
+ * recoud à la sauvegarde.
+ */
+function splitDisplayName(name: string): { first: string; last: string } {
+  const t = (name || "").trim();
+  if (!t) return { first: "", last: "" };
+  const i = t.search(/\s+/);
+  if (i < 0) return { first: t, last: "" };
+  return { first: t.slice(0, i), last: t.slice(i).trim() };
+}
+
+function joinDisplayName(first: string, last: string): string {
+  return [first.trim(), last.trim()].filter(Boolean).join(" ");
+}
 
 export default function FoundersPage() {
   const router = useRouter();
@@ -74,8 +84,9 @@ export default function FoundersPage() {
   const [trialDays, setTrialDays] = useState(FALLBACK_TRIAL_DAYS);
   // Prix réel du plan (Stripe) pour le cadrage ROI du closing — repli 49 €.
   const [planPrice, setPlanPrice] = useState(49);
-  const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<"signup" | "signin">("signup");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
@@ -114,7 +125,11 @@ export default function FoundersPage() {
       if (savedEmail) setEmail((prev) => prev || savedEmail);
       const raw = sessionStorage.getItem(PENDING_PROFILE_KEY);
       if (raw) {
-        setProfile(JSON.parse(raw));
+        const saved = JSON.parse(raw) as OnboardingProfile;
+        setProfile(saved);
+        const { first, last } = splitDisplayName(saved.display_name || "");
+        setFirstName(first);
+        setLastName(last);
         setPhase("account");
       }
     } catch { /* parcours reparti de zéro — sans gravité */ }
@@ -122,6 +137,9 @@ export default function FoundersPage() {
 
   const onboardingDone = useCallback((p: OnboardingProfile) => {
     setProfile(p);
+    const { first, last } = splitDisplayName(p.display_name || "");
+    setFirstName(first);
+    setLastName(last);
     try { sessionStorage.setItem(PENDING_PROFILE_KEY, JSON.stringify(p)); } catch { /* ignore */ }
     setPhase("account");
   }, []);
@@ -138,12 +156,14 @@ export default function FoundersPage() {
    * n'existe plus et les réponses seraient perdues.
    */
   async function persistProfile() {
-    if (!profile) return;
+    const display_name = joinDisplayName(firstName, lastName);
+    const payload: OnboardingProfile = { ...(profile || {}), display_name };
+    if (!display_name && !profile) return;
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/profile`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify(profile),
+        body: JSON.stringify(payload),
       });
       if (res.ok) {
         try { sessionStorage.removeItem(PENDING_PROFILE_KEY); } catch { /* ignore */ }
@@ -167,6 +187,16 @@ export default function FoundersPage() {
       try { sessionStorage.setItem(PENDING_PROFILE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
       return next;
     });
+  }
+
+  function onFirstName(value: string) {
+    setFirstName(value);
+    updateProfileField("display_name", joinDisplayName(value, lastName));
+  }
+
+  function onLastName(value: string) {
+    setLastName(value);
+    updateProfileField("display_name", joinDisplayName(firstName, value));
   }
 
   /**
@@ -302,22 +332,13 @@ export default function FoundersPage() {
   };
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        display: "grid",
-        placeItems: "center",
-        padding: "40px 20px",
-        background:
-          "radial-gradient(circle at 85% 12%, rgba(70,72,212,0.07) 0%, rgba(70,72,212,0) 42%), var(--surface-low)",
-      }}
-    >
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16, width: "100%", maxWidth: 480 }}>
-        {/* Plan + compte sur le MÊME écran : plus de paywall intermédiaire à
-            re-cliquer après la simulation. Le témoignage et l'offre −40 %
-            vivent ici, juste au-dessus du formulaire. */}
+    <main className="onb-account-page">
+      {/* Plan + compte sur le MÊME écran, en vis-à-vis dès qu'il y a la
+          place : plus de paywall à re-cliquer, plus de colonne unique qui
+          force le scroll. Un seul plan ⇒ un fait tarifaire, pas un choix. */}
+      <div className={"onb-account" + (mode === "signin" ? " onb-account-solo" : "")}>
         {mode === "signup" && (
-          <div className="onb-pitch" style={{ width: "100%", padding: 0 }}>
+          <aside className="onb-account-side">
             <a
               className="onb-testimonial"
               href={FOUNDERS_TESTIMONIAL.url}
@@ -342,10 +363,7 @@ export default function FoundersPage() {
               <p className="onb-testimonial-quote">«&nbsp;{FOUNDERS_TESTIMONIAL.quote}&nbsp;»</p>
             </a>
 
-            <h2 className="onb-pitch-title">Choisis ton plan</h2>
-
-            <div className="onb-plan" aria-pressed="true">
-              <span className="onb-plan-radio" aria-hidden="true" />
+            <div className="onb-plan">
               <div className="onb-plan-main">
                 <div className="onb-plan-row">
                   <span className="onb-plan-name">Mensuel</span>
@@ -359,26 +377,16 @@ export default function FoundersPage() {
                 <span className="onb-plan-day">{fmtPrice(perDay)}&nbsp;/jour</span>
               </div>
             </div>
-          </div>
+            <p className="onb-pitch-legal onb-account-legal">
+              Le prix réduit s&apos;applique à ton premier mois après l&apos;essai.
+              Ton abonnement sera ensuite renouvelé à {fmtPrice(planPrice)}/mois,
+              jusqu&apos;à annulation dans ton compte.
+            </p>
+          </aside>
         )}
 
-        <form onSubmit={submit} className="auth-card" style={{ maxWidth: 480, width: "100%", padding: 32, gap: 6 }}>
-          <span
-            style={{
-              alignSelf: "center",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "4px 11px",
-              borderRadius: 20,
-              fontSize: 12,
-              fontWeight: 600,
-              color: "var(--primary)",
-              background: "rgba(70,72,212,0.08)",
-              border: "1px solid rgba(70,72,212,0.18)",
-              marginBottom: 6,
-            }}
-          >
+        <form onSubmit={submit} className="auth-card onb-account-form">
+          <span className="onb-account-badge">
             <Rocket size={12} /> {trialDays} jours gratuits
           </span>
 
@@ -391,63 +399,39 @@ export default function FoundersPage() {
               : "On récupère ton profil et on lance ton essai."}
           </p>
 
-          {profile && (
-            <div
-              style={{
-                margin: "6px 0 10px",
-                padding: "12px 14px",
-                borderRadius: 12,
-                background: "var(--surface-low)",
-                border: "1px solid var(--border)",
-                display: "grid",
-                gap: 10,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--muted)" }}>
-                  Ce qu&apos;on a compris
-                </span>
-                <button
-                  type="button"
-                  className="link-button"
-                  onClick={() => setEditing((v) => !v)}
-                  style={{ fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 5 }}
-                >
-                  <Pencil size={12} /> {editing ? "Terminé" : "Modifier"}
-                </button>
+          {mode === "signup" && (
+            <div className="onb-name-row">
+              <div className="onb-field">
+                <label className="auth-label" htmlFor="onb-first-name">Prénom</label>
+                <input
+                  id="onb-first-name"
+                  className="auth-input"
+                  type="text"
+                  required
+                  value={firstName}
+                  onChange={(e) => onFirstName(e.target.value)}
+                  placeholder="Camille"
+                  autoComplete="given-name"
+                />
               </div>
-
-              {/* Ces trois réponses partent dans le profil éditorial et servent à
-                  TOUTE la génération ensuite. Une déduction approximative laissée
-                  telle quelle se retrouve dans chaque post produit — d'où
-                  l'édition ici, tant que la correction ne coûte qu'un clic. */}
-              {PROFILE_FIELDS.map(({ key, label, placeholder }) =>
-                editing ? (
-                  <label key={key} style={{ display: "grid", gap: 4 }}>
-                    <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--muted)" }}>{label}</span>
-                    <textarea
-                      className="auth-input"
-                      rows={key === "display_name" ? 1 : 2}
-                      value={profile[key] || ""}
-                      placeholder={placeholder}
-                      onChange={(e) => updateProfileField(key, e.target.value)}
-                      style={{ fontSize: 13, lineHeight: 1.45, resize: "vertical", minHeight: 34, padding: "8px 10px" }}
-                    />
-                  </label>
-                ) : profile[key] ? (
-                  <div key={key} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13, lineHeight: 1.45 }}>
-                    <CheckCircle2 size={14} style={{ color: "var(--primary)", flexShrink: 0, marginTop: 2 }} />
-                    <span style={{ color: "var(--muted)" }}>
-                      <strong style={{ fontWeight: 600 }}>{label}</strong> : {profile[key]}
-                    </span>
-                  </div>
-                ) : null,
-              )}
+              <div className="onb-field">
+                <label className="auth-label" htmlFor="onb-last-name">Nom</label>
+                <input
+                  id="onb-last-name"
+                  className="auth-input"
+                  type="text"
+                  value={lastName}
+                  onChange={(e) => onLastName(e.target.value)}
+                  placeholder="Martin"
+                  autoComplete="family-name"
+                />
+              </div>
             </div>
           )}
 
-          <label className="auth-label">Email</label>
+          <label className="auth-label" htmlFor="onb-email">Email</label>
           <input
+            id="onb-email"
             className="auth-input"
             type="email"
             required
@@ -457,43 +441,59 @@ export default function FoundersPage() {
             autoComplete="email"
           />
 
-          <label className="auth-label">Mot de passe</label>
-          <input
-            className="auth-input"
-            type="password"
-            required
-            minLength={6}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
-            autoComplete={mode === "signup" ? "new-password" : "current-password"}
-          />
-
-          {/* Confirmation à la CRÉATION seulement : une faute de frappe sur un
-              mot de passe tapé une seule fois enferme dehors quelqu'un qui vient
-              de laisser sa carte, et la seule sortie est un e-mail de
-              réinitialisation (qui finit parfois en spam). À la connexion, le
-              serveur répond tout de suite — la confirmation n'y sert à rien. */}
-          {mode === "signup" && (
+          {mode === "signup" ? (
+            <div className="onb-pass-row">
+              <div className="onb-field">
+                <label className="auth-label" htmlFor="onb-password">Mot de passe</label>
+                <input
+                  id="onb-password"
+                  className="auth-input"
+                  type="password"
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="new-password"
+                />
+              </div>
+              <div className="onb-field">
+                <label className="auth-label" htmlFor="onb-password2">Confirme</label>
+                <input
+                  id="onb-password2"
+                  ref={password2Ref}
+                  className="auth-input"
+                  type="password"
+                  required
+                  minLength={6}
+                  value={password2}
+                  onChange={(e) => setPassword2(e.target.value)}
+                  placeholder="Retape ton mot de passe"
+                  autoComplete="new-password"
+                />
+              </div>
+            </div>
+          ) : (
             <>
-              <label className="auth-label">Confirme ton mot de passe</label>
+              <label className="auth-label" htmlFor="onb-password">Mot de passe</label>
               <input
-                ref={password2Ref}
+                id="onb-password"
                 className="auth-input"
                 type="password"
                 required
                 minLength={6}
-                value={password2}
-                onChange={(e) => setPassword2(e.target.value)}
-                placeholder="Retape ton mot de passe"
-                autoComplete="new-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete="current-password"
               />
-              {password2.length > 0 && password !== password2 && (
-                <span style={{ marginTop: 5, fontSize: 12.5, color: "var(--danger)" }}>
-                  Les deux mots de passe ne sont pas identiques.
-                </span>
-              )}
             </>
+          )}
+
+          {mode === "signup" && password2.length > 0 && password !== password2 && (
+            <span className="onb-account-mismatch">
+              Les deux mots de passe ne sont pas identiques.
+            </span>
           )}
 
           {error && <div className="error" style={{ marginTop: 10 }}>{error}</div>}
@@ -524,30 +524,11 @@ export default function FoundersPage() {
               le clic — arriver sur une demande de carte sans avoir été prévenu,
               juste après avoir tapé un mot de passe, c'est le réflexe « arnaque »
               assuré. */}
-          <p
-            style={{
-              margin: "12px 0 0",
-              padding: "10px 12px",
-              borderRadius: 10,
-              fontSize: 12.5,
-              lineHeight: 1.5,
-              color: "var(--muted)",
-              background: "rgba(70,72,212,0.05)",
-              border: "1px solid rgba(70,72,212,0.14)",
-            }}
-          >
+          <p className="onb-account-stripe">
             Ensuite : paiement sécurisé Stripe — ta carte est enregistrée mais{" "}
-            <strong style={{ color: "var(--ink)" }}>0&nbsp;€ prélevé pendant tes {trialDays} jours d&apos;essai</strong>,
+            <strong>0&nbsp;€ prélevé pendant tes {trialDays} jours d&apos;essai</strong>,
             résiliable en un clic depuis ton espace.
           </p>
-
-          {mode === "signup" && (
-            <p className="onb-pitch-legal" style={{ marginTop: 10 }}>
-              Le prix réduit s&apos;applique à ton premier mois après l&apos;essai.
-              Ton abonnement sera ensuite renouvelé à {fmtPrice(planPrice)}/mois,
-              jusqu&apos;à annulation dans ton compte.
-            </p>
-          )}
 
           <button
             type="button"

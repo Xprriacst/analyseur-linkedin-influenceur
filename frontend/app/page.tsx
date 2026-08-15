@@ -2250,7 +2250,7 @@ function InstagramGenerator({
     <div>
       {error && <div className="error">{error}</div>}
 
-      <div className="gen-hero">
+      <div className="gen-hero gen-hero-instagram">
         <div>
           <h2 className="section-title" style={{ margin: 0 }}><PenTool size={20} /> Générateur de reels</h2>
           <p className="section-desc" style={{ margin: "6px 0 0" }}>

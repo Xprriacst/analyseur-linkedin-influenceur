@@ -86,6 +86,18 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-08-15 #5 (dev : écran compte /onboarding — un plan, prénom/nom, plus de scroll)
+- **Retour d'Alex (test prod)** : « Choisis ton plan » + les deux ronds (radio) n'ont plus de sens — il n'y a qu'un plan. Le récap « Ce qu'on a compris » (ICP / offre) encombre. Il veut **juste prénom et nom pré-remplis**, et **tout au même niveau** pour ne plus scroller.
+- **Plan** : plus de titre de choix, plus de radio. Le tarif (−40 %, 29,40 € le 1er mois) reste un **fait** à côté du témoignage.
+- **Compte** : prénom + nom extraits de `display_name` (celui de l'analyse), éditables. ICP/offre partent toujours dans le profil, ils ne s'affichent plus ici.
+- **Layout** : dès 860 px, témoignage + tarif à gauche, formulaire à droite. Mobile : formulaire d'abord (le CTA), preuve en dessous.
+- **Tests** : founders-funnel recalé (zéro « Choisis ton plan » / « Ce qu'on a compris » / radio ; Léa / Fondatrice pré-remplis, y compris après reload). Frontend seul, aucune migration, aucune env var.
+
+### 2026-08-15 #4 (RELEASE PROD : /onboarding pour tous les builders — PR #452 → release #453)
+- **Release `dev → main` PR #453** mergée ~14:45 UTC. Delta énuméré avant merge : **#452** (landing builders + URI `/onboarding`, `/founders` en alias) + **#451** (changelog de la release #450, docs). **Aucune migration, aucune env var, aucun cron.** Frontend + e2e + changelog.
+- **Vérifié post-deploy** : Netlify prod `ready` · `/onboarding` et `/founders` **200** sur `cibl.clareo-solutions.fr` avec « Pour les builders — SaaS et freelance » · zéro « Pour les fondateurs de SaaS » · `/`, `/offre`, `/essai`, `/start` en **200** · `lkd-outreach.netlify.app/onboarding` **200** · `/health` prod tout vert · proxy `/api/health` OK de bout en bout.
+- **Reste à faire** : test d'Alex en prod (`/onboarding` → e-mail → champ site ou LinkedIn ; un vieux lien `/founders` = même landing).
+
 ### 2026-08-15 #3 (dev : /onboarding — landing builders SaaS + freelance, /founders en alias)
 - **Retour d'Alex** : la première page du funnel ne doit plus parler qu'aux fondateurs de SaaS — elle vise **tous les builders** (SaaS et freelance). URI canonique **`/onboarding`**. **`/founders` est conservé** (même page) pour les liens déjà en circulation.
 - **Landing** : kicker « Pour les builders — SaaS et freelance », H1 sans « ton produit », rareté « ~40 builders / mois », goulot porté sur l'offre (pas le produit). Après la porte e-mail : **le même champ de lien** (site ou LinkedIn). `/founders` réexporte la même page.

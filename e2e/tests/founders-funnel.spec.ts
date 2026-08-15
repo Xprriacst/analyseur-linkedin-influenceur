@@ -25,8 +25,11 @@ import { test, expect, type Page } from "@playwright/test";
  *    écrans ne doivent JAMAIS afficher « aujourd'hui 0 » ni « 0 abonnés ». Le
  *    fondateur a un compte, on ne l'a simplement pas mesuré — annoncer zéro
  *    serait un chiffre faux sur son propre compte, en plein argumentaire.
- * 5. Plan + compte sont UN seul écran (témoignage + offre −40 % + formulaire).
+ * 5. Plan + compte sont UN seul écran (témoignage + tarif −40 % + formulaire).
  *    Un paywall intermédiaire à re-cliquer après la simulation est une page de trop.
+ *    Un seul plan ⇒ pas de « Choisis ton plan » ni de radio : le tarif est un fait.
+ *    Le récap « Ce qu'on a compris » (ICP/offre) n'apparaît plus : prénom et nom
+ *    pré-remplis dans le formulaire, le reste du profil part en silence.
  * 6. Le MÊME champ accepte aussi une page LinkedIn (pas d'onglet séparé) : un
  *    lien `linkedin.com/in/…` doit partir en `linkedin_url`/`use_apify_linkedin`
  *    (jamais en `website_url`), SANS quiz « Où en es-tu aujourd'hui ? », et l'écran
@@ -211,7 +214,9 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any;
   await expect(page.getByRole("heading", { name: "Crée ton compte" })).toBeVisible();
   await expect(page.getByText(/@reshape_music/)).toBeVisible();
   await expect(page.getByText(/on a passé les 4k/i)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Choisis ton plan" })).toBeVisible();
+  // Un seul plan : le tarif est un fait, pas un choix (ni titre, ni radio).
+  await expect(page.getByRole("heading", { name: "Choisis ton plan" })).toHaveCount(0);
+  await expect(page.locator(".onb-plan-radio")).toHaveCount(0);
   await expect(page.getByText("Mensuel")).toBeVisible();
   await expect(page.getByText(/−40/)).toBeVisible();
   await expect(page.getByText("29,40 €")).toBeVisible();
@@ -239,7 +244,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     // (2) Fin de tunnel : plan + compte sur le MÊME écran — l'essai, avec sa
     // durée annoncée par le serveur — et AUCUN des deux artefacts du tunnel /start.
     await expect(page.getByRole("heading", { name: "Crée ton compte" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Choisis ton plan" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Choisis ton plan" })).toHaveCount(0);
     const trialCta = page.getByRole("button", { name: /Démarrer mes 7 jours gratuits/ });
     await expect(trialCta).toBeVisible();
     await expect(page.getByRole("button", { name: /Recevoir mon audit complet gratuit/ })).toHaveCount(0);
@@ -247,12 +252,15 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     // Écran de compte : l'e-mail de la porte d'entrée est PRÉ-REMPLI — le
     // demander deux fois serait avouer qu'on a perdu la première réponse.
     await expect(page.getByPlaceholder("toi@email.com")).toHaveValue("lea@northstack.io");
+    // Prénom / nom extraits du profil analysé — plus de récap ICP/offre.
+    await expect(page.getByLabel("Prénom", { exact: true })).toHaveValue("Léa");
+    await expect(page.getByLabel("Nom", { exact: true })).toHaveValue("Fondatrice");
+    await expect(page.getByText("Ce qu'on a compris")).toHaveCount(0);
+    await expect(page.getByText(/ICP :/)).toHaveCount(0);
     // Et la carte est annoncée AVANT le départ vers Stripe.
     await expect(page.getByText(/0\s?€ prélevé pendant tes 7 jours/)).toBeVisible();
     // Le téléphone du tunnel audit ne doit jamais être demandé ici.
     await expect(page.getByPlaceholder("06 12 34 56 78")).toHaveCount(0);
-    // Les réponses SaaS sont bien remontées jusqu'à cet écran.
-    await expect(page.getByText(/ICP : .*CTO & équipes tech/)).toBeVisible();
   });
 
   test("les réponses survivent à un rechargement en cours d'inscription", async ({ page }) => {
@@ -264,7 +272,9 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     // l'analyse (donc d'un scrape payant) et perdrait sa qualification.
     await page.reload();
     await expect(page.getByRole("heading", { name: "Crée ton compte" })).toBeVisible();
-    await expect(page.getByText(/ICP : .*CTO & équipes tech/)).toBeVisible();
+    await expect(page.getByLabel("Prénom", { exact: true })).toHaveValue("Léa");
+    await expect(page.getByLabel("Nom", { exact: true })).toHaveValue("Fondatrice");
+    await expect(page.getByPlaceholder("toi@email.com")).toHaveValue("lea@northstack.io");
   });
 
   test("mots de passe différents : aucun compte n'est créé", async ({ page }) => {
