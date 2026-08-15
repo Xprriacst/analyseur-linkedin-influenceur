@@ -212,6 +212,48 @@ const ONB_SAAS_OBSTACLES: string[] = [
   "Je lance dans le silence",
 ];
 
+// Sur /founders, le premier champ accepte le site du SaaS OU la page LinkedIn —
+// un seul champ, pas d'onglets (cf. `inputKind` plus bas, qui détecte laquelle a
+// été collée). L'animation de scan doit décrire ce qui a VRAIMENT été lu, jamais
+// l'URI de la page ni la variante : ces trois jeux de libellés sont choisis par
+// la source détectée dans le champ, exactement le principe du correctif du
+// 2026-08-11 (l'honnêteté suit les données lues, pas l'endroit où on se trouve).
+const ONB_SAAS_SCAN_STEPS_SITE = [
+  "Lecture de ton site…",
+  "On cerne ton produit et ta promesse…",
+  "Identification de ton ICP…",
+  "On peaufine tout ça…",
+];
+const ONB_SAAS_SCAN_STEPS_LINKEDIN = [
+  "Lecture de ton profil…",
+  "Analyse de ton audience…",
+  "Identification de ton ICP…",
+  "On peaufine tout ça…",
+];
+const ONB_SAAS_SCAN_STEPS_DESCRIPTION = [
+  "Lecture de ta description…",
+  "On cerne ton produit et ta promesse…",
+  "Identification de ton ICP…",
+  "On peaufine tout ça…",
+];
+
+/** Ce que le visiteur a réellement collé dans le premier champ. */
+type OnbInputKind = "linkedin" | "linkedin_company" | "website" | "description";
+
+/** Étapes de scan affichées pendant `step === "scanning"` sur le tunnel SaaS. */
+function onbSaasScanSteps(kind: OnbInputKind): string[] {
+  if (kind === "linkedin") return ONB_SAAS_SCAN_STEPS_LINKEDIN;
+  if (kind === "description") return ONB_SAAS_SCAN_STEPS_DESCRIPTION;
+  return ONB_SAAS_SCAN_STEPS_SITE; // website + repli (company bloqué avant d'arriver ici)
+}
+
+/** Badge affiché sur l'écran d'analyse quand rien n'a été scrapé (photo/compteurs absents). */
+function onbSourceLabel(kind: OnbInputKind): string {
+  if (kind === "linkedin") return "Analysé depuis ton profil";
+  if (kind === "description") return "Analysé depuis ta description";
+  return "Analysé depuis ton site";
+}
+
 /** Ce qui change d'une audience de tunnel à l'autre : les chips et les mots. */
 type OnbVariant = {
   /** Audience envoyée au serveur — décide de la grille de paliers de la projection. */
@@ -261,12 +303,13 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     audience: "saas",
     introTitle: "Le LinkedIn qui remplit ton pipeline",
     introSubtitle:
-      "Colle le lien de ton SaaS : on lit ton produit, ton marché et ta promesse, puis on te montre ce que LinkedIn peut lui rapporter.",
-    introPlaceholder: "https://ton-saas.com",
-    // Un lien LinkedIn collé ici reste accepté (la détection se fait sur la forme
-    // de l'URL) : on demande le site, on ne refuse pas le profil.
-    introSkipLabel: "Continuer sans site",
-    introError: "Colle le lien de ton SaaS (ou une courte description).",
+      "Colle le lien de ton SaaS ou de ta page LinkedIn : on lit ce que tu as, puis on te montre ce que LinkedIn peut lui rapporter.",
+    introPlaceholder: "https://ton-saas.com  ou  linkedin.com/in/toi",
+    // Un lien LinkedIn collé ici est accepté au même titre qu'un site — un seul
+    // champ, pas d'onglets (cf. `inputKind`). On demande les deux, on ne refuse
+    // ni l'un ni l'autre.
+    introSkipLabel: "Continuer sans lien",
+    introError: "Colle un lien (site ou LinkedIn) ou une courte description.",
     audienceLabel: "Ton ICP — à qui tu vends ?",
     offerLabel: "Ce que tu vends",
     objectiveLabel: "Ce que tu attends de LinkedIn",
@@ -274,15 +317,10 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     gainsTitle: "Ce que ça peut rapporter à ton SaaS",
     gainsIntro:
       "En publiant régulièrement et en prospectant ton ICP depuis l'app, voici ce que donne un trimestre.",
-    // On lit un site, pas un profil : annoncer « Lecture de ton profil… » puis
-    // « Analyse de ton audience… » ferait croire qu'on a mesuré un compte
-    // LinkedIn, et rendrait suspect tout ce que l'écran suivant affiche.
-    scanSteps: [
-      "Lecture de ton site…",
-      "On cerne ton produit et ta promesse…",
-      "Identification de ton ICP…",
-      "On peaufine tout ça…",
-    ],
+    // Repli par défaut (variant.scanSteps n'est plus utilisé tel quel côté SaaS :
+    // le composant calcule `scanSteps` depuis `inputKind` via `onbSaasScanSteps`,
+    // cf. plus bas — ce champ ne sert que de valeur par défaut avant saisie).
+    scanSteps: ONB_SAAS_SCAN_STEPS_SITE,
     audienceOptions: ONB_SAAS_AUDIENCE_OPTIONS,
     offerOptions: ONB_SAAS_OFFER_OPTIONS,
     objectiveOptions: ONB_SAAS_OBJECTIVE_OPTIONS,
@@ -542,19 +580,30 @@ export default function OnboardingScreen({
   const up = (patch: Partial<ReturnType<typeof onbInitSel>>) =>
     setSel((s) => ({ ...s, ...patch }));
 
-  const inputKind: "linkedin" | "website" | "description" = (() => {
+  const inputKind: OnbInputKind = (() => {
     const v = aiInput.trim();
     if (!v || /\s/.test(v)) return "description";
+    // Page entreprise : le distinguer d'un profil personnel AVANT toute autre
+    // règle — sinon elle tomberait dans "website" (login-wall LinkedIn, analyse
+    // creuse sans la moindre erreur, cf. piège documenté sur ce lot).
+    if (/linkedin\.com\/company\//i.test(v)) return "linkedin_company";
     if (/linkedin\.com\/in\//i.test(v)) return "linkedin";
+    // Lien court LinkedIn (lnkd.in) : jamais traité comme un site quelconque.
+    if (/^https?:\/\/(www\.)?lnkd\.in\//i.test(v)) return "linkedin";
     if (/^https?:\/\//i.test(v) || /^www\./i.test(v) || /^[\w-]+(\.[\w-]+)+(\/|$)/i.test(v)) return "website";
     return "description";
   })();
+
+  // Tunnel SaaS uniquement : les étapes de scan doivent décrire ce qui a
+  // VRAIMENT été collé, pas l'URI de la page (`variant === "saas"`). Le tunnel
+  // /start (`default`) garde ses étapes fixes, inchangées.
+  const scanSteps = variantKey === "saas" ? onbSaasScanSteps(inputKind) : variant.scanSteps;
 
   useEffect(() => {
     if (step !== "scanning") return;
     setScanIdx(0);
     const id = setInterval(
-      () => setScanIdx((i) => (i < variant.scanSteps.length - 1 ? i + 1 : i)),
+      () => setScanIdx((i) => (i < scanSteps.length - 1 ? i + 1 : i)),
       850,
     );
     return () => clearInterval(id);
@@ -590,6 +639,13 @@ export default function OnboardingScreen({
   async function analyze() {
     const trimmed = aiInput.trim();
     if (!trimmed) { setError(variant.introError); return; }
+    // Page entreprise : on ne prétend pas la lire (login-wall LinkedIn côté
+    // fetch site → résumé vide → analyse creuse sans la moindre erreur visible).
+    // Refusé AVANT tout appel serveur, avec la marche à suivre.
+    if (inputKind === "linkedin_company") {
+      setError("On ne lit pas les pages entreprise — colle ton profil perso (linkedin.com/in/…).");
+      return;
+    }
     setError(""); setScanResult(null); setQuizIdx(0); setStep("scanning");
     try {
       const isLinkedin = inputKind === "linkedin";
@@ -809,13 +865,20 @@ export default function OnboardingScreen({
         {step === "scanning" && (
           <div className="onb-screen onb-scan" key="scan">
             <div className="onb-orb">
-              {variantKey === "saas" ? <Globe size={34} /> : <Linkedin size={34} />}
+              {/* L'icône suit ce qui a VRAIMENT été collé (inputKind), pas la
+                  variante — un LinkedIn collé sur /founders garde son logo. Le
+                  tunnel /start (default) garde son icône fixe, inchangée. */}
+              {variantKey === "saas" ? (
+                inputKind === "linkedin" ? <Linkedin size={34} /> : inputKind === "website" ? <Globe size={34} /> : <Sparkles size={34} />
+              ) : (
+                <Linkedin size={34} />
+              )}
             </div>
             {/* « Analyse prête » ne s'affiche qu'une fois le quiz fini : pendant
                 les questions, le statut continue de raconter le scan — annoncer
                 la fin inciterait à bâcler la réponse en cours. */}
             <div className="onb-scan-status" key={scanResult && quizIdx >= 3 ? "done" : scanIdx}>
-              {scanResult && quizIdx >= 3 ? "Analyse prête ✓" : variant.scanSteps[scanIdx]}
+              {scanResult && quizIdx >= 3 ? "Analyse prête ✓" : scanSteps[scanIdx]}
             </div>
 
             {/* Tunnel SaaS : la lecture du site prend de longues secondes — deux
@@ -941,7 +1004,7 @@ export default function OnboardingScreen({
                 </div>
               ) : null}
               {!hasScrapedProfile && (
-                <div className="onb-analysis-source">Analysé depuis ton site</div>
+                <div className="onb-analysis-source">{onbSourceLabel(inputKind)}</div>
               )}
               <div className="onb-analysis-name">{preview.name || "Ton produit"}</div>
               {hasScrapedProfile && preview.handle && (
