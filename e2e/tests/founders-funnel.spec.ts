@@ -1,10 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 
 /**
- * Tunnel fondateurs SaaS (/founders, parcours anonyme) :
- * landing de vente → site OU LinkedIn → scan (quiz stade+obstacles UNIQUEMENT
- * si entrée par le site — pas sur un profil LinkedIn) → audit léger → questions
- * SaaS → gains en ARR → simulation → UN seul écran compte+plan (−40 %) → essai.
+ * Tunnel d'essai builders (/onboarding, alias /founders, parcours anonyme) :
+ * landing de vente (SaaS + freelance) → site OU LinkedIn → scan (quiz
+ * stade+obstacles UNIQUEMENT si entrée par le site — pas sur un profil LinkedIn)
+ * → audit léger → questions → gains en ARR → simulation → UN seul écran
+ * compte+plan (−40 %) → essai.
  *
  * Backend entièrement mocké (zéro coût Apify/Claude/Stripe). Ce spec verrouille les
  * écarts qui feraient de ce tunnel une copie ratée de /start, tous invisibles
@@ -28,7 +29,7 @@ import { test, expect, type Page } from "@playwright/test";
  *    Un paywall intermédiaire à re-cliquer après la simulation est une page de trop.
  * 6. Le MÊME champ accepte aussi une page LinkedIn (pas d'onglet séparé) : un
  *    lien `linkedin.com/in/…` doit partir en `linkedin_url`/`use_apify_linkedin`
- *    (jamais en `website_url`), SANS quiz « Où en est ton SaaS ? », et l'écran
+ *    (jamais en `website_url`), SANS quiz « Où en es-tu aujourd'hui ? », et l'écran
  *    d'analyse doit alors montrer les VRAIS compteurs lus.
  */
 
@@ -123,9 +124,10 @@ async function passGate(page: Page, email = "lea@northstack.io"): Promise<{ lead
     leadBody = route.request().postDataJSON();
     return route.fulfill({ json: { ok: true } });
   });
-  await expect(page.getByText(/onboard ~\d+ fondateurs par mois/i)).toBeVisible();
+  await expect(page.getByText(/onboard ~\d+ builders par mois/i)).toBeVisible();
+  await expect(page.getByText(/Pour les builders/i)).toBeVisible();
   await expect(page.getByText(/places limitées\. ça prend 90 secondes/i)).toBeVisible();
-  await page.getByPlaceholder("toi@ton-saas.com").fill(email);
+  await page.getByPlaceholder("toi@email.com").fill(email);
   await page.getByRole("button", { name: /vérifier ma place/i }).first().click();
   return { leadBody: () => leadBody };
 }
@@ -149,20 +151,20 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any;
     });
   });
 
-  await page.goto("/founders");
+  await page.goto("/onboarding");
   // Landing de vente d'abord : la promesse, puis la porte d'entrée e-mail
   // (rareté réelle : places/mois via FOUNDERS_MONTHLY_SEATS) qui lance l'analyse.
   await expect(page.getByRole("heading", { name: /Le LinkedIn qui remplit ton pipeline/ })).toBeVisible();
   const { leadBody } = await passGate(page);
 
   // Premier écran du tunnel : le lien du SaaS, pas le profil LinkedIn.
-  await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
+  await page.getByPlaceholder("https://ton-site.com").fill("https://northstack.io");
   await page.getByRole("button", { name: "Analyser" }).click();
 
   // Pendant le scan : stade puis obstacles, en DEUX pop-up successives — la
   // matière de l'effet miroir, posée pendant l'attente de l'analyse. La pop-up
   // n'apparaît qu'après ~2,5 s d'animation (auto-attente Playwright).
-  await expect(page.getByText("Où en est ton SaaS ?")).toBeVisible();
+  await expect(page.getByText("Où en es-tu aujourd'hui ?")).toBeVisible();
   await page.getByRole("button", { name: /Premiers clients/ }).click();
   await page.getByRole("button", { name: "Continuer", exact: true }).click();
 
@@ -182,10 +184,12 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any;
   await expect(page.getByText("Ton ICP — à qui tu vends ?")).toBeVisible();
   await page.getByRole("button", { name: "Une cible précise" }).click();
   await expect(page.getByRole("button", { name: "Fondateurs & CEO de SaaS" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Freelances & solopreneurs" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Des prestations sur-mesure" })).toBeVisible();
   await page.getByRole("button", { name: "CTO & équipes tech" }).click();
   await page.getByRole("button", { name: "Continuer", exact: true }).click();
 
-  await expect(page.getByText("Ta catégorie de produit")).toBeVisible();
+  await expect(page.getByText("Ton secteur")).toBeVisible();
   await page.getByRole("button", { name: "DevTools & infra" }).click();
   await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();
 
@@ -204,7 +208,7 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any;
 
   // Simulation → UN seul écran compte+plan (plus de paywall intermédiaire).
   await page.getByRole("button", { name: /Continuer vers l'essai/ }).click();
-  await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Crée ton compte" })).toBeVisible();
   await expect(page.getByText(/@reshape_music/)).toBeVisible();
   await expect(page.getByText(/on a passé les 4k/i)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Choisis ton plan" })).toBeVisible();
@@ -234,7 +238,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
 
     // (2) Fin de tunnel : plan + compte sur le MÊME écran — l'essai, avec sa
     // durée annoncée par le serveur — et AUCUN des deux artefacts du tunnel /start.
-    await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Crée ton compte" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Choisis ton plan" })).toBeVisible();
     const trialCta = page.getByRole("button", { name: /Démarrer mes 7 jours gratuits/ });
     await expect(trialCta).toBeVisible();
@@ -242,7 +246,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
 
     // Écran de compte : l'e-mail de la porte d'entrée est PRÉ-REMPLI — le
     // demander deux fois serait avouer qu'on a perdu la première réponse.
-    await expect(page.getByPlaceholder("toi@ton-saas.com")).toHaveValue("lea@northstack.io");
+    await expect(page.getByPlaceholder("toi@email.com")).toHaveValue("lea@northstack.io");
     // Et la carte est annoncée AVANT le départ vers Stripe.
     await expect(page.getByText(/0\s?€ prélevé pendant tes 7 jours/)).toBeVisible();
     // Le téléphone du tunnel audit ne doit jamais être demandé ici.
@@ -254,12 +258,12 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
   test("les réponses survivent à un rechargement en cours d'inscription", async ({ page }) => {
     await mockBackend(page);
     await reachSimulation(page);
-    await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Crée ton compte" })).toBeVisible();
 
     // Rechargement : sans la réserve de réponses, le fondateur repartirait de
     // l'analyse (donc d'un scrape payant) et perdrait sa qualification.
     await page.reload();
-    await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Crée ton compte" })).toBeVisible();
     await expect(page.getByText(/ICP : .*CTO & équipes tech/)).toBeVisible();
   });
 
@@ -276,9 +280,9 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
 
     await mockBackend(page);
     await reachSimulation(page);
-    await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Crée ton compte" })).toBeVisible();
 
-    await page.getByPlaceholder("toi@ton-saas.com").fill("lea@northstack.io");
+    await page.getByPlaceholder("toi@email.com").fill("lea@northstack.io");
     await page.getByPlaceholder("••••••••").fill("motdepasse1");
     await page.getByPlaceholder("Retape ton mot de passe").fill("motdepasse2");
     await expect(page.getByText("Les deux mots de passe ne sont pas identiques.")).toBeVisible();
@@ -309,9 +313,9 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
       });
     });
 
-    await page.goto("/founders");
+    await page.goto("/onboarding");
     await passGate(page);
-    await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
+    await page.getByPlaceholder("https://ton-site.com").fill("https://northstack.io");
     await page.getByRole("button", { name: "Analyser" }).click();
 
     // Les deux pop-up se répondent SANS attendre la fin de l'analyse.
@@ -331,9 +335,9 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await mockBackend(page);
     await page.route("**/onboarding/projection", (route) => route.fulfill({ status: 500, json: {} }));
 
-    await page.goto("/founders");
+    await page.goto("/onboarding");
     await passGate(page);
-    await page.getByPlaceholder("https://ton-saas.com").fill("https://northstack.io");
+    await page.getByPlaceholder("https://ton-site.com").fill("https://northstack.io");
     await page.getByRole("button", { name: "Analyser" }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
@@ -344,7 +348,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
 
     // Un écran de mise en scène en panne ne doit pas coûter le prospect : on
     // atterrit sur la création de compte, pas sur un écran vide ni sur /start.
-    await expect(page.getByRole("heading", { name: "Crée ton compte fondateur" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Crée ton compte" })).toBeVisible();
   });
 
   test("un lien LinkedIn part en linkedin_url (jamais website_url) et les vrais compteurs s'affichent", async ({
@@ -352,7 +356,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
   }) => {
     // Même champ que le site — pas d'onglet séparé (cf. ticket) : on colle une
     // page LinkedIn et on vérifie que la détection + le rendu suivent la SOURCE
-    // réellement collée, pas l'URI /founders.
+    // réellement collée, pas l'URI /onboarding.
     let draftBody: any = null;
     await page.route("**/onboarding/draft", (route) => {
       draftBody = route.request().postDataJSON();
@@ -384,17 +388,17 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
       }),
     );
 
-    await page.goto("/founders");
+    await page.goto("/onboarding");
     await expect(page.getByRole("heading", { name: /Le LinkedIn qui remplit ton pipeline/ })).toBeVisible();
     await passGate(page);
 
     // Le même champ que le site accepte une page LinkedIn.
-    await page.getByPlaceholder("https://ton-saas.com").fill("https://www.linkedin.com/in/lea-fondatrice/");
+    await page.getByPlaceholder("https://ton-site.com").fill("https://www.linkedin.com/in/lea-fondatrice/");
     await page.getByRole("button", { name: "Analyser" }).click();
 
-    // LinkedIn → PAS de quiz SaaS (« Où en est ton SaaS ? » n'a pas de sens sur
+    // LinkedIn → PAS de quiz SaaS (« Où en es-tu aujourd'hui ? » n'a pas de sens sur
     // un profil perso). L'analyse doit arriver sans ces deux pop-up.
-    await expect(page.getByText("Où en est ton SaaS ?")).toHaveCount(0);
+    await expect(page.getByText("Où en es-tu aujourd'hui ?")).toHaveCount(0);
     await expect(page.getByText("Qu'est-ce qui te bloque le plus ?")).toHaveCount(0);
 
     // Analyse : les vrais compteurs du profil scrapé, pas le badge « site ».
@@ -435,13 +439,24 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
       return route.fulfill({ json: { profile: {}, preview: null } });
     });
 
-    await page.goto("/founders");
+    await page.goto("/onboarding");
     await passGate(page);
-    await page.getByPlaceholder("https://ton-saas.com").fill("https://www.linkedin.com/company/northstack/");
+    await page.getByPlaceholder("https://ton-site.com").fill("https://www.linkedin.com/company/northstack/");
     await page.getByRole("button", { name: "Analyser" }).click();
 
     await expect(page.getByText(/pages entreprise/i)).toBeVisible();
     await expect(page.getByText(/linkedin\.com\/in\//)).toBeVisible();
     expect(draftCalled).toBe(false);
+  });
+
+  test("/founders reste un alias : même landing, même tunnel", async ({ page }) => {
+    await mockBackend(page);
+    await page.goto("/founders");
+    await expect(page.getByRole("heading", { name: /Le LinkedIn qui remplit ton pipeline/ })).toBeVisible();
+    await expect(page.getByText(/Pour les builders/i)).toBeVisible();
+    await expect(page.getByText(/onboard ~\d+ builders par mois/i)).toBeVisible();
+    const { leadBody } = await passGate(page);
+    await expect(page.getByPlaceholder("https://ton-site.com")).toBeVisible();
+    expect(leadBody()).toMatchObject({ email: "lea@northstack.io" });
   });
 });

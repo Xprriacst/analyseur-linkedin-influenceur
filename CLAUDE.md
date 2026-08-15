@@ -86,6 +86,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-08-15 #3 (dev : /onboarding — landing builders SaaS + freelance, /founders en alias)
+- **Retour d'Alex** : la première page du funnel ne doit plus parler qu'aux fondateurs de SaaS — elle vise **tous les builders** (SaaS et freelance). URI canonique **`/onboarding`**. **`/founders` est conservé** (même page) pour les liens déjà en circulation.
+- **Landing** : kicker « Pour les builders — SaaS et freelance », H1 sans « ton produit », rareté « ~40 builders / mois », goulot porté sur l'offre (pas le produit). Après la porte e-mail : **le même champ de lien** (site ou LinkedIn). `/founders` réexporte la même page.
+- **Tunnel** : placeholder `https://ton-site.com`, quiz « Où en es-tu aujourd'hui ? », chips ICP/offre qui couvrent les deux publics (Freelances & solopreneurs, prestations, conseil). Compte : « Crée ton compte » (plus « fondateur »).
+- **Tests** : founders-funnel recalé sur `/onboarding` + un spec d'alias `/founders`. Frontend seul, aucune migration, aucune env var.
+
 ### 2026-08-15 #2 (RELEASE PROD : /founders UX + 29,40 € le 1er mois payé — PR #449 → release #450)
 - **Release `dev → main` PR #450** mergée ~13:58 UTC. Delta énuméré avant merge : **uniquement #449** (UX `/founders` + coupon Stripe d'intro). `origin/main` et `origin/dev` étaient identiques avant ce cycle (release #448). **Aucune migration**, aucune variable d'env, aucun cron.
 - **Stripe live** : le forfait reste **49 €/mois**. Le Checkout d'essai (`/founders`) applique le coupon `cibl_first_month_40` (−40 %, `repeating` 1 mois) → **29,40 € le 1er mois payé** (après les 7 jours d'essai), **puis 49 €**. Le coupon est créé tout seul au 1er checkout (`ensure_intro_coupon`) — pas besoin de le poser dans le dashboard. ⚠️ `duration=once` aurait consommé la remise sur la facture d'essai à 0 €. CIBLDEMO reste sur `/paiement`.

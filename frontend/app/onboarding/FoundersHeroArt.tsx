@@ -1,6 +1,6 @@
 /**
- * Illustration au trait du hero /founders — patron Catalog (ligne noire,
- * scène de bureau). Ici : un fondateur devant son LinkedIn pendant que
+ * Illustration au trait du hero /onboarding — patron Catalog (ligne noire,
+ * scène de bureau). Un builder devant son LinkedIn pendant que
  * le pipeline avance tout seul.
  */
 export default function FoundersHeroArt() {
