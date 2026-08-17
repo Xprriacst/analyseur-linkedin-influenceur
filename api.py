@@ -689,6 +689,51 @@ def draft_onboarding_profile(payload: EditorialProfileDraftRequest, request: Req
     }
 
 
+# Compteur d'ouverture de page pour le tunnel /onboarding (alias /founders) —
+# sert à comparer combien de visiteurs OUVRENT le tunnel à combien laissent
+# leur e-mail (`/onboarding/founders-lead`, statut `founders_optin`). Compteur
+# dédié (pas partagé avec `_onboarding_draft_hits`/`_audit_lead_hits`) : une
+# ouverture de page est gratuite et peut légitimement se répéter bien plus
+# souvent qu'une analyse ou un lead — un plafond partagé la ferait invisible
+# derrière le bruit des autres routes.
+_ONBOARDING_PAGE_VIEW_MAX = int(os.environ.get("ONBOARDING_PAGE_VIEW_MAX_PER_HOUR", "30"))
+_onboarding_page_view_hits: dict[str, list[float]] = {}
+_onboarding_page_view_lock = threading.Lock()
+
+
+@app.post("/onboarding/page-view")
+def onboarding_page_view(request: Request) -> dict[str, Any]:
+    """Journalise l'OUVERTURE de la page /onboarding (et son alias /founders).
+
+    V1 volontairement minimal : uniquement « la page s'est ouverte », pas un
+    suivi détaillé par étape du tunnel (quiz/scan/gains/closing/compte) — hors
+    périmètre de ce lot. Anonyme, best-effort : un excès de bruit ou un échec
+    d'écriture ne renvoie jamais d'erreur au visiteur (rien à afficher, rien à
+    bloquer côté front).
+    """
+    try:
+        _rate_limit_ip(
+            request,
+            _onboarding_page_view_hits,
+            _onboarding_page_view_lock,
+            _ONBOARDING_PAGE_VIEW_MAX,
+            "Trop de requêtes depuis cette connexion.",
+        )
+    except HTTPException:
+        # Dépassement de bruit seulement : la vue n'est simplement pas comptée,
+        # jamais signalée au visiteur.
+        return {"ok": True}
+    # `db.log_onboarding_page_view_event` avale déjà ses propres erreurs — ce
+    # try/except est une seconde protection (patron `call_with_fallback` /
+    # `_safe_record_call`) : même si ce garde interne se perd dans un futur
+    # refacto, cet endpoint anonyme ne doit jamais renvoyer un 500.
+    try:
+        db.log_onboarding_page_view_event(ip_hash=_client_ip_hash(request))
+    except Exception:
+        pass
+    return {"ok": True}
+
+
 # --- Tunnel « audit complet gratuit » ----------------------------------------
 #
 # Suite immédiate de l'audit léger : on montre au visiteur ce qu'il gagnerait à
