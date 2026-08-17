@@ -1268,15 +1268,36 @@ class AvatarVideoJobRequest(BaseModel):
     target_key: str = Field(..., min_length=1, max_length=200)
 
 
+class AvatarDigitalTwinCreateRequest(BaseModel):
+    # URL déjà hébergée (upload préalable via /me/avatar/digital-twin/video —
+    # pas de branche data URL ici, un clip de 2 min ferait des dizaines de Mo
+    # en base64 dans un body JSON).
+    video_url: str = Field(..., min_length=8, max_length=2000)
+    name: Optional[str] = Field(default=None, max_length=120)
+
+
+# Statuts app (pas de contrainte SQL, texte libre comme le reste des colonnes
+# heygen_*) spécifiques au digital twin, superposés au-dessus des statuts
+# HeyGen normalisés (processing/completed/failed) : le consentement précède
+# l'entraînement, ce n'est pas HeyGen qui décide de ces deux-là.
+_CONSENT_PENDING = "pending_consent"
+_CONSENT_EXPIRED = "consent_expired"
+
+
 def _avatar_status_payload(profile: dict[str, Any]) -> dict[str, Any]:
     avatar = None
     if profile.get("heygen_avatar_look_id"):
+        avatar_type = profile.get("heygen_avatar_type") or heygen.AVATAR_TYPE_PHOTO
         avatar = {
             "look_id": profile.get("heygen_avatar_look_id"),
+            "type": avatar_type,
             "status": profile.get("heygen_avatar_status") or "processing",
             "preview_image_url": profile.get("heygen_avatar_preview_url"),
             "created_at": profile.get("heygen_avatar_created_at"),
         }
+        if avatar_type == heygen.AVATAR_TYPE_DIGITAL_TWIN:
+            avatar["consent_url"] = profile.get("heygen_consent_url")
+            avatar["consent_expires_at"] = profile.get("heygen_consent_expires_at")
     voice = None
     if profile.get("heygen_voice_id"):
         voice = {
@@ -1288,25 +1309,44 @@ def _avatar_status_payload(profile: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/me/avatar/status")
 def me_avatar_status(token: str = Depends(require_token)) -> dict[str, Any]:
-    """État de l'avatar IA du client (+ rafraîchit l'entraînement en cours)."""
+    """État de l'avatar IA du client (+ rafraîchit l'entraînement/consentement en cours)."""
     require_feature(token, "instagram")
     profile = db.get_editorial_profile(token) or {}
     look_id = profile.get("heygen_avatar_look_id")
-    # Un avatar encore en entraînement : on relit le statut chez HeyGen à chaque
-    # passage (c'est CE endpoint que le front poll) — best-effort, une panne
-    # HeyGen ne casse pas l'affichage de l'état connu.
-    if look_id and profile.get("heygen_avatar_status") == "processing" and heygen.enabled():
-        try:
-            look = heygen.get_avatar_look(look_id)
-            if look["status"] != "processing":
-                db.update_heygen_avatar_status(
-                    token, look["status"], preview_url=look.get("preview_image_url")
-                )
-                profile["heygen_avatar_status"] = look["status"]
-                if look.get("preview_image_url"):
-                    profile["heygen_avatar_preview_url"] = look["preview_image_url"]
-        except heygen.HeygenError:
-            pass
+    avatar_type = profile.get("heygen_avatar_type") or heygen.AVATAR_TYPE_PHOTO
+    status = profile.get("heygen_avatar_status")
+    if look_id and heygen.enabled():
+        if avatar_type == heygen.AVATAR_TYPE_DIGITAL_TWIN and status == _CONSENT_PENDING:
+            group_id = profile.get("heygen_avatar_group_id")
+            if heygen.is_consent_expired(profile.get("heygen_consent_expires_at")):
+                db.update_heygen_avatar_status(token, _CONSENT_EXPIRED)
+                profile["heygen_avatar_status"] = _CONSENT_EXPIRED
+            elif group_id:
+                # Best-effort : une panne HeyGen ne casse pas l'affichage de
+                # l'état connu (le prochain poll réessaiera).
+                try:
+                    consent = heygen.get_avatar_consent_status(group_id)
+                    if consent["status"] == "given":
+                        db.update_heygen_avatar_status(token, "processing")
+                        db.set_heygen_consent(token, None, None)
+                        profile["heygen_avatar_status"] = "processing"
+                    elif consent["status"] == "expired":
+                        db.update_heygen_avatar_status(token, _CONSENT_EXPIRED)
+                        profile["heygen_avatar_status"] = _CONSENT_EXPIRED
+                except heygen.HeygenError:
+                    pass
+        elif status == "processing":
+            try:
+                look = heygen.get_avatar_look(look_id)
+                if look["status"] != "processing":
+                    db.update_heygen_avatar_status(
+                        token, look["status"], preview_url=look.get("preview_image_url")
+                    )
+                    profile["heygen_avatar_status"] = look["status"]
+                    if look.get("preview_image_url"):
+                        profile["heygen_avatar_preview_url"] = look["preview_image_url"]
+            except heygen.HeygenError:
+                pass
     return _avatar_status_payload(profile)
 
 
@@ -1331,14 +1371,134 @@ def me_avatar_create(payload: AvatarCreateRequest, token: str = Depends(require_
         group_id=avatar.get("group_id"),
         status=avatar.get("status") or "processing",
         preview_url=avatar.get("preview_image_url"),
+        avatar_type=heygen.AVATAR_TYPE_PHOTO,
     )
     return {
         "avatar": {
             "look_id": avatar["look_id"],
+            "type": heygen.AVATAR_TYPE_PHOTO,
             "status": avatar.get("status") or "processing",
             "preview_image_url": avatar.get("preview_image_url"),
         }
     }
+
+
+# ── Digital Twin (0066) : vidéo d'entraînement + consentement HeyGen ────────
+# Même socle que le photo avatar (une seule ligne `user_editorial_profiles`,
+# `heygen_avatar_type` distingue les deux) : créer un digital twin remplace
+# un éventuel avatar photo existant, comme recréer une photo remplace un
+# digital twin. Pas de « les deux en même temps » côté données — un seul
+# avatar actif par client, le client choisit le mode à la création.
+
+@app.post("/me/avatar/digital-twin/video")
+async def me_avatar_digital_twin_upload_video(
+    request: Request,
+    file: UploadFile = File(...),
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Upload la vidéo d'entraînement du digital twin et retourne son URL publique.
+
+    Réutilise le pipeline vidéo du reel Instagram (`zernio.upload_reel_video`,
+    même plafond 100 Mo) : c'est déjà l'endpoint qui protège la mémoire du
+    service pour un upload vidéo volumineux (leçon OOM 2026-06-25/2026-07-10)
+    — pas de raison d'en écrire un second pour un besoin identique.
+    """
+    require_feature(token, "instagram")
+    if not heygen.enabled():
+        raise HTTPException(status_code=400, detail="HEYGEN_API_KEY manquant côté serveur.")
+    if not zernio.enabled():
+        raise HTTPException(status_code=400, detail="ZERNIO_API_KEY manquant côté serveur.")
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > zernio.MAX_REEL_VIDEO_BYTES:
+        mb = zernio.MAX_REEL_VIDEO_BYTES // (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"Vidéo trop volumineuse ({mb} Mo maximum).")
+    data = await file.read()
+    try:
+        url = zernio.upload_reel_video(file.filename, file.content_type or "", data)
+    except zernio.ZernioError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"url": url}
+
+
+def _request_digital_twin_consent(token: str, group_id: str) -> dict[str, Any]:
+    """Demande (ou renouvelle) le lien de consentement HeyGen et le persiste."""
+    try:
+        consent = heygen.request_avatar_consent(group_id)
+    except heygen.HeygenError as exc:
+        raise HTTPException(status_code=502, detail=f"Demande de consentement HeyGen impossible : {exc}") from exc
+    db.set_heygen_consent(token, consent.get("consent_url"), consent.get("expires_at"))
+    return consent
+
+
+@app.post("/me/avatar/digital-twin")
+def me_avatar_digital_twin_create(
+    payload: AvatarDigitalTwinCreateRequest, token: str = Depends(require_token)
+) -> dict[str, Any]:
+    """Crée l'avatar digital twin du client à partir de sa vidéo d'entraînement,
+    puis demande immédiatement le lien de consentement HeyGen (page hébergée
+    par eux, webcam, valable ~24h — impossible de leur fournir une vidéo de
+    consentement déjà enregistrée depuis notre tunnel, réservé aux comptes
+    HeyGen Enterprise)."""
+    require_feature(token, "instagram")
+    if not heygen.enabled():
+        raise HTTPException(status_code=400, detail="HEYGEN_API_KEY manquant côté serveur.")
+
+    import urllib.parse
+    video_url = (payload.video_url or "").strip()
+    parsed = urllib.parse.urlparse(video_url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise HTTPException(
+            status_code=422,
+            detail="URL de vidéo invalide : upload-la d'abord via /me/avatar/digital-twin/video.",
+        )
+
+    profile = db.get_editorial_profile(token) or {}
+    name = (payload.name or profile.get("display_name") or "Avatar").strip() or "Avatar"
+    try:
+        avatar = heygen.create_digital_twin_avatar(name, video_url)
+    except heygen.HeygenError as exc:
+        raise HTTPException(status_code=502, detail=f"Création de l'avatar impossible : {exc}") from exc
+    group_id = avatar.get("group_id")
+    if not group_id:
+        raise HTTPException(
+            status_code=502,
+            detail="Réponse HeyGen inattendue : pas de groupe d'avatar pour demander le consentement.",
+        )
+    db.set_heygen_avatar(
+        token,
+        avatar["look_id"],
+        group_id=group_id,
+        status=_CONSENT_PENDING,
+        preview_url=avatar.get("preview_image_url"),
+        avatar_type=heygen.AVATAR_TYPE_DIGITAL_TWIN,
+    )
+    consent = _request_digital_twin_consent(token, group_id)
+    return {
+        "avatar": {
+            "look_id": avatar["look_id"],
+            "type": heygen.AVATAR_TYPE_DIGITAL_TWIN,
+            "status": _CONSENT_PENDING,
+            "consent_url": consent.get("consent_url"),
+            "consent_expires_at": consent.get("expires_at"),
+        }
+    }
+
+
+@app.post("/me/avatar/digital-twin/consent")
+def me_avatar_digital_twin_consent(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Relance une demande de consentement (lien jamais ouvert ou expiré)."""
+    require_feature(token, "instagram")
+    if not heygen.enabled():
+        raise HTTPException(status_code=400, detail="HEYGEN_API_KEY manquant côté serveur.")
+    profile = db.get_editorial_profile(token) or {}
+    if (profile.get("heygen_avatar_type") or heygen.AVATAR_TYPE_PHOTO) != heygen.AVATAR_TYPE_DIGITAL_TWIN:
+        raise HTTPException(status_code=400, detail="Aucun avatar digital twin en cours de création.")
+    group_id = profile.get("heygen_avatar_group_id")
+    if not group_id:
+        raise HTTPException(status_code=400, detail="Avatar introuvable — recrée-le depuis une vidéo.")
+    consent = _request_digital_twin_consent(token, group_id)
+    db.update_heygen_avatar_status(token, _CONSENT_PENDING)
+    return {"consent_url": consent.get("consent_url"), "consent_expires_at": consent.get("expires_at")}
 
 
 @app.delete("/me/avatar")

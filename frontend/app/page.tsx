@@ -4342,12 +4342,21 @@ function buildPostLines(jobs: GenerationJob[]): PostLine[] {
 function IdeaReservoir({
   isAuthed,
   onGenerate,
+  onPublishDirect,
+  onScheduleDirect,
   desc = "Ajoute tes idées : l'idée du jour piochera dedans en priorité.",
   platform = "linkedin",
 }: {
   isAuthed: boolean;
   /** Fourni = un bouton « Générer un post » apparaît sur chaque idée. */
   onGenerate?: (seed: { text: string; mediaUrls: string[] }) => void;
+  /** Fourni = un bouton « Publier » apparaît sur chaque idée déjà rédigée en
+   *  entier (texte + éventuelle image) : ouvre directement la pop-up de
+   *  publication existante, sans repasser par la génération IA. */
+  onPublishDirect?: (seed: { id: string; text: string; mediaUrls: string[] }) => void;
+  /** Fourni = un bouton « Programmer » apparaît à côté de « Publier », même
+   *  principe mais vers la pop-up de programmation existante. */
+  onScheduleDirect?: (seed: { id: string; text: string; mediaUrls: string[] }) => void;
   desc?: string;
   /** ALE-291 : réservoir séparé par réseau — jamais partagé LinkedIn/Instagram. */
   platform?: "linkedin" | "instagram";
@@ -4725,6 +4734,30 @@ function IdeaReservoir({
                     onClick={() => onGenerate({ text: s.text, mediaUrls })}
                   >
                     <Sparkles size={12} /> Générer
+                  </button>
+                )}
+                {/* Joëlle donne souvent le post déjà rédigé en entier (texte + photo) :
+                    ce raccourci ouvre directement la pop-up de publication existante,
+                    sans repasser par la génération/réécriture IA. Pas de sens sur un
+                    lien d'annonce (isLink), qui n'est pas un post prêt à publier. */}
+                {!isEditing && !isLink && onPublishDirect && (
+                  <button
+                    className="secondary-button"
+                    style={{ fontSize: 12, minHeight: 28, padding: "0 10px", flexShrink: 0 }}
+                    title="Publier ce texte et cette image tels quels, sans passer par l'IA"
+                    onClick={() => onPublishDirect({ id: s.id, text: s.text, mediaUrls })}
+                  >
+                    <Send size={12} /> Publier
+                  </button>
+                )}
+                {!isEditing && !isLink && onScheduleDirect && (
+                  <button
+                    className="secondary-button"
+                    style={{ fontSize: 12, minHeight: 28, padding: "0 10px", flexShrink: 0 }}
+                    title="Programmer ce texte et cette image tels quels, sans passer par l'IA"
+                    onClick={() => onScheduleDirect({ id: s.id, text: s.text, mediaUrls })}
+                  >
+                    <CalendarDays size={12} /> Programmer
                   </button>
                 )}
                 {!isEditing && (
@@ -5727,6 +5760,39 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     void doPublish(key, edited[key] ?? "", true);
   }
 
+  /** Raccourci depuis le réservoir d'idées : Joëlle donne souvent le post déjà
+   *  rédigé en entier (texte + photo) — inutile de le repasser par l'IA. On
+   *  ouvre directement la pop-up de publication existante (`confirmPublish` /
+   *  `doPublish`) avec une clé synthétique `seed:{id}`, en pré-remplissant
+   *  `edited`/`images` sous cette clé comme s'il s'agissait d'une ligne générée. */
+  function publishSeedDirectly(seed: { id: string; text: string; mediaUrls: string[] }) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour publier sur LinkedIn."); return; }
+    if (!linkedin.status?.connected) {
+      setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    const key = `seed:${seed.id}`;
+    setEdited((prev) => ({ ...prev, [key]: seed.text }));
+    setImages((prev) => ({
+      ...prev,
+      [key]: seed.mediaUrls.map((url, i) => ({ id: `seed-${seed.id}-${i}`, url, filename: `photo-idee-${i + 1}.jpg`, source: "upload" as const })),
+    }));
+    setPublishError("");
+    setConfirmPublish(key);
+  }
+
+  /** Même raccourci que `publishSeedDirectly`, mais vers la pop-up de
+   *  programmation existante (`scheduleModal` / `SchedulePostModal`). */
+  function scheduleSeedDirectly(seed: { id: string; text: string; mediaUrls: string[] }) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour programmer une publication."); return; }
+    const key = `seed:${seed.id}`;
+    const seedImages: LinkedInImageAttachment[] = seed.mediaUrls.map((url, i) => ({ id: `seed-${seed.id}-${i}`, url, filename: `photo-idee-${i + 1}.jpg`, source: "upload" as const }));
+    setEdited((prev) => ({ ...prev, [key]: seed.text }));
+    setImages((prev) => ({ ...prev, [key]: seedImages }));
+    setPublishError("");
+    setScheduleModal({ key, text: seed.text, images: seedImages });
+  }
+
   async function doPublish(key: string, text: string, draft: boolean = false, cross?: CrossPostsDraft | null) {
     setPublishError("");
     setPublished(null);
@@ -6163,6 +6229,8 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
             }
             startWizard(text);
           }}
+          onPublishDirect={publishSeedDirectly}
+          onScheduleDirect={scheduleSeedDirectly}
         />
       </div>
 
@@ -9259,12 +9327,53 @@ function UnipileOutreachConnect({
 // ManychatConnect), derrière le flag `instagram` côté ProfileView.
 type AvatarStatusPayload = {
   available: boolean;
-  avatar: { look_id: string; status: string; preview_image_url?: string | null; created_at?: string | null } | null;
+  avatar: {
+    look_id: string;
+    // 0066 : "photo" (existant) | "digital_twin" (vidéo d'entraînement +
+    // consentement HeyGen). Absent sur d'anciennes réponses ⇒ traité comme photo.
+    type?: "photo" | "digital_twin";
+    status: string; // processing|completed|failed, + pending_consent|consent_expired pour digital_twin
+    preview_image_url?: string | null;
+    created_at?: string | null;
+    consent_url?: string | null;
+    consent_expires_at?: string | null;
+  } | null;
   voice: { voice_id: string; name?: string | null } | null;
 };
 type AvatarVoiceOption = { voice_id: string; name: string; gender?: string | null; preview_audio_url?: string | null };
 
 const AVATAR_PHOTO_MAX_BYTES = 8 * 1024 * 1024;
+// 0066 : vidéo d'entraînement du digital twin — même plafond que l'upload de
+// reel Instagram côté serveur (zernio.MAX_REEL_VIDEO_BYTES), le même pipeline
+// d'upload est réutilisé.
+const AVATAR_VIDEO_MAX_BYTES = MAX_REEL_VIDEO_BYTES;
+
+/** Upload la vidéo d'entraînement du digital twin et retourne son URL publique. */
+async function uploadAvatarTrainingVideo(file: File): Promise<string> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${DIRECT_API_URL}/me/avatar/digital-twin/video`, {
+    method: "POST",
+    headers: await authHeaders(),
+    body: form,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Upload de la vidéo impossible");
+  return data.url as string;
+}
+
+/** Formate une échéance ISO en « encore ~Xh » / « encore ~X min » (fallback : la date brute). */
+function formatConsentDeadline(iso?: string | null): string {
+  if (!iso) return "";
+  const deadline = new Date(iso).getTime();
+  if (Number.isNaN(deadline)) return "";
+  const diffMs = deadline - Date.now();
+  if (diffMs <= 0) return "expiré";
+  const hours = Math.floor(diffMs / 3_600_000);
+  if (hours >= 1) return `encore ~${hours} h`;
+  const minutes = Math.max(1, Math.round(diffMs / 60_000));
+  return `encore ~${minutes} min`;
+}
 
 function AvatarConnect({
   isAuthed,
@@ -9280,10 +9389,18 @@ function AvatarConnect({
   const [error, setError] = useState("");
   // Consentement explicite avant l'upload : HeyGen ne vérifie rien sur un photo
   // avatar — c'est ici que « c'est bien moi » est affirmé (et nos CGU le portent).
+  // Même case pour le digital twin (elle porte sur LA PERSONNE filmée) — le
+  // consentement HeyGen lui-même (webcam, page hébergée) est une étape à part,
+  // demandée après création, cf. `consent_url`.
   const [consent, setConsent] = useState(false);
   const [voices, setVoices] = useState<AvatarVoiceOption[] | null>(null);
   const [voiceSaving, setVoiceSaving] = useState(false);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
+  const videoInputRef = useRef<HTMLInputElement | null>(null);
+  // 0066 : choix du mode AVANT création (aucun avatar existant) — une fois
+  // l'avatar créé, son type vient du serveur (`status.avatar.type`).
+  const [createMode, setCreateMode] = useState<"photo" | "digital_twin">("photo");
+  const [consentBusy, setConsentBusy] = useState(false);
 
   async function reload() {
     try {
@@ -9298,9 +9415,13 @@ function AvatarConnect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
-  // L'entraînement dure ~1-2 min : on poll le statut tant qu'il est en cours
-  // (c'est ce même endpoint qui relit HeyGen côté serveur).
-  const training = status?.avatar?.status === "processing";
+  // L'entraînement dure ~1-2 min (photo) ou bien plus (digital twin, après
+  // consentement) : on poll le statut tant qu'il est en cours — ce même
+  // endpoint relit HeyGen ET vérifie le consentement côté serveur.
+  // « pending_consent » est inclus : c'est ce polling qui détecte que le
+  // client a confirmé sur la page HeyGen, sans qu'il ait à revenir cliquer.
+  const avatarStatus = status?.avatar?.status;
+  const training = avatarStatus === "processing" || avatarStatus === "pending_consent";
   useEffect(() => {
     if (!isAuthed || !training) return;
     let stop = false;
@@ -9356,6 +9477,55 @@ function AvatarConnect({
     }
   }
 
+  async function onVideoChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError("");
+    if (!/^video\/(mp4|quicktime)$/.test(file.type)) { setError("Choisis une vidéo MP4 ou MOV."); return; }
+    if (file.size > AVATAR_VIDEO_MAX_BYTES) {
+      setError(`Vidéo trop volumineuse (${Math.round(AVATAR_VIDEO_MAX_BYTES / (1024 * 1024))} Mo maximum).`);
+      return;
+    }
+    setBusy(true);
+    try {
+      const videoUrl = await uploadAvatarTrainingVideo(file);
+      const res = await fetch(`${DIRECT_API_URL}/me/avatar/digital-twin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ video_url: videoUrl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Création de l'avatar impossible");
+      setStatus((prev) => ({ available: true, voice: prev?.voice ?? null, avatar: data.avatar }));
+    } catch (err: any) {
+      setError(err.message || "Création de l'avatar impossible");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resendConsent() {
+    setConsentBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/avatar/digital-twin/consent`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Demande de consentement impossible");
+      setStatus((prev) => (prev && prev.avatar ? {
+        ...prev,
+        avatar: { ...prev.avatar, status: "pending_consent", consent_url: data.consent_url, consent_expires_at: data.consent_expires_at },
+      } : prev));
+    } catch (err: any) {
+      setError(err.message || "Demande de consentement impossible");
+    } finally {
+      setConsentBusy(false);
+    }
+  }
+
   async function removeAvatar() {
     if (!window.confirm("Supprimer ton avatar IA ? Tu pourras en recréer un avec une autre photo.")) return;
     setBusy(true);
@@ -9388,7 +9558,11 @@ function AvatarConnect({
   }
 
   const avatar = status?.avatar ?? null;
+  const avatarType = avatar?.type || "photo";
+  const isDigitalTwin = avatarType === "digital_twin";
   const ready = avatar?.status === "completed";
+  const pendingConsent = avatar?.status === "pending_consent";
+  const consentExpired = avatar?.status === "consent_expired";
   const selectedVoice = status?.voice ?? null;
   const selectedVoicePreview = (voices || []).find((v) => v.voice_id === selectedVoice?.voice_id)?.preview_audio_url;
 
@@ -9401,7 +9575,7 @@ function AvatarConnect({
           ? selectedVoice
             ? "Ton avatar dit tes scripts de reels en vidéo — prêt à générer"
             : "Avatar prêt — choisis sa voix pour pouvoir générer"
-          : "Crée ton clone vidéo à partir d'une photo : il dira tes scripts de reels"
+          : "Crée ton clone vidéo à partir d'une photo ou d'une vidéo : il dira tes scripts de reels"
       }
       open={open}
       onToggle={onToggle}
@@ -9410,6 +9584,10 @@ function AvatarConnect({
           <span className="status-pill no">Non configuré</span>
         ) : ready ? (
           <span className="status-pill ok"><CheckCircle2 size={14} /> Prêt</span>
+        ) : pendingConsent ? (
+          <span className="status-pill"><Link2 size={13} /> Consentement requis</span>
+        ) : consentExpired ? (
+          <span className="status-pill no">Lien expiré</span>
         ) : training ? (
           <span className="status-pill"><Loader2 size={13} className="spinning" /> En préparation</span>
         ) : (
@@ -9432,13 +9610,47 @@ function AvatarConnect({
                 <img src={avatar.preview_image_url} alt="Aperçu de ton avatar IA" style={{ width: 96, height: 96, objectFit: "cover", borderRadius: 10, border: "1px solid var(--border)" }} />
               ) : null}
               <div style={{ flex: 1, minWidth: 220 }}>
-                {training ? (
+                {pendingConsent ? (
+                  <div>
+                    <p className="role-picker-hint" style={{ margin: 0 }}>
+                      Il reste une étape chez HeyGen : confirme ton consentement (webcam, sur leur page) pour lancer
+                      l&apos;entraînement. Le lien est valable {formatConsentDeadline(avatar.consent_expires_at) || "24 h"}.
+                      On détecte automatiquement quand c&apos;est fait — pas besoin de revenir cliquer.
+                    </p>
+                    {avatar.consent_url && (
+                      <a
+                        href={avatar.consent_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="secondary-button"
+                        style={{ display: "inline-flex", marginTop: 10 }}
+                      >
+                        <Link2 size={14} /> Confirmer mon consentement sur HeyGen
+                      </a>
+                    )}
+                  </div>
+                ) : consentExpired ? (
+                  <div>
+                    <p className="error" style={{ margin: 0 }}>
+                      Le lien de consentement a expiré (24 h passées sans confirmation).
+                    </p>
+                    <button className="secondary-button" style={{ marginTop: 10 }} onClick={resendConsent} disabled={consentBusy}>
+                      {consentBusy ? <Loader2 size={14} className="spinning" /> : <RefreshCw size={14} />}
+                      Renvoyer un lien de consentement
+                    </button>
+                  </div>
+                ) : training ? (
                   <p className="role-picker-hint" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
-                    <Loader2 size={13} className="spinning" /> Ton avatar est en préparation chez HeyGen (une à deux minutes)…
+                    <Loader2 size={13} className="spinning" />
+                    {isDigitalTwin
+                      ? "Ton avatar est en entraînement chez HeyGen (peut prendre plusieurs minutes, parfois plus d'une heure sur un digital twin)…"
+                      : "Ton avatar est en préparation chez HeyGen (une à deux minutes)…"}
                   </p>
                 ) : avatar.status === "failed" ? (
                   <p className="error" style={{ margin: 0 }}>
-                    L&apos;entraînement a échoué — réessaie avec une photo de face, bien éclairée, sans lunettes de soleil.
+                    {isDigitalTwin
+                      ? "L'entraînement a échoué — réessaie avec une vidéo de 2 min minimum, plan continu sans coupe, bien éclairée."
+                      : "L'entraînement a échoué — réessaie avec une photo de face, bien éclairée, sans lunettes de soleil."}
                   </p>
                 ) : (
                   <p className="role-picker-hint" style={{ margin: 0 }}>
@@ -9446,11 +9658,18 @@ function AvatarConnect({
                   </p>
                 )}
                 <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-                  {avatar.status === "failed" && (
+                  {avatar.status === "failed" && !isDigitalTwin && (
                     <label className="secondary-button" style={{ display: "inline-flex", cursor: busy ? "wait" : "pointer" }}>
                       {busy ? <Loader2 size={14} className="spinning" /> : <Camera size={14} />}
                       Réessayer avec une autre photo
                       <input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={onPhotoChange} disabled={busy} style={{ display: "none" }} />
+                    </label>
+                  )}
+                  {avatar.status === "failed" && isDigitalTwin && (
+                    <label className="secondary-button" style={{ display: "inline-flex", cursor: busy ? "wait" : "pointer" }}>
+                      {busy ? <Loader2 size={14} className="spinning" /> : <Video size={14} />}
+                      Réessayer avec une autre vidéo
+                      <input ref={videoInputRef} type="file" accept="video/mp4,video/quicktime" onChange={onVideoChange} disabled={busy} style={{ display: "none" }} />
                     </label>
                   )}
                   <button className="ghost-button" onClick={removeAvatar} disabled={busy} style={{ fontSize: 12 }}>
@@ -9461,23 +9680,64 @@ function AvatarConnect({
             </div>
           ) : (
             <div>
-              <p className="role-picker-hint" style={{ marginTop: 0 }}>
-                Uploade une photo de toi (de face, bien éclairée, fond neutre) : HeyGen en fait un avatar
-                vidéo qui dira tes scripts de reels. Coût unique côté plateforme, aucune donnée LinkedIn utilisée.
-              </p>
+              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                <button
+                  type="button"
+                  className={createMode === "photo" ? "secondary-button" : "ghost-button"}
+                  style={{ fontSize: 12 }}
+                  onClick={() => setCreateMode("photo")}
+                >
+                  <Camera size={13} /> Depuis une photo
+                </button>
+                <button
+                  type="button"
+                  className={createMode === "digital_twin" ? "secondary-button" : "ghost-button"}
+                  style={{ fontSize: 12 }}
+                  onClick={() => setCreateMode("digital_twin")}
+                >
+                  <Video size={13} /> Depuis une vidéo (Digital Twin)
+                </button>
+              </div>
+              {createMode === "photo" ? (
+                <p className="role-picker-hint" style={{ marginTop: 0 }}>
+                  Uploade une photo de toi (de face, bien éclairée, fond neutre) : HeyGen en fait un avatar
+                  vidéo qui dira tes scripts de reels. Coût unique côté plateforme, aucune donnée LinkedIn utilisée.
+                </p>
+              ) : (
+                <p className="role-picker-hint" style={{ marginTop: 0 }}>
+                  Uploade une vidéo de toi (minimum 2 min, plan continu sans coupe, 720p ou plus, bien éclairée) :
+                  le rendu et le clonage de voix sont meilleurs qu&apos;avec une simple photo. HeyGen te demandera
+                  ensuite de confirmer ton consentement sur une page dédiée (webcam), lien valable 24 h.
+                </p>
+              )}
               <label style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 13, marginBottom: 10, cursor: "pointer" }}>
                 <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} style={{ marginTop: 2 }} />
-                <span>Je confirme que cette photo me représente (ou que j&apos;ai l&apos;autorisation de la personne photographiée) et j&apos;autorise la création d&apos;un avatar IA à partir d&apos;elle.</span>
+                <span>
+                  Je confirme que cette {createMode === "photo" ? "photo" : "vidéo"} me représente (ou que j&apos;ai
+                  l&apos;autorisation de la personne filmée/photographiée) et j&apos;autorise la création d&apos;un avatar IA à partir d&apos;elle.
+                </span>
               </label>
-              <label
-                className="secondary-button"
-                aria-disabled={!consent || busy}
-                style={{ display: "inline-flex", cursor: !consent || busy ? "not-allowed" : "pointer", opacity: !consent || busy ? 0.6 : 1 }}
-              >
-                {busy ? <Loader2 size={14} className="spinning" /> : <Camera size={14} />}
-                {busy ? "Création en cours…" : "Choisir ma photo (JPG/PNG/WebP)"}
-                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={onPhotoChange} disabled={!consent || busy} style={{ display: "none" }} />
-              </label>
+              {createMode === "photo" ? (
+                <label
+                  className="secondary-button"
+                  aria-disabled={!consent || busy}
+                  style={{ display: "inline-flex", cursor: !consent || busy ? "not-allowed" : "pointer", opacity: !consent || busy ? 0.6 : 1 }}
+                >
+                  {busy ? <Loader2 size={14} className="spinning" /> : <Camera size={14} />}
+                  {busy ? "Création en cours…" : "Choisir ma photo (JPG/PNG/WebP)"}
+                  <input type="file" accept="image/jpeg,image/png,image/webp" onChange={onPhotoChange} disabled={!consent || busy} style={{ display: "none" }} />
+                </label>
+              ) : (
+                <label
+                  className="secondary-button"
+                  aria-disabled={!consent || busy}
+                  style={{ display: "inline-flex", cursor: !consent || busy ? "not-allowed" : "pointer", opacity: !consent || busy ? 0.6 : 1 }}
+                >
+                  {busy ? <Loader2 size={14} className="spinning" /> : <Video size={14} />}
+                  {busy ? "Envoi de la vidéo en cours…" : "Choisir ma vidéo (MP4/MOV)"}
+                  <input type="file" accept="video/mp4,video/quicktime" onChange={onVideoChange} disabled={!consent || busy} style={{ display: "none" }} />
+                </label>
+              )}
             </div>
           )}
 
