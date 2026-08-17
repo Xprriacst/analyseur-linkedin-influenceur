@@ -4342,12 +4342,21 @@ function buildPostLines(jobs: GenerationJob[]): PostLine[] {
 function IdeaReservoir({
   isAuthed,
   onGenerate,
+  onPublishDirect,
+  onScheduleDirect,
   desc = "Ajoute tes idées : l'idée du jour piochera dedans en priorité.",
   platform = "linkedin",
 }: {
   isAuthed: boolean;
   /** Fourni = un bouton « Générer un post » apparaît sur chaque idée. */
   onGenerate?: (seed: { text: string; mediaUrls: string[] }) => void;
+  /** Fourni = un bouton « Publier » apparaît sur chaque idée déjà rédigée en
+   *  entier (texte + éventuelle image) : ouvre directement la pop-up de
+   *  publication existante, sans repasser par la génération IA. */
+  onPublishDirect?: (seed: { id: string; text: string; mediaUrls: string[] }) => void;
+  /** Fourni = un bouton « Programmer » apparaît à côté de « Publier », même
+   *  principe mais vers la pop-up de programmation existante. */
+  onScheduleDirect?: (seed: { id: string; text: string; mediaUrls: string[] }) => void;
   desc?: string;
   /** ALE-291 : réservoir séparé par réseau — jamais partagé LinkedIn/Instagram. */
   platform?: "linkedin" | "instagram";
@@ -4725,6 +4734,30 @@ function IdeaReservoir({
                     onClick={() => onGenerate({ text: s.text, mediaUrls })}
                   >
                     <Sparkles size={12} /> Générer
+                  </button>
+                )}
+                {/* Joëlle donne souvent le post déjà rédigé en entier (texte + photo) :
+                    ce raccourci ouvre directement la pop-up de publication existante,
+                    sans repasser par la génération/réécriture IA. Pas de sens sur un
+                    lien d'annonce (isLink), qui n'est pas un post prêt à publier. */}
+                {!isEditing && !isLink && onPublishDirect && (
+                  <button
+                    className="secondary-button"
+                    style={{ fontSize: 12, minHeight: 28, padding: "0 10px", flexShrink: 0 }}
+                    title="Publier ce texte et cette image tels quels, sans passer par l'IA"
+                    onClick={() => onPublishDirect({ id: s.id, text: s.text, mediaUrls })}
+                  >
+                    <Send size={12} /> Publier
+                  </button>
+                )}
+                {!isEditing && !isLink && onScheduleDirect && (
+                  <button
+                    className="secondary-button"
+                    style={{ fontSize: 12, minHeight: 28, padding: "0 10px", flexShrink: 0 }}
+                    title="Programmer ce texte et cette image tels quels, sans passer par l'IA"
+                    onClick={() => onScheduleDirect({ id: s.id, text: s.text, mediaUrls })}
+                  >
+                    <CalendarDays size={12} /> Programmer
                   </button>
                 )}
                 {!isEditing && (
@@ -5727,6 +5760,39 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
     void doPublish(key, edited[key] ?? "", true);
   }
 
+  /** Raccourci depuis le réservoir d'idées : Joëlle donne souvent le post déjà
+   *  rédigé en entier (texte + photo) — inutile de le repasser par l'IA. On
+   *  ouvre directement la pop-up de publication existante (`confirmPublish` /
+   *  `doPublish`) avec une clé synthétique `seed:{id}`, en pré-remplissant
+   *  `edited`/`images` sous cette clé comme s'il s'agissait d'une ligne générée. */
+  function publishSeedDirectly(seed: { id: string; text: string; mediaUrls: string[] }) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour publier sur LinkedIn."); return; }
+    if (!linkedin.status?.connected) {
+      setPublishError("Connecte d'abord ton compte LinkedIn dans l'onglet Profil.");
+      return;
+    }
+    const key = `seed:${seed.id}`;
+    setEdited((prev) => ({ ...prev, [key]: seed.text }));
+    setImages((prev) => ({
+      ...prev,
+      [key]: seed.mediaUrls.map((url, i) => ({ id: `seed-${seed.id}-${i}`, url, filename: `photo-idee-${i + 1}.jpg`, source: "upload" as const })),
+    }));
+    setPublishError("");
+    setConfirmPublish(key);
+  }
+
+  /** Même raccourci que `publishSeedDirectly`, mais vers la pop-up de
+   *  programmation existante (`scheduleModal` / `SchedulePostModal`). */
+  function scheduleSeedDirectly(seed: { id: string; text: string; mediaUrls: string[] }) {
+    if (!isAuthed) { requireAuth("Connecte-toi pour programmer une publication."); return; }
+    const key = `seed:${seed.id}`;
+    const seedImages: LinkedInImageAttachment[] = seed.mediaUrls.map((url, i) => ({ id: `seed-${seed.id}-${i}`, url, filename: `photo-idee-${i + 1}.jpg`, source: "upload" as const }));
+    setEdited((prev) => ({ ...prev, [key]: seed.text }));
+    setImages((prev) => ({ ...prev, [key]: seedImages }));
+    setPublishError("");
+    setScheduleModal({ key, text: seed.text, images: seedImages });
+  }
+
   async function doPublish(key: string, text: string, draft: boolean = false, cross?: CrossPostsDraft | null) {
     setPublishError("");
     setPublished(null);
@@ -6163,6 +6229,8 @@ function Generator({ isAuthed, requireAuth, seed, generationJobs, onGenerationJo
             }
             startWizard(text);
           }}
+          onPublishDirect={publishSeedDirectly}
+          onScheduleDirect={scheduleSeedDirectly}
         />
       </div>
 
