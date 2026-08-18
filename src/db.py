@@ -110,6 +110,41 @@ def log_onboarding_preview_event(
         pass
 
 
+def log_onboarding_page_view_event(ip_hash: str | None) -> None:
+    """Journalise l'OUVERTURE de la page /onboarding (et son alias /founders).
+
+    Réutilise `onboarding_preview_events` (migration 0055) avec
+    `input_kind='page_view'` comme discriminant, plutôt qu'une nouvelle table :
+    le schéma existant (colonnes nullable, RLS sans policy = service-role only)
+    couvre déjà ce besoin — seul `linkedin_url`/`website_url`/`used_apify`/
+    `preview_ok` n'ont pas de sens pour une simple vue de page et restent à
+    leur valeur neutre (`None`/`False`).
+
+    Compter `input_kind='page_view'` vs les lignes de `audit_leads` au statut
+    `founders_optin` donne le taux de conversion page vue → e-mail laissé :
+        select
+          (select count(*) from onboarding_preview_events where input_kind = 'page_view') as vues,
+          (select count(distinct email) from audit_leads where status = 'founders_optin') as emails;
+
+    Best-effort : le visiteur n'a pas de session, on écrit donc en service-role.
+    Un échec de log ne doit JAMAIS bloquer ni ralentir visiblement le visiteur
+    → toute exception est avalée (même patron que `log_onboarding_preview_event`).
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return
+    try:
+        admin_client().table("onboarding_preview_events").insert({
+            "input_kind": "page_view",
+            "linkedin_url": None,
+            "website_url": None,
+            "used_apify": False,
+            "preview_ok": False,
+            "ip_hash": ip_hash,
+        }).execute()
+    except Exception:
+        pass
+
+
 def insert_audit_lead(lead: dict[str, Any]) -> dict[str, Any] | None:
     """Enregistre un lead du tunnel « audit complet » (landing, sans compte).
 

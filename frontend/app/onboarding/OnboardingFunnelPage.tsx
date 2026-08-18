@@ -103,6 +103,16 @@ export default function FoundersPage() {
     })();
   }, [router]);
 
+  // Ouverture de page (compteur pages vues vs e-mails laissés). Une seule fois
+  // au montage — /onboarding et /founders rendent tous deux ce composant, donc
+  // une seule vue est comptée quelle que soit l'URI empruntée. Best-effort :
+  // aucun effet visible si l'appel échoue (offline, backend froid…).
+  useEffect(() => {
+    fetch(`${DIRECT_API_URL}/onboarding/page-view`, { method: "POST" }).catch(() => {
+      /* ignore — un compteur qui rate une vue ne doit jamais se voir */
+    });
+  }, []);
+
   // Durée réelle de l'essai, lue côté serveur : le bouton final l'annonce, il ne
   // doit pas promettre une durée que Stripe n'accorde pas.
   useEffect(() => {
