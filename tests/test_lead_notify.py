@@ -213,3 +213,32 @@ class RecipientsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuthSdkToleranceTest(unittest.TestCase):
+    """La lecture des comptes ne doit pas dépendre d'une signature de SDK.
+
+    Ce chemin n'est pas jouable en local (client Supabase non installable ici) :
+    son premier vrai passage sera en ligne. Un TypeError non rattrapé y couperait
+    TOUTE la détection des nouveaux comptes, sans autre signe qu'une ligne de log.
+    """
+
+    def test_repli_positionnel_si_les_mots_cles_sont_refuses(self):
+        from src import db as db_module
+
+        calls = []
+
+        class _Admin:
+            def list_users(self, *args, **kwargs):
+                calls.append((args, kwargs))
+                if kwargs:
+                    raise TypeError("unexpected keyword argument 'per_page'")
+                return []
+
+        class _Client:
+            auth = type("A", (), {"admin": _Admin()})()
+
+        with patch.object(db_module, "admin_client", lambda: _Client()):
+            self.assertEqual(db_module._list_auth_users_page(1), [])
+        self.assertEqual(len(calls), 2)          # mot-clé refusé, puis positionnel
+        self.assertEqual(calls[1][0], (1, 100))

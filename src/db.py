@@ -6907,6 +6907,23 @@ def admin_release_lead_notification(kind: str, ref: str) -> None:
         print(f"[lead-notify] libération impossible ({kind}/{ref}) : {exc}", flush=True)
 
 
+def _list_auth_users_page(page: int) -> Any:
+    """Une page de comptes Auth, tolérante à la signature du SDK.
+
+    ⚠️ Ce chemin ne peut PAS être joué en local (le client Supabase n'est pas
+    installable dans l'env de dev de ce repo) : son premier vrai passage sera en
+    ligne. `list_users(page=, per_page=)` est la forme documentée de gotrue-py,
+    mais un `TypeError` sur un mot-clé inconnu ferait échouer TOUTE la détection
+    des nouveaux comptes — en silence, puisque l'appelant se contente de logguer.
+    Le repli positionnel coûte trois lignes et supprime ce pari.
+    """
+    admin = admin_client().auth.admin
+    try:
+        return admin.list_users(page=page, per_page=100)
+    except TypeError:
+        return admin.list_users(page, 100)
+
+
 def admin_list_recent_signups(hours: int = 24, max_pages: int = 5) -> list[dict[str, Any]]:
     """Comptes créés dans les `hours` dernières heures (service-role, via Auth).
 
@@ -6927,7 +6944,7 @@ def admin_list_recent_signups(hours: int = 24, max_pages: int = 5) -> list[dict[
     seen_any = False
     for page in range(1, max_pages + 1):
         try:
-            resp = admin_client().auth.admin.list_users(page=page, per_page=100)
+            resp = _list_auth_users_page(page)
         except Exception as exc:  # noqa: BLE001
             print(f"[lead-notify] lecture des comptes échouée (page {page}) : {exc}", flush=True)
             break
