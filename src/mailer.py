@@ -21,6 +21,18 @@ from typing import Any
 BASE_URL = "https://api.resend.com"
 TIMEOUT_S = 15
 
+# ⚠️ NON COSMÉTIQUE — sans lui, AUCUN e-mail ne part.
+# `api.resend.com` est derrière Cloudflare, dont la protection anti-bot refuse
+# le User-Agent par défaut d'urllib (`Python-urllib/3.x`) : la réponse est un
+# **403 Cloudflare « error code: 1010 »**, pas une erreur de l'API Resend — donc
+# ni « clé invalide » ni « domaine non vérifié » dans le message, rien qui mette
+# sur la piste. Vérifié en direct le 2026-08-19 : requête identique, UA urllib
+# → 403, UA applicatif → 200.
+# Les autres clients urllib du projet (zernio, unipile, stripe_billing) ne sont
+# pas concernés aujourd'hui — leurs API n'appliquent pas cette règle. Si l'un
+# d'eux se met à répondre 403 sans explication, penser d'abord à ceci.
+USER_AGENT = "Cibl/1.0 (+https://cibl.clareo-solutions.fr)"
+
 
 class MailError(RuntimeError):
     """Resend a répondu une erreur, ou la configuration est absente."""
@@ -79,6 +91,7 @@ def send_email(
         headers={
             "Authorization": f"Bearer {_api_key()}",
             "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )

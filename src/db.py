@@ -110,6 +110,41 @@ def log_onboarding_preview_event(
         pass
 
 
+def log_onboarding_page_view_event(ip_hash: str | None) -> None:
+    """Journalise l'OUVERTURE de la page /onboarding (et son alias /founders).
+
+    Réutilise `onboarding_preview_events` (migration 0055) avec
+    `input_kind='page_view'` comme discriminant, plutôt qu'une nouvelle table :
+    le schéma existant (colonnes nullable, RLS sans policy = service-role only)
+    couvre déjà ce besoin — seul `linkedin_url`/`website_url`/`used_apify`/
+    `preview_ok` n'ont pas de sens pour une simple vue de page et restent à
+    leur valeur neutre (`None`/`False`).
+
+    Compter `input_kind='page_view'` vs les lignes de `audit_leads` au statut
+    `founders_optin` donne le taux de conversion page vue → e-mail laissé :
+        select
+          (select count(*) from onboarding_preview_events where input_kind = 'page_view') as vues,
+          (select count(distinct email) from audit_leads where status = 'founders_optin') as emails;
+
+    Best-effort : le visiteur n'a pas de session, on écrit donc en service-role.
+    Un échec de log ne doit JAMAIS bloquer ni ralentir visiblement le visiteur
+    → toute exception est avalée (même patron que `log_onboarding_preview_event`).
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return
+    try:
+        admin_client().table("onboarding_preview_events").insert({
+            "input_kind": "page_view",
+            "linkedin_url": None,
+            "website_url": None,
+            "used_apify": False,
+            "preview_ok": False,
+            "ip_hash": ip_hash,
+        }).execute()
+    except Exception:
+        pass
+
+
 def insert_audit_lead(lead: dict[str, Any]) -> dict[str, Any] | None:
     """Enregistre un lead du tunnel « audit complet » (landing, sans compte).
 
@@ -6827,3 +6862,139 @@ def admin_unfreeze_outreach_account(user_id: str) -> None:
     admin_client().table("linkedin_outreach_accounts").update(
         {"frozen": False, "freeze_reason": None, "frozen_at": None, "updated_at": "now()"}
     ).eq("user_id", user_id).execute()
+
+
+# --- Notifications « nouveau lead » (src/lead_notify.py) ---------------------
+
+
+def admin_claim_lead_notification(kind: str, ref: str) -> bool:
+    """Réserve l'envoi d'une notification. True = c'est à toi de l'envoyer.
+
+    Le verrou est l'index unique `(kind, ref)` en base, pas un test préalable :
+    entre un `select` et un `insert`, deux passages du cron qui se chevauchent
+    enverraient tous les deux. Ici le second insert échoue, et le doublon n'est
+    jamais envoyé.
+
+    Renvoie **False** sur n'importe quelle erreur (doublon comme panne de base).
+    Ne rien envoyer est le bon défaut : la ligne n'a alors pas été écrite, donc
+    le passage suivant retentera. L'inverse — envoyer quand on n'a pas pu tracer —
+    inonderait la boîte de réception toutes les 10 minutes.
+    """
+    if not admin_enabled() or not kind or not ref:
+        return False
+    try:
+        admin_client().table("lead_notifications").insert(
+            {"kind": kind, "ref": str(ref)[:400]}
+        ).execute()
+        return True
+    except Exception:  # noqa: BLE001 — doublon attendu, panne tolérée
+        return False
+
+
+def admin_release_lead_notification(kind: str, ref: str) -> None:
+    """Rend une réservation dont l'envoi a échoué, pour que le passage suivant retente.
+
+    Sans ça, un hoquet de Resend perdrait le lead définitivement : la réservation
+    resterait posée et le cron considérerait le travail fait.
+    """
+    if not admin_enabled() or not kind or not ref:
+        return
+    try:
+        admin_client().table("lead_notifications").delete().eq("kind", kind).eq(
+            "ref", str(ref)[:400]
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[lead-notify] libération impossible ({kind}/{ref}) : {exc}", flush=True)
+
+
+def _list_auth_users_page(page: int) -> Any:
+    """Une page de comptes Auth, tolérante à la signature du SDK.
+
+    ⚠️ Ce chemin ne peut PAS être joué en local (le client Supabase n'est pas
+    installable dans l'env de dev de ce repo) : son premier vrai passage sera en
+    ligne. `list_users(page=, per_page=)` est la forme documentée de gotrue-py,
+    mais un `TypeError` sur un mot-clé inconnu ferait échouer TOUTE la détection
+    des nouveaux comptes — en silence, puisque l'appelant se contente de logguer.
+    Le repli positionnel coûte trois lignes et supprime ce pari.
+    """
+    admin = admin_client().auth.admin
+    try:
+        return admin.list_users(page=page, per_page=100)
+    except TypeError:
+        return admin.list_users(page, 100)
+
+
+def admin_list_recent_signups(hours: int = 24, max_pages: int = 5) -> list[dict[str, Any]]:
+    """Comptes créés dans les `hours` dernières heures (service-role, via Auth).
+
+    Passe par l'API Admin d'Auth et non par une requête SQL : le schéma `auth`
+    n'est pas exposé à PostgREST, `auth.users` est donc illisible par le client
+    Supabase. On pagine jusqu'à `max_pages` sans supposer d'ordre de tri — GoTrue
+    trie par date décroissante, mais bâtir la détection des nouveaux leads sur
+    une convention non contractuelle se paierait par des leads silencieusement
+    ratés le jour où elle change.
+
+    ⚠️ Plafond assumé (5 × 100 = 500 comptes). Il est ANNONCÉ dans les logs quand
+    il est atteint : une troncature muette se lirait « aucun nouveau lead ».
+    """
+    if not admin_enabled():
+        return []
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=max(1, hours))
+    found: list[dict[str, Any]] = []
+    seen_any = False
+    for page in range(1, max_pages + 1):
+        try:
+            resp = _list_auth_users_page(page)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[lead-notify] lecture des comptes échouée (page {page}) : {exc}", flush=True)
+            break
+        users = getattr(resp, "users", resp) or []
+        if not users:
+            break
+        seen_any = True
+        for user in users:
+            created = _parse_ts(getattr(user, "created_at", None))
+            if created is None or created < cutoff:
+                continue
+            found.append({
+                "user_id": str(getattr(user, "id", "") or ""),
+                "email": str(getattr(user, "email", "") or ""),
+                "created_at": created,
+            })
+        if len(users) < 100:
+            break
+    else:
+        if seen_any:
+            print(
+                f"[lead-notify] plafond de {max_pages} pages atteint — des comptes "
+                "peuvent ne pas avoir été examinés.",
+                flush=True,
+            )
+    found.sort(key=lambda row: row["created_at"])
+    return [row for row in found if row["user_id"]]
+
+
+def _parse_ts(value: Any) -> "datetime.datetime | None":
+    """Date d'un compte Auth : objet datetime ou chaîne ISO selon la version du SDK."""
+    if isinstance(value, datetime.datetime):
+        return value if value.tzinfo else value.replace(tzinfo=datetime.timezone.utc)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.timezone.utc)
+
+
+def admin_user_email(user_id: str) -> str:
+    """E-mail d'un compte, lu en service-role. Chaîne vide si illisible."""
+    if not admin_enabled() or not user_id:
+        return ""
+    try:
+        resp = admin_client().auth.admin.get_user_by_id(user_id)
+    except Exception:  # noqa: BLE001
+        return ""
+    user = getattr(resp, "user", None)
+    return str(getattr(user, "email", "") or "") if user else ""
