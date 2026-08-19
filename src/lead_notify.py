@@ -173,11 +173,17 @@ def _send(kind: str, ref: str, subject: str, html: str, reply_to: str | None = N
         return False
     if not db.admin_claim_lead_notification(kind, ref):
         return False  # déjà envoyé, ou base indisponible → le passage suivant retentera
-    if mailer.send_email_safe(targets, subject, html, reply_to=reply_to):
+    # `send_email` (et pas `send_email_safe`) À DESSEIN : la variante silencieuse
+    # renvoie un simple False et **perd la raison** du refus. Pour une alerte
+    # interne, « ça n'est pas parti » sans le pourquoi est inexploitable — un
+    # domaine non vérifié et une panne réseau se diagnostiquent à l'opposé.
+    try:
+        mailer.send_email(targets, subject, html, reply_to=reply_to)
         return True
-    db.admin_release_lead_notification(kind, ref)
-    print(f"[lead-notify] envoi échoué ({kind}/{ref}) — sera retenté.", file=sys.stderr)
-    return False
+    except Exception as exc:  # noqa: BLE001 — best-effort, on ne remonte jamais
+        db.admin_release_lead_notification(kind, ref)
+        print(f"[lead-notify] envoi échoué ({kind}/{ref}) : {exc} — sera retenté.", file=sys.stderr)
+        return False
 
 
 def notify_optin(email: str, source: str = "onboarding") -> bool:

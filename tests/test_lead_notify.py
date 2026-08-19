@@ -102,9 +102,11 @@ class _Mailer:
     def internal_recipients(self):
         return ["alex@example.com"]
 
-    def send_email_safe(self, to, subject, html, reply_to=None):
+    def send_email(self, to, subject, html, reply_to=None):
         self.sent.append((to, subject))
-        return self.ok
+        if not self.ok:
+            raise RuntimeError("Resend 403 : domaine non verifie")
+        return {"id": "fake"}
 
 
 class SendTest(unittest.TestCase):
@@ -131,6 +133,21 @@ class SendTest(unittest.TestCase):
              patch.object(lead_notify.db, "admin_release_lead_notification") as release:
             self.assertFalse(lead_notify.notify_optin("a@b.com"))
         release.assert_called_once()
+
+    def test_la_raison_du_refus_est_journalisee(self):
+        """Une alerte qui ne part pas sans dire pourquoi est indiagnosticable :
+        un domaine non verifie et une panne reseau se corrigent a l'oppose."""
+        import contextlib
+        import io as _io
+
+        mail = _Mailer(ok=False)
+        err = _io.StringIO()
+        with patch.object(lead_notify, "mailer", mail), \
+             patch.object(lead_notify.db, "admin_claim_lead_notification", return_value=True), \
+             patch.object(lead_notify.db, "admin_release_lead_notification"), \
+             contextlib.redirect_stderr(err):
+            lead_notify.notify_optin("a@b.com")
+        self.assertIn("domaine non verifie", err.getvalue())
 
     def test_resend_non_configure_ne_reserve_meme_pas(self):
         mail = _Mailer(on=False)
