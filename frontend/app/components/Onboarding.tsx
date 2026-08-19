@@ -221,21 +221,37 @@ const ONB_SAAS_OBSTACLES: string[] = [
 const ONB_SAAS_SCAN_STEPS_SITE = [
   "Lecture de ton site…",
   "On cerne ton offre et ta promesse…",
-  "Identification de ton ICP…",
+  "Identification de ta cible…",
   "On peaufine tout ça…",
 ];
 const ONB_SAAS_SCAN_STEPS_LINKEDIN = [
   "Lecture de ton profil…",
   "Analyse de ton audience…",
-  "Identification de ton ICP…",
+  "Identification de ta cible…",
   "On peaufine tout ça…",
 ];
 const ONB_SAAS_SCAN_STEPS_DESCRIPTION = [
   "Lecture de ta description…",
   "On cerne ton offre et ta promesse…",
-  "Identification de ton ICP…",
+  "Identification de ta cible…",
   "On peaufine tout ça…",
 ];
+
+/** Objectifs « vitrine / notoriété » — l'écran gains met l'audience en avant, pas le CA. */
+const ONB_VISIBILITY_OBJECTIVES = new Set([
+  "Construire ma marque de fondateur",
+  "Fédérer une communauté d'utilisateurs",
+  "Développer ma notoriété",
+  "Fédérer une communauté",
+]);
+
+/** Acquisition par défaut ; vitrine seulement si TOUS les objectifs choisis sont « notoriété ». */
+export function onbGainsFocus(objectives: string[]): "acquisition" | "visibility" {
+  const picked = objectives.map((o) => o.trim()).filter(Boolean);
+  if (picked.length === 0) return "acquisition";
+  const allVisibility = picked.every((o) => ONB_VISIBILITY_OBJECTIVES.has(o));
+  return allVisibility ? "visibility" : "acquisition";
+}
 
 /** Ce que le visiteur a réellement collé dans le premier champ. */
 type OnbInputKind = "linkedin" | "linkedin_company" | "website" | "description";
@@ -310,13 +326,13 @@ const ONB_VARIANTS: Record<"default" | "saas", OnbVariant> = {
     // ni l'un ni l'autre.
     introSkipLabel: "Continuer sans lien",
     introError: "Colle un lien (site ou LinkedIn) ou une courte description.",
-    audienceLabel: "Ton ICP — à qui tu vends ?",
+    audienceLabel: "Ta cible — à qui tu vends ?",
     offerLabel: "Ce que tu vends",
-    objectiveLabel: "Ce que tu attends de LinkedIn",
+    objectiveLabel: "Ton objectif",
     industryLabel: "Ton secteur",
     gainsTitle: "Ce que ça peut te rapporter",
     gainsIntro:
-      "En publiant régulièrement et en prospectant ton ICP depuis l'app, voici ce que donne un trimestre.",
+      "En publiant régulièrement et en prospectant ta cible depuis l'app, voici ce que donne un trimestre.",
     // Repli par défaut (variant.scanSteps n'est plus utilisé tel quel côté SaaS :
     // le composant calcule `scanSteps` depuis `inputKind` via `onbSaasScanSteps`,
     // cf. plus bas — ce champ ne sert que de valeur par défaut avant saisie).
@@ -551,6 +567,8 @@ export default function OnboardingScreen({
    * fermer l'onglet. On montre alors le GAIN, jamais un état actuel inventé.
    */
   const hasAudienceData = (projection?.followers_now || 0) > 0;
+  /** Vitrine / notoriété vs acquisition — choisi sur page2, pilote l'écran gains. */
+  const gainsFocus = onbGainsFocus(sel.objective.picks);
 
   const up = (patch: Partial<ReturnType<typeof onbInitSel>>) =>
     setSel((s) => ({ ...s, ...patch }));
@@ -1159,7 +1177,9 @@ export default function OnboardingScreen({
         {step === "page2" && (
           <div className="onb-screen" key="page2">
             <h2 className="onb-greeting">Presque fini</h2>
-            <p className="onb-lead">Deux derniers points et c&apos;est parti — ensuite tu crées ton compte.</p>
+            <p className="onb-lead">
+              Choisis ton objectif — l&apos;écran suivant s&apos;adapte (pipeline ou visibilité).
+            </p>
 
             <div className="onb-block">
               <label className="onb-block-label">{variant.objectiveLabel}</label>
@@ -1190,9 +1210,13 @@ export default function OnboardingScreen({
 
         {step === "gains" && (
           <div className="onb-screen onb-analysis" key="gains">
-            <h2 className="onb-analysis-title">{variant.gainsTitle}</h2>
+            <h2 className="onb-analysis-title">
+              {gainsFocus === "visibility" ? "Ta visibilité dans 90 jours" : variant.gainsTitle}
+            </h2>
             <p className="onb-analysis-summary" style={{ opacity: 0.8 }}>
-              {variant.gainsIntro}
+              {gainsFocus === "visibility"
+                ? "En publiant régulièrement (~3 fois par semaine), voici comment ton audience peut grandir."
+                : variant.gainsIntro}
             </p>
 
             {!projection ? (
@@ -1201,7 +1225,7 @@ export default function OnboardingScreen({
               </div>
             ) : (
               <>
-                <div className="onb-gain-grid">
+                <div className={"onb-gain-grid" + (gainsFocus === "visibility" ? " onb-gain-grid-focus" : "")}>
                   <div className="onb-gain-card">
                     <div className="onb-gain-label">
                       {hasAudienceData ? "Abonnés dans 90 jours" : "Abonnés gagnés en 90 jours"}
@@ -1218,26 +1242,34 @@ export default function OnboardingScreen({
                         : "en publiant ~3 fois par semaine"}
                     </div>
                   </div>
-                  <div className="onb-gain-card">
-                    <div className="onb-gain-label">Nouvelles relations ciblées</div>
-                    <div className="onb-gain-value">{fmtRange(projection.relations_per_month, fmtInt)}</div>
-                    <div className="onb-gain-hint">par mois</div>
-                  </div>
-                  <div className="onb-gain-card">
-                    <div className="onb-gain-label">Conversations qualifiées</div>
-                    <div className="onb-gain-value">{fmtRange(projection.conversations_per_month, fmtInt)}</div>
-                    <div className="onb-gain-hint">par mois</div>
-                  </div>
-                  <div className="onb-gain-card">
-                    <div className="onb-gain-label">Nouveaux clients</div>
-                    <div className="onb-gain-value">{fmtRange(projection.clients_per_month, fmtInt)}</div>
-                    <div className="onb-gain-hint">par mois</div>
-                  </div>
+                  {gainsFocus === "acquisition" && (
+                    <>
+                      <div className="onb-gain-card">
+                        <div className="onb-gain-label">Nouvelles relations ciblées</div>
+                        <div className="onb-gain-value">{fmtRange(projection.relations_per_month, fmtInt)}</div>
+                        <div className="onb-gain-hint">par mois</div>
+                      </div>
+                      <div className="onb-gain-card">
+                        <div className="onb-gain-label">Conversations qualifiées</div>
+                        <div className="onb-gain-value">{fmtRange(projection.conversations_per_month, fmtInt)}</div>
+                        <div className="onb-gain-hint">par mois</div>
+                      </div>
+                      <div className="onb-gain-card">
+                        <div className="onb-gain-label">Nouveaux clients</div>
+                        <div className="onb-gain-value">{fmtRange(projection.clients_per_month, fmtInt)}</div>
+                        <div className="onb-gain-hint">par mois</div>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 <div className="onb-analysis-card">
                   <div className="onb-analysis-label">
-                    {hasAudienceData ? "Ton audience sur 90 jours" : "Abonnés gagnés sur 90 jours"}
+                    {gainsFocus === "visibility"
+                      ? "Ton audience sur 90 jours"
+                      : hasAudienceData
+                        ? "Ton audience sur 90 jours"
+                        : "Abonnés gagnés sur 90 jours"}
                   </div>
                   <GrowthCurve
                     start={hasAudienceData ? projection.followers_now : 0}
@@ -1250,27 +1282,31 @@ export default function OnboardingScreen({
                   />
                 </div>
 
-                <div className="onb-analysis-block">
-                  <div className="onb-analysis-label">{dealLabel}</div>
-                  <div className="onb-analysis-tags">
-                    {bands.map((b) => (
-                      <button
-                        key={b.key}
-                        type="button"
-                        className={"onb-band" + (b.key === bandKey ? " selected" : "")}
-                        aria-pressed={b.key === bandKey}
-                        onClick={() => setBandKey(b.key)}
-                      >
-                        {b.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                {gainsFocus === "acquisition" && (
+                  <>
+                    <div className="onb-analysis-block">
+                      <div className="onb-analysis-label">{dealLabel}</div>
+                      <div className="onb-analysis-tags">
+                        {bands.map((b) => (
+                          <button
+                            key={b.key}
+                            type="button"
+                            className={"onb-band" + (b.key === bandKey ? " selected" : "")}
+                            aria-pressed={b.key === bandKey}
+                            onClick={() => setBandKey(b.key)}
+                          >
+                            {b.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
-                <div className="onb-gain-highlight">
-                  <div className="onb-gain-label">{revenueLabel}</div>
-                  <div className="onb-gain-money">{fmtRange(projection.revenue_per_month, fmtMoney)}</div>
-                </div>
+                    <div className="onb-gain-highlight">
+                      <div className="onb-gain-label">{revenueLabel}</div>
+                      <div className="onb-gain-money">{fmtRange(projection.revenue_per_month, fmtMoney)}</div>
+                    </div>
+                  </>
+                )}
 
                 <div className="onb-note">
                   {(band?.assumptions || []).map((line) => (
@@ -1293,12 +1329,18 @@ export default function OnboardingScreen({
         {step === "simulation" && projection && (
           <div className="onb-screen onb-analysis" key="simulation">
             <h2 className="onb-analysis-title">
-              {hasScrapedProfile ? "Ton profil dans 90 jours" : "Ton LinkedIn dans 90 jours"}
+              {gainsFocus === "visibility"
+                ? "Ta vitrine LinkedIn dans 90 jours"
+                : hasScrapedProfile
+                  ? "Ton profil dans 90 jours"
+                  : "Ton LinkedIn dans 90 jours"}
             </h2>
             <p className="onb-analysis-summary" style={{ opacity: 0.8 }}>
-              {hasScrapedProfile
-                ? "À gauche ton compte aujourd'hui, à droite la même page une fois la machine lancée."
-                : "À gauche ce qui arrive aujourd'hui, à droite une fois la machine lancée."}
+              {gainsFocus === "visibility"
+                ? "À gauche aujourd'hui, à droite une audience qui grandit une fois la machine lancée."
+                : hasScrapedProfile
+                  ? "À gauche ton compte aujourd'hui, à droite la même page une fois la machine lancée."
+                  : "À gauche ce qui arrive aujourd'hui, à droite une fois la machine lancée."}
             </p>
 
             <div className="onb-sim-grid">
@@ -1311,16 +1353,24 @@ export default function OnboardingScreen({
                 invites={0}
                 messages={0}
                 offers={0}
+                focus={gainsFocus}
               />
               <SimCard
                 variant="after"
                 caption="Dans 90 jours"
                 preview={preview}
                 identified={hasScrapedProfile}
-                followers={hasAudienceData ? projection.followers_after.high : null}
-                invites={projection.relations_per_month.high}
-                messages={projection.conversations_per_month.high}
-                offers={projection.clients_per_month.high}
+                followers={
+                  hasAudienceData
+                    ? projection.followers_after.high
+                    : gainsFocus === "visibility"
+                      ? projection.followers_gain.high
+                      : null
+                }
+                invites={gainsFocus === "acquisition" ? projection.relations_per_month.high : 0}
+                messages={gainsFocus === "acquisition" ? projection.conversations_per_month.high : 0}
+                offers={gainsFocus === "acquisition" ? projection.clients_per_month.high : 0}
+                focus={gainsFocus}
               />
             </div>
 
@@ -1510,6 +1560,7 @@ function SimCard({
   invites,
   messages,
   offers,
+  focus = "acquisition",
 }: {
   variant: "before" | "after";
   caption: string;
@@ -1521,15 +1572,14 @@ function SimCard({
   invites: number;
   messages: number;
   offers: number;
+  focus?: "acquisition" | "visibility";
 }) {
   const name = preview?.name || "Ton profil";
+  const showPipeline = focus === "acquisition";
   return (
     <div className={"onb-sim-card" + (variant === "after" ? " onb-sim-after" : "")}>
       <div className="onb-sim-caption">{caption}</div>
       {identified && <div className="onb-sim-banner" />}
-      {/* Sans compte lu, ni photo ni nom : une pastille « TP » sous un titre
-          « Ton profil » ne ressemble au compte de personne. Ce qui compte ici,
-          ce sont les trois lignes qui bougent. */}
       {identified && (preview?.avatar_url ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img className="onb-sim-avatar onb-sim-avatar-img" src={preview.avatar_url} alt="" />
@@ -1541,9 +1591,15 @@ function SimCard({
         <div className="onb-sim-followers">{fmtInt(followers)} abonnés</div>
       )}
       <div className="onb-sim-rows">
-        <SimRow icon={<Users size={14} />} label="Invitations reçues" value={invites} />
-        <SimRow icon={<MessageSquare size={14} />} label="Messages non lus" value={messages} />
-        <SimRow icon={<Briefcase size={14} />} label="Propositions" value={offers} />
+        {showPipeline ? (
+          <>
+            <SimRow icon={<Users size={14} />} label="Invitations reçues" value={invites} />
+            <SimRow icon={<MessageSquare size={14} />} label="Messages non lus" value={messages} />
+            <SimRow icon={<Briefcase size={14} />} label="Propositions" value={offers} />
+          </>
+        ) : variant === "after" && followers !== null ? (
+          <SimRow icon={<Users size={14} />} label="Abonnés gagnés" value={followers} />
+        ) : null}
       </div>
     </div>
   );

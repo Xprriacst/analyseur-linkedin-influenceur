@@ -183,8 +183,8 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any;
   await page.getByRole("button", { name: "Voir mon potentiel" }).click();
   await page.getByRole("button", { name: "Continuer", exact: true }).click();
 
-  // (3) Questions de la variante SaaS : l'ICP, pas « À qui tu t'adresses ? ».
-  await expect(page.getByText("Ton ICP — à qui tu vends ?")).toBeVisible();
+  // (3) Questions de la variante SaaS : cible précise, pas le jargon ICP.
+  await expect(page.getByText("Ta cible — à qui tu vends ?")).toBeVisible();
   await page.getByRole("button", { name: "Une cible précise" }).click();
   await expect(page.getByRole("button", { name: "Fondateurs & CEO de SaaS" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Freelances & solopreneurs" })).toBeVisible();
@@ -192,6 +192,8 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any;
   await page.getByRole("button", { name: "CTO & équipes tech" }).click();
   await page.getByRole("button", { name: "Continuer", exact: true }).click();
 
+  await expect(page.getByText("Ton objectif", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Trouver mes premiers clients" }).click();
   await expect(page.getByText("Ton secteur")).toBeVisible();
   await page.getByRole("button", { name: "DevTools & infra" }).click();
   await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();
@@ -457,6 +459,48 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await expect(page.getByText(/pages entreprise/i)).toBeVisible();
     await expect(page.getByText(/linkedin\.com\/in\//)).toBeVisible();
     expect(draftCalled).toBe(false);
+  });
+
+  test("objectif vitrine : gains audience sans bloc revenus", async ({ page }) => {
+    await mockBackend(page);
+    await page.route("**/onboarding/projection", (route) =>
+      route.fulfill({
+        json: {
+          default_band: "smb",
+          deal_label: "Ton ACV moyen (ce que rapporte un client sur 12 mois)",
+          revenue_label: "Nouvel ARR signé par mois",
+          bands: [saasBand("smb", "1 200 à 6 000 € / an", [3600, 14400])],
+        },
+      }),
+    );
+
+    await page.goto("/onboarding");
+    await passGate(page);
+    await page.getByPlaceholder("https://ton-site.com").fill("https://northstack.io");
+    await page.getByRole("button", { name: "Analyser" }).click();
+
+    await page.getByRole("button", { name: /Premiers clients/ }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+    await page.getByRole("button", { name: "Je lance dans le silence" }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+
+    await page.getByRole("button", { name: "Voir mon potentiel" }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+
+    await page.getByRole("button", { name: "Une cible précise" }).click();
+    await page.getByRole("button", { name: "CTO & équipes tech" }).click();
+    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+
+    // Objectif « vitrine » : l'écran gains met l'audience en avant, pas le CA.
+    await page.getByRole("button", { name: "Construire ma marque de fondateur" }).click();
+    await page.getByRole("button", { name: "DevTools & infra" }).click();
+    await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();
+
+    await expect(page.getByText("Ta visibilité dans 90 jours")).toBeVisible();
+    await expect(page.getByText("Nouvel ARR signé par mois")).toHaveCount(0);
+    await expect(page.locator(".onb-gain-money")).toHaveCount(0);
+    await expect(page.locator(".onb-curve")).toBeVisible();
+    await expect(page.getByText("Abonnés gagnés en 90 jours")).toBeVisible();
   });
 
   test("/founders reste un alias : même landing, même tunnel", async ({ page }) => {

@@ -33,7 +33,7 @@ const PROMISES: string[] = [
   "L'analyse chiffrée de ce qui marche vraiment chez les fondateurs de ta catégorie",
   "Des posts écrits dans ta voix, à partir de ce qui performe sur ton marché",
   "Une idée de post chaque matin, publication et programmation incluses",
-  "Ton ICP repéré dans les commentaires de tes concurrents, contacté depuis l'app",
+  "Ton audience repérée dans les commentaires de tes concurrents, contacté depuis l'app",
 ];
 
 /**

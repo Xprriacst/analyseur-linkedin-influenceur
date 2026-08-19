@@ -617,7 +617,7 @@ function FoundersLanding({
           </h1>
 
           <p className="fl-sub">
-            On écrit tes posts, on prospecte ton ICP. Toi, tu valides — moins d&apos;une minute par jour.
+            On écrit tes posts, on prospecte ta cible précise. Toi, tu valides — moins d&apos;une minute par jour.
           </p>
 
           <div className="fl-gate">
@@ -648,8 +648,6 @@ function FoundersLanding({
             <p className="fl-gate-micro">Places limitées. Ça prend 90 secondes.</p>
             {gateError && <div className="fl-gate-error">{gateError}</div>}
           </div>
-
-          <FoundersHeroArt />
         </header>
 
         <div className="fl-proof">
@@ -667,11 +665,13 @@ function FoundersLanding({
           </div>
         </div>
 
+        <FoundersHeroArt />
+
         <section className="fl-section">
           <h2 className="fl-section-title">Le vrai goulot, ce n&apos;est pas ton offre</h2>
           <div className="fl-card">
             <p className="fl-card-p">
-              90&nbsp;% sur le craft le matin, 10&nbsp;% marketeur l&apos;après-midi. Chaque
+              90&nbsp;% sur ton cœur de métier le matin, 10&nbsp;% marketeur l&apos;après-midi. Chaque
               casquette coûte 20 à 30 minutes de refocus — et à la fin de la journée,
               seule la mission a avancé. Ton LinkedIn reste muet.
             </p>
