@@ -932,6 +932,31 @@ def require_audit_leads_admin(token: str) -> dict[str, Any]:
     return user
 
 
+def _shape_audit_lead_row(row: dict[str, Any], *, lead_type: str | None = None) -> dict[str, Any]:
+    preview = row.get("preview") if isinstance(row.get("preview"), dict) else {}
+    shaped = {
+        "id": row.get("id"),
+        "created_at": row.get("created_at"),
+        "full_name": row.get("full_name"),
+        "email": row.get("email"),
+        "phone": row.get("phone"),
+        "linkedin_url": row.get("linkedin_url"),
+        "website_url": row.get("website_url"),
+        "input_kind": row.get("input_kind"),
+        "status": row.get("status"),
+        "error_message": row.get("error_message"),
+        "sent_at": row.get("sent_at"),
+        "consent": row.get("consent"),
+        "niche": preview.get("niche"),
+        "followers": preview.get("followers"),
+        "notion_url": row.get("notion_url"),
+        "public_token": row.get("public_token"),
+    }
+    if lead_type:
+        shaped["type"] = lead_type
+    return shaped
+
+
 @app.get("/admin/audit-leads")
 def admin_audit_leads(
     token: str = Depends(require_token),
@@ -940,27 +965,22 @@ def admin_audit_leads(
     """Dashboard interne : qui a rempli le questionnaire du tunnel audit."""
     require_audit_leads_admin(token)
     rows = db.list_audit_leads(limit=limit)
-    leads: list[dict[str, Any]] = []
-    for row in rows:
-        preview = row.get("preview") if isinstance(row.get("preview"), dict) else {}
-        leads.append({
-            "id": row.get("id"),
-            "created_at": row.get("created_at"),
-            "full_name": row.get("full_name"),
-            "email": row.get("email"),
-            "phone": row.get("phone"),
-            "linkedin_url": row.get("linkedin_url"),
-            "website_url": row.get("website_url"),
-            "input_kind": row.get("input_kind"),
-            "status": row.get("status"),
-            "error_message": row.get("error_message"),
-            "sent_at": row.get("sent_at"),
-            "consent": row.get("consent"),
-            "niche": preview.get("niche"),
-            "followers": preview.get("followers"),
-            "notion_url": row.get("notion_url"),
-            "public_token": row.get("public_token"),
-        })
+    leads = [_shape_audit_lead_row(row) for row in rows]
+    return {"count": len(leads), "leads": leads}
+
+
+@app.get("/admin/onboarding-leads")
+def admin_onboarding_leads(
+    token: str = Depends(require_token),
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Dashboard interne : audits questionnaire + opt-ins e-mail des tunnels."""
+    require_audit_leads_admin(token)
+    rows = db.list_onboarding_leads(limit=limit)
+    leads = [
+        _shape_audit_lead_row(row, lead_type=str(row.get("type") or "audit"))
+        for row in rows
+    ]
     return {"count": len(leads), "leads": leads}
 
 
