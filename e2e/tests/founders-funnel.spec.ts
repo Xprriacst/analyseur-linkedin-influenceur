@@ -259,8 +259,9 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await expect(page.getByLabel("Nom", { exact: true })).toHaveValue("Fondatrice");
     await expect(page.getByText("Ce qu'on a compris")).toHaveCount(0);
     await expect(page.getByText(/ICP :/)).toHaveCount(0);
-    // Et la carte est annoncée AVANT le départ vers Stripe.
-    await expect(page.getByText(/0\s?€ prélevé pendant tes 7 jours/)).toBeVisible();
+    // L'essai démarre sans carte — annoncé avant le clic.
+    await expect(page.getByText(/sans carte bancaire/i)).toBeVisible();
+    await expect(page.getByText(/0\s?€ prélevé pendant tes 7 jours/)).toHaveCount(0);
     // Le téléphone du tunnel audit ne doit jamais être demandé ici.
     await expect(page.getByPlaceholder("06 12 34 56 78")).toHaveCount(0);
   });
@@ -281,9 +282,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
 
   test("mots de passe différents : aucun compte n'est créé", async ({ page }) => {
     // Le verrou porte sur l'APPEL, pas sur le message affiché : un compte ouvert
-    // sur un mot de passe mal tapé n'est plus rattrapable dans ce tunnel — le
-    // fondateur enchaîne sur Stripe, laisse sa carte, et se retrouve enfermé
-    // dehors avec pour seule issue un e-mail de réinitialisation.
+    // sur un mot de passe mal tapé n'est plus rattrapable dans ce tunnel.
     let signups = 0;
     await page.route("**/auth/v1/signup**", (route) => {
       signups += 1;

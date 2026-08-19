@@ -1,28 +1,19 @@
 "use client";
 
 /**
- * Démarrage de l'essai gratuit (/essai) — dernière étape du tunnel fondateurs.
+ * Démarrage de l'essai gratuit (/essai) — repli du tunnel fondateurs.
  *
- *   /onboarding → compte créé → **ici** → Stripe (carte, 0 € prélevé) → app
- *
- * Le compte existe déjà : cette page ne fait pas d'inscription, elle ouvre la
- * session Checkout en mode essai.
- *
- * ⚠️ **C'est Stripe qui tient l'horloge de l'essai, pas l'app.** L'abonnement
- * démarre en `trialing`, rien n'est prélevé avant la fin, puis il bascule tout
- * seul. L'app n'a donc aucune date d'expiration maison à surveiller et aucun
- * accès à refermer — c'est précisément pourquoi la carte est demandée à l'entrée
- * plutôt qu'un accès libre qu'il faudrait couper à la main.
+ *   /onboarding → compte créé → essai direct (sans carte) → app
+ *   ou ici si l'état de facturation était illisible au moment du compte.
  *
  * ⚠️ Le droit à l'essai est décidé **côté serveur** (`trial_eligible` de
  * `/me/billing`) : un compte qui a déjà eu un abonnement repart sur un paiement
- * immédiat. Cette page doit le dire AVANT le clic — un bouton « 7 jours gratuits »
- * qui ouvre un paiement immédiat serait la pire panne silencieuse de ce parcours.
+ * immédiat (carte requise via Checkout).
  */
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, CreditCard, Loader2, Lock, Rocket } from "lucide-react";
+import { CheckCircle2, CreditCard, Loader2, Rocket } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
 import { FOUNDERS_MONTHLY_SEATS, FOUNDERS_GUARANTEE_DAYS } from "../lib/founders";
 
@@ -36,24 +27,19 @@ const PROMISES: string[] = [
   "Ton audience repérée dans les commentaires de tes concurrents, contacté depuis l'app",
 ];
 
-/**
- * Jalons de l'essai, écrits noir sur blanc : personne ne doit être surpris au 8ᵉ jour.
- *
- * ⚠️ Aucune ligne ne promet ici un e-mail de rappel avant la fin : l'app n'en
- * envoie pas, et celui de Stripe dépend d'un réglage de son tableau de bord. Le
- * jour où il sera confirmé actif, ce sera une ligne de plus — pas avant.
- */
+/** Jalons de l'essai sans carte — ce qui se passe et quand. */
 function timeline(days: number, price: string): { day: string; text: string }[] {
   return [
-    { day: "Aujourd'hui", text: "Ton accès complet s'ouvre. Aucun prélèvement." },
+    { day: "Aujourd'hui", text: "Ton accès complet s'ouvre. Aucun prélèvement, aucune carte." },
     {
       day: `Jours 1 à ${days}`,
-      text: "Tu peux arrêter en un clic depuis ton espace — rien ne sera prélevé.",
+      text: "Tu testes Cibl librement. Rien ne part sans que tu ajoutes un moyen de paiement.",
     },
-    { day: `Jour ${days}`, text: `L'abonnement démarre à ${price}/mois, sauf si tu as arrêté avant.` },
     {
-      // ⚠️ Engagement commercial (cf. lib/founders.ts) : remboursement MANUEL
-      // via Stripe, sur simple demande. Ne l'afficher que tant qu'on l'honore.
+      day: `Jour ${days}`,
+      text: `L'essai se termine. Pour continuer : ${price}/mois depuis ton espace (carte à ce moment-là).`,
+    },
+    {
       day: "Après l'essai",
       text: `Satisfait ou remboursé pendant ${FOUNDERS_GUARANTEE_DAYS} jours — le premier mois remboursé sur simple demande.`,
     },
@@ -68,7 +54,6 @@ export default function EssaiPage() {
   const [price, setPrice] = useState("49 €");
   const [credits, setCredits] = useState(1000);
   const [trialDays, setTrialDays] = useState(7);
-  // Fail closed : tant que le serveur n'a pas confirmé, on n'annonce pas d'essai.
   const [trialEligible, setTrialEligible] = useState(false);
   const [alreadySubscribed, setAlreadySubscribed] = useState(false);
 
@@ -83,7 +68,6 @@ export default function EssaiPage() {
         const res = await fetch(`${DIRECT_API_URL}/me/billing`, { headers: await authHeaders() });
         if (res.ok) {
           const state = await res.json();
-          // Déjà en essai ou abonné : il n'a rien à faire ici, l'app l'attend.
           if (state?.subscribed) {
             setAlreadySubscribed(true);
           }
@@ -112,19 +96,28 @@ export default function EssaiPage() {
     setError("");
     setLoading(true);
     try {
+      if (trialEligible) {
+        const res = await fetch(`${DIRECT_API_URL}/me/billing/start-trial`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || "Essai indisponible — réessaie dans un instant.");
+        router.push("/?billing=trial_started");
+        return;
+      }
+
       const res = await fetch(`${DIRECT_API_URL}/me/billing/checkout`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
-          trial: true,
+          trial: false,
           success_url: `${window.location.origin}/?billing=success`,
-          // Essai abandonné → il entre quand même dans l'app avec ses crédits
-          // offerts, profil déjà enregistré. Rien de ce qu'il a fait n'est perdu.
           cancel_url: `${window.location.origin}/?billing=cancelled`,
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Essai indisponible — réessaie dans un instant.");
+      if (!res.ok) throw new Error(data.detail || "Paiement indisponible — réessaie dans un instant.");
       window.location.href = data.url;
     } catch (err: any) {
       setError(err.message || "Une erreur est survenue.");
@@ -142,7 +135,6 @@ export default function EssaiPage() {
 
   return (
     <main className="offre-split" style={{ minHeight: "100vh", display: "grid", gridTemplateColumns: "minmax(0, 1.1fr) minmax(0, 1fr)" }}>
-      {/* ── Gauche : ce que l'essai ouvre ── */}
       <section
         style={{
           position: "relative",
@@ -209,7 +201,6 @@ export default function EssaiPage() {
             ))}
           </ul>
 
-          {/* Ce qui se passe et quand — la seule vraie objection d'un essai avec carte. */}
           <div
             style={{
               margin: "30px 0 0",
@@ -232,7 +223,6 @@ export default function EssaiPage() {
         </div>
       </section>
 
-      {/* ── Droite : le démarrage ── */}
       <section
         style={{
           display: "flex",
@@ -273,8 +263,8 @@ export default function EssaiPage() {
               <p style={{ margin: "8px 0 0", fontSize: 14.5, color: "var(--muted)" }}>
                 {trialEligible ? (
                   <>
-                    Puis {price}/mois, {credits.toLocaleString("fr-FR")} crédits par mois · sans
-                    engagement · résiliable en un clic
+                    Puis {price}/mois si tu continues · {credits.toLocaleString("fr-FR")} crédits par mois ·
+                    sans engagement
                   </>
                 ) : (
                   <>
@@ -298,9 +288,8 @@ export default function EssaiPage() {
               >
                 {trialEligible ? (
                   <>
-                    Ta carte est enregistrée par Stripe pour la suite, mais{" "}
-                    <strong>rien n&apos;est prélevé pendant les {trialDays} jours</strong>. Tu peux
-                    arrêter avant la fin depuis ton espace.
+                    <strong>Aucune carte demandée pour démarrer.</strong> Tu pourras t&apos;abonner
+                    depuis ton espace avant la fin des {trialDays} jours si tu veux continuer.
                   </>
                 ) : (
                   <>
@@ -329,9 +318,11 @@ export default function EssaiPage() {
                 )}
               </button>
 
-              <p style={{ margin: "14px 0 0", fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                <Lock size={12} /> Paiement sécurisé par Stripe
-              </p>
+              {!trialEligible && (
+                <p style={{ margin: "14px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                  Paiement sécurisé par Stripe
+                </p>
+              )}
 
               <button
                 type="button"

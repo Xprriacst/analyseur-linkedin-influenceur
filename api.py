@@ -3374,9 +3374,10 @@ def me_credits(token: str = Depends(require_token)) -> dict[str, Any]:
 # (Checkout + Customer Portal). L'app ne fait que : ouvrir la page de paiement,
 # écouter le webhook, et refléter l'état d'abonnement.
 #
-# Règle de confiance : SEUL le webhook (signé par Stripe) crédite et fait foi sur
-# l'état d'abonnement. Aucun endpoint porteur d'un JWT utilisateur ne crédite —
-# sinon un client pourrait s'auto-recharger en rejouant l'appel de retour.
+# Règle de confiance : le webhook (signé par Stripe) crédite les renouvellements.
+# Exception documentée : `POST /me/billing/start-trial` crédite une seule fois au
+# démarrage d'un essai sans carte, après garde-fous serveur (éligibilité, pas
+# d'abonnement actif) — jamais de crédit rejouable à la demande du client.
 # --------------------------------------------------------------------------- #
 
 class BillingCheckoutRequest(BaseModel):
@@ -3488,6 +3489,64 @@ def _granted_trial_days(user_id: str, requested: bool) -> int:
     if not requested:
         return 0
     return stripe_billing.granted_trial_days(db.get_subscription_by_user_admin(user_id))
+
+
+def _start_trial_subscription(user_id: str, customer_id: str) -> dict[str, Any]:
+    """Démarre un essai sans carte (Stripe subscription + crédits d'essai).
+
+    Idempotent : un compte déjà en essai/abonnement actif renvoie son état.
+    """
+    existing = db.get_subscription_by_user_admin(user_id) or {}
+    if stripe_billing.is_active(existing.get("status")):
+        return {**_billing_state(existing), "ok": True, "already_active": True}
+
+    trial_days = stripe_billing.granted_trial_days(existing)
+    if trial_days <= 0:
+        raise HTTPException(status_code=400, detail="Essai non disponible pour ce compte.")
+
+    try:
+        subscription = stripe_billing.create_trial_subscription(
+            customer_id, user_id, trial_days
+        )
+    except stripe_billing.StripeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    fields = stripe_billing.normalize_subscription(subscription)
+    if fields.get("status") != "trialing":
+        raise HTTPException(
+            status_code=502,
+            detail="Stripe n'a pas démarré l'essai en statut trialing.",
+        )
+
+    credits = stripe_billing.trial_credits()
+    new_balance = db.set_credits_admin(
+        user_id,
+        credits,
+        action="trial_start",
+        description=f"essai gratuit démarré — {credits} crédits",
+    )
+    row = db.upsert_subscription_admin(
+        user_id,
+        stripe_customer_id=customer_id,
+        stripe_subscription_id=fields["stripe_subscription_id"],
+        status=fields["status"],
+        price_id=fields["price_id"],
+        current_period_end=fields["current_period_end"],
+        cancel_at_period_end=fields["cancel_at_period_end"],
+    )
+    if new_balance is None:
+        raise HTTPException(status_code=500, detail="Crédits d'essai non appliqués.")
+
+    state = _billing_state(row or existing)
+    return {**state, "ok": True, "trial": True, "credits": new_balance}
+
+
+@app.post("/me/billing/start-trial")
+def me_billing_start_trial(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Démarre l'essai gratuit sans demander de carte (tunnel /onboarding, /essai)."""
+    _require_billing()
+    user_id, customer_id = _ensure_stripe_customer(token)
+    return _start_trial_subscription(user_id, customer_id)
 
 
 @app.post("/me/billing/checkout")
