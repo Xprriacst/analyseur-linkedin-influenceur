@@ -24,7 +24,7 @@ from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_po
 from src import heygen
 from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
-from src import audit_projection, mailer
+from src import audit_projection, lead_notify, mailer
 from src.audit_report import start_audit_email_thread
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
@@ -873,6 +873,11 @@ def onboarding_founders_lead(payload: FoundersLeadRequest, request: Request) -> 
         # Best-effort assumé : l'opt-in ne doit JAMAIS bloquer l'entrée dans le
         # tunnel — perdre la trace est moins grave que perdre le visiteur.
         print(f"[founders-lead] enregistrement impossible pour {email} : {exc}", file=sys.stderr)
+
+    # Alerte interne, hors du try ci-dessus À DESSEIN : si l'écriture en base a
+    # échoué, l'e-mail devient la SEULE trace du lead — c'est le moment où il
+    # compte le plus, pas celui où il faut y renoncer.
+    lead_notify.notify_optin(email, (payload.source or "onboarding").strip()[:40])
 
     return {"ok": True}
 
@@ -3561,6 +3566,24 @@ def _webhook_user_id(obj: dict[str, Any], customer_id: str | None) -> str | None
     return (row or {}).get("user_id")
 
 
+def _notify_new_subscriber(
+    event_id: str, user_id: str, session: dict[str, Any], *, trial: bool
+) -> None:
+    """Prévient l'équipe qu'un compte vient de s'abonner (silencieux si non configuré).
+
+    L'e-mail est lu d'abord dans la session Stripe (déjà en main, zéro appel
+    réseau) et seulement à défaut auprès d'Auth.
+    """
+    details = session.get("customer_details")
+    email = ""
+    if isinstance(details, dict):
+        email = str(details.get("email") or "")
+    email = email or str(session.get("customer_email") or "") or db.admin_user_email(user_id)
+    total = session.get("amount_total")
+    amount = round(total / 100, 2) if isinstance(total, (int, float)) and total else None
+    lead_notify.notify_subscription(event_id, email or user_id, amount=amount, trial=trial)
+
+
 def _apply_trial_start(
     user_id: str, customer_id: str | None, subscription_id: str, event_id: str
 ) -> dict[str, Any] | None:
@@ -3653,12 +3676,16 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
         # `invoice.paid`, le fondateur entrerait dans son essai avec les seuls
         # crédits de bienvenue — un « essai » qui s'arrête au bout de quelques
         # générations, sans le moindre message d'erreur.
+        trial_state = None
         if subscription_id:
             trial_state = _apply_trial_start(
                 user_id, customer_id, subscription_id, event.get("id") or ""
             )
-            if trial_state:
-                return trial_state
+        # Alerte interne. Référencée sur l'ID de l'ÉVÉNEMENT Stripe : Stripe rejoue
+        # tant qu'il n'a pas de 2xx, et un rejeu ne doit pas produire un 2ᵉ e-mail.
+        _notify_new_subscriber(event.get("id") or "", user_id, obj, trial=bool(trial_state))
+        if trial_state:
+            return trial_state
         return {"ok": True}
 
     if event_type == "invoice.paid":
