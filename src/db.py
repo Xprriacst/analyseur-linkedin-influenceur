@@ -227,6 +227,13 @@ def find_recent_audit_lead(email: str, within_hours: int = 24) -> dict[str, Any]
         return None
 
 
+_AUDIT_LEAD_LIST_COLS = (
+    "id, created_at, full_name, email, phone, linkedin_url, "
+    "website_url, input_kind, status, error_message, sent_at, "
+    "consent, preview, notion_url, notion_page_id, public_token"
+)
+
+
 def list_audit_leads(limit: int = 100) -> list[dict[str, Any]]:
     """Liste les leads du tunnel audit (dashboard interne, service-role).
 
@@ -239,16 +246,54 @@ def list_audit_leads(limit: int = 100) -> list[dict[str, Any]]:
         res = (
             admin_client()
             .table("audit_leads")
-            .select(
-                "id, created_at, full_name, email, phone, linkedin_url, "
-                "website_url, input_kind, status, error_message, sent_at, "
-                "consent, preview, notion_url, notion_page_id, public_token"
-            )
+            .select(_AUDIT_LEAD_LIST_COLS)
             .order("created_at", desc=True)
             .limit(max(1, min(int(limit), 500)))
             .execute()
         )
         return list(getattr(res, "data", None) or [])
+    except Exception:
+        return []
+
+
+def list_onboarding_leads(limit: int = 100) -> list[dict[str, Any]]:
+    """Leads des tunnels d'onboarding : audits questionnaire + opt-ins e-mail.
+
+    Les créations de compte (``lead_notifications``) sont volontairement hors
+    périmètre MVP — elles exigent un join ``auth.users`` via service-role.
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return []
+    cap = max(1, min(int(limit), 500))
+    try:
+        client = admin_client()
+        audits_res = (
+            client.table("audit_leads")
+            .select(_AUDIT_LEAD_LIST_COLS)
+            .neq("status", "founders_optin")
+            .order("created_at", desc=True)
+            .limit(cap)
+            .execute()
+        )
+        optins_res = (
+            client.table("audit_leads")
+            .select(_AUDIT_LEAD_LIST_COLS)
+            .eq("status", "founders_optin")
+            .order("created_at", desc=True)
+            .limit(cap)
+            .execute()
+        )
+        rows: list[dict[str, Any]] = []
+        for row in getattr(audits_res, "data", None) or []:
+            tagged = dict(row)
+            tagged["type"] = "audit"
+            rows.append(tagged)
+        for row in getattr(optins_res, "data", None) or []:
+            tagged = dict(row)
+            tagged["type"] = "founders_optin"
+            rows.append(tagged)
+        rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+        return rows[:cap]
     except Exception:
         return []
 

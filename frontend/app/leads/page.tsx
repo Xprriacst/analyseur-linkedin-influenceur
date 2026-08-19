@@ -1,11 +1,11 @@
 "use client";
 
 /**
- * Dashboard interne des leads du tunnel /start (questionnaire audit).
+ * Dashboard interne des leads des tunnels d'onboarding.
  * Accès réservé aux e-mails de l'équipe (gating serveur).
  */
 
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { Loader2, RefreshCw } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
@@ -14,9 +14,13 @@ const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL ||
   "https://analyseur-linkedin-influenceur-api-eu.onrender.com";
 
+type LeadType = "audit" | "founders_optin";
+type TypeFilter = "all" | LeadType;
+
 type Lead = {
   id: string;
   created_at: string;
+  type?: LeadType;
   full_name: string;
   email: string;
   phone: string;
@@ -37,7 +41,19 @@ const STATUS_LABEL: Record<string, string> = {
   generating: "Génération",
   sent: "Envoyé",
   failed: "Échec envoi",
+  founders_optin: "Opt-in e-mail",
 };
+
+const TYPE_LABEL: Record<LeadType, string> = {
+  audit: "Audit",
+  founders_optin: "Opt-in",
+};
+
+const TYPE_FILTER_OPTIONS: { value: TypeFilter; label: string }[] = [
+  { value: "all", label: "Tous" },
+  { value: "audit", label: "Audits" },
+  { value: "founders_optin", label: "Opt-ins e-mail" },
+];
 
 function formatWhen(iso: string): string {
   try {
@@ -50,6 +66,10 @@ function formatWhen(iso: string): string {
   }
 }
 
+function isOptin(lead: Lead): boolean {
+  return lead.type === "founders_optin" || lead.status === "founders_optin";
+}
+
 export default function LeadsPage() {
   const [ready, setReady] = useState(false);
   const [denied, setDenied] = useState(false);
@@ -57,6 +77,7 @@ export default function LeadsPage() {
   const [error, setError] = useState("");
   const [leads, setLeads] = useState<Lead[]>([]);
   const [count, setCount] = useState(0);
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
 
   useEffect(() => {
     (async () => {
@@ -73,7 +94,7 @@ export default function LeadsPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`${DIRECT_API_URL}/admin/audit-leads?limit=200`, {
+      const res = await fetch(`${DIRECT_API_URL}/admin/onboarding-leads?limit=200`, {
         headers: await authHeaders(),
       });
       if (res.status === 404) {
@@ -103,6 +124,16 @@ export default function LeadsPage() {
     return () => window.clearInterval(id);
   }, [ready, load]);
 
+  const filteredLeads = useMemo(() => {
+    if (typeFilter === "all") return leads;
+    return leads.filter((lead) => {
+      const t: LeadType = isOptin(lead) ? "founders_optin" : "audit";
+      return t === typeFilter;
+    });
+  }, [leads, typeFilter]);
+
+  const showAuditCols = typeFilter !== "founders_optin";
+
   if (!ready) {
     return (
       <main style={shell}>
@@ -116,9 +147,10 @@ export default function LeadsPage() {
       <div style={{ width: "100%", maxWidth: 1100, display: "grid", gap: 20 }}>
         <header style={{ display: "flex", alignItems: "baseline", gap: 16, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 200 }}>
-            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 650 }}>Leads audit</h1>
+            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 650 }}>Leads onboarding</h1>
             <p style={{ margin: "6px 0 0", color: "var(--muted)", fontSize: 13.5 }}>
-              Questionnaires remplis sur <code>/start</code> — rafraîchi toutes les 30 s.
+              Audits (<code>/start</code>, <code>/onboarding</code>) et opt-ins e-mail (
+              <code>/founders</code>) — rafraîchi toutes les 30 s.
             </p>
           </div>
           <button
@@ -145,21 +177,55 @@ export default function LeadsPage() {
 
         {!denied && (
           <>
-            <div style={{ fontSize: 13, color: "var(--muted)" }}>
-              {count} lead{count === 1 ? "" : "s"}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 16,
+                flexWrap: "wrap",
+                fontSize: 13,
+                color: "var(--muted)",
+              }}
+            >
+              <span>
+                {filteredLeads.length} affiché{filteredLeads.length === 1 ? "" : "s"}
+                {typeFilter !== "all" ? ` · ${count} au total` : ""}
+              </span>
+              <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+                {TYPE_FILTER_OPTIONS.map((opt) => (
+                  <label key={opt.value} style={filterLabel}>
+                    <input
+                      type="radio"
+                      name="lead-type-filter"
+                      value={opt.value}
+                      checked={typeFilter === opt.value}
+                      onChange={() => setTypeFilter(opt.value)}
+                      style={{ margin: 0 }}
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
             </div>
 
             {count === 0 && !loading ? (
               <div style={empty}>
-                Personne n&apos;a encore rempli le formulaire. Dès qu&apos;un prospect laisse
-                nom + e-mail + téléphone sur <code>/start</code>, il apparaît ici.
+                Aucun lead pour l&apos;instant. Dès qu&apos;un visiteur laisse son e-mail sur{" "}
+                <code>/founders</code> ou remplit le questionnaire audit, il apparaît ici.
               </div>
+            ) : filteredLeads.length === 0 && !loading ? (
+              <div style={empty}>Aucun lead pour ce filtre.</div>
             ) : (
               <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: 12 }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13.5 }}>
                   <thead>
                     <tr style={{ background: "var(--surface-low)", textAlign: "left" }}>
-                      {["Quand", "Nom", "Contact", "Profil", "Niche", "Audit", "Statut"].map((h) => (
+                      {(typeFilter === "all"
+                        ? ["Type", "Quand", "Nom", "Contact", "Profil", "Source", "Niche", "Audit", "Statut"]
+                        : showAuditCols
+                          ? ["Quand", "Nom", "Contact", "Profil", "Niche", "Audit", "Statut"]
+                          : ["Quand", "E-mail", "Source", "Statut"]
+                      ).map((h) => (
                         <th key={h} style={th}>
                           {h}
                         </th>
@@ -167,66 +233,117 @@ export default function LeadsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {leads.map((lead) => (
-                      <tr key={lead.id} style={{ borderTop: "1px solid var(--border)" }}>
-                        <td style={td}>{formatWhen(lead.created_at)}</td>
-                        <td style={td}>
-                          <strong>{lead.full_name}</strong>
-                        </td>
-                        <td style={td}>
-                          <div>{lead.email}</div>
-                          <div style={{ color: "var(--muted)" }}>{lead.phone}</div>
-                        </td>
-                        <td style={td}>
-                          {lead.linkedin_url ? (
-                            <a href={lead.linkedin_url} target="_blank" rel="noreferrer" style={{ color: "var(--primary)" }}>
-                              LinkedIn
-                            </a>
-                          ) : (
-                            "—"
+                    {filteredLeads.map((lead) => {
+                      const optin = isOptin(lead);
+                      const leadType: LeadType = optin ? "founders_optin" : "audit";
+
+                      if (!showAuditCols) {
+                        return (
+                          <tr key={lead.id} style={{ borderTop: "1px solid var(--border)" }}>
+                            <td style={td}>{formatWhen(lead.created_at)}</td>
+                            <td style={td}>{lead.email}</td>
+                            <td style={td}>{lead.input_kind || "—"}</td>
+                            <td style={td}>
+                              <span style={statusPill(lead.status)}>
+                                {STATUS_LABEL[lead.status] || lead.status}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return (
+                        <tr key={lead.id} style={{ borderTop: "1px solid var(--border)" }}>
+                          {typeFilter === "all" && (
+                            <td style={td}>
+                              <span style={typePill(leadType)}>{TYPE_LABEL[leadType]}</span>
+                            </td>
                           )}
-                          {lead.followers != null && (
-                            <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                              {Number(lead.followers).toLocaleString("fr-FR")} abonnés
-                            </div>
-                          )}
-                        </td>
-                        <td style={td}>{lead.niche || "—"}</td>
-                        <td style={td}>
-                          {lead.notion_url ? (
-                            <a
-                              href={lead.notion_url}
-                              target="_blank"
-                              rel="noreferrer"
-                              style={{ color: "var(--primary)", fontWeight: 600 }}
-                            >
-                              Page Notion
-                            </a>
-                          ) : lead.public_token ? (
-                            <a
-                              href={`/a/${lead.public_token}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              style={{ color: "var(--primary)" }}
-                            >
-                              Voir l&apos;audit
-                            </a>
-                          ) : (
-                            <span style={{ color: "var(--muted)" }}>—</span>
-                          )}
-                        </td>
-                        <td style={td}>
-                          <span style={statusPill(lead.status)}>
-                            {STATUS_LABEL[lead.status] || lead.status}
-                          </span>
-                          {lead.error_message && (
-                            <div style={{ marginTop: 4, color: "var(--muted)", fontSize: 11.5, maxWidth: 220 }}>
-                              {lead.error_message}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                          <td style={td}>{formatWhen(lead.created_at)}</td>
+                          <td style={td}>
+                            <strong>{lead.full_name?.trim() || "—"}</strong>
+                          </td>
+                          <td style={td}>
+                            <div>{lead.email}</div>
+                            {lead.phone?.trim() ? (
+                              <div style={{ color: "var(--muted)" }}>{lead.phone}</div>
+                            ) : null}
+                          </td>
+                          <td style={td}>
+                            {lead.linkedin_url ? (
+                              <a
+                                href={lead.linkedin_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{ color: "var(--primary)" }}
+                              >
+                                LinkedIn
+                              </a>
+                            ) : lead.website_url ? (
+                              <a
+                                href={lead.website_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{ color: "var(--primary)" }}
+                              >
+                                Site
+                              </a>
+                            ) : (
+                              "—"
+                            )}
+                            {lead.followers != null && (
+                              <div style={{ color: "var(--muted)", fontSize: 12 }}>
+                                {Number(lead.followers).toLocaleString("fr-FR")} abonnés
+                              </div>
+                            )}
+                          </td>
+                          <td style={td}>{lead.input_kind || "—"}</td>
+                          <td style={td}>{lead.niche || "—"}</td>
+                          <td style={td}>
+                            {optin ? (
+                              <span style={{ color: "var(--muted)" }}>—</span>
+                            ) : lead.notion_url ? (
+                              <a
+                                href={lead.notion_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{ color: "var(--primary)", fontWeight: 600 }}
+                              >
+                                Page Notion
+                              </a>
+                            ) : lead.public_token ? (
+                              <a
+                                href={`/a/${lead.public_token}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{ color: "var(--primary)" }}
+                              >
+                                Voir l&apos;audit
+                              </a>
+                            ) : (
+                              <span style={{ color: "var(--muted)" }}>—</span>
+                            )}
+                          </td>
+                          <td style={td}>
+                            <span style={statusPill(lead.status)}>
+                              {STATUS_LABEL[lead.status] || lead.status}
+                            </span>
+                            {lead.error_message && (
+                              <div
+                                style={{
+                                  marginTop: 4,
+                                  color: "var(--muted)",
+                                  fontSize: 11.5,
+                                  maxWidth: 220,
+                                }}
+                              >
+                                {lead.error_message}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -257,6 +374,19 @@ const btn: CSSProperties = {
   background: "var(--surface)",
   cursor: "pointer",
   fontSize: 13,
+};
+
+const filterLabel: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "4px 10px",
+  borderRadius: 999,
+  border: "1px solid var(--border)",
+  background: "var(--surface)",
+  color: "var(--text)",
+  cursor: "pointer",
+  fontSize: 12.5,
 };
 
 const th: CSSProperties = {
@@ -304,7 +434,9 @@ function statusPill(status: string): CSSProperties {
       ? { bg: "rgba(16,185,129,0.12)", fg: "#047857" }
       : status === "failed"
         ? { bg: "rgba(239,68,68,0.1)", fg: "#b91c1c" }
-        : { bg: "var(--surface-high)", fg: "var(--muted)" };
+        : status === "founders_optin"
+          ? { bg: "rgba(99,102,241,0.12)", fg: "#4338ca" }
+          : { bg: "var(--surface-high)", fg: "var(--muted)" };
   return {
     display: "inline-block",
     padding: "2px 8px",
@@ -313,5 +445,23 @@ function statusPill(status: string): CSSProperties {
     color: tone.fg,
     fontSize: 12,
     fontWeight: 600,
+  };
+}
+
+function typePill(type: LeadType): CSSProperties {
+  const tone =
+    type === "audit"
+      ? { bg: "rgba(16,185,129,0.12)", fg: "#047857" }
+      : { bg: "rgba(99,102,241,0.12)", fg: "#4338ca" };
+  return {
+    display: "inline-block",
+    padding: "2px 8px",
+    borderRadius: 999,
+    background: tone.bg,
+    color: tone.fg,
+    fontSize: 11,
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
   };
 }
