@@ -14482,6 +14482,37 @@ function safeHttpUrl(u?: string | null): string | undefined {
   }
 }
 
+/** Un signal est un vrai commentaire (post lead-magnet), pas un import de recherche. */
+function isCommentSignal(sig: LeadSignal): boolean {
+  return Boolean((sig.comment_text && String(sig.comment_text).trim()) || sig.trigger_keyword || sig.commented_at);
+}
+
+/** URL d'une recherche LinkedIn (classique, Sales Nav, Recruiter) stockée dans `post_url` d'une source `kind=search`. */
+function isLinkedInSearchUrl(url?: string | null): boolean {
+  const href = safeHttpUrl(url);
+  if (!href) return false;
+  try {
+    const path = new URL(href).pathname.toLowerCase();
+    return path.includes("/search/") || path.includes("/sales/") || path.includes("/talent/") || path.includes("/recruiter/");
+  } catch {
+    return false;
+  }
+}
+
+function leadSignals(l: Lead): LeadSignal[] {
+  if (l.signals && l.signals.length) return l.signals;
+  return [leadLastSignal(l)];
+}
+
+/** Ligne de liste : un commentaire (plus parlant) passe devant une recherche. */
+function leadCaptionSignal(l: Lead): LeadSignal {
+  const all = leadSignals(l);
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    if (isCommentSignal(all[i])) return all[i];
+  }
+  return all[all.length - 1];
+}
+
 function ProspectingView({
   isAuthed,
   requireAuth,
@@ -14929,7 +14960,9 @@ function ProspectingView({
         // ne se déclenche jamais. Le floor à 0 force les cartes à la largeur dispo.
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 6 }}>
           {leads.map((l, i) => {
-            const sig = leadLastSignal(l);
+            const sig = leadCaptionSignal(l);
+            const fromSearch = leadSignals(l).some((s) => isLinkedInSearchUrl(s.post_url));
+            const commented = isCommentSignal(sig);
             const multi = (l.signal_count ?? 1) > 1;
             const skipped = l.contact_status === "skip";
             // ALE-243 : séparateur avant le 1er lead écarté (les écartés sont triés en bas par le backend).
@@ -14969,9 +15002,15 @@ function ProspectingView({
                     )}
                   </span>
                   <span style={{ display: "block", color: "var(--muted)", fontSize: 12, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    a commenté{sig.trigger_keyword ? <> « <strong>{sig.trigger_keyword}</strong> »</> : null}
-                    {sig.author ? ` chez ${sig.author}` : ""}
-                    {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
+                    {commented ? (
+                      <>
+                        a commenté{sig.trigger_keyword ? <> « <strong>{sig.trigger_keyword}</strong> »</> : null}
+                        {sig.author ? ` chez ${sig.author}` : ""}
+                        {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
+                      </>
+                    ) : fromSearch ? (
+                      <>trouvé dans ta recherche</>
+                    ) : null}
                     {multi ? <strong style={{ color: "var(--success)" }}> · {l.signal_count} signaux</strong> : null}
                   </span>
                 </span>
@@ -15130,12 +15169,25 @@ function ProspectingView({
                     <p style={{ margin: 0, fontSize: 13, whiteSpace: "pre-wrap" }}>« {sig.comment_text} »</p>
                   )}
                   <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
-                    {sig.trigger_keyword ? <>mot-clé « <strong>{sig.trigger_keyword}</strong> » · </> : null}
-                    {sig.author ? `chez ${sig.author}` : "post concurrent"}
-                    {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
-                    {safeHttpUrl(sig.post_url) ? (
-                      <> · <a href={safeHttpUrl(sig.post_url)} target="_blank" rel="noreferrer">voir le post</a></>
-                    ) : null}
+                    {isCommentSignal(sig) ? (
+                      <>
+                        {sig.trigger_keyword ? <>mot-clé « <strong>{sig.trigger_keyword}</strong> » · </> : null}
+                        {sig.author ? `chez ${sig.author}` : "post concurrent"}
+                        {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
+                        {safeHttpUrl(sig.post_url) ? (
+                          <> · <a href={safeHttpUrl(sig.post_url)} target="_blank" rel="noreferrer">voir le post</a></>
+                        ) : null}
+                      </>
+                    ) : isLinkedInSearchUrl(sig.post_url) ? (
+                      <>
+                        recherche LinkedIn
+                        {safeHttpUrl(sig.post_url) ? (
+                          <> · <a href={safeHttpUrl(sig.post_url)} target="_blank" rel="noreferrer">voir la recherche</a></>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>profil importé</>
+                    )}
                   </p>
                 </div>
               ))}
