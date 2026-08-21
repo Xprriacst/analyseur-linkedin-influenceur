@@ -158,8 +158,10 @@ class CheckoutTrialPayloadTest(unittest.TestCase):
         self.assertNotIn("discounts", data)
 
     def test_trial_asks_for_the_card_and_cancels_without_one(self):
-        """Sans ces deux réglages, Stripe peut créer un abonnement qui ne sera
-        jamais encaissé et que l'app lirait pourtant comme un accès légitime."""
+        """Checkout avec essai : carte exigée (parcours /paiement ou reprise).
+
+        Le tunnel /onboarding passe par `create_trial_subscription` sans carte.
+        """
         data = self._session(trial_days=7)
         self.assertEqual(data["subscription_data"]["trial_period_days"], 7)
         self.assertEqual(data["payment_method_collection"], "always")
@@ -167,6 +169,34 @@ class CheckoutTrialPayloadTest(unittest.TestCase):
             data["subscription_data"]["trial_settings"]["end_behavior"]["missing_payment_method"],
             "cancel",
         )
+
+    def test_trial_subscription_without_card(self):
+        """Essai fondateurs : abonnement créé côté serveur, sans Checkout."""
+        captured = {}
+
+        def fake_request(method, path, data=None):
+            captured["method"] = method
+            captured["path"] = path
+            captured["data"] = data
+            return {"id": "sub_trial", "status": "trialing", "items": {"data": [{"price": {"id": "price_123"}}]}}
+
+        with patch.dict(os.environ, {"STRIPE_PRICE_ID": "price_123"}, clear=False):
+            with patch.object(stripe_billing, "_request", fake_request):
+                with patch.object(
+                    stripe_billing, "ensure_intro_coupon", return_value="cibl_first_month_40"
+                ):
+                    stripe_billing.create_trial_subscription("cus_1", "user-1", 7)
+
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["path"], "/subscriptions")
+        self.assertEqual(captured["data"]["trial_period_days"], 7)
+        self.assertEqual(captured["data"]["metadata"]["user_id"], "user-1")
+        self.assertNotIn("payment_method_collection", captured["data"])
+        self.assertEqual(
+            captured["data"]["trial_settings"]["end_behavior"]["missing_payment_method"],
+            "cancel",
+        )
+        self.assertEqual(captured["data"]["discounts"], [{"coupon": "cibl_first_month_40"}])
 
     def test_trial_keeps_the_account_link(self):
         """Le rattachement au compte app doit survivre à l'essai, sinon le webhook

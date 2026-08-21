@@ -252,6 +252,27 @@ def create_customer(user_id: str, email: str | None) -> dict[str, Any]:
     return _request("POST", "/customers", payload)
 
 
+def create_trial_subscription(
+    customer_id: str, user_id: str, trial_days: int
+) -> dict[str, Any]:
+    """Abonnement en essai sans carte — créé côté serveur, pas via Checkout.
+
+    Stripe tient l'horloge (`trialing` + `current_period_end`). Sans moyen de
+    paiement enregistré, l'essai se termine en `canceled` (webhook) plutôt qu'en
+    facturation impayée. La remise −40 % du 1er mois payé est posée dès
+    maintenant pour qu'un futur Checkout n'ait pas à la rejouer.
+    """
+    payload: dict[str, Any] = {
+        "customer": customer_id,
+        "items": [{"price": price_id(), "quantity": 1}],
+        "trial_period_days": int(trial_days),
+        "metadata": {"user_id": user_id},
+        "trial_settings": {"end_behavior": {"missing_payment_method": "cancel"}},
+        "discounts": [{"coupon": ensure_intro_coupon()}],
+    }
+    return _request("POST", "/subscriptions", payload)
+
+
 def create_checkout_session(
     customer_id: str,
     user_id: str,
@@ -261,8 +282,8 @@ def create_checkout_session(
 ) -> dict[str, Any]:
     """Session Checkout en mode abonnement (page de paiement hébergée par Stripe).
 
-    `trial_days` > 0 ⇒ essai gratuit : la carte est enregistrée, rien n'est
-    prélevé avant la fin de l'essai, puis l'abonnement démarre seul.
+    `trial_days` > 0 ⇒ essai avec carte (parcours /paiement ou reprise après essai
+    sans carte). Le tunnel /onboarding passe par `create_trial_subscription`.
     """
     payload: dict[str, Any] = {
         "mode": "subscription",
