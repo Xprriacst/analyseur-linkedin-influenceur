@@ -210,16 +210,12 @@ export default function FoundersPage() {
   }
 
   /**
-   * Après le compte : direction Stripe DIRECTEMENT quand l'essai est confirmé
-   * éligible — l'écran /essai re-déroulait un argumentaire à quelqu'un de déjà
-   * convaincu, un clic de trop en plein élan (patron des funnels Catalog/Blow Up).
+   * Après le compte : démarre l'essai SANS carte quand éligible — accès direct
+   * à l'app avec les crédits d'essai. Stripe tient l'horloge côté serveur.
    *
-   * ⚠️ /essai reste la destination de TOUS les autres cas, et c'est structurel :
-   *  - compte non éligible (`trial_eligible` false) : il doit lire « tu repars
-   *    sur X €/mois » AVANT le Checkout — l'envoyer directement sur un paiement
-   *    immédiat après lui avoir promis des jours gratuits serait la pire panne
-   *    silencieuse de ce parcours ;
-   *  - état de facturation illisible ou checkout en échec : repli, jamais d'impasse.
+   * ⚠️ /essai reste la destination de TOUS les autres cas :
+   *  - compte non éligible : paiement immédiat via Checkout (carte requise) ;
+   *  - état illisible ou échec : repli, jamais d'impasse.
    */
   async function toTrial() {
     await persistProfile();
@@ -229,20 +225,12 @@ export default function FoundersPage() {
         const state = await res.json();
         if (state?.subscribed) { router.push("/"); return; }
         if (state?.trial_eligible) {
-          const co = await fetch(`${DIRECT_API_URL}/me/billing/checkout`, {
+          const trial = await fetch(`${DIRECT_API_URL}/me/billing/start-trial`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-            body: JSON.stringify({
-              trial: true,
-              success_url: `${window.location.origin}/?billing=success`,
-              // Abandon sur Stripe : il entre quand même dans l'app avec ses
-              // crédits offerts, profil déjà enregistré (même filet que /essai).
-              cancel_url: `${window.location.origin}/?billing=cancelled`,
-            }),
           });
-          const data = await co.json().catch(() => ({}));
-          if (co.ok && data?.url) {
-            window.location.href = data.url;
+          if (trial.ok) {
+            router.push("/?billing=trial_started");
             return;
           }
         }
@@ -530,14 +518,12 @@ export default function FoundersPage() {
             )}
           </button>
 
-          {/* L'étape suivante est la page de paiement Stripe : le dire ICI, avant
-              le clic — arriver sur une demande de carte sans avoir été prévenu,
-              juste après avoir tapé un mot de passe, c'est le réflexe « arnaque »
-              assuré. */}
+          {/* L'essai démarre sans carte : le dire avant le clic pour éviter
+              la surprise « on me demande quoi ? » après le mot de passe. */}
           <p className="onb-account-stripe">
-            Ensuite : paiement sécurisé Stripe — ta carte est enregistrée mais{" "}
-            <strong>0&nbsp;€ prélevé pendant tes {trialDays} jours d&apos;essai</strong>,
-            résiliable en un clic depuis ton espace.
+            Ensuite : <strong>{trialDays} jours d&apos;accès complet</strong>, sans carte
+            bancaire — tu pourras t&apos;abonner depuis ton espace avant la fin de
+            l&apos;essai si tu veux continuer.
           </p>
 
           <button
@@ -617,7 +603,7 @@ function FoundersLanding({
           </h1>
 
           <p className="fl-sub">
-            On écrit tes posts, on prospecte ton ICP. Toi, tu valides — moins d&apos;une minute par jour.
+            On écrit tes posts, on prospecte ta cible précise. Toi, tu valides — moins d&apos;une minute par jour.
           </p>
 
           <div className="fl-gate">
@@ -648,8 +634,6 @@ function FoundersLanding({
             <p className="fl-gate-micro">Places limitées. Ça prend 90 secondes.</p>
             {gateError && <div className="fl-gate-error">{gateError}</div>}
           </div>
-
-          <FoundersHeroArt />
         </header>
 
         <div className="fl-proof">
@@ -667,11 +651,13 @@ function FoundersLanding({
           </div>
         </div>
 
+        <FoundersHeroArt />
+
         <section className="fl-section">
           <h2 className="fl-section-title">Le vrai goulot, ce n&apos;est pas ton offre</h2>
           <div className="fl-card">
             <p className="fl-card-p">
-              90&nbsp;% sur le craft le matin, 10&nbsp;% marketeur l&apos;après-midi. Chaque
+              90&nbsp;% sur ton cœur de métier le matin, 10&nbsp;% marketeur l&apos;après-midi. Chaque
               casquette coûte 20 à 30 minutes de refocus — et à la fin de la journée,
               seule la mission a avancé. Ton LinkedIn reste muet.
             </p>
