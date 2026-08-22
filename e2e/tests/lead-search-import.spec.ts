@@ -24,6 +24,8 @@ const CONNECTED = {
   },
 };
 
+const SEARCH_URL = "https://www.linkedin.com/search/results/people/?keywords=CTO%20SaaS";
+
 const LEAD = {
   id: "lead-1",
   profile_url: "https://www.linkedin.com/in/camille-roy",
@@ -31,6 +33,9 @@ const LEAD = {
   headline: "CMO @ Acme",
   signal_count: 1,
   status: "new",
+  // Un lead issu d'une recherche n'a PAS commenté : le libellé « a commenté »
+  // (héritage des commentateurs) serait un mensonge d'affichage.
+  signals: [{ post_url: SEARCH_URL }],
 };
 
 async function mockProspecting(
@@ -100,7 +105,7 @@ test("l'URL et le volume choisis partent au serveur, et les leads arrivent à la
   await gotoTab(page, "Prospection");
   await page.getByRole("button", { name: /Importer une recherche LinkedIn/i }).click();
 
-  const searchUrl = "https://www.linkedin.com/search/results/people/?keywords=CTO%20SaaS";
+  const searchUrl = SEARCH_URL;
   await page.getByRole("textbox", { name: /Lien de la recherche/i }).fill(searchUrl);
   // Curseur : on demande explicitement un volume différent du défaut (100).
   await page.getByRole("slider", { name: /Nombre de prospects/i }).fill("200");
@@ -113,6 +118,9 @@ test("l'URL et le volume choisis partent au serveur, et les leads arrivent à la
   // Fin du job : le compte-rendu s'affiche ET la liste se remplit sans action.
   await expect(page.getByText(/200 profils récupérés/i)).toBeVisible({ timeout: 15000 });
   await expect(page.getByText("Camille Roy")).toBeVisible();
+  const row = page.getByRole("button", { name: /Camille Roy/ });
+  await expect(row).toContainText("trouvé dans ta recherche");
+  await expect(row).not.toContainText("a commenté");
 });
 
 test("sans compte LinkedIn connecté, aucun formulaire d'import n'est proposé", async ({ page }) => {
