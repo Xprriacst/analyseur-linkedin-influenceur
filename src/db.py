@@ -36,6 +36,11 @@ def _json_safe(obj: Any) -> Any:
     return obj
 
 
+def _looks_temporary_media_url(url: str | None) -> bool:
+    text = (url or "").strip().lower()
+    return "/temp/" in text and "media.zernio.com" in text
+
+
 def _url() -> str | None:
     return os.environ.get("SUPABASE_URL")
 
@@ -2801,7 +2806,11 @@ def list_self_photos(access_token: str, limit: int = 20) -> list[dict]:
         .limit(limit)
         .execute()
     )
-    return resp.data or []
+    rows = resp.data or []
+    for row in rows:
+        url = row.get("image_url")
+        row["is_temporary"] = _looks_temporary_media_url(url)
+    return rows
 
 
 def get_self_photos_by_ids(access_token: str, photo_ids: list[str]) -> list[dict]:
@@ -2832,7 +2841,10 @@ def get_self_photos_by_ids(access_token: str, photo_ids: list[str]) -> list[dict
         .in_("id", ordered)
         .execute()
     )
-    by_id = {row["id"]: row for row in (resp.data or [])}
+    by_id = {}
+    for row in (resp.data or []):
+        row["is_temporary"] = _looks_temporary_media_url(row.get("image_url"))
+        by_id[row["id"]] = row
     return [by_id[pid] for pid in ordered if pid in by_id]
 
 
@@ -4368,6 +4380,8 @@ def upsert_cached_posts(
 
         new_rows = []
         for item in posts_with_classifs:
+            from src import media_store
+
             post = item.get("post", {})
             url = post.get("url")
             if not url or url in existing_urls:
@@ -4389,7 +4403,9 @@ def upsert_cached_posts(
             }
             media_items = post.get("media_items")
             if media_items:
-                row["media_items"] = _json_safe(media_items)
+                row["media_items"] = _json_safe(
+                    media_store.rehost_image_media_items(media_items, scope="monitoring") or []
+                )
             if detected_by_monitor:
                 row["detected_by_monitor"] = True
             if classif:
@@ -4565,7 +4581,11 @@ def refresh_cached_post_metrics(cache_id: str, post: dict) -> None:
         }
         media_items = post.get("media_items")
         if media_items:
-            updates["media_items"] = _json_safe(media_items)
+            from src import media_store
+
+            updates["media_items"] = _json_safe(
+                media_store.rehost_image_media_items(media_items, scope="monitoring") or []
+            )
         (
             admin_client()
             .table("cached_posts")
