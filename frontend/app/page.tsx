@@ -579,10 +579,56 @@ type SelfPhoto = {
   image_url: string;
   filename?: string | null;
   created_at?: string;
+  is_temporary?: boolean;
 };
 
 const SELF_PHOTOS_CAP = 5;
 const SELF_PHOTOS_PER_GEN = 3;
+
+function SafeThumbImage({
+  src,
+  alt,
+  className,
+  style,
+  fallback,
+}: {
+  src?: string | null;
+  alt: string;
+  className?: string;
+  style?: Record<string, any>;
+  fallback?: React.ReactNode;
+}) {
+  const [broken, setBroken] = useState(false);
+  if (!src || broken) {
+    return (
+      <>{fallback ?? (
+        <div
+          aria-label={alt}
+          style={{
+            display: "grid",
+            placeItems: "center",
+            background: "color-mix(in srgb, var(--border) 50%, white)",
+            color: "var(--muted)",
+            border: "1px dashed var(--border)",
+            ...style,
+          }}
+        >
+          Image indisponible
+        </div>
+      )}</>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      style={style}
+      onError={() => setBroken(true)}
+    />
+  );
+}
 
 function imageJobIsActive(j: ImageJob): boolean {
   return j.status === "queued" || j.status === "running";
@@ -4019,19 +4065,25 @@ function ImageGenModal({
                   <> Ajoute-en d&apos;abord dans <strong>Mon profil</strong>.</>
                 )}
               </p>
+              {selfPhotos.some((p) => p.is_temporary) && (
+                <p style={{ fontSize: 11, color: "var(--danger)", margin: "0 0 8px", lineHeight: 1.45 }}>
+                  Certaines anciennes photos ont expiré. Re-uploade-les depuis <strong>Mon profil</strong> pour les réutiliser.
+                </p>
+              )}
               {selfPhotos.length > 0 ? (
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                   {selfPhotos.map((p) => {
                     const selected = selectedSelfIds.includes(p.id);
                     const dimmed = identityMode && !selected;
+                    const disabled = !!p.is_temporary;
                     return (
                       <button
                         key={p.id}
                         type="button"
                         aria-pressed={selected}
                         aria-label={p.filename || "Photo de moi"}
-                        title={selected ? "Retirer" : "Utiliser comme référence d'identité"}
-                        onClick={() => toggleSelfPhoto(p.id)}
+                        title={disabled ? "Photo expirée — re-uploade-la depuis Mon profil" : (selected ? "Retirer" : "Utiliser comme référence d'identité")}
+                        onClick={() => { if (!disabled) toggleSelfPhoto(p.id); }}
                         style={{
                           width: 72, padding: 4, borderRadius: 10, flex: "0 0 auto", cursor: "pointer",
                           border: `2px solid ${selected ? "var(--primary)" : "var(--border)"}`,
@@ -4041,15 +4093,24 @@ function ImageGenModal({
                           boxShadow: selected
                             ? "0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent)"
                             : "none",
-                          opacity: dimmed ? 0.5 : 1,
-                          filter: dimmed ? "grayscale(0.5)" : "none",
+                          opacity: dimmed || disabled ? 0.5 : 1,
+                          filter: dimmed || disabled ? "grayscale(0.5)" : "none",
                         }}
                       >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
+                        <SafeThumbImage
                           src={p.image_url}
-                          alt=""
+                          alt={p.filename || "Photo de moi"}
                           style={{ width: "100%", height: 64, objectFit: "cover", borderRadius: 6, display: "block" }}
+                          fallback={
+                            <div style={{
+                              width: "100%", height: 64, borderRadius: 6, display: "grid", placeItems: "center",
+                              fontSize: 10, textAlign: "center", padding: 6,
+                              border: "1px dashed var(--border)", color: "var(--muted)",
+                              background: "color-mix(in srgb, var(--border) 50%, white)",
+                            }}>
+                              Photo expirée
+                            </div>
+                          }
                         />
                       </button>
                     );
@@ -7560,8 +7621,12 @@ function LibCard({
     >
       <span className="lib-card-expand" aria-hidden><Maximize2 size={14} /></span>
       {thumb && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img className="lib-thumb" src={thumb} alt="" />
+        <SafeThumbImage
+          className="lib-thumb"
+          src={thumb}
+          alt="Aperçu"
+          style={{ width: "100%", height: 180, objectFit: "cover" }}
+        />
       )}
       <div className="lib-card-title"><strong>{title}</strong>{tags}</div>
       {meta && <div className="lib-card-meta">{meta}</div>}
@@ -11679,14 +11744,23 @@ function SelfPhotosCard() {
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           {photos.map((p) => (
             <div key={p.id} style={{ position: "relative", width: 96 }}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
+              <SafeThumbImage
                 src={p.image_url}
                 alt={p.filename || "Photo de moi"}
                 style={{
                   width: 96, height: 96, objectFit: "cover", borderRadius: 10,
                   border: "1px solid var(--border)", display: "block",
                 }}
+                fallback={
+                  <div style={{
+                    width: 96, height: 96, borderRadius: 10, display: "grid", placeItems: "center",
+                    padding: 8, textAlign: "center", fontSize: 11, lineHeight: 1.25,
+                    border: "1px dashed var(--border)", color: "var(--muted)",
+                    background: "color-mix(in srgb, var(--border) 50%, white)",
+                  }}>
+                    Photo expirée
+                  </div>
+                }
               />
               <button
                 type="button"
@@ -11710,6 +11784,11 @@ function SelfPhotosCard() {
       {!loading && (
         <p style={{ fontSize: 11, color: "var(--muted)", margin: "10px 0 0" }}>
           {photos.length}/{SELF_PHOTOS_CAP} photo{photos.length > 1 ? "s" : ""} — visage bien visible, lumière naturelle de préférence.
+        </p>
+      )}
+      {!loading && photos.some((p) => p.is_temporary) && (
+        <p style={{ fontSize: 11, color: "var(--danger)", margin: "6px 0 0" }}>
+          Certaines anciennes photos ont expiré. Supprime-les puis re-uploade-les.
         </p>
       )}
     </section>
@@ -14482,6 +14561,37 @@ function safeHttpUrl(u?: string | null): string | undefined {
   }
 }
 
+/** Un signal est un vrai commentaire (post lead-magnet), pas un import de recherche. */
+function isCommentSignal(sig: LeadSignal): boolean {
+  return Boolean((sig.comment_text && String(sig.comment_text).trim()) || sig.trigger_keyword || sig.commented_at);
+}
+
+/** URL d'une recherche LinkedIn (classique, Sales Nav, Recruiter) stockée dans `post_url` d'une source `kind=search`. */
+function isLinkedInSearchUrl(url?: string | null): boolean {
+  const href = safeHttpUrl(url);
+  if (!href) return false;
+  try {
+    const path = new URL(href).pathname.toLowerCase();
+    return path.includes("/search/") || path.includes("/sales/") || path.includes("/talent/") || path.includes("/recruiter/");
+  } catch {
+    return false;
+  }
+}
+
+function leadSignals(l: Lead): LeadSignal[] {
+  if (l.signals && l.signals.length) return l.signals;
+  return [leadLastSignal(l)];
+}
+
+/** Ligne de liste : un commentaire (plus parlant) passe devant une recherche. */
+function leadCaptionSignal(l: Lead): LeadSignal {
+  const all = leadSignals(l);
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    if (isCommentSignal(all[i])) return all[i];
+  }
+  return all[all.length - 1];
+}
+
 function ProspectingView({
   isAuthed,
   requireAuth,
@@ -14929,7 +15039,9 @@ function ProspectingView({
         // ne se déclenche jamais. Le floor à 0 force les cartes à la largeur dispo.
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 6 }}>
           {leads.map((l, i) => {
-            const sig = leadLastSignal(l);
+            const sig = leadCaptionSignal(l);
+            const fromSearch = leadSignals(l).some((s) => isLinkedInSearchUrl(s.post_url));
+            const commented = isCommentSignal(sig);
             const multi = (l.signal_count ?? 1) > 1;
             const skipped = l.contact_status === "skip";
             // ALE-243 : séparateur avant le 1er lead écarté (les écartés sont triés en bas par le backend).
@@ -14969,9 +15081,15 @@ function ProspectingView({
                     )}
                   </span>
                   <span style={{ display: "block", color: "var(--muted)", fontSize: 12, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    a commenté{sig.trigger_keyword ? <> « <strong>{sig.trigger_keyword}</strong> »</> : null}
-                    {sig.author ? ` chez ${sig.author}` : ""}
-                    {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
+                    {commented ? (
+                      <>
+                        a commenté{sig.trigger_keyword ? <> « <strong>{sig.trigger_keyword}</strong> »</> : null}
+                        {sig.author ? ` chez ${sig.author}` : ""}
+                        {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
+                      </>
+                    ) : fromSearch ? (
+                      <>trouvé dans ta recherche</>
+                    ) : null}
                     {multi ? <strong style={{ color: "var(--success)" }}> · {l.signal_count} signaux</strong> : null}
                   </span>
                 </span>
@@ -15130,12 +15248,25 @@ function ProspectingView({
                     <p style={{ margin: 0, fontSize: 13, whiteSpace: "pre-wrap" }}>« {sig.comment_text} »</p>
                   )}
                   <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
-                    {sig.trigger_keyword ? <>mot-clé « <strong>{sig.trigger_keyword}</strong> » · </> : null}
-                    {sig.author ? `chez ${sig.author}` : "post concurrent"}
-                    {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
-                    {safeHttpUrl(sig.post_url) ? (
-                      <> · <a href={safeHttpUrl(sig.post_url)} target="_blank" rel="noreferrer">voir le post</a></>
-                    ) : null}
+                    {isCommentSignal(sig) ? (
+                      <>
+                        {sig.trigger_keyword ? <>mot-clé « <strong>{sig.trigger_keyword}</strong> » · </> : null}
+                        {sig.author ? `chez ${sig.author}` : "post concurrent"}
+                        {leadDate(sig.commented_at) ? ` · ${leadDate(sig.commented_at)}` : ""}
+                        {safeHttpUrl(sig.post_url) ? (
+                          <> · <a href={safeHttpUrl(sig.post_url)} target="_blank" rel="noreferrer">voir le post</a></>
+                        ) : null}
+                      </>
+                    ) : isLinkedInSearchUrl(sig.post_url) ? (
+                      <>
+                        recherche LinkedIn
+                        {safeHttpUrl(sig.post_url) ? (
+                          <> · <a href={safeHttpUrl(sig.post_url)} target="_blank" rel="noreferrer">voir la recherche</a></>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>profil importé</>
+                    )}
                   </p>
                 </div>
               ))}

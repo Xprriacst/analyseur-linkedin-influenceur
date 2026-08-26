@@ -86,6 +86,11 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-08-21 (dev : leads d'une recherche — plus de « a commenté »)
+- **Retour d'Alex** après un import LinkedIn qui marche enfin : la liste disait **« a commenté »** sous chaque prospect (Romain Cornille, Flora Codaccioni…). Ils n'ont pas commenté — ils viennent d'une recherche.
+- **Fix** : la ligne distingue commentaire (post lead-magnet) et recherche. Un import affiche **« trouvé dans ta recherche »** ; le volet dit « recherche LinkedIn » (plus « post concurrent »). Un lead qui a les deux signaux garde le commentaire, plus parlant.
+- Frontend + spec `lead-search-import`. Aucune migration.
+
 ### 2026-08-19 #2 (RELEASE PROD : alerte e-mail « nouveau lead » — PR #459/#460/#461 → release #462)
 - **Release `dev → main` PR #462** mergee ~15:59 UTC. Delta enumere avant merge : **#459** (l'alerte elle-meme), **#460** (journaliser la raison d'un envoi refuse), **#461** (User-Agent Resend), et **#458** (compteur de pages vues du tunnel, merge sur `dev` le 18/08 par une autre session, jamais release — passager signale avant le merge, non teste par Alex).
 - **Migration 0067 appliquee et verifiee sur dev ET prod AVANT le merge** (table presente, RLS active, 0 policy, 3 index). **Variables posees sur les deux backends** : `RESEND_API_KEY`, `RESEND_FROM`, `LEAD_NOTIFY_TO`.

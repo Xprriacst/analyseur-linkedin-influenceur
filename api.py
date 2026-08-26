@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import actor_health
-from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing
+from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_posts, influencer_monitor, unipile, stripe_billing, media_store
 from src import heygen
 from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
@@ -343,25 +343,21 @@ def create_me_self_photo(
 ) -> dict[str, Any]:
     """Upload une photo de soi (via Zernio) et l'enregistre dans le profil.
 
-    Plafond : `SELF_PHOTOS_CAP` photos par compte. Même coût média Zernio que
-    les images jointes aux posts — pas de débit de crédits à l'upload.
+    Plafond : `SELF_PHOTOS_CAP` photos par compte. Ces photos doivent rester
+    lisibles des jours plus tard (sélection d'identité, régénération) : elles
+    vont donc dans le stockage durable de l'app, pas dans le `/temp/` de Zernio.
     """
-    if not zernio.enabled():
-        raise HTTPException(status_code=400, detail="Upload média non configuré (ZERNIO_API_KEY manquant).")
     data_url = (payload.data_url or "").strip()
     if not data_url.startswith("data:image/"):
         raise HTTPException(status_code=400, detail="Image invalide : data URL image attendue.")
     try:
-        media_items = zernio.prepare_image_media_items([
-            {"data_url": data_url, "filename": payload.filename or "self-photo.png"},
-        ])
-    except zernio.ZernioError as exc:
+        image_url = media_store.upload_image_data_url(
+            data_url,
+            filename=payload.filename or "self-photo.png",
+            scope="self-photos",
+        )
+    except media_store.MediaStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if not media_items:
-        raise HTTPException(status_code=400, detail="Upload de la photo impossible.")
-    image_url = media_items[0].get("url")
-    if not image_url:
-        raise HTTPException(status_code=500, detail="URL publique de la photo manquante.")
     try:
         photo = db.create_self_photo(token, image_url, filename=payload.filename)
     except ValueError as exc:
@@ -4057,6 +4053,17 @@ def _add_library_entry(
         imported_from_link = True
     else:
         imported_from_link = False
+
+    if image_url:
+        source_url = image_url
+        stem = "library-image"
+        if imported_from_link:
+            stem = "linkedin-post-image"
+        try:
+            image_url = media_store.rehost_external_image(image_url, filename_stem=stem, scope="library")
+        except media_store.MediaStoreError as exc:
+            print(f"[library] image non réhébergée ({source_url}) : {exc}", flush=True)
+            image_url = None
 
     if text and len(text) < 10:
         raise HTTPException(status_code=422, detail="Le texte du post est trop court (10 caractères minimum).")
