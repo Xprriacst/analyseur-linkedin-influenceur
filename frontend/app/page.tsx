@@ -579,10 +579,56 @@ type SelfPhoto = {
   image_url: string;
   filename?: string | null;
   created_at?: string;
+  is_temporary?: boolean;
 };
 
 const SELF_PHOTOS_CAP = 5;
 const SELF_PHOTOS_PER_GEN = 3;
+
+function SafeThumbImage({
+  src,
+  alt,
+  className,
+  style,
+  fallback,
+}: {
+  src?: string | null;
+  alt: string;
+  className?: string;
+  style?: Record<string, any>;
+  fallback?: React.ReactNode;
+}) {
+  const [broken, setBroken] = useState(false);
+  if (!src || broken) {
+    return (
+      <>{fallback ?? (
+        <div
+          aria-label={alt}
+          style={{
+            display: "grid",
+            placeItems: "center",
+            background: "color-mix(in srgb, var(--border) 50%, white)",
+            color: "var(--muted)",
+            border: "1px dashed var(--border)",
+            ...style,
+          }}
+        >
+          Image indisponible
+        </div>
+      )}</>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      style={style}
+      onError={() => setBroken(true)}
+    />
+  );
+}
 
 function imageJobIsActive(j: ImageJob): boolean {
   return j.status === "queued" || j.status === "running";
@@ -4019,19 +4065,25 @@ function ImageGenModal({
                   <> Ajoute-en d&apos;abord dans <strong>Mon profil</strong>.</>
                 )}
               </p>
+              {selfPhotos.some((p) => p.is_temporary) && (
+                <p style={{ fontSize: 11, color: "var(--danger)", margin: "0 0 8px", lineHeight: 1.45 }}>
+                  Certaines anciennes photos ont expiré. Re-uploade-les depuis <strong>Mon profil</strong> pour les réutiliser.
+                </p>
+              )}
               {selfPhotos.length > 0 ? (
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                   {selfPhotos.map((p) => {
                     const selected = selectedSelfIds.includes(p.id);
                     const dimmed = identityMode && !selected;
+                    const disabled = !!p.is_temporary;
                     return (
                       <button
                         key={p.id}
                         type="button"
                         aria-pressed={selected}
                         aria-label={p.filename || "Photo de moi"}
-                        title={selected ? "Retirer" : "Utiliser comme référence d'identité"}
-                        onClick={() => toggleSelfPhoto(p.id)}
+                        title={disabled ? "Photo expirée — re-uploade-la depuis Mon profil" : (selected ? "Retirer" : "Utiliser comme référence d'identité")}
+                        onClick={() => { if (!disabled) toggleSelfPhoto(p.id); }}
                         style={{
                           width: 72, padding: 4, borderRadius: 10, flex: "0 0 auto", cursor: "pointer",
                           border: `2px solid ${selected ? "var(--primary)" : "var(--border)"}`,
@@ -4041,15 +4093,24 @@ function ImageGenModal({
                           boxShadow: selected
                             ? "0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent)"
                             : "none",
-                          opacity: dimmed ? 0.5 : 1,
-                          filter: dimmed ? "grayscale(0.5)" : "none",
+                          opacity: dimmed || disabled ? 0.5 : 1,
+                          filter: dimmed || disabled ? "grayscale(0.5)" : "none",
                         }}
                       >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
+                        <SafeThumbImage
                           src={p.image_url}
-                          alt=""
+                          alt={p.filename || "Photo de moi"}
                           style={{ width: "100%", height: 64, objectFit: "cover", borderRadius: 6, display: "block" }}
+                          fallback={
+                            <div style={{
+                              width: "100%", height: 64, borderRadius: 6, display: "grid", placeItems: "center",
+                              fontSize: 10, textAlign: "center", padding: 6,
+                              border: "1px dashed var(--border)", color: "var(--muted)",
+                              background: "color-mix(in srgb, var(--border) 50%, white)",
+                            }}>
+                              Photo expirée
+                            </div>
+                          }
                         />
                       </button>
                     );
@@ -7560,8 +7621,12 @@ function LibCard({
     >
       <span className="lib-card-expand" aria-hidden><Maximize2 size={14} /></span>
       {thumb && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img className="lib-thumb" src={thumb} alt="" />
+        <SafeThumbImage
+          className="lib-thumb"
+          src={thumb}
+          alt="Aperçu"
+          style={{ width: "100%", height: 180, objectFit: "cover" }}
+        />
       )}
       <div className="lib-card-title"><strong>{title}</strong>{tags}</div>
       {meta && <div className="lib-card-meta">{meta}</div>}
@@ -11679,14 +11744,23 @@ function SelfPhotosCard() {
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           {photos.map((p) => (
             <div key={p.id} style={{ position: "relative", width: 96 }}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
+              <SafeThumbImage
                 src={p.image_url}
                 alt={p.filename || "Photo de moi"}
                 style={{
                   width: 96, height: 96, objectFit: "cover", borderRadius: 10,
                   border: "1px solid var(--border)", display: "block",
                 }}
+                fallback={
+                  <div style={{
+                    width: 96, height: 96, borderRadius: 10, display: "grid", placeItems: "center",
+                    padding: 8, textAlign: "center", fontSize: 11, lineHeight: 1.25,
+                    border: "1px dashed var(--border)", color: "var(--muted)",
+                    background: "color-mix(in srgb, var(--border) 50%, white)",
+                  }}>
+                    Photo expirée
+                  </div>
+                }
               />
               <button
                 type="button"
@@ -11710,6 +11784,11 @@ function SelfPhotosCard() {
       {!loading && (
         <p style={{ fontSize: 11, color: "var(--muted)", margin: "10px 0 0" }}>
           {photos.length}/{SELF_PHOTOS_CAP} photo{photos.length > 1 ? "s" : ""} — visage bien visible, lumière naturelle de préférence.
+        </p>
+      )}
+      {!loading && photos.some((p) => p.is_temporary) && (
+        <p style={{ fontSize: 11, color: "var(--danger)", margin: "6px 0 0" }}>
+          Certaines anciennes photos ont expiré. Supprime-les puis re-uploade-les.
         </p>
       )}
     </section>
