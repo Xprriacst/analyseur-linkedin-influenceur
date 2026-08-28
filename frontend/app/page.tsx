@@ -2486,9 +2486,188 @@ function InstagramGenerator({
   );
 }
 
-/** « Ma bibliothèque » Instagram (ALE-291) : packs reel sauvegardés. Version
- *  allégée de MyContentHub (LinkedIn) — pas encore de templates/veille pour
- *  Instagram, juste les packs que le client a choisi de garder. */
+/** ALE-222 parité Instagram, lot 1 : import par lien + trames réutilisables.
+ *  Miroir de `MyLibraryView` (LinkedIn) en plus compact — la trame ajoutée ici
+ *  apparaît automatiquement dans le picker de trames du Générateur de reels
+ *  (GET /generate/instagram/trames, id `lib:{id}`), sans réglage à part. */
+function InstagramTemplatesSection({ isAuthed }: { isAuthed: boolean }) {
+  const [entries, setEntries] = useState<PostTemplate[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [url, setUrl] = useState("");
+  const [text, setText] = useState("");
+  const [note, setNote] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [extractingId, setExtractingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!isAuthed) { setEntries([]); return; }
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/post-templates?platform=instagram`, { headers: await authHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Chargement de la bibliothèque impossible");
+      setEntries(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setError(err.message || "Chargement impossible");
+    } finally {
+      setLoading(false);
+    }
+  }, [isAuthed]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  // Miroir de la matrice serveur : lien valide OU texte ≥ 10 caractères.
+  const urlOk = /^https?:\/\//i.test(url.trim());
+  const canAdd = urlOk || text.trim().length >= 10;
+
+  async function addEntry() {
+    if (!canAdd || adding) return;
+    setAdding(true);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/post-templates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({
+          url: url.trim() || null,
+          text: text.trim() || null,
+          note: note.trim() || null,
+          platform: "instagram",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Ajout impossible");
+      setEntries((prev) => [data, ...prev]);
+      setUrl(""); setText(""); setNote("");
+    } catch (err: any) {
+      setError(err.message || "Ajout impossible");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function extractStructure(id: string) {
+    setExtractingId(id);
+    setError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/post-templates/${id}/extract-structure`, {
+        method: "POST",
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Extraction impossible");
+      setEntries((prev) => prev.map((e) => (e.id === id ? data : e)));
+    } catch (err: any) {
+      setError(err.message || "Extraction impossible");
+    } finally {
+      setExtractingId(null);
+    }
+  }
+
+  async function deleteEntry(id: string) {
+    setDeletingId(id);
+    setEntries((prev) => prev.filter((e) => e.id !== id));
+    try {
+      await fetch(`${DIRECT_API_URL}/me/post-templates/${id}`, { method: "DELETE", headers: await authHeaders() });
+    } catch { void load(); }
+    finally { setDeletingId(null); }
+  }
+
+  if (!isAuthed) return null;
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <div className="lib-hero">
+        <h2 className="lib-hero-title"><PlusCircle size={18} /> Ajouter à ma bibliothèque</h2>
+        <p className="lib-hero-desc">
+          Colle le lien d&apos;un reel Instagram qui t&apos;a plu — caption, auteur et image sont importés
+          automatiquement. Sa trame apparaît ensuite dans le choix de trame du Générateur.
+        </p>
+        <div className="lib-hero-row">
+          <input
+            type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addEntry(); } }}
+            placeholder="https://www.instagram.com/reel/…"
+            maxLength={2000}
+          />
+          <button className="lib-hero-btn" onClick={addEntry} disabled={adding || !canAdd}>
+            {adding ? <Loader2 size={16} className="spinning" /> : <PlusCircle size={16} />} Ajouter
+          </button>
+        </div>
+        <details className="lib-hero-more">
+          <summary>Plus d&apos;options — texte collé ↓</summary>
+          <div className="lib-hero-optbox">
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Ou colle la caption/le script directement (si tu n'as pas le lien)"
+              maxLength={6000}
+              rows={4}
+            />
+            <input
+              type="text"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Pourquoi il te plaît ? (optionnel — guide l'IA)"
+              maxLength={500}
+            />
+          </div>
+        </details>
+      </div>
+      {error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
+
+      {loading && entries.length === 0 ? (
+        <p className="role-picker-hint" style={{ marginTop: 12 }}>Chargement…</p>
+      ) : entries.length > 0 ? (
+        <div className="variants-list" style={{ marginTop: 16 }}>
+          {entries.map((t) => {
+            const hasStructure = !!(t.structure_text || "").trim();
+            return (
+              <div className="variant-card" key={t.id}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {t.structure_label || (t.post_text || "").slice(0, 60) || "Entrée sans titre"}
+                  </span>
+                  {hasStructure && <span className="badge">Trame prête</span>}
+                </div>
+                {t.post_text && (
+                  <p style={{ fontSize: 13, color: "var(--muted)", marginTop: 6, whiteSpace: "pre-wrap" }}>
+                    {t.post_text.slice(0, 220)}{t.post_text.length > 220 ? "…" : ""}
+                  </p>
+                )}
+                {hasStructure && (
+                  <p style={{ fontSize: 13, marginTop: 6, whiteSpace: "pre-wrap" }}>{t.structure_text}</p>
+                )}
+                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                  {!hasStructure && t.post_text && (
+                    <button className="secondary-button" disabled={extractingId === t.id} onClick={() => extractStructure(t.id)}>
+                      {extractingId === t.id ? <Loader2 size={14} className="spinning" /> : <Sparkles size={14} />} Extraire la trame
+                    </button>
+                  )}
+                  <button className="secondary-button" disabled={deletingId === t.id} onClick={() => deleteEntry(t.id)}>
+                    {deletingId === t.id ? <Loader2 size={14} className="spinning" /> : <Trash2 size={14} />} Supprimer
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="role-picker-hint" style={{ marginTop: 12 }}>
+          Ta bibliothèque de trames est vide — colle le lien d&apos;un reel qui t&apos;a plu ci-dessus.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** « Ma bibliothèque » Instagram (ALE-291 + ALE-222 parité, lot 1) : trames
+ *  importées/réutilisables (InstagramTemplatesSection) + packs reel sauvegardés. */
 function InstagramLibraryView({ isAuthed }: { isAuthed: boolean }) {
   const [posts, setPosts] = useState<SavedPost[]>([]);
   const [loading, setLoading] = useState(false);
@@ -2532,14 +2711,18 @@ function InstagramLibraryView({ isAuthed }: { isAuthed: boolean }) {
   if (!isAuthed) {
     return <p className="role-picker-hint">Connecte-toi pour voir tes reels sauvegardés.</p>;
   }
-  if (loading) {
-    return <p className="role-picker-hint">Chargement…</p>;
-  }
-  if (posts.length === 0) {
-    return <p className="role-picker-hint">Aucun reel sauvegardé pour l&apos;instant — génère un pack et sauvegarde-le depuis le Générateur.</p>;
-  }
 
   return (
+    <div>
+      <InstagramTemplatesSection isAuthed={isAuthed} />
+      <h3 className="section-title" style={{ fontSize: 16, marginBottom: 10 }}>
+        <Bookmark size={16} /> Mes reels sauvegardés
+      </h3>
+      {loading ? (
+        <p className="role-picker-hint">Chargement…</p>
+      ) : posts.length === 0 ? (
+        <p className="role-picker-hint">Aucun reel sauvegardé pour l&apos;instant — génère un pack et sauvegarde-le depuis le Générateur.</p>
+      ) : (
     <div className="variants-list">
       {posts.map((post) => {
         const details = post.reel_details;
@@ -2583,6 +2766,8 @@ function InstagramLibraryView({ isAuthed }: { isAuthed: boolean }) {
           </div>
         );
       })}
+    </div>
+      )}
     </div>
   );
 }
@@ -13684,6 +13869,8 @@ type PostTemplate = {
   source_author?: string | null;
   source_post_url?: string | null;
   created_at?: string;
+  // ALE-222 parité Instagram : bibliothèque partagée, distinguée par plateforme.
+  platform?: string | null;
 };
 
 // ALE-234 : source de prospection rattachée à une entrée de bibliothèque (même post).

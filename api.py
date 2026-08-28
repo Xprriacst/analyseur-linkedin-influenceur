@@ -32,13 +32,14 @@ from src import jobs as jobs_module
 from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread, start_lead_collection_job_thread, start_avatar_video_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters, lead_collect_credit_cost, effective_max_comments
 from src import lead_search
-from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
+from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, extract_reel_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
 from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures, IG_TRAMES
 from src.llm import adapt_post_for_x, adapt_post_for_reddit
 from src.llm import spoken_script
 from src.normalize import normalize_posts, normalize_profile
 from src.patterns import analyze_patterns
 from src.scraper import fetch_post_detail, fetch_posts, fetch_profile
+from src.scraper_instagram import fetch_ig_post_detail
 from src.stats import compute_stats
 from src.instagram_hooks import select_hooks
 from src.trends import compute_trends
@@ -3099,15 +3100,29 @@ def recommend_role(payload: EditorialRoleRequest, token: str = Depends(require_t
 
 @app.get("/generate/instagram/trames")
 def list_instagram_trames(token: str = Depends(require_token)) -> dict[str, Any]:
-    """Catalogue statique des trames de reel Instagram (ALE-291).
+    """Trames de reel Instagram : bibliothèque du client (ALE-222 parité) devant
+    le catalogue statique (ALE-291).
 
-    Gratuit, sans effet de bord — contrairement aux structures LinkedIn (issues
-    de la bibliothèque utilisateur), les trames de reel sont un catalogue fixe
-    pour l'instant. Gardé côté serveur comme le reste du parcours Instagram :
-    masquer le bouton ne protège rien pour un compte non flaggé.
+    Gratuit, sans effet de bord. Gardé côté serveur comme le reste du parcours
+    Instagram : masquer le bouton ne protège rien pour un compte non flaggé.
+    Une trame de bibliothèque porte l'id ``lib:{template_id}`` — reconnu par
+    `process_generation_job` pour aller y lire la trame réelle (jobs.py).
     """
     require_feature(token, "instagram")
-    return {"trames": IG_TRAMES}
+    try:
+        library = db.list_post_templates(token, platform="instagram")
+    except Exception:  # noqa: BLE001 — la bibliothèque est un plus, pas un prérequis
+        library = []
+    user_trames = [
+        {
+            "id": f"lib:{t['id']}",
+            "label": (t.get("structure_label") or "").strip() or "Ma bibliothèque",
+            "description": ((t.get("structure_text") or t.get("post_text") or "").strip())[:160],
+        }
+        for t in library
+        if (t.get("structure_text") or t.get("post_text") or "").strip()
+    ]
+    return {"trames": user_trames + IG_TRAMES}
 
 
 class StructuresRequest(BaseModel):
@@ -4002,6 +4017,8 @@ class PostTemplateRequest(BaseModel):
     format: str | None = Field(default=None, max_length=30)
     image_url: str | None = Field(default=None, max_length=2000)
     image_note: str | None = Field(default=None, max_length=500)
+    # ALE-222 parité Instagram : bibliothèque partagée, distinguée par plateforme.
+    platform: str | None = Field(default=None, max_length=20)
 
 
 def _add_library_entry(
@@ -4017,13 +4034,15 @@ def _add_library_entry(
     image_url: str | None,
     image_note: str | None,
     source: str,
+    platform: str = "linkedin",
 ) -> dict[str, Any]:
-    """Ajout unifié à « Ma bibliothèque » (ALE-222).
+    """Ajout unifié à « Ma bibliothèque » (ALE-222 LinkedIn, ALE-222-IG parité Instagram).
 
     (1) Pas de texte ni de structure + lien valide → import du post (texte,
-    auteur, image) ; (2) texte sans structure manuelle → extraction IA du
-    squelette, best-effort : un échec ne fait jamais perdre la sauvegarde
-    (l'entrée reste utilisable comme inspiration) ; (3) insert.
+    auteur, image, via l'acteur Apify du réseau concerné) ; (2) texte sans
+    structure manuelle → extraction IA du squelette, best-effort : un échec ne
+    fait jamais perdre la sauvegarde (l'entrée reste utilisable comme
+    inspiration) ; (3) insert.
     """
     text = (text or "").strip()
     url = (url or "").strip() or None
@@ -4040,7 +4059,7 @@ def _add_library_entry(
                 status_code=422,
                 detail="Colle le lien du post, son texte, ou une structure.",
             )
-        detail = fetch_post_detail(url)
+        detail = fetch_ig_post_detail(url) if platform == "instagram" else fetch_post_detail(url)
         if not detail:
             raise HTTPException(
                 status_code=422,
@@ -4058,7 +4077,7 @@ def _add_library_entry(
         source_url = image_url
         stem = "library-image"
         if imported_from_link:
-            stem = "linkedin-post-image"
+            stem = "instagram-post-image" if platform == "instagram" else "linkedin-post-image"
         try:
             image_url = media_store.rehost_external_image(image_url, filename_stem=stem, scope="library")
         except media_store.MediaStoreError as exc:
@@ -4091,14 +4110,16 @@ def _add_library_entry(
         source_post_url=url,
         post_text=text[:6000] or None,
         note=(note or "").strip() or None,
+        platform=platform,
     )
     if not entry:
         raise HTTPException(status_code=400, detail="Impossible d'enregistrer dans la bibliothèque.")
     # ALE-234 : un post importé par lien peut être un lead magnet — on le détecte
     # et on crée la source de prospection (sans collecte payante). La clé
     # `lead_magnet` n'est pas persistée sur l'entrée : le front la lit dans la
-    # réponse, puis recroise bibliothèque × sources via l'URL du post.
-    if imported_from_link and text:
+    # réponse, puis recroise bibliothèque × sources via l'URL du post. Détection
+    # LinkedIn uniquement (ALE-234 ne couvre pas la prospection Instagram).
+    if platform == "linkedin" and imported_from_link and text:
         lead_magnet = _detect_library_lead_magnet(token, url=url, text=text, author=author)
         if lead_magnet:
             entry["lead_magnet"] = lead_magnet
@@ -4142,9 +4163,16 @@ def _detect_library_lead_magnet(token: str, *, url: str, text: str, author: str 
 
 
 @app.get("/me/post-templates")
-def me_post_templates(token: str = Depends(require_token)) -> list[dict[str, Any]]:
-    """List the user's library entries (posts de référence + templates unifiés)."""
-    return db.list_post_templates(token)
+def me_post_templates(platform: str = "linkedin", token: str = Depends(require_token)) -> list[dict[str, Any]]:
+    """List the user's library entries (posts de référence + templates unifiés).
+
+    ``platform=instagram`` (ALE-222 parité Instagram) reste derrière le flag —
+    masquer l'onglet ne protège rien, l'endpoint doit refuser lui-même.
+    """
+    platform = "instagram" if platform == "instagram" else "linkedin"
+    if platform == "instagram":
+        require_feature(token, "instagram")
+    return db.list_post_templates(token, platform=platform)
 
 
 @app.post("/me/post-templates")
@@ -4152,6 +4180,9 @@ def add_me_post_template(payload: PostTemplateRequest, token: str = Depends(requ
     """Ajout unifié à « Ma bibliothèque » — lien de post, texte collé et/ou structure."""
     # `source` coercé serveur : jamais de valeur libre venue du client.
     source = "influencer" if (payload.source or "").strip() == "influencer" else "user"
+    platform = "instagram" if (payload.platform or "").strip() == "instagram" else "linkedin"
+    if platform == "instagram":
+        require_feature(token, "instagram")
     return _add_library_entry(
         token,
         url=payload.url,
@@ -4164,6 +4195,7 @@ def add_me_post_template(payload: PostTemplateRequest, token: str = Depends(requ
         image_url=payload.image_url,
         image_note=payload.image_note,
         source=source,
+        platform=platform,
     )
 
 
@@ -4185,10 +4217,15 @@ def extract_me_post_template_structure(template_id: str, token: str = Depends(re
     entry = db.get_post_template(token, template_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entrée introuvable.")
+    is_ig = entry.get("platform") == "instagram"
+    if is_ig:
+        require_feature(token, "instagram")
     text = (entry.get("post_text") or "").strip()
     if not text:
         raise HTTPException(status_code=422, detail="Cette entrée n'a pas de texte de post à analyser.")
-    extracted = extract_post_template(text)
+    # Trame Instagram (hook/script/caption) vs squelette LinkedIn — même contrat
+    # de retour ({structure_label, structure_text}), prompt adapté au réseau.
+    extracted = extract_reel_template(text) if is_ig else extract_post_template(text)
     if len(extracted.get("structure_text") or "") < 10:
         raise HTTPException(status_code=502, detail="L'extraction de la structure a échoué — réessaie.")
     fields: dict[str, Any] = {"structure_text": extracted["structure_text"][:4000]}

@@ -144,3 +144,39 @@ def fetch_ig_reels(handle: str, limit: int = 30, use_cache: bool = True) -> list
         except Exception:
             pass
     return items
+
+
+def fetch_ig_post_detail(post_url: str) -> dict[str, Any] | None:
+    """Scrape un reel/post Instagram isolé par son URL (import dans la bibliothèque).
+
+    Réutilise l'acteur reel déjà câblé pour la veille (`APIFY_IG_REEL_ACTOR`) :
+    son champ d'entrée accepte aussi bien un handle qu'une URL de reel/post
+    directe (vérifié sur le schéma de l'acteur) — pas d'acteur dédié à ajouter.
+    Retourne {text, author, url, image_url} ou None si le post est illisible —
+    l'appelant demande alors à l'utilisateur de coller le texte lui-même.
+    """
+    actor = _ig_reel_actor()
+    run_input = {"username": [post_url.strip()], "skipPinnedPosts": True}
+    try:
+        client = _client()
+        run = client.actor(actor).call(run_input=run_input)
+        items = list(client.dataset(_default_dataset_id(run)).iterate_items())
+    except Exception as exc:
+        print(f"[scraper_instagram] échec scrape post {post_url} via {actor}: {exc}", flush=True)
+        actor_health.record_call(actor, ok=False, error=str(exc), context="fetch_ig_post_detail")
+        return None
+    actor_health.record_call(
+        actor, ok=True, item_count=len(items), expected_min_items=1, context="fetch_ig_post_detail"
+    )
+    for item in items:
+        if item.get("error"):
+            continue
+        text = (item.get("caption") or "").strip()
+        if not text:
+            continue
+        track_apify(actor, 1, cached=False)
+        author = (item.get("ownerFullName") or item.get("ownerUsername") or "").strip() or None
+        url = (item.get("url") or post_url).strip()
+        image_url = (item.get("displayUrl") or "").strip() or None
+        return {"text": text, "author": author, "url": url, "image_url": image_url}
+    return None

@@ -685,6 +685,40 @@ Schéma JSON attendu :
     }
 
 
+def extract_reel_template(post_text: str) -> dict:
+    """Extrait le squelette réutilisable d'un reel Instagram (parité LinkedIn, ALE-222).
+
+    ``post_text`` porte la caption importée (pas le script parlé — celui-ci n'est
+    pas exposé par le scrape). Retourne {structure_label, structure_text} : une
+    trame hook/script/caption générique, jamais le contenu original — même
+    contrat que ``extract_post_template``, adapté au vocabulaire reel.
+    """
+    system = (
+        "Tu es un analyste de contenu Instagram (Reels). Tu extrais le SQUELETTE réutilisable "
+        "d'un reel à partir de sa caption : sa mécanique de hook, sa structure narrative, son "
+        "rythme — JAMAIS son contenu. Le squelette doit être applicable à n'importe quel sujet. "
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
+    )
+    user = (
+        "Caption du reel à analyser :\n\n"
+        + post_text[:4000]
+        + """
+
+Extrais la trame de ce reel (hook / script / caption), pas au format post LinkedIn.
+
+Schéma JSON attendu :
+{
+  "structure_label": "nom court et parlant de la trame (5-10 mots, ex: 'Hook question choc + 3 étapes + CTA commente')",
+  "structure_text": "la trame ligne par ligne, générique et actionnable (ex: '1. Hook : question qui pique la curiosité\\n2. ...'), 4 à 8 lignes, sans AUCUN élément du contenu original"
+}"""
+    )
+    data = _call(system, user, max_tokens=1024, temperature=0.3)
+    return {
+        "structure_label": str(data.get("structure_label") or "").strip(),
+        "structure_text": str(data.get("structure_text") or "").strip(),
+    }
+
+
 def classify_lead_magnet(post_text: str) -> dict:
     """Verdict « lead magnet ou non » d'un post concurrent (ALE-227).
 
@@ -2113,12 +2147,18 @@ def generate_instagram_reel_packs(
     count: int = 1,
     inspiration: dict | None = None,
     recent_posts: list[dict] | None = None,
+    custom_trame: dict | None = None,
 ) -> list[dict]:
     """Génère des packs Reel Instagram (hook + script + caption + hashtags).
 
     ``inspiration`` (optionnel) : {"text": ..., "author": ..., "url": ...} — le
     reel dont le client s'inspire, à transposer, jamais à recopier (même
     logique que le post d'inspiration LinkedIn).
+
+    ``custom_trame`` (optionnel, ALE-222 parité Instagram) : {"label": ...,
+    "description": ...} — une trame de la bibliothèque du client (au lieu du
+    catalogue statique `IG_TRAMES`), résolue par l'appelant. Prioritaire sur
+    `trame_id` quand fourni.
     """
     from src.instagram_hooks import HOOK_TEMPLATES
 
@@ -2138,15 +2178,21 @@ def generate_instagram_reel_packs(
         for i, r in enumerate(roles)
     )
 
-    trame = _IG_TRAMES_BY_ID.get(trame_id or "")
-    trame_directive = (
-        f"\nTrame de reel imposée : {trame['label']} — {trame['description']}\n"
-        if trame
-        else (
-            "\nAucune trame imposée : choisis toi-même la structure la plus adaptée à l'idée "
-            "(storytelling, tuto, liste, avant/après, mythe vs réalité, POV...).\n"
+    if custom_trame and (custom_trame.get("description") or "").strip():
+        trame_directive = (
+            f"\nTrame de reel imposée (depuis ta bibliothèque) : "
+            f"{custom_trame.get('label') or 'Trame personnalisée'} — {custom_trame['description']}\n"
         )
-    )
+    else:
+        trame = _IG_TRAMES_BY_ID.get(trame_id or "")
+        trame_directive = (
+            f"\nTrame de reel imposée : {trame['label']} — {trame['description']}\n"
+            if trame
+            else (
+                "\nAucune trame imposée : choisis toi-même la structure la plus adaptée à l'idée "
+                "(storytelling, tuto, liste, avant/après, mythe vs réalité, POV...).\n"
+            )
+        )
 
     hook_pool = "\n".join(
         f"- {h}" for h in random.sample(HOOK_TEMPLATES, min(12, len(HOOK_TEMPLATES)))
