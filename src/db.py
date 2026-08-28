@@ -3195,6 +3195,7 @@ def list_reference_posts(access_token: str, limit: int = 200) -> list[dict]:
         db.table("post_templates")
         .select("*")
         .eq("user_id", user["id"])
+        .eq("platform", "linkedin")
         .not_.is_("post_text", "null")
         .order("created_at", desc=True)
         .limit(limit)
@@ -3248,18 +3249,25 @@ def delete_reference_post(access_token: str, ref_id: str) -> bool:
 
 # ── Banque de templates de posts (ALE-216) ────────────────────────────────── #
 
-def list_post_templates(access_token: str, limit: int = 200) -> list[dict]:
-    """List the user's post templates, newest first."""
+def list_post_templates(access_token: str, limit: int = 200, platform: str = "linkedin") -> list[dict]:
+    """List the user's post templates for one platform, newest first.
+
+    ``platform`` scope obligatoire (défaut 'linkedin' pour la rétrocompatibilité
+    des appelants historiques) : sans filtre, une trame Instagram polluerait les
+    structures suggérées côté LinkedIn et inversement (ALE-222 parité Instagram).
+    """
     if not supabase_enabled():
         return []
     user = get_user(access_token)
     if not user:
         return []
+    platform = "instagram" if platform == "instagram" else "linkedin"
     db = client_for_token(access_token)
     resp = (
         db.table("post_templates")
         .select("*")
         .eq("user_id", user["id"])
+        .eq("platform", platform)
         .order("created_at", desc=True)
         .limit(limit)
         .execute()
@@ -3298,6 +3306,7 @@ def add_post_template(
     source_post_url: str | None = None,
     post_text: str | None = None,
     note: str | None = None,
+    platform: str = "linkedin",
 ) -> dict | None:
     """Ajoute une entrée à la bibliothèque (texte de post et/ou structure)."""
     if not supabase_enabled():
@@ -3309,6 +3318,7 @@ def add_post_template(
     row: dict[str, Any] = {
         "user_id": user["id"],
         "source": source,
+        "platform": "instagram" if platform == "instagram" else "linkedin",
     }
     for key, value in (
         ("structure_label", structure_label),

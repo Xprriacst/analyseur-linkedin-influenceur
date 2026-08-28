@@ -246,7 +246,7 @@ def _generate_posts_guarded(topic, top_posts, benchmark, user_context, role, cou
         ex.shutdown(wait=False)
 
 
-def _generate_reel_packs_guarded(topic, top_posts, benchmark, user_context, role, trame_id, count, inspiration=None, recent_posts=None):
+def _generate_reel_packs_guarded(topic, top_posts, benchmark, user_context, role, trame_id, count, inspiration=None, recent_posts=None, custom_trame=None):
     """Exécute `generate_instagram_reel_packs` avec un timeout dur (ALE-291)."""
     from src.llm import generate_instagram_reel_packs
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -261,11 +261,30 @@ def _generate_reel_packs_guarded(topic, top_posts, benchmark, user_context, role
         count=count,
         inspiration=inspiration,
         recent_posts=recent_posts,
+        custom_trame=custom_trame,
     )
     try:
         return fut.result(timeout=GENERATION_TIMEOUT_S)
     finally:
         ex.shutdown(wait=False)
+
+
+def _resolve_ig_custom_trame(access_token: str, trame_id: str | None) -> dict | None:
+    """Résout un id de trame `lib:{template_id}` (ALE-222 parité Instagram) en
+    trame personnalisée {label, description}, ou None si l'id vient du
+    catalogue statique (ou est introuvable — replie alors sur le catalogue,
+    plutôt que de faire échouer la génération sur une entrée supprimée entre
+    le choix du client et le lancement du job).
+    """
+    if not trame_id or not trame_id.startswith("lib:"):
+        return None
+    tmpl = db.get_post_template(access_token, trame_id[4:])
+    if not tmpl:
+        return None
+    return {
+        "label": tmpl.get("structure_label") or "Trame personnalisée",
+        "description": (tmpl.get("structure_text") or tmpl.get("post_text") or "").strip(),
+    }
 
 
 def process_generation_job(access_token: str, job_id: str) -> None:
@@ -296,8 +315,9 @@ def process_generation_job(access_token: str, job_id: str) -> None:
 
         if platform == "instagram":
             # ALE-291 : pack Reel Instagram (hook + script + caption + hashtags).
-            # Pas de bibliothèque de structures utilisateur pour l'instant — la
-            # trame vient d'un catalogue statique (ig_trame_id).
+            # ALE-222 parité Instagram : la trame peut venir de la bibliothèque du
+            # client (id préfixé "lib:", résolu ici) plutôt que du seul catalogue
+            # statique — cf. GET /generate/instagram/trames.
             inspiration = None
             inspiration_text = (job.get("inspiration_text") or "").strip()
             if inspiration_text:
@@ -306,10 +326,12 @@ def process_generation_job(access_token: str, job_id: str) -> None:
                     "author": job.get("inspiration_author"),
                     "url": job.get("inspiration_url"),
                 }
+            trame_id = job.get("ig_trame_id")
+            custom_trame = _resolve_ig_custom_trame(access_token, trame_id)
             variants = _generate_reel_packs_guarded(
                 topic, top_posts, benchmark, user_context, role,
-                job.get("ig_trame_id"), count, inspiration=inspiration,
-                recent_posts=recent_posts,
+                trame_id, count, inspiration=inspiration,
+                recent_posts=recent_posts, custom_trame=custom_trame,
             )
         else:
             # ALE-286 : le post d'inspiration passe en TÊTE des références (le
