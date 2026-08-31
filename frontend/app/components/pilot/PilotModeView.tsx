@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { Outfit } from "next/font/google";
 import {
+  Check,
   ChevronDown,
   Globe,
   Linkedin,
@@ -18,6 +20,12 @@ import {
   Users,
 } from "lucide-react";
 import "./pilot-mode.css";
+
+const outfit = Outfit({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800", "900"],
+  variable: "--font-pilot",
+});
 
 export type PilotAuthor = {
   name: string;
@@ -76,39 +84,15 @@ type InterfaceMode = "pilot" | "expert";
 
 type PilotModeViewProps = {
   plan: PilotPlan;
-  /** Affiche le bandeau « maquette » en haut de page. */
   preview?: boolean;
-  /** Contrôle externe du mode (maquette avec toggle). */
   mode?: InterfaceMode;
   onModeChange?: (mode: InterfaceMode) => void;
-  /** Callbacks d'action — absents = toast maquette. */
   onPublish?: () => void;
   onEditPost?: () => void;
   onRegeneratePost?: () => void;
   onInvite?: (contactId: string) => void;
   onFollowProfile?: (profileId: string) => void;
 };
-
-function useTypingGreeting(fullText: string, enabled = true) {
-  const [text, setText] = useState("");
-
-  useEffect(() => {
-    if (!enabled) {
-      setText(fullText);
-      return;
-    }
-    setText("");
-    let i = 0;
-    const id = window.setInterval(() => {
-      i += 1;
-      setText(fullText.slice(0, i));
-      if (i >= fullText.length) window.clearInterval(id);
-    }, 28);
-    return () => window.clearInterval(id);
-  }, [fullText, enabled]);
-
-  return text;
-}
 
 export default function PilotModeView({
   plan,
@@ -127,13 +111,13 @@ export default function PilotModeView({
 
   const [strategyOpen, setStrategyOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-
-  const greetingFull = `Bonjour ${plan.userName}, voici ton plan du jour.`;
-  const greeting = useTypingGreeting(greetingFull, mode === "pilot");
+  const [followed, setFollowed] = useState<Set<string>>(new Set());
+  const [invited, setInvited] = useState<Set<string>>(new Set());
+  const [published, setPublished] = useState(false);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
-    window.setTimeout(() => setToast(null), 2600);
+    window.setTimeout(() => setToast(null), 2400);
   }, []);
 
   const handleAction = useCallback(
@@ -142,57 +126,50 @@ export default function PilotModeView({
         fn();
         return;
       }
-      showToast(`${label} — action simulée (maquette)`);
+      showToast(`${label} — simulé`);
     },
     [showToast],
   );
 
-  const progressPct = plan.weeklyTotal > 0
-    ? Math.round((plan.weeklyDone / plan.weeklyTotal) * 100)
-    : 0;
-
-  const postBody = `${plan.post.hook}\n\n${plan.post.body}`;
-
   const header = (
     <header className="pilot-header">
-      <div className="pilot-brand">
-        <div className="pilot-brand-mark">
-          <Target size={20} strokeWidth={2.5} />
-        </div>
-        <div className="pilot-brand-text">
+      <div className="pilot-header-inner">
+        <div className="pilot-brand">
+          <div className="pilot-brand-mark" aria-hidden />
           <span className="pilot-brand-name">Cibl</span>
+          <span className="pilot-brand-sep" aria-hidden />
           <span className="pilot-brand-mode">
-            <span className="pilot-brand-mode-dot" aria-hidden />
-            {mode === "pilot" ? "Mode Pilote · LinkedIn" : "Mode Expert"}
+            {mode === "pilot" ? "Pilote" : "Expert"}
           </span>
         </div>
-      </div>
 
-      <div className="pilot-header-meta">
-        {mode === "pilot" && (
-          <span className="pilot-day-chip">
-            Jour {plan.dayNumber} · Semaine {plan.weekNumber}
-          </span>
-        )}
-        <div className="pilot-mode-toggle" role="tablist" aria-label="Mode d'interface">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === "pilot"}
-            className={mode === "pilot" ? "active" : ""}
-            onClick={() => setMode("pilot")}
-          >
-            Pilote
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === "expert"}
-            className={mode === "expert" ? "active" : ""}
-            onClick={() => setMode("expert")}
-          >
-            Expert
-          </button>
+        <div className="pilot-header-meta">
+          {mode === "pilot" && (
+            <span className="pilot-day-chip">
+              Jour {plan.dayNumber}
+              <span className="pilot-day-chip-muted">· S{plan.weekNumber}</span>
+            </span>
+          )}
+          <div className="pilot-mode-toggle" role="tablist" aria-label="Mode d'interface">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "pilot"}
+              className={mode === "pilot" ? "active" : ""}
+              onClick={() => setMode("pilot")}
+            >
+              Pilote
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "expert"}
+              className={mode === "expert" ? "active" : ""}
+              onClick={() => setMode("expert")}
+            >
+              Expert
+            </button>
+          </div>
         </div>
       </div>
     </header>
@@ -200,78 +177,64 @@ export default function PilotModeView({
 
   if (mode === "expert") {
     return (
-      <div className="pilot-expert-shell">
-        {preview && (
-          <div className="pilot-inner" style={{ paddingBottom: 0 }}>
-            <div className="pilot-preview-banner">
-              <Sparkles size={14} />
-              Maquette — bascule Pilote / Expert
-            </div>
-            {header}
-          </div>
-        )}
-        {!preview && header}
+      <div className={`pilot-expert-shell ${outfit.variable}`}>
+        {header}
         <div className="pilot-expert-placeholder">
-          <Target size={40} strokeWidth={1.5} color="var(--primary)" />
+          <div className="pilot-brand-mark" style={{ width: 28, height: 28, borderRadius: 8 }} />
           <h1>Mode Expert</h1>
           <p>
-            Ici s&apos;affiche l&apos;application actuelle — sidebar, Contenu, Prospection, Inbox…
-            Cette maquette ne reproduit pas la vue complète ; le toggle sert à valider le basculement.
+            L’app actuelle s’affiche ici — sidebar, Contenu, Prospection, Inbox.
+            Cette maquette ne reproduit pas la vue complète.
           </p>
         </div>
       </div>
     );
   }
 
+  const weekDots = Array.from({ length: plan.weeklyTotal }, (_, i) => i < plan.weeklyDone);
+
   return (
-    <div className="pilot-root">
+    <div className={`pilot-root ${outfit.variable}`}>
+      {preview && (
+        <div className="pilot-preview-banner">
+          <Sparkles size={12} />
+          Maquette
+        </div>
+      )}
+
+      {header}
+
       <div className="pilot-inner">
-        {preview && (
-          <div className="pilot-preview-banner">
-            <Sparkles size={14} />
-            Maquette — données fictives · LinkedIn uniquement
-          </div>
-        )}
-
-        {header}
-
         <div className="pilot-greeting-block">
-          <h1 className="pilot-greeting">
-            {greeting}
-            {greeting.length < greetingFull.length && (
-              <span className="pilot-cursor" aria-hidden>|</span>
-            )}
-          </h1>
+          <p className="pilot-kicker">Aujourd’hui</p>
+          <h1 className="pilot-greeting">Bonjour {plan.userName}.</h1>
           <p className="pilot-greeting-sub">
-            L&apos;IA a préparé ton post et sélectionné {plan.contacts.length} personnes à contacter.
-            Deux actions, c&apos;est tout pour aujourd&apos;hui.
+            Ton post est prêt. {plan.contacts.length} personnes à contacter.
+            <span className="pilot-greeting-rest"> C’est tout.</span>
           </p>
-          <div className="pilot-progress-wrap">
-            <div className="pilot-progress-label">
-              <span>Objectif de la semaine</span>
-              <span>
-                {plan.weeklyDone}/{plan.weeklyTotal} actions
-              </span>
+
+          <div className="pilot-week" aria-label="Objectif de la semaine">
+            <div className="pilot-week-dots">
+              {weekDots.map((done, i) => (
+                <span
+                  key={i}
+                  className={`pilot-week-dot${done ? " done" : ""}`}
+                  aria-label={done ? `Action ${i + 1} faite` : `Action ${i + 1} restante`}
+                />
+              ))}
             </div>
-            <div
-              className="pilot-progress-bar"
-              role="progressbar"
-              aria-valuenow={progressPct}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <div className="pilot-progress-fill" style={{ width: `${progressPct}%` }} />
-            </div>
+            <span className="pilot-week-label">
+              {plan.weeklyDone}/{plan.weeklyTotal} cette semaine
+            </span>
           </div>
         </div>
 
         <section className="pilot-section pilot-section-post" aria-labelledby="pilot-post-title">
           <div className="pilot-section-head">
             <div className="pilot-section-label" id="pilot-post-title">
-              <PenLine size={14} />
               Post du jour
             </div>
-            <span className="pilot-badge structure">{plan.post.structure}</span>
+            <span className="pilot-badge">{plan.post.structure}</span>
           </div>
 
           <article className="pilot-linkedin-feed" aria-label="Aperçu du post LinkedIn">
@@ -285,52 +248,62 @@ export default function PilotModeView({
                 )}
               </div>
               <div className="pilot-linkedin-author">
-                <div className="pilot-linkedin-name">{plan.author.name}</div>
+                <div className="pilot-linkedin-name">
+                  {plan.author.name}
+                  <span className="pilot-linkedin-you"> · Vous</span>
+                </div>
                 <div className="pilot-linkedin-headline">{plan.author.headline}</div>
                 <div className="pilot-linkedin-meta">
-                  <span>À l&apos;instant</span>
+                  <span>À l’instant</span>
                   <span aria-hidden> · </span>
-                  <Globe size={12} aria-label="Public" />
+                  <Globe size={11} strokeWidth={2} aria-label="Public" />
                 </div>
               </div>
               <Linkedin size={18} className="pilot-linkedin-logo" aria-hidden />
             </div>
 
             <div className="pilot-linkedin-body">
-              <p className="pilot-linkedin-text">{postBody}</p>
+              <p className="pilot-linkedin-text">
+                {plan.post.hook}
+                {"\n\n"}
+                {plan.post.body}
+              </p>
             </div>
 
             <div className="pilot-linkedin-reactions" aria-hidden>
               <span className="pilot-linkedin-reaction-icons">
-                <span className="pilot-li-icon like">👍</span>
-                <span className="pilot-li-icon celebrate">👏</span>
+                <span className="pilot-li-icon like" />
+                <span className="pilot-li-icon celebrate" />
               </span>
-              <span className="pilot-linkedin-reaction-count">—</span>
+              <span>Soyez le premier à réagir</span>
             </div>
 
             <div className="pilot-linkedin-actions" aria-hidden>
-              <span><ThumbsUp size={16} /> J&apos;aime</span>
-              <span><MessageCircle size={16} /> Commenter</span>
-              <span><Repeat2 size={16} /> Republier</span>
-              <span><Send size={16} /> Envoyer</span>
+              <span><ThumbsUp size={16} strokeWidth={1.8} /> J’aime</span>
+              <span><MessageCircle size={16} strokeWidth={1.8} /> Commenter</span>
+              <span><Repeat2 size={16} strokeWidth={1.8} /> Republier</span>
+              <span><Send size={16} strokeWidth={1.8} /> Envoyer</span>
             </div>
           </article>
 
           <div className="pilot-actions">
             <button
               type="button"
-              className="pilot-btn pilot-btn-primary"
-              onClick={() => handleAction("Publication", onPublish)}
+              className={`pilot-btn pilot-btn-primary${published ? " done" : ""}`}
+              onClick={() => {
+                setPublished(true);
+                handleAction("Publication", onPublish);
+              }}
             >
-              <Send size={16} />
-              Publier
+              {published ? <Check size={16} strokeWidth={2.4} /> : <Send size={16} />}
+              {published ? "Publié" : "Publier"}
             </button>
             <button
               type="button"
               className="pilot-btn pilot-btn-ghost"
               onClick={() => handleAction("Modification", onEditPost)}
             >
-              <PenLine size={16} />
+              <PenLine size={15} />
               Modifier
             </button>
             <button
@@ -338,7 +311,7 @@ export default function PilotModeView({
               className="pilot-btn pilot-btn-ghost"
               onClick={() => handleAction("Régénération", onRegeneratePost)}
             >
-              <RefreshCw size={16} />
+              <RefreshCw size={15} />
               Autre angle
             </button>
           </div>
@@ -348,24 +321,18 @@ export default function PilotModeView({
           <section className="pilot-section pilot-section-follow" aria-labelledby="pilot-follow-title">
             <div className="pilot-section-head">
               <div className="pilot-section-label" id="pilot-follow-title">
-                <TrendingUp size={14} />
-                Profils à suivre
+                <TrendingUp size={13} strokeWidth={2.2} />
+                À suivre
               </div>
-              <span className="pilot-section-hint">Issus de ton analyse onboarding</span>
+              <span className="pilot-section-hint">Depuis ton analyse</span>
             </div>
-            <p className="pilot-follow-intro">
-              Ces créateurs publient sur ton ICP — suis-les pour calibrer ton ton et ta structure.
-            </p>
-            <div className="pilot-follow-scroll">
-              {plan.followProfiles.map((profile, index) => (
-                <div
-                  key={profile.id}
-                  className="pilot-follow-card"
-                  style={{ animationDelay: `${0.28 + index * 0.07}s` }}
-                >
-                  <div className="pilot-follow-top">
+            <div className="pilot-follow-list">
+              {plan.followProfiles.map((profile) => {
+                const isFollowed = followed.has(profile.id);
+                return (
+                  <div key={profile.id} className="pilot-follow-row">
                     <div
-                      className="pilot-avatar pilot-avatar-round"
+                      className="pilot-avatar"
                       style={{ background: profile.accent }}
                       aria-hidden
                     >
@@ -373,71 +340,77 @@ export default function PilotModeView({
                     </div>
                     <div className="pilot-follow-info">
                       <h3>{profile.name}</h3>
-                      <p>{profile.handle}</p>
+                      <p>{profile.reason}</p>
                     </div>
+                    <button
+                      type="button"
+                      className={`pilot-btn pilot-btn-follow${isFollowed ? " done" : ""}`}
+                      onClick={() => {
+                        setFollowed((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(profile.id)) next.delete(profile.id);
+                          else next.add(profile.id);
+                          return next;
+                        });
+                        handleAction(`Suivre ${profile.name}`, () => onFollowProfile?.(profile.id));
+                      }}
+                    >
+                      {isFollowed ? <Check size={14} /> : <UserPlus size={14} />}
+                      {isFollowed ? "Suivi" : "Suivre"}
+                    </button>
                   </div>
-                  <p className="pilot-follow-reason">{profile.reason}</p>
-                  <button
-                    type="button"
-                    className="pilot-btn pilot-btn-follow"
-                    onClick={() =>
-                      handleAction(`Suivre ${profile.name}`, () => onFollowProfile?.(profile.id))
-                    }
-                  >
-                    <UserPlus size={14} />
-                    Suivre sur LinkedIn
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         )}
 
         <section className="pilot-section pilot-section-contacts" aria-labelledby="pilot-contacts-title">
-          <div className="pilot-section-label" id="pilot-contacts-title">
-            <Users size={14} />
-            {plan.contacts.length} personnes à contacter
+          <div className="pilot-section-head">
+            <div className="pilot-section-label" id="pilot-contacts-title">
+              <Users size={13} strokeWidth={2.2} />
+              À contacter
+            </div>
+            <span className="pilot-section-hint">{plan.contacts.length} aujourd’hui</span>
           </div>
-          <div className="pilot-contacts-grid">
-            {plan.contacts.map((contact, index) => (
-              <div
-                key={contact.id}
-                className="pilot-contact-card"
-                style={{ animationDelay: `${0.38 + index * 0.08}s` }}
-              >
-                <div className="pilot-contact-top">
-                  <div
-                    className="pilot-avatar"
-                    style={{ background: contact.accent }}
-                    aria-hidden
+          <div className="pilot-contacts-list">
+            {plan.contacts.map((contact) => {
+              const isInvited = invited.has(contact.id);
+              return (
+                <article key={contact.id} className="pilot-contact-card">
+                  <div className="pilot-contact-top">
+                    <div
+                      className="pilot-avatar"
+                      style={{ background: contact.accent }}
+                      aria-hidden
+                    >
+                      {contact.initials}
+                    </div>
+                    <div className="pilot-contact-info">
+                      <h3>{contact.name}</h3>
+                      <p>
+                        {contact.role}
+                        {contact.company ? ` · ${contact.company}` : ""}
+                      </p>
+                    </div>
+                    <span className="pilot-score">{contact.score}</span>
+                  </div>
+                  <p className="pilot-message-preview">{contact.message}</p>
+                  <button
+                    type="button"
+                    className={`pilot-btn pilot-btn-primary pilot-btn-invite${isInvited ? " done" : ""}`}
+                    onClick={() => {
+                      setInvited((prev) => new Set(prev).add(contact.id));
+                      handleAction(`Invitation à ${contact.name}`, () => onInvite?.(contact.id));
+                    }}
+                    disabled={isInvited}
                   >
-                    {contact.initials}
-                  </div>
-                  <div className="pilot-contact-info">
-                    <h3>{contact.name}</h3>
-                    <p>
-                      {contact.role}
-                      {contact.company ? ` · ${contact.company}` : ""}
-                    </p>
-                  </div>
-                  <span className="pilot-score">{contact.score}%</span>
-                </div>
-                <div className="pilot-message-preview">
-                  <span>Message personnalisé</span>
-                  {contact.message}
-                </div>
-                <button
-                  type="button"
-                  className="pilot-btn pilot-btn-primary"
-                  onClick={() =>
-                    handleAction(`Invitation à ${contact.name}`, () => onInvite?.(contact.id))
-                  }
-                >
-                  <UserPlus size={15} />
-                  Inviter
-                </button>
-              </div>
-            ))}
+                    {isInvited ? <Check size={15} /> : <UserPlus size={15} />}
+                    {isInvited ? "Invitation envoyée" : "Inviter"}
+                  </button>
+                </article>
+              );
+            })}
           </div>
         </section>
 
@@ -448,32 +421,26 @@ export default function PilotModeView({
             aria-expanded={strategyOpen}
             onClick={() => setStrategyOpen((v) => !v)}
           >
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <Target size={16} />
-              Détails de ta stratégie
+            <span>
+              <Target size={15} strokeWidth={2.2} />
+              Ta stratégie
             </span>
-            <ChevronDown size={18} className="chevron" />
+            <ChevronDown size={16} className="chevron" />
           </button>
           {strategyOpen && (
             <div className="pilot-strategy-panel">
               <ul className="pilot-strategy-list">
                 <li>
-                  <Target size={16} />
-                  <span>
-                    <strong>Cible :</strong> {plan.strategy.target}
-                  </span>
+                  <strong>Cible</strong>
+                  {plan.strategy.target}
                 </li>
                 <li>
-                  <RefreshCw size={16} />
-                  <span>
-                    <strong>Rythme :</strong> {plan.strategy.frequency}
-                  </span>
+                  <strong>Rythme</strong>
+                  {plan.strategy.frequency}
                 </li>
                 <li>
-                  <PenLine size={16} />
-                  <span>
-                    <strong>Structure privilégiée :</strong> {plan.strategy.structureHint}
-                  </span>
+                  <strong>Structure</strong>
+                  {plan.strategy.structureHint}
                 </li>
               </ul>
             </div>

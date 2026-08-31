@@ -1,173 +1,131 @@
-/* Mode Pilote — maquette LinkedIn-first · polish type Apple (ressorts sans rebond) */
+/* Mode Pilote — thème clair Catalog + polish Apple */
 
 .pilot-root {
-  --pilot-bg: #07070f;
-  --pilot-bg-2: #0e0e1a;
-  --pilot-surface: rgba(255, 255, 255, 0.045);
-  --pilot-surface-hover: rgba(255, 255, 255, 0.075);
-  --pilot-border: rgba(255, 255, 255, 0.08);
-  --pilot-border-strong: rgba(255, 255, 255, 0.14);
-  --pilot-ink: #f4f4f8;
-  --pilot-muted: rgba(244, 244, 248, 0.55);
-  --pilot-accent: #7c83ff;
-  --pilot-accent-2: #4648d4;
-  --pilot-glow: rgba(124, 131, 255, 0.35);
+  --pilot-bg: #f7f4ee;
+  --pilot-ink: #14141a;
+  --pilot-muted: #5c5c68;
+  --pilot-line: #d9d4c8;
+  --pilot-card: #fffcf7;
+  --pilot-white: #ffffff;
+  --pilot-accent: #4648d4;
   --pilot-linkedin: #0a66c2;
-  --pilot-success: #34d399;
-  /* Courbe type ressort Apple : amortissement 1.0, réponse ~0.4 */
+  --pilot-success: #1a7f4b;
   --pilot-ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
   --pilot-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --pilot-duration: 0.42s;
+  --pilot-duration: 0.45s;
+  --pilot-shadow: 0 1px 2px rgba(20, 20, 26, 0.04), 0 12px 32px rgba(20, 20, 26, 0.06);
 
   min-height: 100vh;
   color: var(--pilot-ink);
-  font-family: var(--font-inter), -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
   background:
-    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(70, 72, 212, 0.28), transparent 55%),
-    radial-gradient(ellipse 60% 40% at 100% 50%, rgba(10, 102, 194, 0.12), transparent 50%),
-    linear-gradient(180deg, var(--pilot-bg) 0%, var(--pilot-bg-2) 100%);
-  position: relative;
-  overflow-x: hidden;
-}
-
-.pilot-root::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, black, transparent 75%);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.pilot-root::after {
-  content: "";
-  position: fixed;
-  width: 420px;
-  height: 420px;
-  top: -120px;
-  right: -80px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(124, 131, 255, 0.15), transparent 70%);
-  filter: blur(40px);
-  animation: pilot-orb-drift 14s var(--pilot-ease) infinite alternate;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.pilot-inner {
-  position: relative;
-  z-index: 1;
-  max-width: 920px;
-  margin: 0 auto;
-  padding: 24px 20px 64px;
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(70, 72, 212, 0.07), transparent 55%),
+    var(--pilot-bg);
+  font-family: var(--font-pilot), var(--font-inter), -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 .pilot-preview-banner {
-  display: flex;
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-bottom: 20px;
-  padding: 8px 14px;
+  gap: 6px;
+  padding: 5px 10px;
   border-radius: 999px;
-  border: 1px dashed rgba(245, 158, 11, 0.45);
-  background: rgba(245, 158, 11, 0.08);
-  color: #fbbf24;
+  border: 1px solid var(--pilot-line);
+  background: rgba(255, 252, 247, 0.7);
+  backdrop-filter: blur(16px) saturate(1.4);
+  color: var(--pilot-muted);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  pointer-events: none;
   animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) both;
 }
 
 .pilot-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  border-bottom: 1px solid rgba(217, 212, 200, 0.65);
+  background: rgba(247, 244, 238, 0.72);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+}
+
+.pilot-header-inner {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 14px 22px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 32px;
-  animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) 0.04s both;
 }
 
 .pilot-brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  min-width: 0;
 }
 
 .pilot-brand-mark {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, var(--pilot-accent-2), var(--pilot-accent));
-  box-shadow: 0 0 24px var(--pilot-glow);
-  color: #fff;
-}
-
-.pilot-brand-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--pilot-accent);
+  box-shadow: 0 0 0 3px rgba(70, 72, 212, 0.14);
+  flex-shrink: 0;
 }
 
 .pilot-brand-name {
   font-size: 15px;
   font-weight: 700;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.03em;
+}
+
+.pilot-brand-sep {
+  width: 1px;
+  height: 12px;
+  background: var(--pilot-line);
+  margin: 0 2px;
 }
 
 .pilot-brand-mode {
-  font-size: 12px;
-  letter-spacing: -0.01em;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
   color: var(--pilot-muted);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.pilot-brand-mode-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--pilot-success);
-  box-shadow: 0 0 8px rgba(52, 211, 153, 0.8);
-  animation: pilot-pulse-dot 2.4s var(--pilot-ease) infinite;
 }
 
 .pilot-header-meta {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  gap: 10px;
 }
 
 .pilot-day-chip {
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--pilot-border);
-  background: var(--pilot-surface);
-  backdrop-filter: blur(16px) saturate(1.4);
   font-size: 12px;
-  letter-spacing: -0.01em;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--pilot-ink);
+}
+
+.pilot-day-chip-muted {
   color: var(--pilot-muted);
-  font-family: var(--font-mono), ui-monospace, monospace;
+  margin-left: 4px;
 }
 
 .pilot-mode-toggle {
   display: inline-flex;
   padding: 3px;
   border-radius: 999px;
-  border: 1px solid var(--pilot-border-strong);
-  background: rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(20px) saturate(1.5);
+  background: rgba(20, 20, 26, 0.05);
 }
 
 .pilot-mode-toggle button {
@@ -176,13 +134,14 @@
   color: var(--pilot-muted);
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: -0.01em;
-  padding: 7px 14px;
+  letter-spacing: -0.02em;
+  padding: 6px 12px;
   border-radius: 999px;
   cursor: pointer;
   transition:
-    color var(--pilot-duration) var(--pilot-ease),
-    background var(--pilot-duration) var(--pilot-ease),
+    color 0.22s var(--pilot-ease),
+    background 0.22s var(--pilot-ease),
+    box-shadow 0.22s var(--pilot-ease),
     transform 0.08s var(--pilot-ease);
 }
 
@@ -191,153 +150,146 @@
 }
 
 .pilot-mode-toggle button.active {
-  color: #fff;
-  background: linear-gradient(135deg, var(--pilot-accent-2), var(--pilot-accent));
-  box-shadow: 0 4px 16px rgba(70, 72, 212, 0.4);
+  color: var(--pilot-ink);
+  background: var(--pilot-white);
+  box-shadow: 0 1px 2px rgba(20, 20, 26, 0.08);
+}
+
+.pilot-inner {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 40px 22px 88px;
 }
 
 .pilot-greeting-block {
-  margin-bottom: 28px;
-  animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) 0.08s both;
+  margin-bottom: 40px;
+  animation: pilot-enter 0.55s var(--pilot-ease-out) both;
+}
+
+.pilot-kicker {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--pilot-muted);
 }
 
 .pilot-greeting {
-  font-size: clamp(28px, 4.2vw, 36px);
-  font-weight: 700;
-  letter-spacing: -0.045em;
-  line-height: 1.08;
-  margin: 0 0 10px;
-  background: linear-gradient(135deg, #fff 25%, rgba(255, 255, 255, 0.72));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-.pilot-cursor {
-  opacity: 0.45;
-  font-weight: 400;
-  animation: pilot-blink 1s step-end infinite;
+  margin: 0;
+  font-size: clamp(34px, 6vw, 48px);
+  font-weight: 800;
+  letter-spacing: -0.048em;
+  line-height: 1.02;
+  color: var(--pilot-ink);
 }
 
 .pilot-greeting-sub {
-  margin: 0 0 18px;
-  font-size: 15px;
-  letter-spacing: -0.015em;
-  line-height: 1.55;
-  color: var(--pilot-muted);
-  max-width: 520px;
-}
-
-.pilot-progress-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-width: 360px;
-}
-
-.pilot-progress-label {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  letter-spacing: -0.01em;
+  margin: 14px 0 0;
+  max-width: 420px;
+  font-size: 17px;
+  font-weight: 450;
+  letter-spacing: -0.022em;
+  line-height: 1.45;
   color: var(--pilot-muted);
 }
 
-.pilot-progress-bar {
-  height: 5px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  overflow: hidden;
+.pilot-greeting-rest {
+  color: var(--pilot-ink);
 }
 
-.pilot-progress-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--pilot-accent-2), var(--pilot-accent));
-  transition: width 0.65s var(--pilot-ease-out);
+.pilot-week {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.pilot-week-dots {
+  display: flex;
+  gap: 7px;
+}
+
+.pilot-week-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(20, 20, 26, 0.12);
+  transition: background 0.35s var(--pilot-ease), transform 0.35s var(--pilot-ease);
+}
+
+.pilot-week-dot.done {
+  background: var(--pilot-accent);
+  transform: scale(1.05);
+}
+
+.pilot-week-label {
+  font-size: 13px;
+  letter-spacing: -0.02em;
+  color: var(--pilot-muted);
 }
 
 .pilot-section {
-  margin-bottom: 28px;
+  margin-bottom: 36px;
   animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) both;
 }
 
-.pilot-section-post { animation-delay: 0.12s; }
-.pilot-section-follow { animation-delay: 0.2s; }
-.pilot-section-contacts { animation-delay: 0.28s; }
-.pilot-section-strategy { animation-delay: 0.36s; }
+.pilot-section-post { animation-delay: 0.08s; }
+.pilot-section-follow { animation-delay: 0.16s; }
+.pilot-section-contacts { animation-delay: 0.24s; }
+.pilot-section-strategy { animation-delay: 0.3s; }
 
 .pilot-section-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
-  flex-wrap: wrap;
 }
 
 .pilot-section-label {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--pilot-muted);
-  font-family: var(--font-mono), ui-monospace, monospace;
-}
-
-.pilot-section-label svg {
-  opacity: 0.7;
-}
-
-.pilot-section-hint {
-  font-size: 11px;
-  letter-spacing: -0.01em;
-  color: rgba(244, 244, 248, 0.38);
-}
-
-.pilot-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  border: 1px solid var(--pilot-border);
-  background: rgba(0, 0, 0, 0.2);
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.025em;
   color: var(--pilot-ink);
 }
 
-.pilot-badge.structure {
-  border-color: rgba(124, 131, 255, 0.35);
-  background: rgba(124, 131, 255, 0.12);
-  color: #c4c8ff;
+.pilot-section-label svg {
+  color: var(--pilot-muted);
 }
 
-/* ——— Aperçu feed LinkedIn (carte claire réaliste) ——— */
+.pilot-section-hint {
+  font-size: 12px;
+  letter-spacing: -0.015em;
+  color: var(--pilot-muted);
+}
+
+.pilot-badge {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--pilot-muted);
+}
+
+/* ——— Feed LinkedIn ——— */
 
 .pilot-linkedin-feed {
+  background: var(--pilot-white);
+  border: 1px solid rgba(20, 20, 26, 0.08);
   border-radius: 12px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: #fff;
-  color: rgba(0, 0, 0, 0.9);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.06) inset,
-    0 24px 48px rgba(0, 0, 0, 0.4);
   overflow: hidden;
-  margin-bottom: 16px;
-  animation: pilot-scale-in 0.5s var(--pilot-ease-out) both;
+  box-shadow: var(--pilot-shadow);
+  animation: pilot-scale-in 0.55s var(--pilot-ease-out) both;
 }
 
 .pilot-linkedin-feed-header {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 14px 16px 0;
+  padding: 16px 16px 0;
 }
 
 .pilot-linkedin-avatar {
@@ -350,9 +302,9 @@
   justify-content: center;
   font-size: 15px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   color: #fff;
-  background: linear-gradient(135deg, var(--pilot-accent-2), var(--pilot-linkedin));
+  background: linear-gradient(145deg, #5b5de8, #0a66c2);
   overflow: hidden;
 }
 
@@ -369,19 +321,24 @@
 
 .pilot-linkedin-name {
   font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
+  font-weight: 650;
+  letter-spacing: -0.025em;
   line-height: 1.25;
-  color: rgba(0, 0, 0, 0.9);
+}
+
+.pilot-linkedin-you {
+  font-weight: 500;
+  color: rgba(20, 20, 26, 0.45);
 }
 
 .pilot-linkedin-headline {
+  margin-top: 1px;
   font-size: 12px;
   letter-spacing: -0.01em;
   line-height: 1.35;
-  color: rgba(0, 0, 0, 0.6);
+  color: rgba(0, 0, 0, 0.55);
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -389,10 +346,9 @@
 .pilot-linkedin-meta {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   margin-top: 2px;
   font-size: 12px;
-  letter-spacing: -0.01em;
   color: rgba(0, 0, 0, 0.45);
 }
 
@@ -403,53 +359,54 @@
 }
 
 .pilot-linkedin-body {
-  padding: 12px 16px 8px;
+  padding: 10px 16px 8px;
 }
 
 .pilot-linkedin-text {
   margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 14px;
   letter-spacing: -0.01em;
-  line-height: 1.55;
-  color: rgba(0, 0, 0, 0.88);
+  line-height: 1.5;
+  color: rgba(0, 0, 0, 0.9);
   white-space: pre-wrap;
 }
 
 .pilot-linkedin-reactions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
   padding: 8px 16px;
   border-top: 1px solid rgba(0, 0, 0, 0.08);
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: rgba(0, 0, 0, 0.5);
 }
 
 .pilot-linkedin-reaction-icons {
   display: inline-flex;
-  align-items: center;
 }
 
 .pilot-li-icon {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  margin-right: -4px;
   border: 1.5px solid #fff;
+  margin-right: -4px;
 }
 
-.pilot-li-icon.like { background: #378fe9; }
-.pilot-li-icon.celebrate { background: #6dae4f; }
+.pilot-li-icon.like {
+  background: #378fe9;
+}
+
+.pilot-li-icon.celebrate {
+  background: #6dae4f;
+}
 
 .pilot-linkedin-actions {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   border-top: 1px solid rgba(0, 0, 0, 0.08);
-  padding: 4px 8px 6px;
+  padding: 2px 6px 4px;
 }
 
 .pilot-linkedin-actions span {
@@ -457,131 +414,38 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 10px 4px;
-  font-size: 12px;
+  padding: 11px 4px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   color: rgba(0, 0, 0, 0.55);
 }
-
-/* ——— Profils à suivre ——— */
-
-.pilot-follow-intro {
-  margin: 0 0 14px;
-  font-size: 14px;
-  letter-spacing: -0.015em;
-  line-height: 1.5;
-  color: var(--pilot-muted);
-  max-width: 560px;
-}
-
-.pilot-follow-scroll {
-  display: flex;
-  gap: 12px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-  scroll-snap-type: x mandatory;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
-}
-
-.pilot-follow-card {
-  flex: 0 0 min(300px, 85vw);
-  scroll-snap-align: start;
-  padding: 16px;
-  border-radius: 18px;
-  border: 1px solid var(--pilot-border);
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
-  backdrop-filter: blur(20px) saturate(1.3);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) both;
-  transition:
-    border-color var(--pilot-duration) var(--pilot-ease),
-    transform var(--pilot-duration) var(--pilot-ease);
-}
-
-.pilot-follow-card:hover {
-  border-color: rgba(124, 131, 255, 0.32);
-}
-
-.pilot-follow-top {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.pilot-avatar-round {
-  border-radius: 50% !important;
-}
-
-.pilot-follow-info h3 {
-  margin: 0 0 2px;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-}
-
-.pilot-follow-info p {
-  margin: 0;
-  font-size: 12px;
-  color: var(--pilot-muted);
-  letter-spacing: -0.01em;
-}
-
-.pilot-follow-reason {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.5;
-  letter-spacing: -0.012em;
-  color: rgba(244, 244, 248, 0.82);
-}
-
-.pilot-btn-follow {
-  width: 100%;
-  padding: 9px 14px;
-  font-size: 13px;
-  color: var(--pilot-ink);
-  background: var(--pilot-surface);
-  border: 1px solid var(--pilot-border);
-  border-radius: 12px;
-}
-
-.pilot-btn-follow:hover {
-  background: var(--pilot-surface-hover);
-  border-color: rgba(10, 102, 194, 0.45);
-}
-
-.pilot-btn-follow:active {
-  transform: scale(0.98);
-}
-
-/* ——— Actions & contacts ——— */
 
 .pilot-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .pilot-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 11px 18px;
-  border-radius: 12px;
+  gap: 7px;
+  padding: 10px 16px;
+  border-radius: 999px;
   font-size: 14px;
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.025em;
   cursor: pointer;
   border: 1px solid transparent;
   transition:
     transform 0.08s var(--pilot-ease),
-    box-shadow var(--pilot-duration) var(--pilot-ease),
-    background var(--pilot-duration) var(--pilot-ease),
-    border-color var(--pilot-duration) var(--pilot-ease);
+    background 0.22s var(--pilot-ease),
+    color 0.22s var(--pilot-ease),
+    border-color 0.22s var(--pilot-ease),
+    box-shadow 0.22s var(--pilot-ease);
 }
 
 .pilot-btn:active {
@@ -590,171 +454,211 @@
 
 .pilot-btn-primary {
   color: #fff;
-  background: linear-gradient(135deg, var(--pilot-accent-2), var(--pilot-accent));
-  box-shadow: 0 8px 24px rgba(70, 72, 212, 0.4);
+  background: var(--pilot-ink);
+  box-shadow: 0 8px 20px rgba(20, 20, 26, 0.16);
 }
 
 .pilot-btn-primary:hover {
-  box-shadow: 0 10px 32px rgba(70, 72, 212, 0.52);
+  background: #2a2a32;
+}
+
+.pilot-btn-primary.done {
+  background: var(--pilot-success);
+  box-shadow: none;
 }
 
 .pilot-btn-ghost {
   color: var(--pilot-ink);
-  background: var(--pilot-surface);
-  border-color: var(--pilot-border);
-  backdrop-filter: blur(12px);
+  background: transparent;
+  border-color: var(--pilot-line);
 }
 
 .pilot-btn-ghost:hover {
-  background: var(--pilot-surface-hover);
-  border-color: var(--pilot-border-strong);
+  background: rgba(20, 20, 26, 0.03);
 }
 
-.pilot-contacts-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
+.pilot-btn:disabled {
+  cursor: default;
+  opacity: 1;
 }
 
-@media (max-width: 820px) {
-  .pilot-contacts-grid {
-    grid-template-columns: 1fr;
-  }
+/* ——— À suivre ——— */
+
+.pilot-follow-list {
+  display: flex;
+  flex-direction: column;
+  background: var(--pilot-card);
+  border: 1px solid var(--pilot-line);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.pilot-follow-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--pilot-line);
+}
+
+.pilot-follow-row:last-child {
+  border-bottom: none;
+}
+
+.pilot-follow-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.pilot-follow-info h3 {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.pilot-follow-info p {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  letter-spacing: -0.015em;
+  line-height: 1.4;
+  color: var(--pilot-muted);
+}
+
+.pilot-btn-follow {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  font-size: 13px;
+  color: var(--pilot-ink);
+  background: transparent;
+  border-color: var(--pilot-line);
+}
+
+.pilot-btn-follow.done {
+  color: var(--pilot-success);
+  border-color: transparent;
+  background: rgba(26, 127, 75, 0.08);
+}
+
+/* ——— Contacts ——— */
+
+.pilot-contacts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .pilot-contact-card {
-  padding: 18px;
-  border-radius: 18px;
-  border: 1px solid var(--pilot-border);
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
-  backdrop-filter: blur(16px) saturate(1.2);
+  padding: 16px 16px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--pilot-line);
+  background: var(--pilot-card);
   display: flex;
   flex-direction: column;
   gap: 12px;
-  animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) both;
   transition:
     transform var(--pilot-duration) var(--pilot-ease),
-    border-color var(--pilot-duration) var(--pilot-ease),
     box-shadow var(--pilot-duration) var(--pilot-ease);
 }
 
 .pilot-contact-card:hover {
-  transform: translateY(-3px);
-  border-color: rgba(124, 131, 255, 0.32);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.32);
+  transform: translateY(-1px);
+  box-shadow: var(--pilot-shadow);
 }
 
 .pilot-contact-top {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  align-items: center;
+  gap: 11px;
 }
 
 .pilot-avatar {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   color: #fff;
   flex-shrink: 0;
-  background: linear-gradient(135deg, #334155, #1e293b);
-  border: 1px solid var(--pilot-border-strong);
+}
+
+.pilot-contact-info {
+  flex: 1;
+  min-width: 0;
 }
 
 .pilot-contact-info h3 {
-  margin: 0 0 2px;
+  margin: 0;
   font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.025em;
+  font-weight: 650;
+  letter-spacing: -0.03em;
 }
 
 .pilot-contact-info p {
-  margin: 0;
-  font-size: 12px;
-  letter-spacing: -0.01em;
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  letter-spacing: -0.015em;
   color: var(--pilot-muted);
-  line-height: 1.4;
 }
 
 .pilot-score {
-  margin-left: auto;
-  padding: 4px 8px;
-  border-radius: 8px;
-  font-size: 11px;
-  font-weight: 700;
-  font-family: var(--font-mono), ui-monospace, monospace;
-  background: rgba(52, 211, 153, 0.12);
-  color: var(--pilot-success);
-  border: 1px solid rgba(52, 211, 153, 0.25);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+  color: var(--pilot-muted);
 }
 
 .pilot-message-preview {
+  margin: 0;
   padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(0, 0, 0, 0.28);
-  border: 1px solid var(--pilot-border);
-  font-size: 13px;
-  line-height: 1.55;
-  letter-spacing: -0.012em;
-  color: rgba(244, 244, 248, 0.85);
-  flex: 1;
+  background: rgba(20, 20, 26, 0.035);
+  font-size: 13.5px;
+  line-height: 1.5;
+  letter-spacing: -0.018em;
+  color: rgba(20, 20, 26, 0.78);
 }
 
-.pilot-message-preview span {
-  color: var(--pilot-muted);
-  font-size: 11px;
-  display: block;
-  margin-bottom: 6px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-family: var(--font-mono), ui-monospace, monospace;
-}
-
-.pilot-contact-card .pilot-btn {
+.pilot-btn-invite {
   width: 100%;
-  padding: 10px 14px;
-  font-size: 13px;
 }
+
+/* ——— Stratégie ——— */
 
 .pilot-strategy-toggle {
   width: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 16px 20px;
-  border: 1px solid var(--pilot-border);
-  border-radius: 16px;
-  background: var(--pilot-surface);
-  backdrop-filter: blur(16px);
+  padding: 14px 4px;
+  border: none;
+  border-top: 1px solid var(--pilot-line);
+  background: transparent;
   color: var(--pilot-ink);
   font-size: 14px;
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.025em;
   cursor: pointer;
-  transition:
-    background var(--pilot-duration) var(--pilot-ease),
-    border-color var(--pilot-duration) var(--pilot-ease),
-    transform 0.08s var(--pilot-ease);
+}
+
+.pilot-strategy-toggle span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .pilot-strategy-toggle:active {
   transform: scale(0.995);
 }
 
-.pilot-strategy-toggle:hover {
-  background: var(--pilot-surface-hover);
-  border-color: var(--pilot-border-strong);
-}
-
 .pilot-strategy-toggle svg.chevron {
-  transition: transform 0.35s var(--pilot-ease-out);
   color: var(--pilot-muted);
+  transition: transform 0.35s var(--pilot-ease-out);
 }
 
 .pilot-strategy-toggle.open svg.chevron {
@@ -762,12 +666,8 @@
 }
 
 .pilot-strategy-panel {
-  margin-top: 10px;
-  padding: 18px 20px;
-  border-radius: 16px;
-  border: 1px solid var(--pilot-border);
-  background: rgba(0, 0, 0, 0.22);
-  animation: pilot-panel-open 0.38s var(--pilot-ease-out) both;
+  padding: 4px 0 8px;
+  animation: pilot-panel-open 0.35s var(--pilot-ease-out) both;
 }
 
 .pilot-strategy-list {
@@ -776,41 +676,41 @@
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .pilot-strategy-list li {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  font-size: 14px;
-  line-height: 1.5;
-  letter-spacing: -0.012em;
-  color: rgba(244, 244, 248, 0.88);
+  flex-direction: column;
+  gap: 3px;
+  font-size: 14.5px;
+  letter-spacing: -0.02em;
+  line-height: 1.4;
+  color: var(--pilot-ink);
 }
 
-.pilot-strategy-list li svg {
-  flex-shrink: 0;
-  margin-top: 2px;
-  color: var(--pilot-accent);
+.pilot-strategy-list strong {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--pilot-muted);
 }
 
 .pilot-toast {
   position: fixed;
-  bottom: 24px;
+  bottom: 28px;
   left: 50%;
-  transform: translateX(-50%) translateY(80px);
-  padding: 12px 20px;
-  border-radius: 12px;
-  border: 1px solid var(--pilot-border-strong);
-  background: rgba(14, 14, 26, 0.92);
-  backdrop-filter: blur(20px) saturate(1.4);
-  color: var(--pilot-ink);
+  transform: translateX(-50%) translateY(16px);
+  padding: 11px 18px;
+  border-radius: 999px;
+  background: var(--pilot-ink);
+  color: #fff;
   font-size: 13px;
   font-weight: 500;
-  letter-spacing: -0.01em;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
-  z-index: 100;
+  letter-spacing: -0.02em;
+  box-shadow: 0 12px 32px rgba(20, 20, 26, 0.22);
+  z-index: 50;
   opacity: 0;
   pointer-events: none;
   transition:
@@ -823,74 +723,62 @@
   transform: translateX(-50%) translateY(0);
 }
 
-/* Placeholder vue Expert (maquette) */
 .pilot-expert-shell {
   min-height: 100vh;
-  background: var(--bg);
-  color: var(--ink);
+  background: var(--bg, #fff);
+  color: var(--ink, #14141a);
+  font-family: var(--font-pilot), var(--font-inter), system-ui, sans-serif;
 }
 
 .pilot-expert-shell .pilot-header {
-  max-width: 920px;
-  margin: 0 auto;
-  padding: 24px 20px 0;
-}
-
-.pilot-expert-shell .pilot-brand-name {
-  color: var(--ink);
-}
-
-.pilot-expert-shell .pilot-brand-mode {
-  color: var(--muted);
-}
-
-.pilot-expert-shell .pilot-brand-mode-dot {
-  background: var(--muted);
-  box-shadow: none;
-  animation: none;
+  background: rgba(255, 255, 255, 0.78);
+  border-bottom-color: var(--border, #e5e7eb);
 }
 
 .pilot-expert-placeholder {
-  min-height: 100vh;
+  min-height: calc(100vh - 56px);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
-  padding: 40px 24px;
-  background: var(--bg);
-  color: var(--ink);
+  gap: 12px;
+  padding: 48px 24px;
   text-align: center;
 }
 
 .pilot-expert-placeholder h1 {
-  margin: 0;
-  font-size: 22px;
-  letter-spacing: -0.03em;
+  margin: 8px 0 0;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
 }
 
 .pilot-expert-placeholder p {
   margin: 0;
-  max-width: 420px;
-  color: var(--muted);
-  line-height: 1.55;
+  max-width: 380px;
+  font-size: 15px;
+  line-height: 1.5;
+  letter-spacing: -0.02em;
+  color: var(--muted, #5c5c68);
 }
 
 @keyframes pilot-enter {
   from {
     opacity: 0;
-    transform: translateY(14px);
+    transform: translateY(10px);
+    filter: blur(4px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
+    filter: blur(0);
   }
 }
 
 @keyframes pilot-scale-in {
   from {
     opacity: 0;
-    transform: scale(0.98) translateY(8px);
+    transform: scale(0.985) translateY(8px);
   }
   to {
     opacity: 1;
@@ -901,7 +789,7 @@
 @keyframes pilot-panel-open {
   from {
     opacity: 0;
-    transform: translateY(-6px);
+    transform: translateY(-4px);
   }
   to {
     opacity: 1;
@@ -909,63 +797,37 @@
   }
 }
 
-@keyframes pilot-orb-drift {
-  from { transform: translate(0, 0) scale(1); }
-  to { transform: translate(-40px, 30px) scale(1.06); }
-}
-
-@keyframes pilot-pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.55; transform: scale(0.88); }
-}
-
-@keyframes pilot-blink {
-  50% { opacity: 0; }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .pilot-root::after,
-  .pilot-brand-mode-dot,
-  .pilot-cursor {
-    animation: none;
-  }
-
   .pilot-section,
-  .pilot-contact-card,
-  .pilot-follow-card,
-  .pilot-header,
   .pilot-greeting-block,
   .pilot-preview-banner,
-  .pilot-linkedin-feed {
+  .pilot-linkedin-feed,
+  .pilot-strategy-panel {
     animation: none;
+    filter: none;
   }
 
-  .pilot-contact-card:hover,
-  .pilot-follow-card:hover {
+  .pilot-contact-card:hover {
     transform: none;
-  }
-
-  .pilot-progress-fill {
-    transition: none;
   }
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .pilot-mode-toggle,
-  .pilot-day-chip,
-  .pilot-follow-card,
-  .pilot-contact-card,
-  .pilot-btn-ghost,
-  .pilot-strategy-toggle,
-  .pilot-toast {
+  .pilot-header,
+  .pilot-preview-banner {
     backdrop-filter: none;
-    background: rgba(20, 20, 32, 0.95);
+    background: var(--pilot-bg);
   }
 }
 
-@media (prefers-contrast: more) {
-  .pilot-root {
-    --pilot-border: rgba(255, 255, 255, 0.22);
-    --pilot-muted: rgba(244, 244, 248, 0.78);
+@media (max-width: 520px) {
+  .pilot-linkedin-actions span {
+    font-size: 0;
+    gap: 0;
+  }
+
+  .pilot-linkedin-actions span svg {
+    width: 18px;
+    height: 18px;
   }
 }
