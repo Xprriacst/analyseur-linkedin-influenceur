@@ -199,15 +199,17 @@ export default function PilotModeView({
 
       <div className="pilot-inner">
         <div className="pilot-hero">
-          <span className="pilot-ai-chip">
-            <Sparkles size={12} strokeWidth={2.2} aria-hidden />
-            Généré pour toi
-          </span>
-          <h1 className="pilot-greeting">Bonjour {plan.userName}.</h1>
-          <p className="pilot-greeting-sub">
-            Ton post est prêt. {plan.contacts.length} personnes à contacter.
-            <span className="pilot-greeting-rest"> C’est tout.</span>
-          </p>
+          <div className="pilot-hero-copy">
+            <span className="pilot-ai-chip">
+              <Sparkles size={12} strokeWidth={2.2} aria-hidden />
+              Généré pour toi
+            </span>
+            <h1 className="pilot-greeting">Bonjour {plan.userName}.</h1>
+            <p className="pilot-greeting-sub">
+              Ton post est prêt. {plan.contacts.length} personnes à contacter.
+              <span className="pilot-greeting-rest"> C’est tout.</span>
+            </p>
+          </div>
           <div className="pilot-week" aria-label="Objectif de la semaine">
             <div className="pilot-week-dots">
               {weekDots.map((done, i) => (
@@ -224,7 +226,8 @@ export default function PilotModeView({
           </div>
         </div>
 
-        <section className="pilot-section" aria-labelledby="pilot-post-title">
+        <div className="pilot-desk">
+          <section className="pilot-section" aria-labelledby="pilot-post-title">
           <div className="pilot-section-head">
             <h2 className="pilot-section-label" id="pilot-post-title">
               Post du jour
@@ -287,7 +290,8 @@ export default function PilotModeView({
           </article>
         </section>
 
-        {plan.followProfiles.length > 0 && (
+        <aside className="pilot-aside">
+          {plan.followProfiles.length > 0 && (
           <section className="pilot-section" aria-labelledby="pilot-follow-title">
             <div className="pilot-section-head">
               <h2 className="pilot-section-label" id="pilot-follow-title">
@@ -376,7 +380,9 @@ export default function PilotModeView({
               );
             })}
           </div>
-        </section>
+          </section>
+        </aside>
+        </div>
 
         <section className="pilot-section-strategy">
           <button
