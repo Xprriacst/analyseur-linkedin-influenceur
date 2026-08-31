@@ -24,7 +24,7 @@ from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_po
 from src import heygen
 from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
-from src import audit_projection, lead_notify, mailer
+from src import audit_projection, lead_notify, mailer, pilot_plan
 from src.audit_report import start_audit_email_thread
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
@@ -5415,6 +5415,12 @@ def me_linkedin_outreach_chat_send(
             learn_opt_out=payload.learn_opt_out,
         )
     return {"ok": True, "quota": _outreach_quota(account, *_safe_counts(token))}
+
+
+@app.get("/me/pilot/today")
+def me_pilot_today(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Plan du jour Mode Pilote — agrégation lecture seule, 0 crédit / 0 LLM / 0 Apify."""
+    return pilot_plan.build_pilot_today(token)
 
 
 @app.get("/me/daily-ideas")
