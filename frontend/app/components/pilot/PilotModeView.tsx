@@ -115,17 +115,18 @@ export default function PilotModeView({
   const [invited, setInvited] = useState<Set<string>>(new Set());
   const [published, setPublished] = useState(false);
 
-  const handleAction = useCallback((label: string, fn?: () => void) => {
-    if (fn) {
-      fn();
-      return;
-    }
-    toast(`${label} — simulé`);
-  }, []);
+  const handleAction = useCallback(
+    (label: string, fn?: () => void) => {
+      fn?.();
+      if (preview) {
+        toast(`${label} — simulé`);
+      }
+    },
+    [preview],
+  );
 
   const toaster = (
     <Toaster
-      id="pilot"
       theme="light"
       invert
       position="bottom-center"
