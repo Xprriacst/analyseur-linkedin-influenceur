@@ -135,27 +135,6 @@ export default function PilotShell({
     }
   }
 
-  async function handleFollow(profileId: string) {
-    const handle = meta?.follow_handles?.[profileId];
-    if (!handle) {
-      toast.error("Profil introuvable");
-      return;
-    }
-    try {
-      const res = await fetch(`${DIRECT_API_URL}/me/followed-influencers`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ handle, platform: "linkedin" }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Suivi impossible");
-      toast.success("Influenceur suivi");
-      void loadPlan();
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Suivi impossible");
-    }
-  }
-
   function handlePublishClick() {
     if (meta?.post_empty || !postText.trim()) {
       onOpenGenerator({ topic: "" });
@@ -218,7 +197,6 @@ export default function PilotShell({
           onOpenAssistant(postText || topic);
         }}
         onInvite={handleInvite}
-        onFollowProfile={handleFollow}
       />
       {publishOpen && (
         <PublishConfirmModal

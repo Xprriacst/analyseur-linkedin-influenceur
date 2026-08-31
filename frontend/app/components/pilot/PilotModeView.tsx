@@ -80,7 +80,6 @@ type PilotModeViewProps = {
   onEditPost?: () => void;
   onRegeneratePost?: () => void;
   onInvite?: (contactId: string) => void;
-  onFollowProfile?: (profileId: string) => void;
 };
 
 export default function PilotModeView({
@@ -94,14 +93,13 @@ export default function PilotModeView({
   onEditPost,
   onRegeneratePost,
   onInvite,
-  onFollowProfile,
 }: PilotModeViewProps) {
   const [internalMode, setInternalMode] = useState<InterfaceMode>("pilot");
   const mode = controlledMode ?? internalMode;
   const setMode = onModeChange ?? setInternalMode;
 
   const [strategyOpen, setStrategyOpen] = useState(false);
-  const [followed, setFollowed] = useState<Set<string>>(new Set());
+  const [expandedContactId, setExpandedContactId] = useState<string | null>(null);
   const [invited, setInvited] = useState<Set<string>>(new Set());
   const [published, setPublished] = useState(false);
 
@@ -313,107 +311,84 @@ export default function PilotModeView({
         </section>
 
         <aside className="pilot-aside">
-          {plan.followProfiles.length > 0 && (
-          <section className="pilot-section" aria-labelledby="pilot-follow-title">
+          <section className="pilot-section" aria-labelledby="pilot-contacts-title">
             <div className="pilot-section-head">
-              <h2 className="pilot-section-label" id="pilot-follow-title">
-                À suivre
+              <h2 className="pilot-section-label" id="pilot-contacts-title">
+                À contacter
               </h2>
-              <span className="pilot-section-hint">Depuis ton analyse</span>
+              <span className="pilot-section-hint">{plan.contacts.length} aujourd’hui</span>
             </div>
-            <div className="pilot-follow-list">
-              {plan.followProfiles.map((profile) => {
-                const isFollowed = followed.has(profile.id);
+            <div className="pilot-contacts-list">
+              {contactsBlockedReason && (
+                <div className="pilot-empty-block pilot-empty-block-inline">
+                  <p className="pilot-empty-copy">{contactsBlockedReason}</p>
+                </div>
+              )}
+              {!contactsBlockedReason && plan.contacts.length === 0 && (
+                <div className="pilot-empty-block pilot-empty-block-inline">
+                  <p className="pilot-empty-copy">
+                    Aucun lead invitable pour l’instant — importe une recherche ou collecte des commentaires, puis laisse le scoring ICP faire son travail.
+                  </p>
+                </div>
+              )}
+              {plan.contacts.map((contact) => {
+                const isInvited = invited.has(contact.id);
+                const isOpen = expandedContactId === contact.id;
+                const panelId = `pilot-contact-panel-${contact.id}`;
                 return (
-                  <div key={profile.id} className="pilot-follow-row">
-                    <div className="pilot-avatar" aria-hidden>
-                      {profile.initials}
-                    </div>
-                    <div className="pilot-follow-info">
-                      <h3>{profile.name}</h3>
-                      <p>{profile.reason}</p>
-                    </div>
+                  <article
+                    key={contact.id}
+                    className={`pilot-contact-block${isOpen ? " open" : ""}${isInvited ? " invited" : ""}`}
+                  >
                     <button
                       type="button"
-                      className={`pilot-btn pilot-btn-follow${isFollowed ? " done" : ""}`}
-                      onClick={() => {
-                        setFollowed((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(profile.id)) next.delete(profile.id);
-                          else next.add(profile.id);
-                          return next;
-                        });
-                        handleAction(`Suivre ${profile.name}`, () =>
-                          onFollowProfile?.(profile.id),
-                        );
-                      }}
+                      className="pilot-contact-summary"
+                      aria-expanded={isOpen}
+                      aria-controls={panelId}
+                      onClick={() =>
+                        setExpandedContactId((current) =>
+                          current === contact.id ? null : contact.id,
+                        )
+                      }
                     >
-                      {isFollowed ? <Check size={14} /> : <UserPlus size={14} />}
-                      {isFollowed ? "Suivi" : "Suivre"}
+                      <div className="pilot-avatar" aria-hidden>
+                        {contact.initials}
+                      </div>
+                      <div className="pilot-contact-info">
+                        <h3>{contact.name}</h3>
+                        <p>
+                          {contact.role}
+                          {contact.company ? ` · ${contact.company}` : ""}
+                        </p>
+                      </div>
+                      <span className="pilot-score">{contact.score}</span>
+                      <ChevronDown size={16} className="pilot-contact-chevron" aria-hidden />
                     </button>
-                  </div>
+                    <div id={panelId} className={`pilot-contact-panel${isOpen ? " open" : ""}`}>
+                      {isOpen && (
+                        <div className="pilot-contact-panel-inner">
+                          <p className="pilot-message-preview">{contact.message}</p>
+                          <button
+                            type="button"
+                            className={`pilot-btn pilot-btn-primary pilot-btn-invite${isInvited ? " done" : ""}`}
+                            onClick={() => {
+                              setInvited((prev) => new Set(prev).add(contact.id));
+                              handleAction(`Invitation à ${contact.name}`, () =>
+                                onInvite?.(contact.id),
+                              );
+                            }}
+                            disabled={isInvited || Boolean(contactsBlockedReason)}
+                          >
+                            {isInvited ? <Check size={15} /> : <UserPlus size={15} />}
+                            {isInvited ? "Invitation envoyée" : "Inviter"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </article>
                 );
               })}
             </div>
-          </section>
-        )}
-
-        <section className="pilot-section" aria-labelledby="pilot-contacts-title">
-          <div className="pilot-section-head">
-            <h2 className="pilot-section-label" id="pilot-contacts-title">
-              À contacter
-            </h2>
-            <span className="pilot-section-hint">{plan.contacts.length} aujourd’hui</span>
-          </div>
-          <div className="pilot-contacts-list">
-            {contactsBlockedReason && (
-              <div className="pilot-empty-block pilot-empty-block-inline">
-                <p className="pilot-empty-copy">{contactsBlockedReason}</p>
-              </div>
-            )}
-            {!contactsBlockedReason && plan.contacts.length === 0 && (
-              <div className="pilot-empty-block pilot-empty-block-inline">
-                <p className="pilot-empty-copy">
-                  Aucun lead invitable pour l’instant — importe une recherche ou collecte des commentaires, puis laisse le scoring ICP faire son travail.
-                </p>
-              </div>
-            )}
-            {plan.contacts.map((contact) => {
-              const isInvited = invited.has(contact.id);
-              return (
-                <article key={contact.id} className="pilot-contact-card">
-                  <div className="pilot-contact-top">
-                    <div className="pilot-avatar" aria-hidden>
-                      {contact.initials}
-                    </div>
-                    <div className="pilot-contact-info">
-                      <h3>{contact.name}</h3>
-                      <p>
-                        {contact.role}
-                        {contact.company ? ` · ${contact.company}` : ""}
-                      </p>
-                    </div>
-                    <span className="pilot-score">{contact.score}</span>
-                  </div>
-                  <p className="pilot-message-preview">{contact.message}</p>
-                  <button
-                    type="button"
-                    className={`pilot-btn pilot-btn-primary pilot-btn-invite${isInvited ? " done" : ""}`}
-                    onClick={() => {
-                      setInvited((prev) => new Set(prev).add(contact.id));
-                      handleAction(`Invitation à ${contact.name}`, () =>
-                        onInvite?.(contact.id),
-                      );
-                    }}
-                    disabled={isInvited || Boolean(contactsBlockedReason)}
-                  >
-                    {isInvited ? <Check size={15} /> : <UserPlus size={15} />}
-                    {isInvited ? "Invitation envoyée" : "Inviter"}
-                  </button>
-                </article>
-              );
-            })}
-          </div>
           </section>
         </aside>
         </div>

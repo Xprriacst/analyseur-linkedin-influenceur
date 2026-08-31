@@ -119,6 +119,8 @@ test.describe("Mode Pilote", () => {
     await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
       timeout: 45_000,
     });
+    await expect(page.getByRole("region", { name: "À suivre" })).toHaveCount(0);
+    await page.getByRole("button", { name: /Camille Dupont/i }).click();
     await page.getByRole("button", { name: /^Inviter$/i }).click();
     await expect.poll(() => inviteCalled).toBe(true);
     await expect(page.getByRole("button", { name: /Invitation envoyée/i })).toBeVisible();

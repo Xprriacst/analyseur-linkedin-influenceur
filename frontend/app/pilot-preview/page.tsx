@@ -24,24 +24,7 @@ Résultat en 90 jours : des conversations avec des fondateurs qui avaient exacte
 
 Si tu es en train de lancer ton offre B2B et que tu postes dans le vide, commence par une histoire vécue cette semaine. Une seule. Et termine par une question sincère.`,
   },
-  followProfiles: [
-    {
-      id: "fp1",
-      name: "Romain Cornille",
-      handle: "@romain-cornille",
-      reason: "Posts fondateurs SaaS · storytelling + CTA commentaire — même ICP que toi.",
-      initials: "RC",
-      accent: "linear-gradient(135deg, #6366f1, #4338ca)",
-    },
-    {
-      id: "fp2",
-      name: "Flora Codaccioni",
-      handle: "@flora-codaccioni",
-      reason: "Contenu éducatif B2B · structure récit + chiffres — bon modèle de rythme.",
-      initials: "FC",
-      accent: "linear-gradient(135deg, #ec4899, #be185d)",
-    },
-  ],
+  followProfiles: [],
   contacts: [
     {
       id: "1",

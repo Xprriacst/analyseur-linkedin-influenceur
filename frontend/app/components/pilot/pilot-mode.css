@@ -585,23 +585,68 @@
 .pilot-contacts-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
-.pilot-contact-card {
-  padding: 16px;
-  border-radius: 20px;
+.pilot-contact-block {
+  border-radius: 18px;
   background: var(--pilot-card);
   box-shadow: var(--pilot-shadow);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  overflow: hidden;
 }
 
-.pilot-contact-top {
+.pilot-contact-summary {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 11px;
+  padding: 14px 16px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  transition: background var(--duration-press) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pilot-contact-summary:hover {
+    background: rgba(0, 0, 0, 0.02);
+  }
+}
+
+.pilot-contact-summary:active {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.pilot-contact-chevron {
+  flex-shrink: 0;
+  color: var(--pilot-muted);
+  transition: transform var(--duration-ui) var(--ease-out);
+}
+
+.pilot-contact-block.open .pilot-contact-chevron {
+  transform: rotate(180deg);
+}
+
+.pilot-contact-panel-inner {
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: pilot-contact-reveal 220ms var(--ease-out) both;
+}
+
+@keyframes pilot-contact-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .pilot-avatar {
@@ -808,7 +853,8 @@
   .pilot-hero,
   .pilot-desk,
   .pilot-section,
-  .pilot-section-strategy {
+  .pilot-section-strategy,
+  .pilot-contact-panel-inner {
     animation: none;
     transform: none;
   }
@@ -859,7 +905,7 @@
 
   .pilot-post-card,
   .pilot-follow-list,
-  .pilot-contact-card {
+  .pilot-contact-block {
     box-shadow: none;
     outline: 1px solid var(--pilot-ink);
   }
