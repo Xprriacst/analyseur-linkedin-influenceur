@@ -3,17 +3,37 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ChevronDown,
+  Globe,
   Linkedin,
+  MessageCircle,
   PenLine,
   RefreshCw,
+  Repeat2,
   Send,
   Sparkles,
   Target,
+  ThumbsUp,
   TrendingUp,
   UserPlus,
   Users,
 } from "lucide-react";
 import "./pilot-mode.css";
+
+export type PilotAuthor = {
+  name: string;
+  headline: string;
+  initials: string;
+  avatarUrl?: string;
+};
+
+export type PilotFollowProfile = {
+  id: string;
+  name: string;
+  handle: string;
+  reason: string;
+  initials: string;
+  accent: string;
+};
 
 export type PilotContact = {
   id: string;
@@ -45,7 +65,9 @@ export type PilotPlan = {
   weekNumber: number;
   weeklyDone: number;
   weeklyTotal: number;
+  author: PilotAuthor;
   post: PilotPost;
+  followProfiles: PilotFollowProfile[];
   contacts: PilotContact[];
   strategy: PilotStrategy;
 };
@@ -64,6 +86,7 @@ type PilotModeViewProps = {
   onEditPost?: () => void;
   onRegeneratePost?: () => void;
   onInvite?: (contactId: string) => void;
+  onFollowProfile?: (profileId: string) => void;
 };
 
 function useTypingGreeting(fullText: string, enabled = true) {
@@ -96,6 +119,7 @@ export default function PilotModeView({
   onEditPost,
   onRegeneratePost,
   onInvite,
+  onFollowProfile,
 }: PilotModeViewProps) {
   const [internalMode, setInternalMode] = useState<InterfaceMode>("pilot");
   const mode = controlledMode ?? internalMode;
@@ -126,6 +150,8 @@ export default function PilotModeView({
   const progressPct = plan.weeklyTotal > 0
     ? Math.round((plan.weeklyDone / plan.weeklyTotal) * 100)
     : 0;
+
+  const postBody = `${plan.post.hook}\n\n${plan.post.body}`;
 
   const header = (
     <header className="pilot-header">
@@ -213,7 +239,7 @@ export default function PilotModeView({
           <h1 className="pilot-greeting">
             {greeting}
             {greeting.length < greetingFull.length && (
-              <span style={{ opacity: 0.5 }}>|</span>
+              <span className="pilot-cursor" aria-hidden>|</span>
             )}
           </h1>
           <p className="pilot-greeting-sub">
@@ -227,66 +253,158 @@ export default function PilotModeView({
                 {plan.weeklyDone}/{plan.weeklyTotal} actions
               </span>
             </div>
-            <div className="pilot-progress-bar" role="progressbar" aria-valuenow={progressPct} aria-valuemin={0} aria-valuemax={100}>
+            <div
+              className="pilot-progress-bar"
+              role="progressbar"
+              aria-valuenow={progressPct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
               <div className="pilot-progress-fill" style={{ width: `${progressPct}%` }} />
             </div>
           </div>
         </div>
 
-        <section className="pilot-section" aria-labelledby="pilot-post-title">
-          <div className="pilot-section-label" id="pilot-post-title">
-            <PenLine size={14} />
-            Post du jour
+        <section className="pilot-section pilot-section-post" aria-labelledby="pilot-post-title">
+          <div className="pilot-section-head">
+            <div className="pilot-section-label" id="pilot-post-title">
+              <PenLine size={14} />
+              Post du jour
+            </div>
+            <span className="pilot-badge structure">{plan.post.structure}</span>
           </div>
-          <article className="pilot-card pilot-post-card">
-            <div className="pilot-post-meta">
-              <span className="pilot-badge linkedin">
-                <Linkedin size={13} />
-                LinkedIn
+
+          <article className="pilot-linkedin-feed" aria-label="Aperçu du post LinkedIn">
+            <div className="pilot-linkedin-feed-header">
+              <div className="pilot-linkedin-avatar" aria-hidden>
+                {plan.author.avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={plan.author.avatarUrl} alt="" />
+                ) : (
+                  plan.author.initials
+                )}
+              </div>
+              <div className="pilot-linkedin-author">
+                <div className="pilot-linkedin-name">{plan.author.name}</div>
+                <div className="pilot-linkedin-headline">{plan.author.headline}</div>
+                <div className="pilot-linkedin-meta">
+                  <span>À l&apos;instant</span>
+                  <span aria-hidden> · </span>
+                  <Globe size={12} aria-label="Public" />
+                </div>
+              </div>
+              <Linkedin size={18} className="pilot-linkedin-logo" aria-hidden />
+            </div>
+
+            <div className="pilot-linkedin-body">
+              <p className="pilot-linkedin-text">{postBody}</p>
+            </div>
+
+            <div className="pilot-linkedin-reactions" aria-hidden>
+              <span className="pilot-linkedin-reaction-icons">
+                <span className="pilot-li-icon like">👍</span>
+                <span className="pilot-li-icon celebrate">👏</span>
               </span>
-              <span className="pilot-badge structure">{plan.post.structure}</span>
+              <span className="pilot-linkedin-reaction-count">—</span>
             </div>
-            <div className="pilot-post-preview">
-              <div className="pilot-hook">{plan.post.hook}</div>
-              <p className="pilot-post-text">{plan.post.body}</p>
-            </div>
-            <div className="pilot-actions">
-              <button
-                type="button"
-                className="pilot-btn pilot-btn-primary"
-                onClick={() => handleAction("Publication", onPublish)}
-              >
-                <Send size={16} />
-                Publier
-              </button>
-              <button
-                type="button"
-                className="pilot-btn pilot-btn-ghost"
-                onClick={() => handleAction("Modification", onEditPost)}
-              >
-                <PenLine size={16} />
-                Modifier
-              </button>
-              <button
-                type="button"
-                className="pilot-btn pilot-btn-ghost"
-                onClick={() => handleAction("Régénération", onRegeneratePost)}
-              >
-                <RefreshCw size={16} />
-                Autre angle
-              </button>
+
+            <div className="pilot-linkedin-actions" aria-hidden>
+              <span><ThumbsUp size={16} /> J&apos;aime</span>
+              <span><MessageCircle size={16} /> Commenter</span>
+              <span><Repeat2 size={16} /> Republier</span>
+              <span><Send size={16} /> Envoyer</span>
             </div>
           </article>
+
+          <div className="pilot-actions">
+            <button
+              type="button"
+              className="pilot-btn pilot-btn-primary"
+              onClick={() => handleAction("Publication", onPublish)}
+            >
+              <Send size={16} />
+              Publier
+            </button>
+            <button
+              type="button"
+              className="pilot-btn pilot-btn-ghost"
+              onClick={() => handleAction("Modification", onEditPost)}
+            >
+              <PenLine size={16} />
+              Modifier
+            </button>
+            <button
+              type="button"
+              className="pilot-btn pilot-btn-ghost"
+              onClick={() => handleAction("Régénération", onRegeneratePost)}
+            >
+              <RefreshCw size={16} />
+              Autre angle
+            </button>
+          </div>
         </section>
 
-        <section className="pilot-section" aria-labelledby="pilot-contacts-title">
+        {plan.followProfiles.length > 0 && (
+          <section className="pilot-section pilot-section-follow" aria-labelledby="pilot-follow-title">
+            <div className="pilot-section-head">
+              <div className="pilot-section-label" id="pilot-follow-title">
+                <TrendingUp size={14} />
+                Profils à suivre
+              </div>
+              <span className="pilot-section-hint">Issus de ton analyse onboarding</span>
+            </div>
+            <p className="pilot-follow-intro">
+              Ces créateurs publient sur ton ICP — suis-les pour calibrer ton ton et ta structure.
+            </p>
+            <div className="pilot-follow-scroll">
+              {plan.followProfiles.map((profile, index) => (
+                <div
+                  key={profile.id}
+                  className="pilot-follow-card"
+                  style={{ animationDelay: `${0.28 + index * 0.07}s` }}
+                >
+                  <div className="pilot-follow-top">
+                    <div
+                      className="pilot-avatar pilot-avatar-round"
+                      style={{ background: profile.accent }}
+                      aria-hidden
+                    >
+                      {profile.initials}
+                    </div>
+                    <div className="pilot-follow-info">
+                      <h3>{profile.name}</h3>
+                      <p>{profile.handle}</p>
+                    </div>
+                  </div>
+                  <p className="pilot-follow-reason">{profile.reason}</p>
+                  <button
+                    type="button"
+                    className="pilot-btn pilot-btn-follow"
+                    onClick={() =>
+                      handleAction(`Suivre ${profile.name}`, () => onFollowProfile?.(profile.id))
+                    }
+                  >
+                    <UserPlus size={14} />
+                    Suivre sur LinkedIn
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section className="pilot-section pilot-section-contacts" aria-labelledby="pilot-contacts-title">
           <div className="pilot-section-label" id="pilot-contacts-title">
             <Users size={14} />
             {plan.contacts.length} personnes à contacter
           </div>
           <div className="pilot-contacts-grid">
-            {plan.contacts.map((contact) => (
-              <div key={contact.id} className="pilot-contact-card">
+            {plan.contacts.map((contact, index) => (
+              <div
+                key={contact.id}
+                className="pilot-contact-card"
+                style={{ animationDelay: `${0.38 + index * 0.08}s` }}
+              >
                 <div className="pilot-contact-top">
                   <div
                     className="pilot-avatar"
@@ -323,7 +441,7 @@ export default function PilotModeView({
           </div>
         </section>
 
-        <section className="pilot-section">
+        <section className="pilot-section pilot-section-strategy">
           <button
             type="button"
             className={`pilot-strategy-toggle${strategyOpen ? " open" : ""}`}
@@ -331,8 +449,8 @@ export default function PilotModeView({
             onClick={() => setStrategyOpen((v) => !v)}
           >
             <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <TrendingUp size={16} />
-              Ta stratégie LinkedIn
+              <Target size={16} />
+              Détails de ta stratégie
             </span>
             <ChevronDown size={18} className="chevron" />
           </button>
@@ -355,13 +473,6 @@ export default function PilotModeView({
                   <PenLine size={16} />
                   <span>
                     <strong>Structure privilégiée :</strong> {plan.strategy.structureHint}
-                  </span>
-                </li>
-                <li>
-                  <Linkedin size={16} />
-                  <span>
-                    <strong>Profils à suivre :</strong>{" "}
-                    {plan.strategy.profiles.join(" · ")}
                   </span>
                 </li>
               </ul>

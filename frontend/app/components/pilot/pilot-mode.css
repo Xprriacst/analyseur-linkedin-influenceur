@@ -1,10 +1,10 @@
-/* Mode Pilote — maquette / shell LinkedIn-first */
+/* Mode Pilote — maquette LinkedIn-first · polish type Apple (ressorts sans rebond) */
 
 .pilot-root {
   --pilot-bg: #07070f;
   --pilot-bg-2: #0e0e1a;
-  --pilot-surface: rgba(255, 255, 255, 0.04);
-  --pilot-surface-hover: rgba(255, 255, 255, 0.07);
+  --pilot-surface: rgba(255, 255, 255, 0.045);
+  --pilot-surface-hover: rgba(255, 255, 255, 0.075);
   --pilot-border: rgba(255, 255, 255, 0.08);
   --pilot-border-strong: rgba(255, 255, 255, 0.14);
   --pilot-ink: #f4f4f8;
@@ -14,9 +14,14 @@
   --pilot-glow: rgba(124, 131, 255, 0.35);
   --pilot-linkedin: #0a66c2;
   --pilot-success: #34d399;
+  /* Courbe type ressort Apple : amortissement 1.0, réponse ~0.4 */
+  --pilot-ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --pilot-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --pilot-duration: 0.42s;
 
   min-height: 100vh;
   color: var(--pilot-ink);
+  font-family: var(--font-inter), -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
   background:
     radial-gradient(ellipse 80% 50% at 50% -20%, rgba(70, 72, 212, 0.28), transparent 55%),
     radial-gradient(ellipse 60% 40% at 100% 50%, rgba(10, 102, 194, 0.12), transparent 50%),
@@ -30,8 +35,8 @@
   position: fixed;
   inset: 0;
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
   background-size: 48px 48px;
   mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, black, transparent 75%);
   pointer-events: none;
@@ -48,7 +53,7 @@
   border-radius: 50%;
   background: radial-gradient(circle, rgba(124, 131, 255, 0.15), transparent 70%);
   filter: blur(40px);
-  animation: pilot-orb-drift 12s ease-in-out infinite alternate;
+  animation: pilot-orb-drift 14s var(--pilot-ease) infinite alternate;
   pointer-events: none;
   z-index: 0;
 }
@@ -72,11 +77,11 @@
   border: 1px dashed rgba(245, 158, 11, 0.45);
   background: rgba(245, 158, 11, 0.08);
   color: #fbbf24;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  animation: pilot-fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) both;
 }
 
 .pilot-header {
@@ -85,7 +90,7 @@
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 32px;
-  animation: pilot-fade-up 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.05s both;
+  animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) 0.04s both;
 }
 
 .pilot-brand {
@@ -115,11 +120,12 @@
 .pilot-brand-name {
   font-size: 15px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
 }
 
 .pilot-brand-mode {
   font-size: 12px;
+  letter-spacing: -0.01em;
   color: var(--pilot-muted);
   display: inline-flex;
   align-items: center;
@@ -132,7 +138,7 @@
   border-radius: 50%;
   background: var(--pilot-success);
   box-shadow: 0 0 8px rgba(52, 211, 153, 0.8);
-  animation: pilot-pulse-dot 2s ease-in-out infinite;
+  animation: pilot-pulse-dot 2.4s var(--pilot-ease) infinite;
 }
 
 .pilot-header-meta {
@@ -148,7 +154,9 @@
   border-radius: 999px;
   border: 1px solid var(--pilot-border);
   background: var(--pilot-surface);
+  backdrop-filter: blur(16px) saturate(1.4);
   font-size: 12px;
+  letter-spacing: -0.01em;
   color: var(--pilot-muted);
   font-family: var(--font-mono), ui-monospace, monospace;
 }
@@ -158,8 +166,8 @@
   padding: 3px;
   border-radius: 999px;
   border: 1px solid var(--pilot-border-strong);
-  background: rgba(0, 0, 0, 0.25);
-  backdrop-filter: blur(12px);
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(20px) saturate(1.5);
 }
 
 .pilot-mode-toggle button {
@@ -168,10 +176,18 @@
   color: var(--pilot-muted);
   font-size: 12px;
   font-weight: 600;
+  letter-spacing: -0.01em;
   padding: 7px 14px;
   border-radius: 999px;
   cursor: pointer;
-  transition: color 0.2s, background 0.2s, box-shadow 0.2s;
+  transition:
+    color var(--pilot-duration) var(--pilot-ease),
+    background var(--pilot-duration) var(--pilot-ease),
+    transform 0.08s var(--pilot-ease);
+}
+
+.pilot-mode-toggle button:active {
+  transform: scale(0.96);
 }
 
 .pilot-mode-toggle button.active {
@@ -182,26 +198,33 @@
 
 .pilot-greeting-block {
   margin-bottom: 28px;
-  animation: pilot-fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) 0.1s both;
+  animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) 0.08s both;
 }
 
 .pilot-greeting {
-  font-size: clamp(26px, 4vw, 34px);
+  font-size: clamp(28px, 4.2vw, 36px);
   font-weight: 700;
-  letter-spacing: -0.03em;
-  line-height: 1.15;
-  margin: 0 0 8px;
-  background: linear-gradient(135deg, #fff 30%, rgba(255, 255, 255, 0.72));
+  letter-spacing: -0.045em;
+  line-height: 1.08;
+  margin: 0 0 10px;
+  background: linear-gradient(135deg, #fff 25%, rgba(255, 255, 255, 0.72));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 
+.pilot-cursor {
+  opacity: 0.45;
+  font-weight: 400;
+  animation: pilot-blink 1s step-end infinite;
+}
+
 .pilot-greeting-sub {
   margin: 0 0 18px;
   font-size: 15px;
+  letter-spacing: -0.015em;
+  line-height: 1.55;
   color: var(--pilot-muted);
-  line-height: 1.5;
   max-width: 520px;
 }
 
@@ -216,11 +239,12 @@
   display: flex;
   justify-content: space-between;
   font-size: 12px;
+  letter-spacing: -0.01em;
   color: var(--pilot-muted);
 }
 
 .pilot-progress-bar {
-  height: 6px;
+  height: 5px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
@@ -229,29 +253,36 @@
 .pilot-progress-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--pilot-accent-2), var(--pilot-accent), #a5b4fc);
-  background-size: 200% 100%;
-  animation: pilot-shimmer 3s ease infinite;
-  transition: width 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+  background: linear-gradient(90deg, var(--pilot-accent-2), var(--pilot-accent));
+  transition: width 0.65s var(--pilot-ease-out);
 }
 
 .pilot-section {
-  margin-bottom: 24px;
-  animation: pilot-fade-up 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
+  margin-bottom: 28px;
+  animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) both;
 }
 
-.pilot-section:nth-of-type(1) { animation-delay: 0.15s; }
-.pilot-section:nth-of-type(2) { animation-delay: 0.25s; }
-.pilot-section:nth-of-type(3) { animation-delay: 0.35s; }
+.pilot-section-post { animation-delay: 0.12s; }
+.pilot-section-follow { animation-delay: 0.2s; }
+.pilot-section-contacts { animation-delay: 0.28s; }
+.pilot-section-strategy { animation-delay: 0.36s; }
+
+.pilot-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
 
 .pilot-section-label {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--pilot-muted);
   font-family: var(--font-mono), ui-monospace, monospace;
@@ -261,31 +292,10 @@
   opacity: 0.7;
 }
 
-.pilot-card {
-  border-radius: 20px;
-  border: 1px solid var(--pilot-border);
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
-  backdrop-filter: blur(16px);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.06) inset,
-    0 24px 48px rgba(0, 0, 0, 0.35);
-  overflow: hidden;
-  transition: border-color 0.25s, transform 0.25s;
-}
-
-.pilot-card:hover {
-  border-color: var(--pilot-border-strong);
-}
-
-.pilot-post-card {
-  padding: 22px 22px 20px;
-}
-
-.pilot-post-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 16px;
+.pilot-section-hint {
+  font-size: 11px;
+  letter-spacing: -0.01em;
+  color: rgba(244, 244, 248, 0.38);
 }
 
 .pilot-badge {
@@ -294,17 +304,12 @@
   gap: 6px;
   padding: 5px 10px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
+  letter-spacing: -0.01em;
   border: 1px solid var(--pilot-border);
   background: rgba(0, 0, 0, 0.2);
   color: var(--pilot-ink);
-}
-
-.pilot-badge.linkedin {
-  border-color: rgba(10, 102, 194, 0.45);
-  background: rgba(10, 102, 194, 0.15);
-  color: #7ec8ff;
 }
 
 .pilot-badge.structure {
@@ -313,42 +318,246 @@
   color: #c4c8ff;
 }
 
-.pilot-post-preview {
-  padding: 18px 18px 16px;
-  border-radius: 14px;
-  border: 1px solid var(--pilot-border);
-  background: rgba(0, 0, 0, 0.22);
-  margin-bottom: 18px;
-  position: relative;
+/* ——— Aperçu feed LinkedIn (carte claire réaliste) ——— */
+
+.pilot-linkedin-feed {
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: #fff;
+  color: rgba(0, 0, 0, 0.9);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.06) inset,
+    0 24px 48px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  margin-bottom: 16px;
+  animation: pilot-scale-in 0.5s var(--pilot-ease-out) both;
 }
 
-.pilot-post-preview::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 14px;
-  bottom: 14px;
-  width: 3px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, var(--pilot-accent), var(--pilot-linkedin));
+.pilot-linkedin-feed-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px 0;
 }
 
-.pilot-hook {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--pilot-accent);
-  margin-bottom: 10px;
-  padding-left: 12px;
-}
-
-.pilot-post-text {
-  margin: 0;
-  padding-left: 12px;
+.pilot-linkedin-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 15px;
-  line-height: 1.65;
-  color: rgba(244, 244, 248, 0.92);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #fff;
+  background: linear-gradient(135deg, var(--pilot-accent-2), var(--pilot-linkedin));
+  overflow: hidden;
+}
+
+.pilot-linkedin-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pilot-linkedin-author {
+  flex: 1;
+  min-width: 0;
+}
+
+.pilot-linkedin-name {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: rgba(0, 0, 0, 0.9);
+}
+
+.pilot-linkedin-headline {
+  font-size: 12px;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  color: rgba(0, 0, 0, 0.6);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.pilot-linkedin-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 12px;
+  letter-spacing: -0.01em;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.pilot-linkedin-logo {
+  flex-shrink: 0;
+  color: var(--pilot-linkedin);
+  margin-top: 2px;
+}
+
+.pilot-linkedin-body {
+  padding: 12px 16px 8px;
+}
+
+.pilot-linkedin-text {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  line-height: 1.55;
+  color: rgba(0, 0, 0, 0.88);
   white-space: pre-wrap;
 }
+
+.pilot-linkedin-reactions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.pilot-linkedin-reaction-icons {
+  display: inline-flex;
+  align-items: center;
+}
+
+.pilot-li-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  margin-right: -4px;
+  border: 1.5px solid #fff;
+}
+
+.pilot-li-icon.like { background: #378fe9; }
+.pilot-li-icon.celebrate { background: #6dae4f; }
+
+.pilot-linkedin-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  padding: 4px 8px 6px;
+}
+
+.pilot-linkedin-actions span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: rgba(0, 0, 0, 0.55);
+}
+
+/* ——— Profils à suivre ——— */
+
+.pilot-follow-intro {
+  margin: 0 0 14px;
+  font-size: 14px;
+  letter-spacing: -0.015em;
+  line-height: 1.5;
+  color: var(--pilot-muted);
+  max-width: 560px;
+}
+
+.pilot-follow-scroll {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.pilot-follow-card {
+  flex: 0 0 min(300px, 85vw);
+  scroll-snap-align: start;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid var(--pilot-border);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  backdrop-filter: blur(20px) saturate(1.3);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) both;
+  transition:
+    border-color var(--pilot-duration) var(--pilot-ease),
+    transform var(--pilot-duration) var(--pilot-ease);
+}
+
+.pilot-follow-card:hover {
+  border-color: rgba(124, 131, 255, 0.32);
+}
+
+.pilot-follow-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pilot-avatar-round {
+  border-radius: 50% !important;
+}
+
+.pilot-follow-info h3 {
+  margin: 0 0 2px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.pilot-follow-info p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--pilot-muted);
+  letter-spacing: -0.01em;
+}
+
+.pilot-follow-reason {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: -0.012em;
+  color: rgba(244, 244, 248, 0.82);
+}
+
+.pilot-btn-follow {
+  width: 100%;
+  padding: 9px 14px;
+  font-size: 13px;
+  color: var(--pilot-ink);
+  background: var(--pilot-surface);
+  border: 1px solid var(--pilot-border);
+  border-radius: 12px;
+}
+
+.pilot-btn-follow:hover {
+  background: var(--pilot-surface-hover);
+  border-color: rgba(10, 102, 194, 0.45);
+}
+
+.pilot-btn-follow:active {
+  transform: scale(0.98);
+}
+
+/* ——— Actions & contacts ——— */
 
 .pilot-actions {
   display: flex;
@@ -365,9 +574,14 @@
   border-radius: 12px;
   font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.015em;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: transform 0.12s, box-shadow 0.2s, background 0.2s, border-color 0.2s;
+  transition:
+    transform 0.08s var(--pilot-ease),
+    box-shadow var(--pilot-duration) var(--pilot-ease),
+    background var(--pilot-duration) var(--pilot-ease),
+    border-color var(--pilot-duration) var(--pilot-ease);
 }
 
 .pilot-btn:active {
@@ -377,18 +591,18 @@
 .pilot-btn-primary {
   color: #fff;
   background: linear-gradient(135deg, var(--pilot-accent-2), var(--pilot-accent));
-  box-shadow: 0 8px 24px rgba(70, 72, 212, 0.45);
-  animation: pilot-cta-glow 2.5s ease-in-out infinite;
+  box-shadow: 0 8px 24px rgba(70, 72, 212, 0.4);
 }
 
 .pilot-btn-primary:hover {
-  box-shadow: 0 10px 32px rgba(70, 72, 212, 0.55);
+  box-shadow: 0 10px 32px rgba(70, 72, 212, 0.52);
 }
 
 .pilot-btn-ghost {
   color: var(--pilot-ink);
   background: var(--pilot-surface);
   border-color: var(--pilot-border);
+  backdrop-filter: blur(12px);
 }
 
 .pilot-btn-ghost:hover {
@@ -413,21 +627,21 @@
   border-radius: 18px;
   border: 1px solid var(--pilot-border);
   background: linear-gradient(160deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+  backdrop-filter: blur(16px) saturate(1.2);
   display: flex;
   flex-direction: column;
   gap: 12px;
-  transition: transform 0.25s, border-color 0.25s, box-shadow 0.25s;
-  animation: pilot-fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) both;
+  transition:
+    transform var(--pilot-duration) var(--pilot-ease),
+    border-color var(--pilot-duration) var(--pilot-ease),
+    box-shadow var(--pilot-duration) var(--pilot-ease);
 }
 
-.pilot-contact-card:nth-child(1) { animation-delay: 0.3s; }
-.pilot-contact-card:nth-child(2) { animation-delay: 0.38s; }
-.pilot-contact-card:nth-child(3) { animation-delay: 0.46s; }
-
 .pilot-contact-card:hover {
-  transform: translateY(-4px);
-  border-color: rgba(124, 131, 255, 0.35);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  transform: translateY(-3px);
+  border-color: rgba(124, 131, 255, 0.32);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.32);
 }
 
 .pilot-contact-top {
@@ -445,6 +659,7 @@
   justify-content: center;
   font-size: 14px;
   font-weight: 700;
+  letter-spacing: -0.02em;
   color: #fff;
   flex-shrink: 0;
   background: linear-gradient(135deg, #334155, #1e293b);
@@ -455,12 +670,13 @@
   margin: 0 0 2px;
   font-size: 15px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.025em;
 }
 
 .pilot-contact-info p {
   margin: 0;
   font-size: 12px;
+  letter-spacing: -0.01em;
   color: var(--pilot-muted);
   line-height: 1.4;
 }
@@ -484,6 +700,7 @@
   border: 1px solid var(--pilot-border);
   font-size: 13px;
   line-height: 1.55;
+  letter-spacing: -0.012em;
   color: rgba(244, 244, 248, 0.85);
   flex: 1;
 }
@@ -514,11 +731,20 @@
   border: 1px solid var(--pilot-border);
   border-radius: 16px;
   background: var(--pilot-surface);
+  backdrop-filter: blur(16px);
   color: var(--pilot-ink);
   font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.015em;
   cursor: pointer;
-  transition: background 0.2s, border-color 0.2s;
+  transition:
+    background var(--pilot-duration) var(--pilot-ease),
+    border-color var(--pilot-duration) var(--pilot-ease),
+    transform 0.08s var(--pilot-ease);
+}
+
+.pilot-strategy-toggle:active {
+  transform: scale(0.995);
 }
 
 .pilot-strategy-toggle:hover {
@@ -527,7 +753,7 @@
 }
 
 .pilot-strategy-toggle svg.chevron {
-  transition: transform 0.25s;
+  transition: transform 0.35s var(--pilot-ease-out);
   color: var(--pilot-muted);
 }
 
@@ -540,8 +766,8 @@
   padding: 18px 20px;
   border-radius: 16px;
   border: 1px solid var(--pilot-border);
-  background: rgba(0, 0, 0, 0.2);
-  animation: pilot-expand 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+  background: rgba(0, 0, 0, 0.22);
+  animation: pilot-panel-open 0.38s var(--pilot-ease-out) both;
 }
 
 .pilot-strategy-list {
@@ -559,6 +785,7 @@
   gap: 10px;
   font-size: 14px;
   line-height: 1.5;
+  letter-spacing: -0.012em;
   color: rgba(244, 244, 248, 0.88);
 }
 
@@ -577,15 +804,18 @@
   border-radius: 12px;
   border: 1px solid var(--pilot-border-strong);
   background: rgba(14, 14, 26, 0.92);
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(20px) saturate(1.4);
   color: var(--pilot-ink);
   font-size: 13px;
   font-weight: 500;
+  letter-spacing: -0.01em;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
   z-index: 100;
   opacity: 0;
   pointer-events: none;
-  transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s;
+  transition:
+    transform 0.38s var(--pilot-ease-out),
+    opacity 0.38s var(--pilot-ease-out);
 }
 
 .pilot-toast.visible {
@@ -636,6 +866,7 @@
 .pilot-expert-placeholder h1 {
   margin: 0;
   font-size: 22px;
+  letter-spacing: -0.03em;
 }
 
 .pilot-expert-placeholder p {
@@ -645,14 +876,32 @@
   line-height: 1.55;
 }
 
-.pilot-expert-placeholder .pilot-btn {
-  margin-top: 8px;
-}
-
-@keyframes pilot-fade-up {
+@keyframes pilot-enter {
   from {
     opacity: 0;
-    transform: translateY(16px);
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pilot-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes pilot-panel-open {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
   }
   to {
     opacity: 1;
@@ -662,48 +911,61 @@
 
 @keyframes pilot-orb-drift {
   from { transform: translate(0, 0) scale(1); }
-  to { transform: translate(-40px, 30px) scale(1.08); }
+  to { transform: translate(-40px, 30px) scale(1.06); }
 }
 
 @keyframes pilot-pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.6; transform: scale(0.85); }
+  50% { opacity: 0.55; transform: scale(0.88); }
 }
 
-@keyframes pilot-shimmer {
-  0% { background-position: 0% 50%; }
-  100% { background-position: 200% 50%; }
-}
-
-@keyframes pilot-cta-glow {
-  0%, 100% { box-shadow: 0 8px 24px rgba(70, 72, 212, 0.4); }
-  50% { box-shadow: 0 8px 32px rgba(124, 131, 255, 0.55); }
-}
-
-@keyframes pilot-expand {
-  from {
-    opacity: 0;
-    transform: translateY(-8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+@keyframes pilot-blink {
+  50% { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .pilot-root::after,
-  .pilot-progress-fill,
-  .pilot-btn-primary,
-  .pilot-brand-mode-dot {
+  .pilot-brand-mode-dot,
+  .pilot-cursor {
     animation: none;
   }
 
   .pilot-section,
   .pilot-contact-card,
+  .pilot-follow-card,
   .pilot-header,
   .pilot-greeting-block,
-  .pilot-preview-banner {
+  .pilot-preview-banner,
+  .pilot-linkedin-feed {
     animation: none;
+  }
+
+  .pilot-contact-card:hover,
+  .pilot-follow-card:hover {
+    transform: none;
+  }
+
+  .pilot-progress-fill {
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .pilot-mode-toggle,
+  .pilot-day-chip,
+  .pilot-follow-card,
+  .pilot-contact-card,
+  .pilot-btn-ghost,
+  .pilot-strategy-toggle,
+  .pilot-toast {
+    backdrop-filter: none;
+    background: rgba(20, 20, 32, 0.95);
+  }
+}
+
+@media (prefers-contrast: more) {
+  .pilot-root {
+    --pilot-border: rgba(255, 255, 255, 0.22);
+    --pilot-muted: rgba(244, 244, 248, 0.78);
   }
 }
