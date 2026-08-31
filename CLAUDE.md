@@ -86,6 +86,15 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-08-31 (RELEASE PROD : alertes e-mail `/start` + essai sans carte — PR #472 → release)
+- **Release `dev → main`.** Delta énuméré avant merge : **uniquement #472**. Aucune migration (0067 déjà en prod depuis #462), aucune env var nouvelle, aucun cron à créer.
+- **Pourquoi** : Elie Tales (28/08, tunnel `/start`) n'a prévenu personne. Tom n'a rien reçu — ce n'est pas un spam manqué : **aucun envoi interne n'a été tenté**.
+- **Deux trous** : (1) l'alerte interne de `/start` lisait `AUDIT_LEAD_NOTIFY_TO` (jamais posée) au lieu de `LEAD_NOTIFY_TO` → sortie silencieuse, zéro log ; (2) `POST /me/billing/start-trial` (essai sans carte, chemin actuel de `/onboarding` depuis #465) ne passe pas par le webhook Stripe → aucune alerte « abonnement ».
+- **Fix** : `_notify_internal_audit_lead` passe par `lead_notify.recipients()` ; `notify_trial_start` après un essai sans carte (ref `start-trial:{user_id}`).
+- ⚠️ **Tom recevra les alertes `/start` dès ce deploy.** Alex non : Resend n'accepte toujours d'écrire qu'à `tom@clareo-solutions.fr` tant que `clareo-solutions.fr` n'est pas vérifié (DNS chez IONOS). Même restriction : l'audit destiné au prospect (Elie n'a jamais reçu le sien) reste bloqué.
+- ⚠️ **Le cron `analyseur-lead-notify` a bien sa `SUPABASE_SERVICE_ROLE_KEY`** — la note « reste à coller » du 19/08 est périmée (run du 31/08 17:00 UTC : `Terminé : 0 alerte(s)`, pas « cron désactivé »).
+- Backend seul. Tests : +1 cas `start-trial:{user_id}`.
+
 ### 2026-08-21 (dev : leads d'une recherche — plus de « a commenté »)
 - **Retour d'Alex** après un import LinkedIn qui marche enfin : la liste disait **« a commenté »** sous chaque prospect (Romain Cornille, Flora Codaccioni…). Ils n'ont pas commenté — ils viennent d'une recherche.
 - **Fix** : la ligne distingue commentaire (post lead-magnet) et recherche. Un import affiche **« trouvé dans ta recherche »** ; le volet dit « recherche LinkedIn » (plus « post concurrent »). Un lead qui a les deux signaux garde le commentaire, plus parlant.
