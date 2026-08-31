@@ -24,27 +24,19 @@
   -webkit-font-smoothing: antialiased;
 }
 
-.pilot-preview-banner {
-  position: fixed;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 40;
+.pilot-preview-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 3px 8px;
   border-radius: 999px;
-  border: 1px solid var(--pilot-line);
-  background: rgba(255, 252, 247, 0.7);
-  backdrop-filter: blur(16px) saturate(1.4);
-  color: var(--pilot-muted);
-  font-size: 11px;
-  font-weight: 600;
+  background: rgba(70, 72, 212, 0.08);
+  color: var(--pilot-accent);
+  font-size: 10px;
+  font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  pointer-events: none;
-  animation: pilot-enter var(--pilot-duration) var(--pilot-ease-out) both;
 }
 
 .pilot-header {
@@ -800,7 +792,6 @@
 @media (prefers-reduced-motion: reduce) {
   .pilot-section,
   .pilot-greeting-block,
-  .pilot-preview-banner,
   .pilot-linkedin-feed,
   .pilot-strategy-panel {
     animation: none;
@@ -813,8 +804,7 @@
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .pilot-header,
-  .pilot-preview-banner {
+  .pilot-header {
     backdrop-filter: none;
     background: var(--pilot-bg);
   }

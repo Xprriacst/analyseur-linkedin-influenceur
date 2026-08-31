@@ -141,6 +141,12 @@ export default function PilotModeView({
           <span className="pilot-brand-mode">
             {mode === "pilot" ? "Pilote" : "Expert"}
           </span>
+          {preview && (
+            <span className="pilot-preview-chip">
+              <Sparkles size={11} />
+              Maquette
+            </span>
+          )}
         </div>
 
         <div className="pilot-header-meta">
@@ -195,13 +201,6 @@ export default function PilotModeView({
 
   return (
     <div className={`pilot-root ${outfit.variable}`}>
-      {preview && (
-        <div className="pilot-preview-banner">
-          <Sparkles size={12} />
-          Maquette
-        </div>
-      )}
-
       {header}
 
       <div className="pilot-inner">
