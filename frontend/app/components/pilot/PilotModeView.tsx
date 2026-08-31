@@ -74,6 +74,8 @@ type PilotModeViewProps = {
   preview?: boolean;
   mode?: InterfaceMode;
   onModeChange?: (mode: InterfaceMode) => void;
+  postEmpty?: boolean;
+  contactsBlockedReason?: string;
   onPublish?: () => void;
   onEditPost?: () => void;
   onRegeneratePost?: () => void;
@@ -86,6 +88,8 @@ export default function PilotModeView({
   preview = false,
   mode: controlledMode,
   onModeChange,
+  postEmpty = false,
+  contactsBlockedReason,
   onPublish,
   onEditPost,
   onRegeneratePost,
@@ -115,6 +119,8 @@ export default function PilotModeView({
     },
     [preview],
   );
+
+  const hasPostContent = !postEmpty && Boolean(plan.post.hook.trim() || plan.post.body.trim());
 
   const toaster = (
     <Toaster
@@ -169,7 +175,7 @@ export default function PilotModeView({
     </header>
   );
 
-  if (mode === "expert") {
+  if (mode === "expert" && preview) {
     return (
       <div className="pilot-expert-shell">
         {toaster}
@@ -206,8 +212,9 @@ export default function PilotModeView({
             </span>
             <h1 className="pilot-greeting">Bonjour {plan.userName}.</h1>
             <p className="pilot-greeting-sub">
-              Ton post est prêt. {plan.contacts.length} personnes à contacter.
-              <span className="pilot-greeting-rest"> C’est tout.</span>
+              {hasPostContent
+                ? <>Ton post est prêt. {plan.contacts.length} personne{plan.contacts.length > 1 ? "s" : ""} à contacter.<span className="pilot-greeting-rest"> C’est tout.</span></>
+                : <>Pas encore de post du jour — lance une génération.<span className="pilot-greeting-rest"> Le reste de ton plan est prêt.</span></>}
             </p>
           </div>
           <div className="pilot-week" aria-label="Objectif de la semaine">
@@ -237,54 +244,69 @@ export default function PilotModeView({
 
           <article className="pilot-post-card" aria-label="Post à publier">
             <div className="pilot-post-card-inner">
-              <div className="pilot-post-author">
-                <div className="pilot-avatar pilot-avatar-author" aria-hidden>
-                  {plan.author.avatarUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={plan.author.avatarUrl} alt="" />
-                  ) : (
-                    plan.author.initials
-                  )}
+              {hasPostContent ? (
+                <>
+                  <div className="pilot-post-author">
+                    <div className="pilot-avatar pilot-avatar-author" aria-hidden>
+                      {plan.author.avatarUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={plan.author.avatarUrl} alt="" />
+                      ) : (
+                        plan.author.initials
+                      )}
+                    </div>
+                    <div>
+                      <div className="pilot-post-name">{plan.author.name}</div>
+                      <div className="pilot-post-headline">{plan.author.headline}</div>
+                    </div>
+                  </div>
+                  <p className="pilot-post-hook">{plan.post.hook}</p>
+                  {postParagraphs.map((paragraph, i) => (
+                    <p key={i} className="pilot-post-p">
+                      {paragraph}
+                    </p>
+                  ))}
+                </>
+              ) : (
+                <div className="pilot-empty-block">
+                  <p className="pilot-empty-title">Aucun post prêt</p>
+                  <p className="pilot-empty-copy">
+                    Génère un post dans le Générateur ou active l’idée du jour — rien n’est inventé ici.
+                  </p>
                 </div>
-                <div>
-                  <div className="pilot-post-name">{plan.author.name}</div>
-                  <div className="pilot-post-headline">{plan.author.headline}</div>
-                </div>
-              </div>
-              <p className="pilot-post-hook">{plan.post.hook}</p>
-              {postParagraphs.map((paragraph, i) => (
-                <p key={i} className="pilot-post-p">
-                  {paragraph}
-                </p>
-              ))}
+              )}
               <div className="pilot-actions">
                 <button
                   type="button"
                   className={`pilot-btn pilot-btn-primary${published ? " done" : ""}`}
                   onClick={() => {
-                    setPublished(true);
+                    if (hasPostContent) setPublished(true);
                     handleAction("Publication", onPublish);
                   }}
                 >
                   {published ? <Check size={16} strokeWidth={2.4} /> : <Send size={16} />}
-                  {published ? "Publié" : "Publier"}
+                  {published ? "Publié" : hasPostContent ? "Publier" : "Ouvrir le Générateur"}
                 </button>
-                <button
-                  type="button"
-                  className="pilot-btn pilot-btn-ghost"
-                  onClick={() => handleAction("Modification", onEditPost)}
-                >
-                  <PenLine size={15} />
-                  Modifier
-                </button>
-                <button
-                  type="button"
-                  className="pilot-btn pilot-btn-ghost"
-                  onClick={() => handleAction("Régénération", onRegeneratePost)}
-                >
-                  <RefreshCw size={15} />
-                  Autre angle
-                </button>
+                {hasPostContent && (
+                  <>
+                    <button
+                      type="button"
+                      className="pilot-btn pilot-btn-ghost"
+                      onClick={() => handleAction("Modification", onEditPost)}
+                    >
+                      <PenLine size={15} />
+                      Modifier
+                    </button>
+                    <button
+                      type="button"
+                      className="pilot-btn pilot-btn-ghost"
+                      onClick={() => handleAction("Régénération", onRegeneratePost)}
+                    >
+                      <RefreshCw size={15} />
+                      Autre angle
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </article>
@@ -344,6 +366,18 @@ export default function PilotModeView({
             <span className="pilot-section-hint">{plan.contacts.length} aujourd’hui</span>
           </div>
           <div className="pilot-contacts-list">
+            {contactsBlockedReason && (
+              <div className="pilot-empty-block pilot-empty-block-inline">
+                <p className="pilot-empty-copy">{contactsBlockedReason}</p>
+              </div>
+            )}
+            {!contactsBlockedReason && plan.contacts.length === 0 && (
+              <div className="pilot-empty-block pilot-empty-block-inline">
+                <p className="pilot-empty-copy">
+                  Aucun lead invitable pour l’instant — importe une recherche ou collecte des commentaires, puis laisse le scoring ICP faire son travail.
+                </p>
+              </div>
+            )}
             {plan.contacts.map((contact) => {
               const isInvited = invited.has(contact.id);
               return (
@@ -371,7 +405,7 @@ export default function PilotModeView({
                         onInvite?.(contact.id),
                       );
                     }}
-                    disabled={isInvited}
+                    disabled={isInvited || Boolean(contactsBlockedReason)}
                   >
                     {isInvited ? <Check size={15} /> : <UserPlus size={15} />}
                     {isInvited ? "Invitation envoyée" : "Inviter"}

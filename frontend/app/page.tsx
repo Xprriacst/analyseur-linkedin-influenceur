@@ -71,6 +71,8 @@ import AutopilotModal, {
   AutopilotDrafts, AutopilotSequence,
   type AutopilotState, type LeadTierCounts,
 } from "./components/AutopilotModal";
+import PilotShell from "./components/pilot/PilotShell";
+import "./components/pilot/pilot-mode.css";
 import { authHeaders, supabase } from "./lib/supabase";
 
 const API_URL = "/api";
@@ -2777,6 +2779,9 @@ function TopHeader({
   view,
   isAuthed,
   userEmail,
+  showInterfaceToggle,
+  interfaceMode,
+  onInterfaceModeChange,
   onReset,
   onSignIn,
   onSignUp,
@@ -2786,6 +2791,9 @@ function TopHeader({
   view: MainView;
   isAuthed: boolean;
   userEmail?: string;
+  showInterfaceToggle?: boolean;
+  interfaceMode?: "pilot" | "expert";
+  onInterfaceModeChange?: (mode: "pilot" | "expert") => void;
   onReset: () => void;
   onSignIn: () => void;
   onSignUp: () => void;
@@ -2817,6 +2825,32 @@ function TopHeader({
         )}
       </div>
       <div className="header-actions">
+        {showInterfaceToggle && onInterfaceModeChange ? (
+          <div
+            className="pilot-mode-toggle header-interface-toggle"
+            role="tablist"
+            aria-label="Mode d'interface"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={interfaceMode === "pilot"}
+              className={interfaceMode === "pilot" ? "active" : ""}
+              onClick={() => onInterfaceModeChange("pilot")}
+            >
+              Pilote
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={interfaceMode === "expert"}
+              className={interfaceMode === "expert" ? "active" : ""}
+              onClick={() => onInterfaceModeChange("expert")}
+            >
+              Expert
+            </button>
+          </div>
+        ) : null}
         {result && view === "analyze" ? (
           <>
             {isAuthed ? (
@@ -15877,6 +15911,42 @@ export default function Home() {
   }, []);
   const restricted = ideasAccount && clientView;
 
+  type InterfaceMode = "pilot" | "expert";
+  const [interfaceMode, setInterfaceMode] = useState<InterfaceMode>("pilot");
+  useEffect(() => {
+    if (restricted) return;
+    try {
+      const saved = localStorage.getItem("lkd_interface_mode");
+      if (saved === "pilot" || saved === "expert") setInterfaceMode(saved);
+    } catch { /* ignore */ }
+  }, [restricted]);
+
+  const setInterfaceModePersist = useCallback((mode: InterfaceMode) => {
+    setInterfaceMode(mode);
+    if (restricted) return;
+    try { localStorage.setItem("lkd_interface_mode", mode); } catch { /* ignore */ }
+  }, [restricted]);
+
+  useEffect(() => {
+    if (restricted && interfaceMode === "pilot") setInterfaceMode("expert");
+  }, [restricted, interfaceMode]);
+
+  const showPilotShell =
+    isAuthed && !restricted && !showOnboarding && !checkingProfile && interfaceMode === "pilot";
+
+  function openGeneratorFromPilot(seed: { topic: string; postText?: string; postId?: string }) {
+    setInterfaceModePersist("expert");
+    setGeneratorSeed({ topic: seed.topic || seed.postText?.slice(0, 120) || "", nonce: Date.now() });
+    setContentTab("generator");
+    setView("content");
+    setPlatform("linkedin");
+  }
+
+  function openAssistantFromPilot(postText: string) {
+    setInterfaceModePersist("expert");
+    reworkWithAssistant(postText);
+  }
+
   function toggleClientView() {
     setClientView((v) => {
       const next = !v;
@@ -16602,11 +16672,19 @@ export default function Home() {
           onSkip={finishOnboarding}
         />
       )}
-      {isAuthed && checkingProfile && !showOnboarding && (
+      {isAuthed && checkingProfile && !showOnboarding && !showPilotShell && (
         <div className="onb-overlay">
           <div className="onb-boot"><Loader2 size={30} className="spinning" /></div>
         </div>
       )}
+      {showPilotShell ? (
+        <PilotShell
+          mode="pilot"
+          onModeChange={setInterfaceModePersist}
+          onOpenGenerator={openGeneratorFromPilot}
+          onOpenAssistant={openAssistantFromPilot}
+        />
+      ) : (
       <div className={IS_DEV_ENV ? "app-shell dev-env" : "app-shell"}>
         <Sidebar
           health={health}
@@ -16646,6 +16724,9 @@ export default function Home() {
           view={view}
           isAuthed={isAuthed}
           userEmail={session?.user?.email ?? undefined}
+          showInterfaceToggle={isAuthed && !restricted}
+          interfaceMode={interfaceMode}
+          onInterfaceModeChange={setInterfaceModePersist}
           onReset={() => { setResult(null); setLoadedReport(null); }}
           onSignIn={() => requireAuth(undefined, "signin")}
           onSignUp={() => requireAuth(undefined, "signup")}
@@ -16750,6 +16831,7 @@ export default function Home() {
           )}
         </main>
       </div>
+      )}
       <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} reason={authReason} defaultMode={authMode} />
     </>
   );

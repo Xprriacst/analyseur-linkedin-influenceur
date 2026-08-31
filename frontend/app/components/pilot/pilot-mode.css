@@ -165,6 +165,12 @@
   color: #aeaeb2;
 }
 
+.header-interface-toggle {
+  --pilot-muted: #6e6e73;
+  --pilot-ink: #1d1d1f;
+  --pilot-card: #ffffff;
+}
+
 .pilot-mode-toggle {
   display: inline-flex;
   padding: 3px;
@@ -944,4 +950,28 @@
   .pilot-btn-follow {
     margin-left: 52px;
   }
+}
+
+.pilot-empty-block {
+  padding: 20px 0 8px;
+}
+
+.pilot-empty-block-inline {
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.pilot-empty-title {
+  margin: 0 0 6px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--pilot-ink, #1d1d1f);
+}
+
+.pilot-empty-copy {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: rgba(29, 29, 31, 0.62);
 }

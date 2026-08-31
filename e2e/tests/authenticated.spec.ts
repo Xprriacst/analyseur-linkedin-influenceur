@@ -3,6 +3,10 @@ import { gotoTab, gotoSubTab } from "./helpers";
 
 // Parcours authentifiés en LECTURE SEULE (pas de génération → aucun coût LLM/Apify).
 test.beforeEach(async ({ page }) => {
+  // Mode Pilote = écran par défaut agence ; les specs Expert partent de la vue sidebar.
+  await page.addInitScript(() => {
+    localStorage.setItem("lkd_interface_mode", "expert");
+  });
   await page.goto("/");
 });
 
