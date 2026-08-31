@@ -172,6 +172,15 @@ class SendTest(unittest.TestCase):
             lead_notify.notify_subscription("evt_123", "a@b.com", amount=49)
         claim.assert_called_once_with("subscription", "evt_123")
 
+    def test_essai_sans_carte_reference_le_user_pas_le_webhook(self):
+        """POST /me/billing/start-trial ne passe pas par Stripe checkout : ref dédiée."""
+        mail = _Mailer()
+        with patch.object(lead_notify, "mailer", mail), \
+             patch.object(lead_notify.db, "admin_claim_lead_notification", return_value=True) as claim:
+            self.assertTrue(lead_notify.notify_trial_start("user-abc", "a@b.com"))
+        claim.assert_called_once_with("subscription", "start-trial:user-abc")
+        self.assertIn("Essai", mail.sent[0][1])
+
 
 class ScanTest(unittest.TestCase):
     def _accounts(self, *, minutes_ago):
