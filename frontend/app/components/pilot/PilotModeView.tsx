@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import { Libre_Bodoni, Newsreader, Public_Sans } from "next/font/google";
 import { Toaster, toast } from "sonner";
 import {
   Check,
@@ -9,29 +8,11 @@ import {
   PenLine,
   RefreshCw,
   Send,
+  Sparkles,
   Target,
   UserPlus,
 } from "lucide-react";
 import "./pilot-mode.css";
-
-const publicSans = Public_Sans({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-pilot",
-});
-
-const libreBodoni = Libre_Bodoni({
-  subsets: ["latin"],
-  weight: ["500", "600", "700"],
-  variable: "--font-pilot-display",
-});
-
-const newsreader = Newsreader({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  style: ["normal", "italic"],
-  variable: "--font-pilot-serif",
-});
 
 export type PilotAuthor = {
   name: string;
@@ -100,10 +81,6 @@ type PilotModeViewProps = {
   onFollowProfile?: (profileId: string) => void;
 };
 
-function fontVars() {
-  return `${publicSans.variable} ${libreBodoni.variable} ${newsreader.variable}`;
-}
-
 export default function PilotModeView({
   plan,
   preview = false,
@@ -123,16 +100,6 @@ export default function PilotModeView({
   const [followed, setFollowed] = useState<Set<string>>(new Set());
   const [invited, setInvited] = useState<Set<string>>(new Set());
   const [published, setPublished] = useState(false);
-
-  const edition = useMemo(
-    () =>
-      new Intl.DateTimeFormat("fr-FR", {
-        weekday: "long",
-        day: "numeric",
-        month: "long",
-      }).format(new Date()),
-    [],
-  );
 
   const postParagraphs = useMemo(
     () => plan.post.body.split(/\n\n+/).map((p) => p.trim()).filter(Boolean),
@@ -165,10 +132,8 @@ export default function PilotModeView({
     <header className="pilot-header">
       <div className="pilot-header-inner">
         <div className="pilot-brand">
+          <span className="pilot-brand-mark" aria-hidden />
           <span className="pilot-brand-name">Cibl</span>
-          <span className="pilot-brand-mode">
-            {mode === "pilot" ? "Mode pilote" : "Mode expert"}
-          </span>
           {preview && <span className="pilot-preview-chip">Maquette</span>}
         </div>
 
@@ -176,7 +141,7 @@ export default function PilotModeView({
           {mode === "pilot" && (
             <span className="pilot-day-chip">
               Jour {plan.dayNumber}
-              <span className="pilot-day-chip-muted"> / S{plan.weekNumber}</span>
+              <span className="pilot-day-chip-muted"> · S{plan.weekNumber}</span>
             </span>
           )}
           <div className="pilot-mode-toggle" role="tablist" aria-label="Mode d'interface">
@@ -206,11 +171,10 @@ export default function PilotModeView({
 
   if (mode === "expert") {
     return (
-      <div className={`pilot-expert-shell ${fontVars()}`}>
+      <div className="pilot-expert-shell">
         {toaster}
         {header}
         <div className="pilot-expert-placeholder">
-          <p className="pilot-kicker">App actuelle</p>
           <h1>Mode Expert</h1>
           <p>
             L’app actuelle s’affiche ici — sidebar, Contenu, Prospection, Inbox.
@@ -224,25 +188,32 @@ export default function PilotModeView({
   const weekDots = Array.from({ length: plan.weeklyTotal }, (_, i) => i < plan.weeklyDone);
 
   return (
-    <div className={`pilot-root ${fontVars()}`}>
+    <div className="pilot-root">
       {toaster}
+      <div className="pilot-aurora" aria-hidden>
+        <span className="pilot-orb pilot-orb-a" />
+        <span className="pilot-orb pilot-orb-b" />
+        <span className="pilot-orb pilot-orb-c" />
+      </div>
       {header}
 
       <div className="pilot-inner">
-        <div className="pilot-masthead">
-          <p className="pilot-kicker">Édition du {edition}</p>
+        <div className="pilot-hero">
+          <span className="pilot-ai-chip">
+            <Sparkles size={12} strokeWidth={2.2} aria-hidden />
+            Généré pour toi
+          </span>
           <h1 className="pilot-greeting">Bonjour {plan.userName}.</h1>
           <p className="pilot-greeting-sub">
             Ton post est prêt. {plan.contacts.length} personnes à contacter.
             <span className="pilot-greeting-rest"> C’est tout.</span>
           </p>
-
           <div className="pilot-week" aria-label="Objectif de la semaine">
             <div className="pilot-week-dots">
               {weekDots.map((done, i) => (
                 <span
                   key={i}
-                  className={`pilot-week-dot${done ? " done" : ""}`}
+                  className={`pilot-week-dot${done ? " done" : " next"}`}
                   aria-label={done ? `Action ${i + 1} faite` : `Action ${i + 1} restante`}
                 />
               ))}
@@ -253,160 +224,159 @@ export default function PilotModeView({
           </div>
         </div>
 
-        <div className="pilot-desk">
-          <section className="pilot-desk-main" aria-labelledby="pilot-post-title">
-            <div className="pilot-section-head">
-              <div className="pilot-section-label" id="pilot-post-title">
-                <span className="pilot-index">01</span>
-                Post du jour
-              </div>
-              <span className="pilot-badge">{plan.post.structure}</span>
-            </div>
+        <section className="pilot-section" aria-labelledby="pilot-post-title">
+          <div className="pilot-section-head">
+            <h2 className="pilot-section-label" id="pilot-post-title">
+              Post du jour
+            </h2>
+            <span className="pilot-badge">{plan.post.structure}</span>
+          </div>
 
-            <article className="pilot-article" aria-label="Post à publier">
-              <p className="pilot-article-hook">{plan.post.hook}</p>
+          <article className="pilot-post-card" aria-label="Post à publier">
+            <div className="pilot-post-card-inner">
+              <div className="pilot-post-author">
+                <div className="pilot-avatar pilot-avatar-author" aria-hidden>
+                  {plan.author.avatarUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={plan.author.avatarUrl} alt="" />
+                  ) : (
+                    plan.author.initials
+                  )}
+                </div>
+                <div>
+                  <div className="pilot-post-name">{plan.author.name}</div>
+                  <div className="pilot-post-headline">{plan.author.headline}</div>
+                </div>
+              </div>
+              <p className="pilot-post-hook">{plan.post.hook}</p>
               {postParagraphs.map((paragraph, i) => (
-                <p key={i} className="pilot-article-p">
+                <p key={i} className="pilot-post-p">
                   {paragraph}
                 </p>
               ))}
-              <footer className="pilot-article-byline">
-                <span className="pilot-avatar" aria-hidden>
-                  {plan.author.initials}
-                </span>
-                <div>
-                  <div className="pilot-article-name">{plan.author.name}</div>
-                  <div className="pilot-article-headline">{plan.author.headline}</div>
-                </div>
-              </footer>
-            </article>
+              <div className="pilot-actions">
+                <button
+                  type="button"
+                  className={`pilot-btn pilot-btn-primary${published ? " done" : ""}`}
+                  onClick={() => {
+                    setPublished(true);
+                    handleAction("Publication", onPublish);
+                  }}
+                >
+                  {published ? <Check size={16} strokeWidth={2.4} /> : <Send size={16} />}
+                  {published ? "Publié" : "Publier"}
+                </button>
+                <button
+                  type="button"
+                  className="pilot-btn pilot-btn-ghost"
+                  onClick={() => handleAction("Modification", onEditPost)}
+                >
+                  <PenLine size={15} />
+                  Modifier
+                </button>
+                <button
+                  type="button"
+                  className="pilot-btn pilot-btn-ghost"
+                  onClick={() => handleAction("Régénération", onRegeneratePost)}
+                >
+                  <RefreshCw size={15} />
+                  Autre angle
+                </button>
+              </div>
+            </div>
+          </article>
+        </section>
 
-            <div className="pilot-actions">
-              <button
-                type="button"
-                className={`pilot-btn pilot-btn-primary${published ? " done" : ""}`}
-                onClick={() => {
-                  setPublished(true);
-                  handleAction("Publication", onPublish);
-                }}
-              >
-                {published ? <Check size={16} strokeWidth={2.4} /> : <Send size={16} />}
-                {published ? "Publié" : "Publier"}
-              </button>
-              <button
-                type="button"
-                className="pilot-btn pilot-btn-ghost"
-                onClick={() => handleAction("Modification", onEditPost)}
-              >
-                <PenLine size={15} />
-                Modifier
-              </button>
-              <button
-                type="button"
-                className="pilot-btn pilot-btn-ghost"
-                onClick={() => handleAction("Régénération", onRegeneratePost)}
-              >
-                <RefreshCw size={15} />
-                Autre angle
-              </button>
+        {plan.followProfiles.length > 0 && (
+          <section className="pilot-section" aria-labelledby="pilot-follow-title">
+            <div className="pilot-section-head">
+              <h2 className="pilot-section-label" id="pilot-follow-title">
+                À suivre
+              </h2>
+              <span className="pilot-section-hint">Depuis ton analyse</span>
+            </div>
+            <div className="pilot-follow-list">
+              {plan.followProfiles.map((profile) => {
+                const isFollowed = followed.has(profile.id);
+                return (
+                  <div key={profile.id} className="pilot-follow-row">
+                    <div className="pilot-avatar" aria-hidden>
+                      {profile.initials}
+                    </div>
+                    <div className="pilot-follow-info">
+                      <h3>{profile.name}</h3>
+                      <p>{profile.reason}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className={`pilot-btn pilot-btn-follow${isFollowed ? " done" : ""}`}
+                      onClick={() => {
+                        setFollowed((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(profile.id)) next.delete(profile.id);
+                          else next.add(profile.id);
+                          return next;
+                        });
+                        handleAction(`Suivre ${profile.name}`, () =>
+                          onFollowProfile?.(profile.id),
+                        );
+                      }}
+                    >
+                      {isFollowed ? <Check size={14} /> : <UserPlus size={14} />}
+                      {isFollowed ? "Suivi" : "Suivre"}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </section>
+        )}
 
-          <aside className="pilot-desk-rail">
-            {plan.followProfiles.length > 0 && (
-              <section className="pilot-rail-block" aria-labelledby="pilot-follow-title">
-                <div className="pilot-section-head">
-                  <div className="pilot-section-label" id="pilot-follow-title">
-                    <span className="pilot-index">02</span>
-                    À suivre
+        <section className="pilot-section" aria-labelledby="pilot-contacts-title">
+          <div className="pilot-section-head">
+            <h2 className="pilot-section-label" id="pilot-contacts-title">
+              À contacter
+            </h2>
+            <span className="pilot-section-hint">{plan.contacts.length} aujourd’hui</span>
+          </div>
+          <div className="pilot-contacts-list">
+            {plan.contacts.map((contact) => {
+              const isInvited = invited.has(contact.id);
+              return (
+                <article key={contact.id} className="pilot-contact-card">
+                  <div className="pilot-contact-top">
+                    <div className="pilot-avatar" aria-hidden>
+                      {contact.initials}
+                    </div>
+                    <div className="pilot-contact-info">
+                      <h3>{contact.name}</h3>
+                      <p>
+                        {contact.role}
+                        {contact.company ? ` · ${contact.company}` : ""}
+                      </p>
+                    </div>
+                    <span className="pilot-score">{contact.score}</span>
                   </div>
-                  <span className="pilot-section-hint">Depuis ton analyse</span>
-                </div>
-                <div className="pilot-follow-list">
-                  {plan.followProfiles.map((profile) => {
-                    const isFollowed = followed.has(profile.id);
-                    return (
-                      <div key={profile.id} className="pilot-follow-row">
-                        <div className="pilot-avatar" aria-hidden>
-                          {profile.initials}
-                        </div>
-                        <div className="pilot-follow-info">
-                          <h3>{profile.name}</h3>
-                          <p>{profile.reason}</p>
-                        </div>
-                        <button
-                          type="button"
-                          className={`pilot-btn pilot-btn-follow${isFollowed ? " done" : ""}`}
-                          onClick={() => {
-                            setFollowed((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(profile.id)) next.delete(profile.id);
-                              else next.add(profile.id);
-                              return next;
-                            });
-                            handleAction(`Suivre ${profile.name}`, () =>
-                              onFollowProfile?.(profile.id),
-                            );
-                          }}
-                        >
-                          {isFollowed ? <Check size={14} /> : <UserPlus size={14} />}
-                          {isFollowed ? "Suivi" : "Suivre"}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
-
-            <section className="pilot-rail-block" aria-labelledby="pilot-contacts-title">
-              <div className="pilot-section-head">
-                <div className="pilot-section-label" id="pilot-contacts-title">
-                  <span className="pilot-index">03</span>
-                  À contacter
-                </div>
-                <span className="pilot-section-hint">{plan.contacts.length} aujourd’hui</span>
-              </div>
-              <div className="pilot-contacts-list">
-                {plan.contacts.map((contact) => {
-                  const isInvited = invited.has(contact.id);
-                  return (
-                    <article key={contact.id} className="pilot-contact-card">
-                      <div className="pilot-contact-top">
-                        <div className="pilot-avatar" aria-hidden>
-                          {contact.initials}
-                        </div>
-                        <div className="pilot-contact-info">
-                          <h3>{contact.name}</h3>
-                          <p>
-                            {contact.role}
-                            {contact.company ? ` · ${contact.company}` : ""}
-                          </p>
-                        </div>
-                        <span className="pilot-score">{contact.score}</span>
-                      </div>
-                      <p className="pilot-message-preview">{contact.message}</p>
-                      <button
-                        type="button"
-                        className={`pilot-btn pilot-btn-primary pilot-btn-invite${isInvited ? " done" : ""}`}
-                        onClick={() => {
-                          setInvited((prev) => new Set(prev).add(contact.id));
-                          handleAction(`Invitation à ${contact.name}`, () =>
-                            onInvite?.(contact.id),
-                          );
-                        }}
-                        disabled={isInvited}
-                      >
-                        {isInvited ? <Check size={15} /> : <UserPlus size={15} />}
-                        {isInvited ? "Invitation envoyée" : "Inviter"}
-                      </button>
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
-          </aside>
-        </div>
+                  <p className="pilot-message-preview">{contact.message}</p>
+                  <button
+                    type="button"
+                    className={`pilot-btn pilot-btn-primary pilot-btn-invite${isInvited ? " done" : ""}`}
+                    onClick={() => {
+                      setInvited((prev) => new Set(prev).add(contact.id));
+                      handleAction(`Invitation à ${contact.name}`, () =>
+                        onInvite?.(contact.id),
+                      );
+                    }}
+                    disabled={isInvited}
+                  >
+                    {isInvited ? <Check size={15} /> : <UserPlus size={15} />}
+                    {isInvited ? "Invitation envoyée" : "Inviter"}
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        </section>
 
         <section className="pilot-section-strategy">
           <button
