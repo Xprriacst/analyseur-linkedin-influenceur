@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { Outfit } from "next/font/google";
+import { Toaster, toast } from "sonner";
 import {
   Check,
   ChevronDown,
@@ -110,25 +111,29 @@ export default function PilotModeView({
   const setMode = onModeChange ?? setInternalMode;
 
   const [strategyOpen, setStrategyOpen] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
   const [followed, setFollowed] = useState<Set<string>>(new Set());
   const [invited, setInvited] = useState<Set<string>>(new Set());
   const [published, setPublished] = useState(false);
 
-  const showToast = useCallback((message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(null), 2400);
+  const handleAction = useCallback((label: string, fn?: () => void) => {
+    if (fn) {
+      fn();
+      return;
+    }
+    toast(`${label} — simulé`);
   }, []);
 
-  const handleAction = useCallback(
-    (label: string, fn?: () => void) => {
-      if (fn) {
-        fn();
-        return;
-      }
-      showToast(`${label} — simulé`);
-    },
-    [showToast],
+  const toaster = (
+    <Toaster
+      id="pilot"
+      theme="light"
+      invert
+      position="bottom-center"
+      offset={28}
+      mobileOffset={16}
+      visibleToasts={3}
+      toastOptions={{ duration: 2400 }}
+    />
   );
 
   const header = (
@@ -184,6 +189,7 @@ export default function PilotModeView({
   if (mode === "expert") {
     return (
       <div className={`pilot-expert-shell ${outfit.variable}`}>
+        {toaster}
         {header}
         <div className="pilot-expert-placeholder">
           <div className="pilot-brand-mark" style={{ width: 28, height: 28, borderRadius: 8 }} />
@@ -201,6 +207,7 @@ export default function PilotModeView({
 
   return (
     <div className={`pilot-root ${outfit.variable}`}>
+      {toaster}
       {header}
 
       <div className="pilot-inner">
@@ -418,6 +425,7 @@ export default function PilotModeView({
             type="button"
             className={`pilot-strategy-toggle${strategyOpen ? " open" : ""}`}
             aria-expanded={strategyOpen}
+            aria-controls="pilot-strategy-panel"
             onClick={() => setStrategyOpen((v) => !v)}
           >
             <span>
@@ -426,8 +434,11 @@ export default function PilotModeView({
             </span>
             <ChevronDown size={16} className="chevron" />
           </button>
-          {strategyOpen && (
-            <div className="pilot-strategy-panel">
+          <div
+            id="pilot-strategy-panel"
+            className={`pilot-strategy-panel${strategyOpen ? " open" : ""}`}
+          >
+            <div className="pilot-strategy-panel-inner">
               <ul className="pilot-strategy-list">
                 <li>
                   <strong>Cible</strong>
@@ -443,12 +454,8 @@ export default function PilotModeView({
                 </li>
               </ul>
             </div>
-          )}
+          </div>
         </section>
-      </div>
-
-      <div className={`pilot-toast${toast ? " visible" : ""}`} role="status" aria-live="polite">
-        {toast}
       </div>
     </div>
   );
