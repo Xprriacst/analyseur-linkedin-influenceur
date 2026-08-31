@@ -883,7 +883,7 @@ def _notify_internal_audit_lead(
     full_name: str, email: str, phone: str, payload: AuditLeadRequest
 ) -> None:
     """Prévient l'équipe qu'un lead vient d'arriver (silencieux si non configuré)."""
-    recipients = mailer.internal_recipients()
+    recipients = lead_notify.recipients()
     if not recipients:
         return
     preview = payload.preview or {}
@@ -3549,7 +3549,9 @@ def _start_trial_subscription(user_id: str, customer_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Crédits d'essai non appliqués.")
 
     state = _billing_state(row or existing)
-    return {**state, "ok": True, "trial": True, "credits": new_balance}
+    result = {**state, "ok": True, "trial": True, "credits": new_balance}
+    lead_notify.notify_trial_start(user_id, db.admin_user_email(user_id))
+    return result
 
 
 @app.post("/me/billing/start-trial")

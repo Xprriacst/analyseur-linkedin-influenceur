@@ -214,6 +214,24 @@ def notify_subscription(
         return False
 
 
+def notify_trial_start(user_id: str, email: str) -> bool:
+    """Appelée après `POST /me/billing/start-trial` (essai sans carte).
+
+    Ce chemin ne passe pas par le webhook Stripe (`checkout.session.completed`) :
+    sans cet appel, un fondateur qui crée son compte puis démarre l'essai depuis
+    `/onboarding` ne déclenche aucune alerte « abonnement » — seul le cron
+    « compte créé » peut le rattraper, et seulement après le délai de grâce.
+    """
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        subject, html = render_subscription(email or user_id, now, trial=True)
+        ref = f"start-trial:{user_id}"
+        return _send("subscription", ref, subject, html, reply_to=email or None)
+    except Exception as exc:  # noqa: BLE001 — jamais au détriment de l'essai
+        print(f"[lead-notify] essai sans carte {email or user_id} : {exc}", file=sys.stderr)
+        return False
+
+
 def signup_is_ripe(
     created_at: datetime.datetime, has_profile: bool, now: datetime.datetime
 ) -> bool:
