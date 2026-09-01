@@ -434,7 +434,7 @@ export default function PilotModeView({
         </aside>
         </div>
 
-        {/* Profils à suivre — REPLIÉ par défaut. La vue simplifiée garde le rail
+        {/* Influenceurs à suivre — REPLIÉ par défaut. La vue simplifiée garde le rail
             contacts seul (décision du 2026-08-31) ; les suggestions existent
             bien en Mode Pilote, mais il faut cliquer pour les afficher.
             ⚠️ `<section>` SANS `aria-labelledby`, comme « Ta stratégie » : elle
@@ -457,7 +457,7 @@ export default function PilotModeView({
           >
             <span>
               <Users size={15} strokeWidth={2.2} />
-              Profils à suivre
+              Influenceurs à suivre
             </span>
             <ChevronDown size={16} className="chevron" />
           </button>

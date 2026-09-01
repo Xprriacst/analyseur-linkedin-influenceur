@@ -180,7 +180,7 @@ test.describe("Mode Pilote", () => {
     // 1. La vue simplifiée reste épurée : le rail « À suivre » ne revient PAS…
     await expect(page.getByRole("region", { name: "À suivre" })).toHaveCount(0);
     // …et rien n'est affiché tant qu'on n'a pas cliqué.
-    const toggle = page.getByRole("button", { name: "Profils à suivre" });
+    const toggle = page.getByRole("button", { name: "Influenceurs à suivre" });
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await expect(page.getByText("Marie Coach")).toHaveCount(0);
 
@@ -216,7 +216,7 @@ test.describe("Mode Pilote", () => {
     await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
       timeout: 45_000,
     });
-    await page.getByRole("button", { name: "Profils à suivre" }).click();
+    await page.getByRole("button", { name: "Influenceurs à suivre" }).click();
     // Pas de liste vide muette : on dit pourquoi et quoi faire.
     await expect(page.getByText(/complète ton profil éditorial/i)).toBeVisible();
   });

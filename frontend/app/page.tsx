@@ -13216,7 +13216,7 @@ function InfluencersView({
   const [checking, setChecking] = useState(false);
   const [checkMsg, setCheckMsg] = useState("");
 
-  // Suggestions de profils à suivre (matching niche/ICP, 0 crédit) : la seule
+  // Suggestions d'influenceurs à suivre (matching niche/ICP, 0 crédit) : la seule
   // chose à voir sur cet écran pour un compte qui n'a encore rien analysé.
   const [suggestions, setSuggestions] = useState<FollowSuggestion[]>([]);
 
@@ -13516,7 +13516,7 @@ function InfluencersView({
       {visibleSuggestions.length > 0 && (
         <div className="card" style={{ padding: 0, overflow: "hidden", marginTop: 24 }}>
           <div className="tr-table-head">
-            <h3 style={{ margin: 0, fontSize: 16 }}>Profils suggérés à suivre</h3>
+            <h3 style={{ margin: 0, fontSize: 16 }}>Influenceurs suggérés à suivre</h3>
             <span style={{ fontSize: 12, color: "var(--muted)" }}>
               Repérés dans ta niche · déjà analysés sur Cibl · gratuit
             </span>

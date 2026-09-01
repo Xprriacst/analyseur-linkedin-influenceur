@@ -11,7 +11,7 @@ import { gotoTab, gotoSubTab } from "./helpers";
 //     — un handle abîmé en route fait suivre quelqu'un d'autre (ou personne),
 //     et le cron de veille scrape alors le mauvais profil pendant des jours ;
 //  2. une liste vide (profil éditorial pas encore rempli) doit faire
-//     DISPARAÎTRE la section. Une section vide « Profils suggérés » sur un
+//     DISPARAÎTRE la section. Une section vide « Influenceurs suggérés » sur un
 //     compte neuf donne l'impression d'un écran cassé, et c'est justement la
 //     garantie produit : rien plutôt que des profils au hasard.
 
@@ -83,7 +83,7 @@ test("suggestions affichées avec le motif du match, et suivi via l'endpoint exi
   await gotoTab(page, "Contenu");
   await gotoSubTab(page, "Analyses");
 
-  const card = page.locator(".card", { hasText: "Profils suggérés à suivre" });
+  const card = page.locator(".card", { hasText: "Influenceurs suggérés à suivre" });
   await expect(card).toBeVisible({ timeout: 30_000 });
   await expect(card.getByText("Marie Coach")).toBeVisible();
   await expect(card.getByText("Coaching business pour indépendants")).toBeVisible();
@@ -119,6 +119,6 @@ test("profil éditorial vide : aucune suggestion, aucune section", async ({ page
   // Le reste de l'écran est bien chargé…
   await expect(page.getByRole("heading", { name: /^Mes influenceurs$/i })).toBeVisible({ timeout: 30_000 });
   // …mais la section de suggestions n'existe pas du tout.
-  await expect(page.getByText("Profils suggérés à suivre")).toHaveCount(0);
+  await expect(page.getByText("Influenceurs suggérés à suivre")).toHaveCount(0);
   await expect(page.locator(".error")).toHaveCount(0);
 });
