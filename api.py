@@ -197,6 +197,16 @@ def _require_pilot_post_quota(token: str, requested: int = 1) -> None:
         raise HTTPException(status_code=402, detail=error)
 
 
+def _refuse_pilot_uncounted_generation(token: str) -> None:
+    """402 pour un compte `pilot_free` sur un chemin de génération NON compté.
+
+    No-op pour tout autre compte : `/generate` et `/generate/stream` restent
+    inchangés pour les abonnés, les comptes agence et les comptes à crédits."""
+    if not pilot_plan.is_pilot_free(db.get_user(token)):
+        return
+    raise HTTPException(status_code=402, detail=pilot_plan.uncounted_generation_error())
+
+
 def _require_pilot_lead_quota(token: str) -> None:
     """402 si un compte `pilot_free` dépasse ses contacts du jour (fenêtre 24 h)."""
     if not pilot_plan.is_pilot_free(db.get_user(token)):
@@ -2937,11 +2947,12 @@ def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) ->
     # Débit après toutes les préconditions : un user sans influenceur ne perd pas de crédits.
     credits: int | None = None
     if token:
-        # Plan Pilote gratuit : quota AVANT le débit — un 402 de quota ne doit
-        # jamais avoir déjà consommé des crédits. Couvre /generate ET /generate/stream
-        # (les deux passent ici) : la file de jobs a sa propre garde, aucun chemin
-        # de génération payant ne reste ouvert à un compte plafonné.
-        _require_pilot_post_quota(token, payload.count)
+        # Plan Pilote gratuit : refus AVANT le débit — un 402 ne doit jamais avoir
+        # déjà consommé des crédits. ⚠️ Ici on ne pose PAS le quota, on refuse :
+        # ces deux routes (/generate et /generate/stream) n'écrivent aucun job, le
+        # compteur ne les verrait jamais et le plafond serait décoratif (cf.
+        # pilot_plan.uncounted_generation_error). Aucun écran de l'app n'y passe.
+        _refuse_pilot_uncounted_generation(token)
         ok, balance = db.debit_credits(token, "generate_post", payload.count)
         if not ok:
             cost = db.CREDIT_COSTS["generate_post"] * payload.count

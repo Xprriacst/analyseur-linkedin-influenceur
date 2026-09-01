@@ -113,6 +113,28 @@ def lead_quota_error(used_today: int, limit: int | None = None) -> str | None:
     )
 
 
+def uncounted_generation_error() -> str:
+    """Message de refus des chemins de génération que le compteur ne VOIT pas.
+
+    ⚠️ Le compteur de posts (`db.count_recent_generated_posts`) lit la table des
+    jobs de génération. `POST /generate` et `POST /generate/stream` — le chemin
+    synchrone historique — n'y écrivent RIEN : ils génèrent puis rangent
+    directement dans `generated_posts`. Y poser le quota tel quel ne bornait donc
+    rien du tout : le compteur restait à 0 à chaque appel et un compte plafonné
+    pouvait générer sans fin, gratuitement pour lui, à notre charge chez Anthropic.
+    Un garde-fou qui *semble* posé est pire qu'un garde-fou absent : personne ne
+    va le rechercher.
+
+    Ces deux routes ne sont appelées par AUCUN écran de l'app (le front passe
+    exclusivement par la file `POST /generate/jobs`, vérifié). Pour un compte
+    Pilote gratuit, on les refuse donc franchement plutôt que de laisser une
+    porte de génération non comptée : fail closed, et le message dit où aller."""
+    return (
+        "Mode Pilote : la génération passe par le Générateur de l'app "
+        "(ce raccourci d'API n'est pas décompté du plan gratuit). " + _UPGRADE_HINT
+    )
+
+
 def can_enroll_pilot_free(
     *,
     current_plan: str | None,

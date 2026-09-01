@@ -2383,9 +2383,12 @@ def count_recent_lead_invites(access_token: str, *, hours: int = 24) -> int:
       porte déjà : on ne relit pas le journal pour lui ;
     - le journal (`linkedin_outreach_actions`, `origin='immediate'`) — la soupape
       « envoyer maintenant » n'entre jamais en file.
-    Une action annulée (`cancelled`), échouée (`failed`) ou sautée (`skipped` — déjà
-    en relation) rend son créneau : le client ne perd pas un contact du jour sur un
-    hoquet.
+    Seuls `pending` et `sent` comptent : une action annulée, échouée ou sautée
+    (déjà en relation) rend son créneau — le client ne perd pas un contact du jour
+    sur un hoquet. ⚠️ La liste est volontairement une liste BLANCHE : la migration
+    0048 écrit `canceled` (un L) là où le reste du dépôt écrit `cancelled`, et une
+    liste noire sur l'orthographe se serait trompée en silence dans un sens ou dans
+    l'autre — ici, tout statut inconnu ne consomme simplement pas de quota.
 
     ⚠️ LÈVE en cas d'échec de lecture (fail closed, patron `outreach_counts`)."""
     if not supabase_enabled():

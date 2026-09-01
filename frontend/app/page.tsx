@@ -15943,10 +15943,16 @@ export default function Home() {
   const pilotFreePlan = accountPlan === "pilot_free";
 
   // Un compte Pilote gratuit ATTERRIT sur le Mode Pilote (une seule fois, au
-  // chargement du plan) : les actions du plan du jour (« Modifier le post »,
-  // générer) peuvent ensuite ouvrir l'écran Expert nécessaire — c'est le TOGGLE
-  // Expert qui est verrouillé (upsell), pas la navigation issue du plan. Le
-  // gating réel (quotas) est côté serveur : le front ne protège rien.
+  // chargement du plan), et ne persiste jamais « expert » : au rechargement il
+  // repart sur sa vue par défaut.
+  //
+  // ⚠️ Le toggle Expert reste CLIQUABLE, à dessein — la landing le présente comme
+  // « grisé », mais le verrouiller aujourd'hui créerait une impasse : le Mode
+  // Pilote lui-même renvoie vers « Mon profil → Connexions » pour brancher
+  // LinkedIn, et cet écran n'existe QUE côté Expert. Un compte gratuit sans
+  // LinkedIn connecté ne pourrait alors plus rien publier ni inviter. L'upsell
+  // visuel (grisage + écran d'offre) est un lot à part, avec sa maquette.
+  // Le vrai gating est côté serveur (quotas) : le front ne protège rien.
   const pilotPlanApplied = useRef(false);
   useEffect(() => {
     if (!pilotFreePlan || pilotPlanApplied.current) return;
