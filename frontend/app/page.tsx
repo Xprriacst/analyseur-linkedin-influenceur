@@ -13565,6 +13565,16 @@ function InfluencerTrendsBlock({
   );
 }
 
+/** Suggestion « à suivre » — profil déjà analysé par un autre compte, matché sur la niche. */
+type FollowSuggestion = {
+  handle: string;
+  name: string;
+  headline: string;
+  profile_url: string;
+  follower_count: number;
+  matched_keywords: string[];
+};
+
 function InfluencersView({
   entries,
   loading,
@@ -13591,6 +13601,10 @@ function InfluencersView({
   const [checking, setChecking] = useState(false);
   const [checkMsg, setCheckMsg] = useState("");
 
+  // Suggestions d'influenceurs à suivre (matching niche/ICP, 0 crédit) : la seule
+  // chose à voir sur cet écran pour un compte qui n'a encore rien analysé.
+  const [suggestions, setSuggestions] = useState<FollowSuggestion[]>([]);
+
   useEffect(() => {
     if (!isAuthed) { setFollowed({}); return; }
     let cancelled = false;
@@ -13605,6 +13619,22 @@ function InfluencersView({
           if (data.cap) setFollowCap(data.cap);
         })
         .catch(() => {})
+    );
+    return () => { cancelled = true; };
+  }, [isAuthed]);
+
+  useEffect(() => {
+    if (!isAuthed) { setSuggestions([]); return; }
+    let cancelled = false;
+    authHeaders().then((h) =>
+      fetch(`${DIRECT_API_URL}/me/follow-suggestions`, { headers: h })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!cancelled && data) setSuggestions(data.suggestions || []);
+        })
+        .catch(() => {
+          /* best-effort : une suggestion manquante n'est pas une panne d'écran */
+        })
     );
     return () => { cancelled = true; };
   }, [isAuthed]);
@@ -13675,6 +13705,8 @@ function InfluencersView({
   }
 
   const followedCount = Object.keys(followed).length;
+  const visibleSuggestions = suggestions.filter((sg) => !followed[sg.handle]);
+  const capReached = followedCount >= followCap;
 
   if (!isAuthed) {
     return (
@@ -13859,6 +13891,75 @@ function InfluencersView({
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Suggestions « à suivre » — profils déjà analysés par d'autres comptes,
+          filtrés sur la niche du client (0 crédit, 0 IA, 0 Apify). La section
+          n'existe PAS quand la liste est vide : profil éditorial pas encore
+          rempli, ou aucun profil de la niche dans le cache mutualisé. */}
+      {visibleSuggestions.length > 0 && (
+        <div className="card" style={{ padding: 0, overflow: "hidden", marginTop: 24 }}>
+          <div className="tr-table-head">
+            <h3 style={{ margin: 0, fontSize: 16 }}>Influenceurs suggérés à suivre</h3>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>
+              Repérés dans ta niche · déjà analysés sur Cibl · gratuit
+            </span>
+          </div>
+          <div>
+            {visibleSuggestions.map((sg, i) => (
+              <div
+                key={sg.handle}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "12px 16px",
+                  borderTop: i === 0 ? "none" : "1px solid var(--border)",
+                }}
+              >
+                <span className="tr-avatar" aria-hidden="true">{initialsOf(sg.name)}</span>
+                <span style={{ minWidth: 0, flex: 1 }}>
+                  <a
+                    href={safeHttpUrl(sg.profile_url)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="tr-name"
+                    title="Voir le profil LinkedIn"
+                  >
+                    {sg.name}
+                  </a>
+                  <span className="tr-sub" style={{ display: "block" }}>
+                    {sg.headline || decodeHandle(sg.handle)}
+                    {sg.follower_count ? ` · ${fmt(sg.follower_count)} abonnés` : ""}
+                  </span>
+                  {sg.matched_keywords.length > 0 && (
+                    <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                      Correspond à ta niche : {sg.matched_keywords.join(" · ")}
+                    </span>
+                  )}
+                </span>
+                {/* `aria-label` : sans lui, six boutons « Suivre » identiques sont
+                    indistinguables au lecteur d'écran (et au test e2e). */}
+                <button
+                  type="button"
+                  className="secondary-button"
+                  style={{ padding: "4px 10px", fontSize: 12, whiteSpace: "nowrap" }}
+                  disabled={togglingHandle === sg.handle || capReached}
+                  aria-label={`Suivre ${sg.name}`}
+                  title={capReached
+                    ? `Tu suis déjà ${followCap} influenceurs (maximum). Retires-en un pour en ajouter.`
+                    : `Surveiller ses nouveaux posts (max ${followCap} influenceurs)`}
+                  onClick={() => toggleFollow(sg.handle)}
+                >
+                  {togglingHandle === sg.handle
+                    ? <Loader2 size={12} className="spinning" />
+                    : <Eye size={12} />}
+                  {" Suivre"}
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

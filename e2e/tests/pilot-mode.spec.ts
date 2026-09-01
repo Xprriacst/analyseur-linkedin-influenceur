@@ -78,6 +78,33 @@ async function mockPilotBackend(page: import("@playwright/test").Page) {
   );
 }
 
+const FOLLOW_SUGGESTIONS = [
+  {
+    handle: "marie-coach",
+    name: "Marie Coach",
+    headline: "Coaching business pour indépendants",
+    profile_url: "https://www.linkedin.com/in/marie-coach/",
+    follower_count: 5200,
+    matched_keywords: ["coaching", "indépendants"],
+  },
+];
+
+/** Compte les appels au endpoint de suggestions — c'est ce compteur qui prouve
+ *  le chargement paresseux (0 tant que le panneau est replié). */
+function mockFollowSuggestions(
+  page: import("@playwright/test").Page,
+  suggestions: unknown[],
+  counter: { calls: number },
+) {
+  return page.route("**/me/follow-suggestions", (route) => {
+    counter.calls += 1;
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ suggestions, followed_count: 0, cap: 5 }),
+    });
+  });
+}
+
 test.describe("Mode Pilote", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => {
@@ -124,5 +151,73 @@ test.describe("Mode Pilote", () => {
     await page.getByRole("button", { name: /^Inviter$/i }).click();
     await expect.poll(() => inviteCalled).toBe(true);
     await expect(page.getByRole("button", { name: /Invitation envoyée/i })).toBeVisible();
+  });
+
+  test("les suggestions à suivre sont repliées, chargées au clic, et suivies via l’API existante", async ({
+    page,
+  }) => {
+    const counter = { calls: 0 };
+    let followBody: Record<string, unknown> | null = null;
+    await mockFollowSuggestions(page, FOLLOW_SUGGESTIONS, counter);
+    await page.route("**/me/followed-influencers", (route) => {
+      if (route.request().method() === "POST") {
+        followBody = JSON.parse(route.request().postData() || "{}");
+        return route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ id: "follow-1", handle: "marie-coach", platform: "linkedin" }),
+        });
+      }
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ followed: [], cap: 5 }),
+      });
+    });
+
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+
+    // 1. La vue simplifiée reste épurée : le rail « À suivre » ne revient PAS…
+    await expect(page.getByRole("region", { name: "À suivre" })).toHaveCount(0);
+    // …et rien n'est affiché tant qu'on n'a pas cliqué.
+    const toggle = page.getByRole("button", { name: "Influenceurs à suivre" });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByText("Marie Coach")).toHaveCount(0);
+
+    // 2. ⚠️ Chargement PARESSEUX : aucun appel serveur avant le dépliage. Sans
+    //    ce garde, l'écran d'accueil paierait la requête tous les jours pour un
+    //    panneau que peu de gens ouvrent — le gaspillage qu'on cherche à éviter.
+    expect(counter.calls).toBe(0);
+
+    // 3. Au clic, les suggestions arrivent, avec le motif du match.
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByText("Marie Coach")).toBeVisible();
+    await expect(page.getByText(/correspond à ta niche : coaching · indépendants/i)).toBeVisible();
+    await expect.poll(() => counter.calls).toBe(1);
+
+    // 4. « Suivre » passe par l'endpoint existant (et son plafond de 5).
+    await page.getByRole("button", { name: "Suivre Marie Coach" }).click();
+    await expect.poll(() => followBody).not.toBeNull();
+    expect(followBody).toMatchObject({ handle: "marie-coach" });
+    await expect(page.getByRole("button", { name: "Suivre Marie Coach" })).toContainText("Suivi");
+
+    // 5. Refermer puis rouvrir ne rappelle pas le serveur (une fois par écran).
+    await toggle.click();
+    await toggle.click();
+    await expect(page.getByText("Marie Coach")).toBeVisible();
+    expect(counter.calls).toBe(1);
+  });
+
+  test("profil éditorial vide : le panneau existe mais explique quoi faire", async ({ page }) => {
+    const counter = { calls: 0 };
+    await mockFollowSuggestions(page, [], counter);
+
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await page.getByRole("button", { name: "Influenceurs à suivre" }).click();
+    // Pas de liste vide muette : on dit pourquoi et quoi faire.
+    await expect(page.getByText(/complète ton profil éditorial/i)).toBeVisible();
   });
 });
