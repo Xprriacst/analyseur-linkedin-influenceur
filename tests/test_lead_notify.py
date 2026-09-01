@@ -268,3 +268,172 @@ class AuthSdkToleranceTest(unittest.TestCase):
             self.assertEqual(db_module._list_auth_users_page(1), [])
         self.assertEqual(len(calls), 2)          # mot-clé refusé, puis positionnel
         self.assertEqual(calls[1][0], (1, 100))
+
+
+class SlackTest(unittest.TestCase):
+    """Alerte Slack interne (décision Alex 2026-09-01) — EN PLUS de l'e-mail.
+
+    Propriétés verrouillées, dont la perte serait silencieuse :
+    - le webhook reçoit le bon payload (URL, texte, User-Agent explicite — le
+      défaut urllib se fait refuser par les protections anti-bot, 403 « 1010 ») ;
+    - un échec Slack n'affecte NI l'e-mail NI la réservation exactement-une-fois ;
+    - un e-mail rejoué (réservation refusée) ne double-poste pas sur Slack ;
+    - un e-mail en échec ⇒ pas de Slack ce passage-ci (le retry enverra les deux) ;
+    - variable d'env absente ⇒ no-op, zéro appel réseau ;
+    - la raison d'un refus est journalisée VERBATIM (leçon PR #460) ;
+    - le texte injecté (nom issu d'une analyse IA) est échappé.
+    """
+
+    WEBHOOK = "https://hooks.slack.com/services/T000/B000/XXXX"
+
+    @staticmethod
+    def _recorder(calls):
+        class _Resp:
+            def read(self):
+                return b"ok"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request)
+            return _Resp()
+
+        return fake_urlopen
+
+    def test_webhook_appele_avec_le_bon_payload(self):
+        import json as json_lib
+
+        mail = _Mailer()
+        calls = []
+        with patch.dict(os.environ, {lead_notify.SLACK_WEBHOOK_ENV: self.WEBHOOK}), \
+             patch.object(lead_notify, "mailer", mail), \
+             patch.object(lead_notify.db, "admin_claim_lead_notification", return_value=True), \
+             patch("urllib.request.urlopen", self._recorder(calls)):
+            self.assertTrue(lead_notify.notify_optin("a@b.com"))
+        self.assertEqual(len(mail.sent), 1)      # l'e-mail part toujours
+        self.assertEqual(len(calls), 1)          # et le Slack aussi
+        request = calls[0]
+        self.assertEqual(request.full_url, self.WEBHOOK)
+        body = json_lib.loads(request.data.decode("utf-8"))
+        self.assertIn("a@b.com", body["text"])
+        # User-Agent explicite : `Python-urllib/3.x` = 403 anti-bot indiagnosticable.
+        agent = request.get_header("User-agent") or ""
+        self.assertEqual(agent, lead_notify.SLACK_USER_AGENT)
+        self.assertNotIn("Python-urllib", agent)
+
+    def test_echec_slack_n_affecte_ni_l_email_ni_la_reservation(self):
+        import contextlib
+        import io as _io
+
+        mail = _Mailer()
+
+        def boom(request, timeout=None):
+            raise RuntimeError("connexion refusee par hooks.slack.com")
+
+        err = _io.StringIO()
+        with patch.dict(os.environ, {lead_notify.SLACK_WEBHOOK_ENV: self.WEBHOOK}), \
+             patch.object(lead_notify, "mailer", mail), \
+             patch.object(lead_notify.db, "admin_claim_lead_notification", return_value=True), \
+             patch.object(lead_notify.db, "admin_release_lead_notification") as release, \
+             patch("urllib.request.urlopen", boom), \
+             contextlib.redirect_stderr(err):
+            self.assertTrue(lead_notify.notify_optin("a@b.com"))
+        release.assert_not_called()              # la réservation reste consommée
+        self.assertEqual(len(mail.sent), 1)      # l'e-mail est bien parti
+        # …et la raison est journalisée VERBATIM, pas un « envoi échoué » muet.
+        self.assertIn("connexion refusee par hooks.slack.com", err.getvalue())
+
+    def test_refus_http_slack_journalise_le_corps_verbatim(self):
+        import contextlib
+        import io as _io
+        import urllib.error as _err
+
+        mail = _Mailer()
+
+        def http_403(request, timeout=None):
+            raise _err.HTTPError(
+                self.WEBHOOK, 403, "Forbidden", {}, _io.BytesIO(b"invalid_token")
+            )
+
+        err = _io.StringIO()
+        with patch.dict(os.environ, {lead_notify.SLACK_WEBHOOK_ENV: self.WEBHOOK}), \
+             patch.object(lead_notify, "mailer", mail), \
+             patch.object(lead_notify.db, "admin_claim_lead_notification", return_value=True), \
+             patch("urllib.request.urlopen", http_403), \
+             contextlib.redirect_stderr(err):
+            self.assertTrue(lead_notify.notify_optin("a@b.com"))
+        self.assertIn("403", err.getvalue())
+        self.assertIn("invalid_token", err.getvalue())
+
+    def test_env_var_absente_no_op_zero_appel_reseau(self):
+        mail = _Mailer()
+        calls = []
+        with patch.dict(os.environ, {lead_notify.SLACK_WEBHOOK_ENV: ""}), \
+             patch.object(lead_notify, "mailer", mail), \
+             patch.object(lead_notify.db, "admin_claim_lead_notification", return_value=True), \
+             patch("urllib.request.urlopen", self._recorder(calls)):
+            self.assertTrue(lead_notify.notify_optin("a@b.com"))
+        self.assertEqual(calls, [])              # aucun appel réseau
+        self.assertEqual(len(mail.sent), 1)      # l'e-mail, lui, part comme avant
+
+    def test_email_rejoue_ne_double_poste_pas_sur_slack(self):
+        """Réservation refusée (déjà envoyé) ⇒ ni e-mail ni Slack."""
+        mail = _Mailer()
+        calls = []
+        with patch.dict(os.environ, {lead_notify.SLACK_WEBHOOK_ENV: self.WEBHOOK}), \
+             patch.object(lead_notify, "mailer", mail), \
+             patch.object(lead_notify.db, "admin_claim_lead_notification", return_value=False), \
+             patch("urllib.request.urlopen", self._recorder(calls)):
+            self.assertFalse(lead_notify.notify_optin("a@b.com"))
+        self.assertEqual(mail.sent, [])
+        self.assertEqual(calls, [])
+
+    def test_email_en_echec_pas_de_slack_ce_passage(self):
+        """Réservation rendue ⇒ le retry renverra les DEUX canaux : poster Slack
+        maintenant produirait un doublon Slack au passage suivant."""
+        import contextlib
+        import io as _io
+
+        mail = _Mailer(ok=False)
+        calls = []
+        with patch.dict(os.environ, {lead_notify.SLACK_WEBHOOK_ENV: self.WEBHOOK}), \
+             patch.object(lead_notify, "mailer", mail), \
+             patch.object(lead_notify.db, "admin_claim_lead_notification", return_value=True), \
+             patch.object(lead_notify.db, "admin_release_lead_notification"), \
+             contextlib.redirect_stderr(_io.StringIO()):
+            self.assertFalse(lead_notify.notify_optin("a@b.com"))
+        self.assertEqual(calls, [])
+
+    def test_creation_de_compte_via_le_cron_poste_aussi_sur_slack(self):
+        """Le ticket : « à chaque création de compte » — le chemin scan_signups."""
+        mail = _Mailer()
+        calls = []
+        now = datetime.datetime.now(datetime.timezone.utc)
+        accounts = [{
+            "user_id": "u1",
+            "email": "a@b.com",
+            "created_at": now - datetime.timedelta(minutes=1),
+        }]
+        with patch.dict(os.environ, {lead_notify.SLACK_WEBHOOK_ENV: self.WEBHOOK}), \
+             patch.object(lead_notify, "mailer", mail), \
+             patch.object(lead_notify.db, "admin_list_recent_signups", return_value=accounts), \
+             patch.object(lead_notify.db, "get_ai_context_for_user", return_value=PROFILE), \
+             patch.object(lead_notify.db, "admin_claim_lead_notification", return_value=True), \
+             patch("urllib.request.urlopen", self._recorder(calls)):
+            self.assertEqual(lead_notify.scan_signups(), 1)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("Emmanuel Preizal", calls[0].data.decode("utf-8"))
+        self.assertIn("Nouveau compte", calls[0].data.decode("utf-8"))
+
+    def test_texte_slack_echappe_le_contenu_injecte(self):
+        # Le nom vient d'une analyse IA d'une page publique : pas de confiance.
+        text = lead_notify.render_slack_message(
+            "signup", "Nouveau compte — <Bad> & Co"
+        )
+        self.assertNotIn("<Bad>", text)
+        self.assertIn("&lt;Bad&gt;", text)
+        self.assertIn("&amp; Co", text)
