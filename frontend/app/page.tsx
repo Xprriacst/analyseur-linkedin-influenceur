@@ -390,10 +390,15 @@ type ContentTab = "analyses" | "generator" | "library";
 
 // « Mon profil » empilait sur une seule page trois métiers sans rapport : le contexte
 // éditorial, les comptes à relier, et ce qui tourne tout seul. Un onglet par métier.
-type ProfileTab = "profile" | "connections" | "automations";
+type ProfileTab = "profile" | "dashboard" | "connections" | "automations";
 
 const PROFILE_TABS: { key: ProfileTab; label: string; icon: React.ReactNode }[] = [
   { key: "profile", label: "Mon profil", icon: <UserRound size={14} /> },
+  // Tableau de bord : où j'en suis (lecture seule). Volontairement PAS l'onglet par
+  // défaut — l'écran d'entrée de « Mon profil » reste le contexte éditorial, celui
+  // qu'on vient remplir. (Une itération passée l'avait mis par défaut et avait cassé
+  // les 3 specs e2e du profil, cf. CLAUDE.md.)
+  { key: "dashboard", label: "Tableau de bord", icon: <BarChart3 size={14} /> },
   { key: "connections", label: "Connexions", icon: <Link2 size={14} /> },
   { key: "automations", label: "Automatisations", icon: <Zap size={14} /> },
 ];
@@ -12014,6 +12019,384 @@ function SelfPhotosCard() {
   );
 }
 
+// --------------------------------------------------------------------------- //
+// Mon profil → Tableau de bord (backlog Notion, priorité Alex 2026-08-31)
+//
+// Vue d'ensemble EN LECTURE SEULE de la prospection : abonnés (baseline +
+// progression), invitations, messages, retours. Aucune action, aucun crédit,
+// aucun appel modèle — c'est un miroir, pas un poste de pilotage.
+// --------------------------------------------------------------------------- //
+
+type FollowerPoint = { date: string; followers: number };
+type FollowerProgress =
+  | { available: false; reason: string }
+  | {
+      available: true;
+      current: number;
+      current_at: string | null;
+      baseline: number;
+      baseline_at: string | null;
+      delta: number;
+      history: FollowerPoint[];
+    };
+
+type DashboardProgress = {
+  followers: FollowerProgress;
+  invitations: { sent_today: number; sent_week: number; total_invited: number; total_connected: number };
+  messages: { sent_today: number; total_sent: number };
+  counts_reliable: boolean;
+  unipile_connected: boolean;
+};
+
+type DashboardReplies = {
+  conversations: { available: false; reason: string; error?: string } | { available: true; total: number };
+  replies:
+    | { available: false; reason: string }
+    | { available: true; replied: number; checked: number; total_messaged: number; capped: boolean };
+};
+
+/** « 12 août » — les relevés d'abonnés arrivent en `YYYY-MM-DD`. */
+function fmtDay(value: string | null | undefined) {
+  if (!value) return "—";
+  const d = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+}
+
+/** Delta signé : « +150 », « −40 », « = ». Le signe est l'information. */
+function fmtDelta(delta: number) {
+  if (delta === 0) return "=";
+  return `${delta > 0 ? "+" : "−"}${Math.abs(delta).toLocaleString("fr-FR")}`;
+}
+
+/**
+ * Courbe des abonnés — SVG inline, aucune dépendance.
+ *
+ * ⚠️ L'axe vertical est cadré sur le min/max RÉELS, pas sur zéro : sur un compte
+ * qui passe de 1 200 à 1 350, un axe partant de 0 écraserait la courbe en ligne
+ * plate et donnerait à lire « il ne se passe rien ». À l'inverse on ne prétend
+ * jamais tracer une progression avec un seul point : sous 2 relevés, pas de courbe.
+ */
+function FollowerSparkline({ points }: { points: FollowerPoint[] }) {
+  if (points.length < 2) return null;
+  const w = 560;
+  const h = 90;
+  const pad = 6;
+  const values = points.map((p) => p.followers);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const coords = points.map((p, i) => {
+    const x = pad + (i * (w - pad * 2)) / (points.length - 1);
+    const y = h - pad - ((p.followers - min) / span) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const last = coords[coords.length - 1].split(",");
+  return (
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      preserveAspectRatio="none"
+      style={{ width: "100%", height: 90, display: "block", marginTop: 12 }}
+      role="img"
+      aria-label={`Progression des abonnés : ${points.length} relevés, de ${values[0]} à ${values[values.length - 1]}`}
+      data-testid="dash-follower-curve"
+    >
+      <polyline
+        points={coords.join(" ")}
+        fill="none"
+        stroke="var(--primary)"
+        strokeWidth={2}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      <circle cx={last[0]} cy={last[1]} r={3.5} fill="var(--primary)" />
+    </svg>
+  );
+}
+
+function DashStat({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: React.ReactNode;
+  hint?: string;
+}) {
+  return (
+    <div className="kpi-card">
+      <span>{label}</span>
+      <div className="metric">{value}</div>
+      {hint ? (
+        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{hint}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProgressDashboard({ isAuthed }: { isAuthed: boolean }) {
+  const [data, setData] = useState<DashboardProgress | null>(null);
+  const [error, setError] = useState("");
+  const [replies, setReplies] = useState<DashboardReplies | null>(null);
+  const [repliesLoading, setRepliesLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthed) {
+      setData(null);
+      return;
+    }
+    let cancelled = false;
+    setError("");
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/dashboard/progress`, {
+          headers: await authHeaders(),
+        });
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.detail || "Tableau de bord indisponible");
+        if (!cancelled) setData(payload);
+      } catch (err: any) {
+        if (!cancelled) setError(err.message || "Tableau de bord indisponible");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthed]);
+
+  // Les « retours » sont chargés À PART, après le reste, et seulement si un compte
+  // LinkedIn est relié : vérifier qui a répondu coûte un appel Unipile par
+  // conversation (leur liste de chats ne porte aucun indicateur de réponse). Les
+  // mettre dans le même appel ferait attendre les abonnés et les compteurs — qui,
+  // eux, viennent de notre base — derrière la section la plus lente.
+  useEffect(() => {
+    if (!isAuthed || !data?.unipile_connected) {
+      setReplies(null);
+      return;
+    }
+    let cancelled = false;
+    setRepliesLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/dashboard/replies`, {
+          headers: await authHeaders(),
+        });
+        if (!res.ok) return;
+        const payload = await res.json();
+        if (!cancelled) setReplies(payload);
+      } catch {
+        // Section best-effort : un échec laisse « Retours » muet, jamais d'erreur
+        // à l'écran — le reste du tableau de bord reste juste.
+      } finally {
+        if (!cancelled) setRepliesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthed, data?.unipile_connected]);
+
+  if (!isAuthed) {
+    return (
+      <p className="section-desc" style={{ marginTop: 0 }}>
+        Connecte-toi pour voir où tu en es.
+      </p>
+    );
+  }
+
+  if (error) return <div className="error">{error}</div>;
+
+  if (!data) {
+    return (
+      <div className="card sk-list" data-testid="dash-skeleton">
+        <Sk w="40%" h={14} />
+        <Sk w="70%" h={10} style={{ marginTop: 10 }} />
+        <Sk w="100%" h={72} style={{ marginTop: 14 }} />
+      </div>
+    );
+  }
+
+  const followers = data.followers;
+  const conversations = replies?.conversations;
+  const replyStats = replies?.replies;
+
+  return (
+    <div data-testid="profile-dashboard">
+      <div className="section-header">
+        <div>
+          <h2 className="section-title">
+            <BarChart3 size={20} /> Où j&apos;en suis
+          </h2>
+          <p className="section-desc">
+            Ta prospection en un coup d&apos;œil. Lecture seule — rien ne s&apos;envoie
+            depuis cet écran, et l&apos;afficher ne coûte aucun crédit.
+          </p>
+        </div>
+      </div>
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Abonnés — baseline + progression                                  */}
+      {/* ---------------------------------------------------------------- */}
+      <section className="card" style={{ marginBottom: 12 }}>
+        <h3 style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <TrendingUp size={16} /> Abonnés LinkedIn
+        </h3>
+        {followers.available ? (
+          <>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                flexWrap: "wrap",
+                gap: 16,
+                marginTop: 10,
+              }}
+            >
+              <div>
+                <div className="metric" style={{ fontSize: 30 }} data-testid="dash-followers-current">
+                  {fmt(followers.current)}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                  au {fmtDay(followers.current_at)}
+                </div>
+              </div>
+              <div
+                data-testid="dash-followers-delta"
+                style={{
+                  fontSize: 15,
+                  fontWeight: 700,
+                  color: followers.delta > 0 ? "var(--primary)" : "var(--muted)",
+                }}
+              >
+                {fmtDelta(followers.delta)}
+                <span style={{ fontWeight: 500, color: "var(--muted)", marginLeft: 6 }}>
+                  depuis le {fmtDay(followers.baseline_at)} ({fmt(followers.baseline)})
+                </span>
+              </div>
+            </div>
+            <FollowerSparkline points={followers.history} />
+            {followers.history.length < 2 ? (
+              <p className="section-desc" style={{ marginTop: 10, marginBottom: 0 }}>
+                Un seul relevé pour l&apos;instant : c&apos;est ton point de départ. La
+                courbe apparaîtra dès la prochaine analyse de ton propre profil.
+              </p>
+            ) : null}
+          </>
+        ) : (
+          // ⚠️ Jamais « 0 abonné » ici. Le chiffre vient de TON profil déjà analysé ;
+          // sans analyse, on n'a rien mesuré — le dire, plutôt qu'afficher un zéro
+          // qui se ferait passer pour un fait. Aucun scrape n'est déclenché depuis
+          // cet écran (coût Apify), c'est délibéré.
+          <p className="section-desc" style={{ marginTop: 8, marginBottom: 0 }}>
+            {followers.reason === "read_error"
+              ? "Impossible de lire tes relevés d'abonnés pour le moment. Réessaie plus tard — rien n'est perdu."
+              : "Pas encore de relevé. Analyse ton propre profil LinkedIn (onglet Analyser, avec l'URL de ton profil renseignée dans Mon profil) : on posera le point de départ, puis la progression se remplira toute seule."}
+          </p>
+        )}
+      </section>
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Invitations & messages                                            */}
+      {/* ---------------------------------------------------------------- */}
+      {!data.counts_reliable ? (
+        <p
+          className="section-desc"
+          style={{ marginTop: 0, marginBottom: 8, color: "var(--coral)" }}
+          data-testid="dash-counts-warning"
+        >
+          Les compteurs du jour et de la semaine n&apos;ont pas pu être lus — ils
+          s&apos;affichent à 0 sans que ça veuille dire que tu n&apos;as rien envoyé.
+        </p>
+      ) : null}
+
+      <div className="kpi-grid">
+        <DashStat
+          label="Invitations aujourd'hui"
+          value={fmt(data.invitations.sent_today)}
+          hint="envoyées depuis minuit"
+        />
+        <DashStat
+          label="Invitations cette semaine"
+          value={fmt(data.invitations.sent_week)}
+          hint="7 jours glissants"
+        />
+        <DashStat
+          label="Prospects invités"
+          value={fmt(data.invitations.total_invited)}
+          hint="depuis le début"
+        />
+        <DashStat
+          label="Invitations acceptées"
+          value={fmt(data.invitations.total_connected)}
+          hint={
+            data.invitations.total_invited > 0
+              ? `${Math.round((data.invitations.total_connected / data.invitations.total_invited) * 100)} % des invités`
+              : undefined
+          }
+        />
+        <DashStat
+          label="Messages envoyés"
+          value={fmt(data.messages.total_sent)}
+          hint={`${fmt(data.messages.sent_today)} aujourd'hui`}
+        />
+      </div>
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Retours — dépend d'Unipile, chargé à part                          */}
+      {/* ---------------------------------------------------------------- */}
+      <section className="card" style={{ marginTop: 12 }}>
+        <h3 style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <MessageSquare size={16} /> Retours
+        </h3>
+        {!data.unipile_connected ? (
+          <p className="section-desc" style={{ marginTop: 8, marginBottom: 0 }}>
+            Relie ton compte LinkedIn dans <strong>Connexions</strong> pour voir tes
+            conversations et qui t&apos;a répondu.
+          </p>
+        ) : repliesLoading || !replies ? (
+          <div className="sk-list" style={{ marginTop: 10 }} data-testid="dash-replies-skeleton">
+            <Sk w="60%" h={10} />
+            <Sk w="40%" h={10} style={{ marginTop: 8 }} />
+          </div>
+        ) : (
+          <div style={{ marginTop: 10 }}>
+            {conversations?.available ? (
+              <p style={{ margin: 0, fontSize: 13 }} data-testid="dash-conversations">
+                <strong>{fmt(conversations.total)}</strong> conversation
+                {conversations.total > 1 ? "s" : ""} ouverte
+                {conversations.total > 1 ? "s" : ""} sur ton compte LinkedIn.
+              </p>
+            ) : (
+              <p className="section-desc" style={{ margin: 0 }}>
+                Conversations indisponibles pour le moment (LinkedIn n&apos;a pas
+                répondu). Le reste du tableau de bord reste juste.
+              </p>
+            )}
+            {replyStats?.available ? (
+              <p style={{ marginTop: 8, marginBottom: 0, fontSize: 13 }} data-testid="dash-replies">
+                <strong>{fmt(replyStats.replied)}</strong> réponse
+                {replyStats.replied > 1 ? "s" : ""} sur {fmt(replyStats.checked)}{" "}
+                conversation{replyStats.checked > 1 ? "s" : ""} vérifiée
+                {replyStats.checked > 1 ? "s" : ""}.
+                {/* ⚠️ Le « capped » n'est pas cosmétique : présenter un chiffre
+                    d'échantillon comme un total (« 3 réponses » quand on n'a
+                    regardé que 20 conversations sur 200) serait un chiffre faux. */}
+                {replyStats.capped ? (
+                  <span style={{ color: "var(--muted)" }}>
+                    {" "}
+                    Échantillon des plus récentes — tu as contacté{" "}
+                    {fmt(replyStats.total_messaged)} prospects au total.
+                  </span>
+                ) : null}
+              </p>
+            ) : null}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function ProfileView({
   isAuthed,
   requireAuth,
@@ -12369,6 +12752,8 @@ function ProfileView({
           </button>
         ))}
       </div>
+
+      {tab === "dashboard" && <ProgressDashboard isAuthed={isAuthed} />}
 
       {tab === "connections" && (
         <div>
