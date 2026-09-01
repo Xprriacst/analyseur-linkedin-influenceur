@@ -42,9 +42,9 @@ export const FOUNDERS_TESTIMONIAL = {
 } as const;
 
 /**
- * Verbatims clients de la page de vente (`/offre`).
+ * Verbatims clients des pages de vente `/pilote` et `/offre`.
  * ⚠️ Citations réelles, collées telles quelles — ne pas inventer de rôle,
- * d'entreprise, de photo ni paraphraser.
+ * d'entreprise, de photo ni paraphraser. Prénoms seuls.
  */
 export const CLIENT_TESTIMONIALS = [
   {
