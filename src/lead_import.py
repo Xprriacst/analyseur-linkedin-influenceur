@@ -46,6 +46,17 @@ MAX_FILE_BYTES = 5 * 1024 * 1024
 # des dizaines de milliers de lignes d'un coup.
 MAX_LEADS = 2000
 
+# Pré-filtre bon marché devant `canonical_profile_url` : un chemin de profil
+# LinkedIn porte forcément `/in/` ou `/pub/` (c'est ce que cherche le regex de
+# `lead_search`), et ce fragment survit tel quel dans le chemin analysé. Le test
+# de sous-chaîne est donc un SUR-ensemble strict de ce que la canonicalisation
+# accepte — aucune URL de profil ne peut lui échapper.
+# ⚠️ Ce n'est pas de l'optimisation prématurée : la détection de la colonne
+# d'URL appelle la canonicalisation sur CHAQUE cellule. Sur un export de 5 Mo
+# (≈ 17 000 lignes × 20 colonnes), les 350 000 `urlparse` mesuraient 2,9 s de
+# CPU pur pendant lesquelles tout le backend attend (une seule instance Render).
+_PROFILE_PATH_HINT = re.compile(r"/(?:in|pub)/", re.IGNORECASE)
+
 _XLSX_MAGIC = b"PK\x03\x04"
 _XLS_MAGIC = b"\xd0\xcf\x11\xe0"  # vieux .xls binaire (OLE2) — non supporté
 
@@ -55,6 +66,13 @@ _XLS_MAGIC = b"\xd0\xcf\x11\xe0"  # vieux .xls binaire (OLE2) — non supporté
 # stdlib-only, on ne tire pas defusedxml ; ElementTree ne résout de toute façon
 # pas les entités externes, et cette borne coupe l'amplification mémoire.)
 _MAX_XML_MEMBER_BYTES = 30 * 1024 * 1024
+
+
+def _profile_url(cell: str | None) -> str | None:
+    """URL de profil canonique d'une cellule, ou None (cf. `_PROFILE_PATH_HINT`)."""
+    if not cell or not _PROFILE_PATH_HINT.search(cell):
+        return None
+    return canonical_profile_url(cell)
 
 
 def _norm_header(value: str) -> str:
@@ -123,7 +141,17 @@ def _parse_csv(data: bytes) -> list[list[str]]:
         first_line = sample.splitlines()[0] if sample.splitlines() else ""
         delimiter = max(",;\t", key=first_line.count) if first_line else ","
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
-    return [[cell.strip() for cell in row] for row in reader]
+    try:
+        return [[cell.strip() for cell in row] for row in reader]
+    except csv.Error as exc:
+        # `csv` lève sur une cellule démesurée (> 128 Ko) ou un octet NUL —
+        # typiquement un binaire renommé .csv, ou un export corrompu. Sans ce
+        # garde, l'exception remonte brute et l'upload répond 500 : le client
+        # lit « erreur serveur » là où le fichier est simplement illisible.
+        raise LeadImportError(
+            "Fichier CSV illisible (ligne trop longue ou caractère invalide). "
+            "Ré-exporte ta liste depuis ton tableur, puis réessaie."
+        ) from exc
 
 
 def _local(tag: str) -> str:
@@ -264,7 +292,7 @@ def _url_column(rows: list[list[str]]) -> int | None:
     counts: dict[int, int] = {}
     for row in rows:
         for i, cell in enumerate(row):
-            if cell and canonical_profile_url(cell):
+            if _profile_url(cell):
                 counts[i] = counts.get(i, 0) + 1
     if not counts:
         return None
@@ -306,7 +334,7 @@ def parse_leads_file(filename: str | None, data: bytes) -> dict[str, Any]:
     # Ligne d'en-tête = première ligne SI elle ne porte pas déjà une URL de
     # profil (un fichier sans en-tête commence directement par les données).
     first = filled[0]
-    has_header = not any(canonical_profile_url(cell) for cell in first if cell)
+    has_header = not any(_profile_url(cell) for cell in first)
     headers = [_norm_header(cell) for cell in first] if has_header else []
     data_rows = filled[1:] if has_header else filled
 
@@ -331,11 +359,11 @@ def parse_leads_file(filename: str | None, data: bytes) -> dict[str, Any]:
     ignored = 0
     truncated = False
     for row in data_rows:
-        url = canonical_profile_url(_cell(row, url_col)) if url_col is not None else None
+        url = _profile_url(_cell(row, url_col)) if url_col is not None else None
         if not url:
             # Fichier hétérogène : l'URL peut vivre dans une autre colonne sur
             # certaines lignes. On balaie la ligne avant de l'ignorer.
-            url = next((canonical_profile_url(c) for c in row if c and canonical_profile_url(c)), None)
+            url = next((u for u in (_profile_url(c) for c in row) if u), None)
         if not url:
             ignored += 1
             continue

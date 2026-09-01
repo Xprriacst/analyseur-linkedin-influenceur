@@ -16,6 +16,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -4573,8 +4574,12 @@ async def add_me_lead_import(
     if len(data) > lead_import.MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail=f"Fichier trop volumineux ({mb} Mo maximum).")
 
+    # ⚠️ Le parsing est du CPU pur, et il n'est pas instantané : un .xlsx proche
+    # du plafond se décompresse en dizaines de Mo de XML (mesuré ~7,5 s). Le
+    # laisser dans la coroutine bloquerait la boucle d'évènements — c'est-à-dire
+    # TOUS les autres clients de l'unique instance Render, invisiblement.
     try:
-        parsed = lead_import.parse_leads_file(file.filename, data)
+        parsed = await run_in_threadpool(lead_import.parse_leads_file, file.filename, data)
     except lead_import.LeadImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

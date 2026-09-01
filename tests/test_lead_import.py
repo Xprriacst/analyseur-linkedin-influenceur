@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from src import lead_import
 from src.lead_import import LeadImportError, parse_leads_file
+from src.lead_search import canonical_profile_url
 
 
 def _csv(text: str, encoding: str = "utf-8") -> bytes:
@@ -162,10 +163,62 @@ class CsvParsingTest(unittest.TestCase):
         self.assertEqual(len(out["leads"]), 3)
         self.assertTrue(out["truncated"])
 
+    def test_unreadable_csv_is_a_clean_422_not_a_500(self):
+        # `csv` lève une `csv.Error` brute sur une cellule > 128 Ko ou un octet
+        # NUL (binaire renommé .csv, export corrompu). Sans garde, l'exception
+        # remonte jusqu'à l'endpoint et le client lit « erreur serveur » là où
+        # son fichier est simplement illisible.
+        for label, data in (
+            ("cellule démesurée", b'url\n"' + b"x" * 200_000 + b'"\n'),
+            ("octet NUL", b"url\nhttps://www.linkedin.com/in/a\x00b\n"),
+        ):
+            with self.subTest(label):
+                with self.assertRaises(LeadImportError) as ctx:
+                    parse_leads_file("l.csv", data)
+                self.assertIn("illisible", str(ctx.exception))
+
     def test_old_xls_binary_is_refused_with_guidance(self):
         with self.assertRaises(LeadImportError) as ctx:
             parse_leads_file("vieux.xls", b"\xd0\xcf\x11\xe0" + b"\x00" * 64)
         self.assertIn(".xlsx", str(ctx.exception))
+
+
+class ProfileUrlPrefilterTest(unittest.TestCase):
+    """Le pré-filtre `/in/`|`/pub/` doit être un SUR-ENSEMBLE strict du parseur.
+
+    Il existe pour la vitesse (la détection de colonne canonicalise chaque
+    cellule : 350 000 `urlparse` sur un export de 5 Mo, mesurés à 2,9 s de CPU
+    dans la requête d'upload). Mais s'il rejetait ne serait-ce qu'une forme
+    d'URL que `canonical_profile_url` accepte, des prospects disparaîtraient de
+    l'import SANS AUCUNE ERREUR — exactement la panne muette qu'on veut éviter.
+    D'où ce test de parité plutôt qu'un test de vitesse.
+    """
+
+    CELLS = [
+        "https://www.linkedin.com/in/ada",
+        "https://fr.linkedin.com/in/jean-dupont/",
+        "http://linkedin.com/in/bob?trk=x",
+        "www.linkedin.com/in/carol",
+        "linkedin.com/in/dave",
+        "https://WWW.LINKEDIN.COM/IN/ERIN",          # casse inversée
+        "https://www.linkedin.com/pub/frank/1/2/3",  # ancien format /pub/
+        "https://www.linkedin.com/in/clément-géynet-☀️",
+        "https://www.linkedin.com/company/acme",     # entreprise : PAS un profil
+        "https://www.linkedin.com/posts/activity-123",
+        "Ada Lovelace",
+        "ada@example.com",
+        "Directeur/interim/RH",                      # « /in » sans « /in/ »
+        "",
+        None,
+        "42",
+    ]
+
+    def test_prefilter_never_loses_a_profile_the_parser_would_accept(self):
+        for cell in self.CELLS:
+            with self.subTest(cell=cell):
+                self.assertEqual(
+                    lead_import._profile_url(cell), canonical_profile_url(cell)
+                )
 
 
 class XlsxParsingTest(unittest.TestCase):
