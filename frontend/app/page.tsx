@@ -15921,11 +15921,53 @@ export default function Home() {
     } catch { /* ignore */ }
   }, [restricted]);
 
+  // Plan du compte (Pilote gratuit…), lu CÔTÉ SERVEUR via GET /me/plan — jamais
+  // depuis `session.user.app_metadata` (le JWT client peut être en retard d'un
+  // refresh sur une attribution toute fraîche), et jamais depuis `user_metadata`
+  // (éditable par l'utilisateur). Échec/endpoint absent → null = comportement
+  // historique, rien ne change pour l'existant.
+  const [accountPlan, setAccountPlan] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isAuthed) { setAccountPlan(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/plan`, { headers: await authHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setAccountPlan(typeof data?.plan === "string" ? data.plan : null);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthed]);
+  const pilotFreePlan = accountPlan === "pilot_free";
+
+  // Un compte Pilote gratuit ATTERRIT sur le Mode Pilote (une seule fois, au
+  // chargement du plan), et ne persiste jamais « expert » : au rechargement il
+  // repart sur sa vue par défaut.
+  //
+  // ⚠️ Le toggle Expert reste CLIQUABLE, à dessein — la landing le présente comme
+  // « grisé », mais le verrouiller aujourd'hui créerait une impasse : le Mode
+  // Pilote lui-même renvoie vers « Mon profil → Connexions » pour brancher
+  // LinkedIn, et cet écran n'existe QUE côté Expert. Un compte gratuit sans
+  // LinkedIn connecté ne pourrait alors plus rien publier ni inviter. L'upsell
+  // visuel (grisage + écran d'offre) est un lot à part, avec sa maquette.
+  // Le vrai gating est côté serveur (quotas) : le front ne protège rien.
+  const pilotPlanApplied = useRef(false);
+  useEffect(() => {
+    if (!pilotFreePlan || pilotPlanApplied.current) return;
+    pilotPlanApplied.current = true;
+    setInterfaceMode("pilot");
+  }, [pilotFreePlan]);
+
   const setInterfaceModePersist = useCallback((mode: InterfaceMode) => {
     setInterfaceMode(mode);
     if (restricted) return;
+    // Un compte Pilote gratuit ne persiste jamais « expert » : au rechargement il
+    // repart sur sa vue par défaut, le Mode Pilote.
+    if (pilotFreePlan && mode === "expert") return;
     try { localStorage.setItem("lkd_interface_mode", mode); } catch { /* ignore */ }
-  }, [restricted]);
+  }, [restricted, pilotFreePlan]);
 
   useEffect(() => {
     if (restricted && interfaceMode === "pilot") setInterfaceMode("expert");
