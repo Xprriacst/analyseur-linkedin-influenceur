@@ -30,6 +30,7 @@ Valeurs backend attendues :
 - **Abonnement Stripe (ALE-274)** : `STRIPE_SECRET_KEY` (clé **test** sur dev, clé **live** en prod), `STRIPE_PRICE_ID` (le tarif récurrent 49 €/mois — un par mode, l'id diffère entre test et live), `STRIPE_WEBHOOK_SECRET` (**un secret par environnement** : chaque env a son endpoint webhook Stripe). Optionnels : `STRIPE_PLAN_CREDITS` (défaut 1000), `STRIPE_TAX_ENABLED` (défaut off — à n'activer qu'une fois l'adresse du siège renseignée dans Stripe, sinon toute session Checkout est rejetée), `STRIPE_INTRO_COUPON_ID` (défaut `cibl_first_month_40` — créé tout seul au 1er checkout d'essai : −40 % = **29,40 € le 1er mois payé**, puis 49 € ; ⚠️ `duration=repeating` 1 mois, **pas** `once`, sinon la remise se mange sur la facture d'essai à 0 €). Absents ⇒ la facturation est désactivée proprement (l'UI affiche « non configuré »). Webhook à déclarer côté Stripe sur `POST {backend}/stripe/webhooks`, événements `checkout.session.completed`, `invoice.paid`, `customer.subscription.updated`, `customer.subscription.deleted`.
 - **Prospection LinkedIn / Unipile (ALE-230)** : `UNIPILE_DSN` (ex. `api8.unipile.com:13443`, host:port ou URL complète) + `UNIPILE_API_KEY` (clé serveur unique, modèle multi-client — chaque client connecte SON compte LinkedIn). Absents ⇒ la messagerie LinkedIn est désactivée proprement (`unipile.enabled()` False, l'UI affiche « non configuré »). **Coût Unipile = abonnement fixe par compte LinkedIn connecté** (pas à l'usage) — à répercuter dans les abonnements clients.
 - **Groupe privé Skool (`/pilote`)** : `SKOOL_INVITE_URL` (lien d'invitation https, servi uniquement à un compte connecté via `GET /pilote/invite`). Absente ou non-https ⇒ pas de bouton. Le groupe ne mentionne pas Cibl ; Cibl vend l'accès.
+- **Google OAuth (`/pilote`)** : pas une variable d'env. Activer le provider dans Supabase Auth (Client ID + secret Google Cloud, callback `https://zcxaxwqkswuefzlzpgvi.supabase.co/auth/v1/callback`, Redirect URLs `http://localhost:3000/pilote` + domaines de l'env). Sans ça le bouton affiche l'erreur Supabase, il n'est pas mort.
 - Caveat : prod et dev partagent encore le même projet Supabase ; les tests dev peuvent donc écrire dans la même base.
 
 ### Règle de déploiement
@@ -87,6 +88,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-09-01 #2 (dev : `/pilote` — Continuer avec Google)
+- **Demande d'Alex** : ouvrir le bouton Google, volontairement absent dans #479 (OAuth n'était pas câblé — un bouton mort aurait menti).
+- CTA **« Continuer avec Google »** → `signInWithOAuth({ provider: "google" })`, retour `/pilote?oauth=google`. Le tag `landing: pilote` passe par `updateUser` (OAuth n'accepte pas `options.data`), uniquement si le compte est **neuf** (`isFreshAccount`, < 10 min). Un compte déjà existant qui se reconnecte n'est pas retagué et va dans l'app.
+- ⚠️ Google n'est **pas** une variable d'env : activer le provider dans Supabase Auth (Client ID + secret Google Cloud, callback `https://zcxaxwqkswuefzlzpgvi.supabase.co/auth/v1/callback`, Redirect URLs `http://localhost:3000/pilote` + domaines de l'env). Sans ça le bouton affiche l'erreur Supabase, il n'est pas mort.
+- Spec `pilote-landing` : le clic part vers `/authorize?provider=google` avec retour `/pilote`. Frontend seul, aucune migration.
+
 ### 2026-09-01 (dev : `/offre` — verbatims clients Sacha et Joëlle)
 - **Demande d'Alex** : coller sur la page de vente les citations réelles de Sacha (« 100% satisfait de votre accompagnement ») et Joëlle (qualité / disponibilité / réactivité du 1er mois).
 - `/offre` attendait précisément ça (le commentaire du fichier disait « pas de témoignages tant qu'il n'y a pas de vraies citations »). Section « Ce qu'ils en disent » entre les fonctionnalités et la sécurité — **mot pour mot**, prénom seul, ni rôle ni photo inventés.
@@ -108,13 +115,13 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 ### 2026-09-01 (dev : landing `/pilote` — page de vente du mode Pilote gratuit)
 - **Ticket Notion** « Landing page type Freelance Mention + accès gratuit ». URI canonique **`/pilote`**. C'est **cette** page — pas `/offre`, pas `/onboarding` — qui porte désormais le funnel (vues + inscriptions taguées `landing: pilote`), les verbatims Sacha/Joëlle, et l'accès au groupe privé Skool.
 - **Écran d'entrée** calqué sur [app.freelancemention.fr](https://app.freelancemention.fr) : argument + preuve à **gauche**, création de compte à **droite** (formulaire sur le premier écran — le funnel mesure vue → compte). DA du Mode Pilote (encre + aurore `#64d2ff` / `#0071e3` / `#bf5af2`), pas le bleu/blanc de la référence. Accent éditorial en serif italique.
-- **CTA** « Commencer gratuitement » → `signUp` (e-mail + mot de passe **confirmé**, confirmation e-mail désactivée côté Supabase). **Pas de bouton Google** : aucun OAuth n'est câblé, un bouton mort aurait menti. Connexion en lien secondaire.
+- **CTA** « Commencer gratuitement » → `signUp` (e-mail + mot de passe **confirmé**, confirmation e-mail désactivée côté Supabase). Connexion e-mail en lien secondaire. **Pas de bouton Google à cette livraison** (#479) : OAuth n'était pas câblé — ajouté dans l'entrée #2.
 - **Promesse** : 1 post / jour, jusqu'à 3 contacts / jour, **groupe privé de missions et de stratégies d'acquisition**. Teaser Expert (grisé dans l'app). Promesse honnête sur LinkedIn : tu commences sans connecter ; l'envoi est cadencé (horaires, jours ouvrés, warm-up) — **pas** « zéro risque de ban ».
 - **Témoignages** : verbatims **Sacha** et **Joëlle**, mot pour mot, prénoms seuls (`CLIENT_TESTIMONIALS`). Pas de rôle, photo, ni chiffre d'inscrits inventé. ReShape du tunnel `/onboarding` **inchangé**.
 - **Skool** : annoncé à gauche (copy, aucun href). Lien d'invitation **après inscription** (`GET /pilote/invite`, authentifié) via `SKOOL_INVITE_URL`. Absente ou non-https ⇒ pas de bouton. Le groupe ne mentionne pas Cibl.
 - **Instrumentation** : `trackPilotePageView()` au montage + `piloteSignupMetadata()` dans le `signUp` — les deux lignes qui allument le compteur livré juste avant (ticket Funnel /pilote).
-- ⚠️ **Non fait volontairement** : redirection des autres URI (`/`, `/onboarding`, `/founders`, `/start`, `/essai`, `/offre`) — encore ouvert. Google OAuth. Quotas techniques et pool de prospects (tickets liés).
-- Tests : `tests/test_skool_invite.py` + spec e2e `pilote-landing` (vue comptée, tag `landing=pilote`, verbatims, pas de Google, lien Skool seulement après signup, pas de bouton mort sans URL). Frontend + `GET /pilote/invite`. Aucune migration.
+- ⚠️ **Non fait volontairement** : redirection des autres URI (`/`, `/onboarding`, `/founders`, `/start`, `/essai`, `/offre`) — encore ouvert. Quotas techniques et pool de prospects (tickets liés).
+- Tests : `tests/test_skool_invite.py` + spec e2e `pilote-landing` (vue comptée, tag `landing=pilote`, verbatims, lien Skool seulement après signup, pas de bouton mort sans URL). Frontend + `GET /pilote/invite`. Aucune migration.
 
 ### 2026-09-01 (dev : funnel `/pilote` — compteur pages vues vs comptes créés)
 - **Demande d'Alex** (ticket Notion « Funnel /pilote ») : sur la future landing **`/pilote`**, savoir en continu combien de visiteurs **ouvrent la page** et combien **créent un compte**. Le compteur est livré **avant** la landing : c'est la leçon du tunnel `/onboarding`, dont le compteur n'est arrivé que le 2026-08-19 — tout le trafic antérieur est définitivement non mesuré.

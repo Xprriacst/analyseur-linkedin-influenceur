@@ -14,13 +14,14 @@
  * Sans elles, POST /pilote/page-view n'est jamais appelé et aucun compte
  * n'est tagué `landing: pilote`.
  *
- * Google OAuth : pas de bouton. Cibl n'a aujourd'hui que e-mail + mot de passe
- * (aucun OAuth, aucun magic link). Un bouton « Continuer avec Google » serait
- * mort — Alex tranchera s'il faut l'ouvrir.
+ * Google : `signInWithOAuth({ provider: "google" })`, retour sur
+ * `/pilote?oauth=google`. Le tag `landing: pilote` passe par `updateUser`
+ * (OAuth n'accepte pas `options.data`). Un compte déjà existant qui se
+ * reconnecte va directement dans l'app.
  *
- * Groupe Skool : annoncé à gauche (copy, pas de lien). Le lien d'invitation
- * n'arrive qu'APRÈS inscription, via `GET /pilote/invite` authentifié.
- * Variable absente ⇒ pas de bouton.
+ * Groupe Skool : annoncé à gauche (copy, pas de lien). Le bouton
+ * « Rejoindre le groupe privé » n'existe que sur l'écran « Compte créé »,
+ * après inscription, et seulement si `GET /pilote/invite` renvoie une URL https.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -28,12 +29,13 @@ import { useRouter } from "next/navigation";
 import { Instrument_Serif } from "next/font/google";
 import { ArrowRight, Check, Loader2, Users } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
-import { trackPilotePageView, piloteSignupMetadata } from "../lib/funnel";
+import { PILOTE_LANDING, trackPilotePageView, piloteSignupMetadata } from "../lib/funnel";
 import { CLIENT_TESTIMONIALS, PROOF_INFLUENCERS_ANALYZED, PROOF_POSTS_ANALYZED } from "../lib/founders";
 import {
   PILOTE_CONTACTS_PER_DAY,
   PILOTE_GROUP_BLURB,
   PILOTE_POSTS_PER_DAY,
+  isFreshAccount,
 } from "../lib/pilote";
 import "./pilote-landing.css";
 
@@ -69,17 +71,64 @@ export default function PilotePage() {
   }, []);
 
   useEffect(() => {
+    const fromGoogle = () =>
+      new URLSearchParams(window.location.search).get("oauth") === "google";
+
+    async function onSession(user: { created_at: string; user_metadata?: Record<string, unknown> } | null) {
+      if (stayOnSuccess.current) return;
+      if (!user) return;
+      if (fromGoogle() && isFreshAccount(user.created_at)) {
+        stayOnSuccess.current = true;
+        if (user.user_metadata?.landing !== PILOTE_LANDING) {
+          await supabase.auth.updateUser({
+            data: piloteSignupMetadata({ onboarding_pending: true, onboarding_done: false }),
+          });
+        }
+        await loadInvite();
+        setPhase("success");
+        window.history.replaceState({}, "", "/pilote");
+        return;
+      }
+      router.replace("/");
+    }
+
+    let cancelled = false;
     (async () => {
       const { data } = await supabase.auth.getSession();
-      // Re-vérifié APRÈS l'await : un signup peut avoir abouti pendant que
-      // getSession était en vol. Sans ça on enverrait le nouvel inscrit sur
-      // `/` avant l'écran de succès (donc sans le lien Skool).
-      if (stayOnSuccess.current) return;
-      if (data.session) router.replace("/");
+      if (cancelled) return;
+      await onSession(data.session?.user ?? null);
     })();
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (cancelled) return;
+      void onSession(session?.user ?? null);
+    });
+    return () => {
+      cancelled = true;
+      sub.subscription.unsubscribe();
+    };
   }, [router]);
 
   const passwordMismatch = mode === "signup" && password2.length > 0 && password !== password2;
+
+  async function continueWithGoogle() {
+    setError("");
+    setInfo("");
+    setLoading(true);
+    try {
+      const { error: err } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/pilote?oauth=google`,
+          queryParams: { prompt: "select_account" },
+        },
+      });
+      if (err) throw err;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Connexion Google impossible.";
+      setError(msg);
+      setLoading(false);
+    }
+  }
 
   async function loadInvite() {
     try {
@@ -112,6 +161,7 @@ export default function PilotePage() {
         return;
       }
 
+      stayOnSuccess.current = true;
       const { data, error: err } = await supabase.auth.signUp({
         email,
         password,
@@ -119,7 +169,10 @@ export default function PilotePage() {
           data: piloteSignupMetadata({ onboarding_pending: true, onboarding_done: false }),
         },
       });
-      if (err) throw err;
+      if (err) {
+        stayOnSuccess.current = false;
+        throw err;
+      }
 
       if (data.session) {
         stayOnSuccess.current = true;
@@ -130,6 +183,7 @@ export default function PilotePage() {
       }
 
       setInfo("Compte créé. Confirme ton e-mail, puis reconnecte-toi ici pour entrer dans le mode Pilote.");
+      stayOnSuccess.current = false;
       setMode("signin");
       setLoading(false);
     } catch (err: unknown) {
@@ -246,8 +300,22 @@ export default function PilotePage() {
               <h1>{mode === "signup" ? "Crée ton compte" : "Connexion"}</h1>
               <p className="pilote-sub">
                 {mode === "signup"
-                  ? "Gratuit, sans carte. Tu confirmes le mot de passe : tu es dans l'app tout de suite."
+                  ? "Gratuit, sans carte. Google ou e-mail : tu es dans l'app tout de suite."
                   : "Connecte-toi à ton compte."}
+              </p>
+
+              <button
+                type="button"
+                className="pilote-google"
+                onClick={continueWithGoogle}
+                disabled={loading}
+                data-testid="pilote-google"
+              >
+                <GoogleMark />
+                Continuer avec Google
+              </button>
+              <p className="pilote-divider" role="separator">
+                ou
               </p>
 
               <label htmlFor="pilote-email">Email</label>
@@ -336,5 +404,28 @@ export default function PilotePage() {
         </div>
       </section>
     </div>
+  );
+}
+
+function GoogleMark() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+      <path
+        fill="#FFC107"
+        d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 8 3.1l5.7-5.7C34.2 6.1 29.4 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.3-.4-3.5z"
+      />
+      <path
+        fill="#FF3D00"
+        d="M6.3 14.7 12.9 19.6C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 8 3.1l5.7-5.7C34.2 6.1 29.4 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"
+      />
+      <path
+        fill="#4CAF50"
+        d="M24 44c5.2 0 10-2 13.6-5.2l-6.3-5.3C29.3 35.1 26.8 36 24 36c-5.3 0-9.7-3.3-11.3-7.9l-6.5 5C9.6 39.6 16.3 44 24 44z"
+      />
+      <path
+        fill="#1976D2"
+        d="M43.6 20.5H42V20H24v8h11.3c-1.1 3.2-3.5 5.8-6.7 7.5l.1-.1 6.3 5.3C36.9 41.9 44 37 44 24c0-1.3-.1-2.3-.4-3.5z"
+      />
+    </svg>
   );
 }

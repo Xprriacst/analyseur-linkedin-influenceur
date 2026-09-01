@@ -45,8 +45,10 @@ export function trackPilotePageView(): void {
 }
 
 /**
- * Métadonnées à passer à `supabase.auth.signUp({ options: { data } })` depuis
- * la landing `/pilote`, pour que le compte créé soit rattachable à sa landing.
+ * Métadonnées du compte créé depuis `/pilote`.
+ * - e-mail : `signUp({ options: { data } })`
+ * - Google : `signInWithOAuth` n'accepte pas `data` → `updateUser({ data })`
+ *   au retour (`?oauth=google`), uniquement si le compte vient d'être créé.
  *
  * ⚠️ Ces métadonnées vivent dans `user_metadata`, que l'utilisateur peut
  * MODIFIER lui-même depuis son navigateur (`supabase.auth.updateUser`). C'est
