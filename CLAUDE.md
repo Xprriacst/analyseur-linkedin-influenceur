@@ -29,6 +29,8 @@ Valeurs backend attendues :
 - `CORS_ORIGINS` optionnel : liste d'origines supplémentaires séparées par des virgules si le slug Render dev change.
 - **Abonnement Stripe (ALE-274)** : `STRIPE_SECRET_KEY` (clé **test** sur dev, clé **live** en prod), `STRIPE_PRICE_ID` (le tarif récurrent 49 €/mois — un par mode, l'id diffère entre test et live), `STRIPE_WEBHOOK_SECRET` (**un secret par environnement** : chaque env a son endpoint webhook Stripe). Optionnels : `STRIPE_PLAN_CREDITS` (défaut 1000), `STRIPE_TAX_ENABLED` (défaut off — à n'activer qu'une fois l'adresse du siège renseignée dans Stripe, sinon toute session Checkout est rejetée), `STRIPE_INTRO_COUPON_ID` (défaut `cibl_first_month_40` — créé tout seul au 1er checkout d'essai : −40 % = **29,40 € le 1er mois payé**, puis 49 € ; ⚠️ `duration=repeating` 1 mois, **pas** `once`, sinon la remise se mange sur la facture d'essai à 0 €). Absents ⇒ la facturation est désactivée proprement (l'UI affiche « non configuré »). Webhook à déclarer côté Stripe sur `POST {backend}/stripe/webhooks`, événements `checkout.session.completed`, `invoice.paid`, `customer.subscription.updated`, `customer.subscription.deleted`.
 - **Prospection LinkedIn / Unipile (ALE-230)** : `UNIPILE_DSN` (ex. `api8.unipile.com:13443`, host:port ou URL complète) + `UNIPILE_API_KEY` (clé serveur unique, modèle multi-client — chaque client connecte SON compte LinkedIn). Absents ⇒ la messagerie LinkedIn est désactivée proprement (`unipile.enabled()` False, l'UI affiche « non configuré »). **Coût Unipile = abonnement fixe par compte LinkedIn connecté** (pas à l'usage) — à répercuter dans les abonnements clients.
+- **Groupe privé Skool (`/pilote`)** : `SKOOL_INVITE_URL` (lien d'invitation https, servi uniquement à un compte connecté via `GET /pilote/invite`). Absente ou non-https ⇒ pas de bouton. Le groupe ne mentionne pas Cibl ; Cibl vend l'accès.
+- **Google OAuth (`/pilote`)** : pas une variable d'env. Activer le provider dans Supabase Auth (Client ID + secret Google Cloud, callback `https://zcxaxwqkswuefzlzpgvi.supabase.co/auth/v1/callback`, Redirect URLs `http://localhost:3000/pilote` + domaines de l'env). Sans ça le bouton affiche l'erreur Supabase, il n'est pas mort.
 - Caveat : prod et dev partagent encore le même projet Supabase ; les tests dev peuvent donc écrire dans la même base.
 
 ### Règle de déploiement
@@ -85,6 +87,58 @@ Suite **Playwright** dans `e2e/` (projet npm séparé, hors base directory Netli
 Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-journal.md` (sur `dev`, entrée la plus récente en haut). Chaque run y consigne : issues traitées + PR + statuts, difficultés rencontrées (erreurs exactes), leçons et états en suspens. **Tout agent qui démarre une routine doit lire les dernières entrées d'abord** ; tout run doit en ajouter une à la fin (seul cas de push direct autorisé sur `dev` : ce fichier de docs uniquement). Prompt de routine de référence : `docs/routine-agent-issues.prompt.md`.
 
 ## Changelog
+
+### 2026-09-01 #2 (dev : `/pilote` — Continuer avec Google)
+- **Demande d'Alex** : ouvrir le bouton Google, volontairement absent dans #479 (OAuth n'était pas câblé — un bouton mort aurait menti).
+- CTA **« Continuer avec Google »** → `signInWithOAuth({ provider: "google" })`, retour `/pilote?oauth=google`. Le tag `landing: pilote` passe par `updateUser` (OAuth n'accepte pas `options.data`), uniquement si le compte est **neuf** (`isFreshAccount`, < 10 min). Un compte déjà existant qui se reconnecte n'est pas retagué et va dans l'app.
+- ⚠️ Google n'est **pas** une variable d'env : activer le provider dans Supabase Auth (Client ID + secret Google Cloud, callback `https://zcxaxwqkswuefzlzpgvi.supabase.co/auth/v1/callback`, Redirect URLs `http://localhost:3000/pilote` + domaines de l'env). Sans ça le bouton affiche l'erreur Supabase, il n'est pas mort.
+- Spec `pilote-landing` : le clic part vers `/authorize?provider=google` avec retour `/pilote`. Frontend seul, aucune migration.
+
+### 2026-09-01 (dev : `/offre` — verbatims clients Sacha et Joëlle)
+- **Demande d'Alex** : coller sur la page de vente les citations réelles de Sacha (« 100% satisfait de votre accompagnement ») et Joëlle (qualité / disponibilité / réactivité du 1er mois).
+- `/offre` attendait précisément ça (le commentaire du fichier disait « pas de témoignages tant qu'il n'y a pas de vraies citations »). Section « Ce qu'ils en disent » entre les fonctionnalités et la sécurité — **mot pour mot**, prénom seul, ni rôle ni photo inventés.
+- Constantes `CLIENT_TESTIMONIALS` dans `frontend/app/lib/founders.ts` (partagées avec `/pilote`). ReShape du tunnel `/onboarding` inchangé.
+- Spec public `offre-landing` : le mot-à-mot est verrouillé. Frontend seul, aucune migration, aucune env var.
+
+### 2026-09-01 (dev : `/start` — l'audit reste en base si Resend refuse l'envoi)
+- **Ticket Notion** « Tunnel /start : l'audit du seul vrai prospect n'a jamais été généré » (Elie Tales, 28/08). En prod : `audit_payload` NULL, `error_message` = Resend 403. Le modèle *avait* répondu — le `except` unique de `process_audit_lead` a tout jeté avec le refus d'envoi.
+- **Cause** : génération + Notion + `send_email` dans le même `try`. Un 403 Resend (domaine `clareo-solutions.fr` non vérifié chez Resend — DNS IONOS) tombait dans le `except` qui n'écrivait que `status=failed` + le message. La page publique `/a/{token}` et un rejeu n'avaient plus rien à afficher ni à renvoyer.
+- **Fix** : `audit_payload` (et champs Notion) persistés **juste après** `generate_full_audit`, avant tout envoi. Statuts (colonne texte libre, **aucune migration**) :
+  - `failed` = la génération n'a pas abouti ;
+  - `generated` = payload en base, e-mail pas encore / en échec ;
+  - `sent` inchangé.
+  Un 403 Resend **ne rétrograde plus** un payload déjà écrit. Rejouer un `generated` retente l'envoi **sans** rappeler le modèle ni recréer la page Notion.
+- `/leads` : pastille « Généré, non envoyé » (ambre) vs « Échec génération » — avant, `failed` disait « Échec envoi », ce qui recouvrait les deux pannes.
+- ⚠️ **Hors de cette PR** : régénérer l'audit d'Elie Tales. Son payload est encore NULL en prod — un rejeu `process_audit_lead(id)` après ce deploy **rappelle** le modèle (c'est le cas `failed` sans payload). Une fois Resend OK (ticket DNS IONOS), les prochains 403 ne perdent plus l'audit.
+- Tests : `tests/test_audit_funnel.py` (+2 : send lève → `generated` + payload ; rejeu sans appel modèle). Backend + libellés `/leads`. Aucune migration, aucune env var.
+
+### 2026-09-01 (dev : landing `/pilote` — page de vente du mode Pilote gratuit)
+- **Ticket Notion** « Landing page type Freelance Mention + accès gratuit ». URI canonique **`/pilote`**. C'est **cette** page — pas `/offre`, pas `/onboarding` — qui porte désormais le funnel (vues + inscriptions taguées `landing: pilote`), les verbatims Sacha/Joëlle, et l'accès au groupe privé Skool.
+- **Écran d'entrée** calqué sur [app.freelancemention.fr](https://app.freelancemention.fr) : argument + preuve à **gauche**, création de compte à **droite** (formulaire sur le premier écran — le funnel mesure vue → compte). DA du Mode Pilote (encre + aurore `#64d2ff` / `#0071e3` / `#bf5af2`), pas le bleu/blanc de la référence. Accent éditorial en serif italique.
+- **CTA** « Commencer gratuitement » → `signUp` (e-mail + mot de passe **confirmé**, confirmation e-mail désactivée côté Supabase). Connexion e-mail en lien secondaire. **Pas de bouton Google à cette livraison** (#479) : OAuth n'était pas câblé — ajouté dans l'entrée #2.
+- **Promesse** : 1 post / jour, jusqu'à 3 contacts / jour, **groupe privé de missions et de stratégies d'acquisition**. Teaser Expert (grisé dans l'app). Promesse honnête sur LinkedIn : tu commences sans connecter ; l'envoi est cadencé (horaires, jours ouvrés, warm-up) — **pas** « zéro risque de ban ».
+- **Témoignages** : verbatims **Sacha** et **Joëlle**, mot pour mot, prénoms seuls (`CLIENT_TESTIMONIALS`). Pas de rôle, photo, ni chiffre d'inscrits inventé. ReShape du tunnel `/onboarding` **inchangé**.
+- **Skool** : annoncé à gauche (copy, aucun href). Lien d'invitation **après inscription** (`GET /pilote/invite`, authentifié) via `SKOOL_INVITE_URL`. Absente ou non-https ⇒ pas de bouton. Le groupe ne mentionne pas Cibl.
+- **Instrumentation** : `trackPilotePageView()` au montage + `piloteSignupMetadata()` dans le `signUp` — les deux lignes qui allument le compteur livré juste avant (ticket Funnel /pilote).
+- ⚠️ **Non fait volontairement** : redirection des autres URI (`/`, `/onboarding`, `/founders`, `/start`, `/essai`, `/offre`) — encore ouvert. Quotas techniques et pool de prospects (tickets liés).
+- Tests : `tests/test_skool_invite.py` + spec e2e `pilote-landing` (vue comptée, tag `landing=pilote`, verbatims, lien Skool seulement après signup, pas de bouton mort sans URL). Frontend + `GET /pilote/invite`. Aucune migration.
+
+### 2026-09-01 (dev : funnel `/pilote` — compteur pages vues vs comptes créés)
+- **Demande d'Alex** (ticket Notion « Funnel /pilote ») : sur la future landing **`/pilote`**, savoir en continu combien de visiteurs **ouvrent la page** et combien **créent un compte**. Le compteur est livré **avant** la landing : c'est la leçon du tunnel `/onboarding`, dont le compteur n'est arrivé que le 2026-08-19 — tout le trafic antérieur est définitivement non mesuré.
+- **Vues** : `POST /pilote/page-view`, anonyme, best-effort (aucun 429 ni 500 visible), **rate-limit dédié** (`PILOTE_PAGE_VIEW_MAX_PER_HOUR`, défaut 30/h/IP). Écrit dans `onboarding_preview_events` (migration 0055, service-role only) avec le discriminant **`input_kind='pilote_page_view'`**. ⚠️ **Aucune migration** : le schéma existant (colonnes nullable, RLS sans policy) couvre déjà ce besoin.
+- ⚠️ **`page_view` (sans préfixe) reste `/onboarding`** — nom historique, porté par les lignes déjà en base. Le renommer par symétrie ferait disparaître d'un coup les vues déjà comptées. Un test verrouille les deux valeurs **et le fait qu'elles diffèrent** : les deux landings partagent une table, une collision rendrait les DEUX taux de conversion faux en silence.
+- **Comptes** : marqués **à l'inscription** (`piloteSignupMetadata()` → `raw_user_meta_data.landing = 'pilote'`), pas déduits de leur date de création. ⚠️ **La requête cible du ticket (`count(*) from auth.users where created_at >= date_lancement`) est un piège** : elle compte aussi les comptes de test et tout signup venu d'une autre porte d'entrée — et se met à mentir sans rien signaler le jour où `/onboarding` est rouvert.
+- ⚠️ **`landing` vit dans `user_metadata`, que l'utilisateur peut MODIFIER lui-même** depuis son navigateur. Acceptable pour un compteur d'acquisition ; **jamais** pour ouvrir un droit (quota Pilote gratuit, feature, plan) — ces décisions restent dans `app_metadata`, côté serveur, comme le rôle et les feature flags. Écrit noir sur blanc dans `frontend/app/lib/funnel.ts` à l'attention du ticket quotas.
+- **Une vue par chargement de page, pas par rendu** (`trackLandingPageView`) : sans ce garde, un remontage de composant (StrictMode en dev, changement d'état en prod) recompterait le même visiteur — le compteur gonflerait tout seul et le taux s'effondrerait sans qu'aucune visite n'ait bougé.
+- **Lecture (service-role)** :
+  ```sql
+  select
+    (select count(*) from onboarding_preview_events where input_kind = 'pilote_page_view') as vues,
+    (select count(distinct ip_hash) from onboarding_preview_events where input_kind = 'pilote_page_view') as visiteurs,
+    (select count(*) from auth.users where raw_user_meta_data->>'landing' = 'pilote') as comptes;
+  ```
+- **Tests** : `tests/test_pilote_funnel.py` (10 cas : discriminant, champs neutres, non-collision avec `/onboarding`, compteur de rate-limit dédié et non partagé, dépassement qui répond OK sans écrire, échec DB jamais remonté au visiteur, no-op sans Supabase/service-role). **542 unitaires verts** (venv scratch — le venv du repo est cassé, cohérent avec les entrées précédentes), `py_compile` vert, `npm run build` vert, zéro marqueur de conflit.
+- **Reste à faire, dans la landing (ticket séparé, DoD « maquette validée par Alex »)** : ~~appeler `trackPilotePageView()` au montage de `/pilote` et passer `piloteSignupMetadata()` à `supabase.auth.signUp`~~ — **fait dans la PR landing `/pilote`**. Le spec e2e du funnel appartient à cette PR-là. **Non fait volontairement** : écran `/admin` de lecture du ratio (V2 du ticket — la requête SQL ci-dessus est la V1 demandée).
 
 ### 2026-08-31 (RELEASE PROD : alertes e-mail `/start` + essai sans carte — PR #472 → release)
 - **Release `dev → main`.** Delta énuméré avant merge : **uniquement #472**. Aucune migration (0067 déjà en prod depuis #462), aucune env var nouvelle, aucun cron à créer.

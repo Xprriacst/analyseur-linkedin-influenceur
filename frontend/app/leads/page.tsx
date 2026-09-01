@@ -39,8 +39,9 @@ type Lead = {
 const STATUS_LABEL: Record<string, string> = {
   pending: "En attente",
   generating: "Génération",
+  generated: "Généré, non envoyé",
   sent: "Envoyé",
-  failed: "Échec envoi",
+  failed: "Échec génération",
   founders_optin: "Opt-in e-mail",
 };
 
@@ -432,7 +433,9 @@ function statusPill(status: string): CSSProperties {
   const tone =
     status === "sent"
       ? { bg: "rgba(16,185,129,0.12)", fg: "#047857" }
-      : status === "failed"
+      : status === "generated"
+        ? { bg: "rgba(245,158,11,0.12)", fg: "#b45309" }
+        : status === "failed"
         ? { bg: "rgba(239,68,68,0.1)", fg: "#b91c1c" }
         : status === "founders_optin"
           ? { bg: "rgba(99,102,241,0.12)", fg: "#4338ca" }
