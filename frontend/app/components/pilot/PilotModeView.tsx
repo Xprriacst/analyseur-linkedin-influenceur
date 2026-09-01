@@ -35,10 +35,15 @@ export type PilotContact = {
   name: string;
   role: string;
   company: string;
-  score: number;
+  // null = prospect du pool partagé : le score ICP appartient au compte qui a
+  // identifié le prospect (contexte privé) — on ne l'affiche jamais ici.
+  score: number | null;
   initials: string;
   accent: string;
   message: string;
+  // "pool" = proposé par le pool partagé (compte sans LinkedIn connecté) ;
+  // absent/"leads" = lead du compte (comportement historique).
+  source?: "pool" | "leads";
 };
 
 export type PilotPost = {
@@ -361,7 +366,11 @@ export default function PilotModeView({
                           {contact.company ? ` · ${contact.company}` : ""}
                         </p>
                       </div>
-                      <span className="pilot-score">{contact.score}</span>
+                      {contact.source === "pool" ? (
+                        <span className="pilot-pool-chip">Repéré pour toi</span>
+                      ) : typeof contact.score === "number" ? (
+                        <span className="pilot-score">{contact.score}</span>
+                      ) : null}
                       <ChevronDown size={16} className="pilot-contact-chevron" aria-hidden />
                     </button>
                     <div id={panelId} className={`pilot-contact-panel${isOpen ? " open" : ""}`}>
@@ -377,7 +386,10 @@ export default function PilotModeView({
                                 onInvite?.(contact.id),
                               );
                             }}
-                            disabled={isInvited || Boolean(contactsBlockedReason)}
+                            // Un prospect du pool n'est pas encore un lead du compte :
+                            // l'invitation passe par le circuit existant (leads + file
+                            // cadencée), qui exige de toute façon LinkedIn connecté.
+                            disabled={isInvited || Boolean(contactsBlockedReason) || contact.source === "pool"}
                           >
                             {isInvited ? <Check size={15} /> : <UserPlus size={15} />}
                             {isInvited ? "Invitation envoyée" : "Inviter"}

@@ -21,6 +21,8 @@ type PilotMeta = {
   follow_handles?: Record<string, string>;
   linkedin_outreach_connected?: boolean;
   linkedin_publish_connected?: boolean;
+  // "pool" = prospects du pool partagé (compte sans LinkedIn connecté).
+  contacts_source?: "pool" | "leads";
   contacts_blocked_reason?: string | null;
 };
 

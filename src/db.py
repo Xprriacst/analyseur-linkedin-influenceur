@@ -6982,6 +6982,112 @@ def admin_release_lead_notification(kind: str, ref: str) -> None:
         print(f"[lead-notify] libération impossible ({kind}/{ref}) : {exc}", flush=True)
 
 
+# ── Pool partagé de prospects — Mode Pilote (migration 0072) ──────────────────
+#
+# La table `pilot_pool_assignments` est CROSS-USER par nature (le pool lit les
+# leads de tous les comptes) → service-role only, RLS sans policy, lecture via
+# `GET /me/pilot/today` uniquement. Toutes les fonctions exigent un `user_id`
+# explicite (patron des `admin_*` d'ALE-174 : la clé service-role contourne la
+# RLS, l'oubli d'un filtre servirait les prospects d'un compte à un autre).
+
+# ⚠️ FRONTIÈRE D'ANONYMISATION, pas une simple projection de perf : ces colonnes
+# sont les SEULES données d'un lead autorisées à traverser d'un compte à un
+# autre (données publiques du profil LinkedIn + user_id pour la ceinture
+# d'exclusion côté logique pure — il ne sort jamais vers le receveur, cf.
+# `prospect_pool.public_prospect`). Ne JAMAIS y ajouter comment_text, score,
+# score_reason, signals, contact_status, skip_reason, outreach_* : c'est le
+# contexte privé du compte source. Verrouillé par `tests/test_prospect_pool.py`.
+_POOL_PUBLIC_LEAD_COLS = "user_id, profile_url, name, headline"
+
+# ⚠️ Piège de projection (5 incidents documentés, cf. _GENERATION_JOB_COLS) :
+# toute colonne écrite par `admin_create_pool_assignment` doit être relue ici,
+# sinon elle vaut None sans erreur. Verrouillé par un test.
+_POOL_ASSIGNMENT_COLS = "id, user_id, day, position, profile_url, name, headline"
+
+
+def admin_pool_candidate_leads(exclude_user_id: str, limit: int = 400) -> list[dict]:
+    """Leads des AUTRES comptes, réduits aux colonnes publiques (candidats du pool)."""
+    if not admin_enabled() or not exclude_user_id:
+        return []
+    resp = (
+        admin_client()
+        .table("leads")
+        .select(_POOL_PUBLIC_LEAD_COLS)
+        .neq("user_id", exclude_user_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+def admin_pool_assignments_for_day(user_id: str, day: str) -> list[dict]:
+    """Prospects déjà attribués à CE compte pour CE jour (mémo de la journée)."""
+    if not admin_enabled() or not user_id or not day:
+        return []
+    resp = (
+        admin_client()
+        .table("pilot_pool_assignments")
+        .select(_POOL_ASSIGNMENT_COLS)
+        .eq("user_id", user_id)
+        .eq("day", day)
+        .order("position")
+        .execute()
+    )
+    return resp.data or []
+
+
+def admin_pool_reserved_urls(day: str) -> set[str]:
+    """URLs de profil déjà attribuées à N'IMPORTE QUEL compte pour ce jour.
+
+    Pré-filtre de confort : le vrai verrou anti-doublon est l'index unique
+    `(day, profile_url)` — cf. `admin_create_pool_assignment`.
+    """
+    if not admin_enabled() or not day:
+        return set()
+    resp = (
+        admin_client()
+        .table("pilot_pool_assignments")
+        .select("profile_url")
+        .eq("day", day)
+        .execute()
+    )
+    return {r["profile_url"] for r in (resp.data or []) if r.get("profile_url")}
+
+
+def admin_pool_user_history_urls(user_id: str) -> set[str]:
+    """Tout ce qui a DÉJÀ été proposé à ce compte (un prospect ne revient pas)."""
+    if not admin_enabled() or not user_id:
+        return set()
+    resp = (
+        admin_client()
+        .table("pilot_pool_assignments")
+        .select("profile_url")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return {r["profile_url"] for r in (resp.data or []) if r.get("profile_url")}
+
+
+def admin_create_pool_assignment(row: dict) -> dict | None:
+    """Réserve un prospect pour un compte et un jour. None = pas à toi.
+
+    Le verrou est l'index unique `(day, profile_url)` en base, pas un select
+    préalable (même patron que `admin_claim_lead_notification`) : entre la
+    lecture des réservations et cet insert, un autre compte a pu prendre le même
+    prospect — son insert a gagné, le nôtre échoue, et l'appelant passe au
+    candidat suivant. None couvre aussi une panne d'écriture : ne rien proposer
+    vaut mieux qu'une proposition non mémorisée qui changerait à chaque refresh.
+    """
+    if not admin_enabled() or not row or not row.get("user_id") or not row.get("profile_url"):
+        return None
+    try:
+        resp = admin_client().table("pilot_pool_assignments").insert(row).execute()
+        return (resp.data or [None])[0]
+    except Exception:  # noqa: BLE001 — doublon attendu (course de réservation), panne tolérée
+        return None
+
+
 def _list_auth_users_page(page: int) -> Any:
     """Une page de comptes Auth, tolérante à la signature du SDK.
 
