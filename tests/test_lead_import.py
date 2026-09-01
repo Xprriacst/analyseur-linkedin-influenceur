@@ -163,19 +163,38 @@ class CsvParsingTest(unittest.TestCase):
         self.assertEqual(len(out["leads"]), 3)
         self.assertTrue(out["truncated"])
 
-    def test_unreadable_csv_is_a_clean_422_not_a_500(self):
-        # `csv` lève une `csv.Error` brute sur une cellule > 128 Ko ou un octet
-        # NUL (binaire renommé .csv, export corrompu). Sans garde, l'exception
-        # remonte jusqu'à l'endpoint et le client lit « erreur serveur » là où
-        # son fichier est simplement illisible.
-        for label, data in (
-            ("cellule démesurée", b'url\n"' + b"x" * 200_000 + b'"\n'),
-            ("octet NUL", b"url\nhttps://www.linkedin.com/in/a\x00b\n"),
-        ):
+    def test_oversized_cell_is_a_clean_422_not_a_500(self):
+        # `csv` lève une `csv.Error` BRUTE sur une cellule > 128 Ko (binaire
+        # renommé .csv, export corrompu). Sans garde, elle remonte jusqu'à
+        # l'endpoint et le client lit « erreur serveur » là où son fichier est
+        # simplement illisible.
+        data = b'url\n"' + b"x" * 200_000 + b'"\n'
+        with self.assertRaises(LeadImportError) as ctx:
+            parse_leads_file("l.csv", data)
+        self.assertIn("illisible", str(ctx.exception))
+
+    def test_no_raw_csv_error_ever_escapes(self):
+        # Le contrat est « aucune `csv.Error` ne sort d'ici » — pas « telle
+        # entrée lève ». ⚠️ Ce que `csv` refuse DÉPEND DE LA VERSION DE PYTHON :
+        # l'octet NUL levait jusqu'en 3.10 et passe depuis la 3.11. Un test qui
+        # exigeait la levée passait en local (3.9) et tombait en CI (3.12) —
+        # c'est la version du runtime qui décide, pas nous. On vérifie donc la
+        # seule chose qui doit être vraie partout : soit ça parse, soit c'est un
+        # `LeadImportError` porteur d'un message pour le client.
+        payloads = {
+            "octet NUL": b"url\nhttps://www.linkedin.com/in/a\x00b\n",
+            "cellule démesurée": b'url\n"' + b"x" * 200_000 + b'"\n',
+            "guillemets déséquilibrés": b'url\n"https://www.linkedin.com/in/a\n',
+            "octets binaires": bytes(range(256)) * 4,
+        }
+        for label, data in payloads.items():
             with self.subTest(label):
-                with self.assertRaises(LeadImportError) as ctx:
+                try:
                     parse_leads_file("l.csv", data)
-                self.assertIn("illisible", str(ctx.exception))
+                except LeadImportError:
+                    pass
+                except Exception as exc:  # noqa: BLE001 — c'est l'objet du test
+                    self.fail(f"exception brute remontée au client : {type(exc).__name__}: {exc}")
 
     def test_old_xls_binary_is_refused_with_guidance(self):
         with self.assertRaises(LeadImportError) as ctx:
