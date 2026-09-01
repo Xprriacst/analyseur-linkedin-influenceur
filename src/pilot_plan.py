@@ -6,7 +6,7 @@ import re
 from typing import Any
 from urllib.parse import unquote
 
-from src import db
+from src import db, prospect_pool
 
 PILOT_CONTACT_LIMIT = 3
 PILOT_FOLLOW_LIMIT = 5
@@ -99,6 +99,22 @@ def pick_follow_profiles(
         if len(rows) >= limit:
             break
     return rows
+
+
+def split_headline(headline: str | None) -> tuple[str, str]:
+    """Découpe « rôle · entreprise » d'une headline LinkedIn (best-effort)."""
+    text = (headline or "").strip()
+    company = ""
+    if " · " in text:
+        role, company = text.split(" · ", 1)
+    elif " @ " in text:
+        role, company = text.split(" @ ", 1)
+    elif " chez " in text.lower():
+        parts = re.split(r"\s+chez\s+", text, maxsplit=1, flags=re.I)
+        role, company = (parts[0], parts[1]) if len(parts) == 2 else (text, "")
+    else:
+        role = text
+    return role.strip(), company.strip()
 
 
 def contact_message_preview(lead: dict[str, Any], targeting: dict[str, Any] | None) -> str:
@@ -248,6 +264,7 @@ def compose_pilot_plan(
     publish_connected: bool,
     weekly_done: int,
     weekly_total: int,
+    pool_prospects: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     display = (profile or {}).get("display_name") or (profile or {}).get("brand_name") or "toi"
     user_first = first_name(display if display != "toi" else None) if display != "toi" else "toi"
@@ -282,30 +299,51 @@ def compose_pilot_plan(
         post_hook, post_body = split_post_text(post_text)
 
     follow_rows = pick_follow_profiles(library, followed_handles)
-    contact_leads = pick_contacts(leads)
+
+    # ── Aiguillage des « à contacter » (ticket « Agent prospects », 2026-09-01) ──
+    # AVEC LinkedIn connecté → recherches propres : les leads du compte, notés
+    # par SON scoring ICP (chemin historique, inchangé). SANS LinkedIn → pool
+    # partagé : prospects identifiés par les autres comptes, données publiques
+    # uniquement (jamais de score/commentaire du compte source — il n'y en a
+    # simplement pas dans `pool_prospects`, cf. `prospect_pool`).
+    contacts_source = "leads"
     contacts = []
-    for idx, lead in enumerate(contact_leads):
-        company = ""
-        headline = (lead.get("headline") or "").strip()
-        if " · " in headline:
-            role, company = headline.split(" · ", 1)
-        elif " @ " in headline:
-            role, company = headline.split(" @ ", 1)
-        elif " chez " in headline.lower():
-            parts = re.split(r"\s+chez\s+", headline, maxsplit=1, flags=re.I)
-            role, company = (parts[0], parts[1]) if len(parts) == 2 else (headline, "")
-        else:
-            role = headline
-        contacts.append({
-            "id": str(lead.get("id") or idx),
-            "name": (lead.get("name") or "Prospect").strip(),
-            "role": role.strip() or "Profil LinkedIn",
-            "company": company.strip(),
-            "score": int(lead.get("score") or 0),
-            "initials": initials(lead.get("name")),
-            "accent": _PILOT_ACCENTS[idx % len(_PILOT_ACCENTS)],
-            "message": contact_message_preview(lead, targeting),
-        })
+    if outreach_connected or not pool_prospects:
+        contact_leads = pick_contacts(leads)
+        for idx, lead in enumerate(contact_leads):
+            role, company = split_headline(lead.get("headline"))
+            contacts.append({
+                "id": str(lead.get("id") or idx),
+                "name": (lead.get("name") or "Prospect").strip(),
+                "role": role or "Profil LinkedIn",
+                "company": company,
+                "score": int(lead.get("score") or 0),
+                "initials": initials(lead.get("name")),
+                "accent": _PILOT_ACCENTS[idx % len(_PILOT_ACCENTS)],
+                "message": contact_message_preview(lead, targeting),
+                "source": "leads",
+            })
+    else:
+        contacts_source = "pool"
+        for idx, prospect in enumerate(pool_prospects[:PILOT_CONTACT_LIMIT]):
+            role, company = split_headline(prospect.get("headline"))
+            contacts.append({
+                "id": str(prospect.get("id") or prospect.get("profile_url") or idx),
+                "name": (prospect.get("name") or "Prospect").strip(),
+                "role": role or "Profil LinkedIn",
+                "company": company,
+                # Pas de score : le score ICP appartient au compte SOURCE (privé)
+                # et le receveur n'a encore rien noté. L'UI masque la pastille.
+                "score": None,
+                "initials": initials(prospect.get("name")),
+                "accent": _PILOT_ACCENTS[idx % len(_PILOT_ACCENTS)],
+                "message": contact_message_preview(
+                    {"name": prospect.get("name"), "headline": prospect.get("headline")},
+                    targeting,
+                ),
+                "source": "pool",
+                "profile_url": prospect.get("profile_url"),
+            })
 
     now = datetime.datetime.now()
     iso = now.isocalendar()
@@ -346,10 +384,16 @@ def compose_pilot_plan(
         "follow_handles": {f["id"]: f.get("influencer_handle") for f in follow_rows},
         "linkedin_outreach_connected": outreach_connected,
         "linkedin_publish_connected": publish_connected,
+        "contacts_source": contacts_source,
         "contacts_blocked_reason": (
             None
             if outreach_connected
-            else "Connecte ton compte LinkedIn de prospection (Mon profil → Connexions) pour inviter des leads."
+            else (
+                "Connecte ton compte LinkedIn (Mon profil → Connexions) pour inviter "
+                "ces prospects — ils te sont réservés aujourd'hui."
+                if contacts_source == "pool" and contacts
+                else "Connecte ton compte LinkedIn de prospection (Mon profil → Connexions) pour inviter des leads."
+            )
         ),
     }
     return {"plan": plan, "meta": meta}
@@ -388,6 +432,20 @@ def build_pilot_today(access_token: str) -> dict[str, Any]:
         outreach_connected = bool(outreach_account and outreach_account.get("unipile_account_id"))
         publish_connected = bool(profile and profile.get("zernio_account_id"))
         weekly_done, weekly_total = weekly_progress(access_token)
+
+        # Aiguillage du ticket « Agent prospects » : le pool partagé ne sert QUE
+        # les comptes sans LinkedIn connecté — un compte connecté travaille sur
+        # ses propres leads (recherches Unipile / commentateurs) et ne consomme
+        # aucune réservation du pool. Sélection à la demande, mémorisée pour la
+        # journée (table `pilot_pool_assignments`), fail-safe : erreur ⇒ [].
+        pool_prospects: list[dict[str, Any]] = []
+        if not outreach_connected:
+            user = db.get_user(access_token)
+            pool_prospects = prospect_pool.ensure_daily_assignments(
+                (user or {}).get("id"),
+                targeting,
+                [l.get("profile_url") for l in leads if l.get("profile_url")],
+            )
         return compose_pilot_plan(
             profile=profile,
             targeting=targeting,
@@ -401,6 +459,7 @@ def build_pilot_today(access_token: str) -> dict[str, Any]:
             publish_connected=publish_connected,
             weekly_done=weekly_done,
             weekly_total=weekly_total,
+            pool_prospects=pool_prospects,
         )
     except Exception as exc:
         print(f"[pilot] build_pilot_today échoué : {exc}", flush=True)

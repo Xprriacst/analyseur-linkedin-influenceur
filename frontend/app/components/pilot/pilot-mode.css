@@ -702,6 +702,20 @@
   color: var(--pilot-muted);
 }
 
+/* Prospect du pool partagé (compte sans LinkedIn connecté) : pas de score ICP
+   à montrer — un petit badge dit d'où vient la proposition. */
+.pilot-pool-chip {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #0071e3;
+  background: rgba(0, 113, 227, 0.1);
+  white-space: nowrap;
+}
+
 .pilot-message-preview {
   margin: 0;
   padding: 12px 14px;
