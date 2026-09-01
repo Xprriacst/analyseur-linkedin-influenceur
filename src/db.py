@@ -115,21 +115,29 @@ def log_onboarding_preview_event(
         pass
 
 
-def log_onboarding_page_view_event(ip_hash: str | None) -> None:
-    """Journalise l'OUVERTURE de la page /onboarding (et son alias /founders).
+# Discriminants `onboarding_preview_events.input_kind` réservés aux OUVERTURES
+# de page. Ils ne décrivent pas une analyse (les autres valeurs — `linkedin`,
+# `website`, `description` — le font) : la table est réutilisée comme journal de
+# vues parce que son schéma (colonnes nullable, RLS sans policy = service-role
+# only) couvre déjà exactement ce besoin.
+#
+# ⚠️ `page_view` (sans préfixe) reste la landing `/onboarding` : le nom est
+# historique (elle était la seule quand le compteur a été livré le 2026-08-17) et
+# des lignes portent déjà cette valeur en prod. Le renommer casserait le
+# comptage des vues déjà enregistrées — chaque nouvelle landing prend donc un
+# discriminant préfixé, jamais l'inverse.
+ONBOARDING_PAGE_VIEW_KIND = "page_view"
+PILOTE_PAGE_VIEW_KIND = "pilote_page_view"
 
-    Réutilise `onboarding_preview_events` (migration 0055) avec
-    `input_kind='page_view'` comme discriminant, plutôt qu'une nouvelle table :
-    le schéma existant (colonnes nullable, RLS sans policy = service-role only)
-    couvre déjà ce besoin — seul `linkedin_url`/`website_url`/`used_apify`/
-    `preview_ok` n'ont pas de sens pour une simple vue de page et restent à
-    leur valeur neutre (`None`/`False`).
 
-    Compter `input_kind='page_view'` vs les lignes de `audit_leads` au statut
-    `founders_optin` donne le taux de conversion page vue → e-mail laissé :
-        select
-          (select count(*) from onboarding_preview_events where input_kind = 'page_view') as vues,
-          (select count(distinct email) from audit_leads where status = 'founders_optin') as emails;
+def log_page_view_event(input_kind: str, ip_hash: str | None) -> None:
+    """Journalise l'OUVERTURE d'une landing publique (anonyme, best-effort).
+
+    Réutilise `onboarding_preview_events` (migration 0055) avec `input_kind`
+    comme discriminant de landing, plutôt qu'une table par tunnel : le schéma
+    existant couvre déjà ce besoin — `linkedin_url`/`website_url`/`used_apify`/
+    `preview_ok` n'ont pas de sens pour une simple vue de page et restent à leur
+    valeur neutre (`None`/`False`).
 
     Best-effort : le visiteur n'a pas de session, on écrit donc en service-role.
     Un échec de log ne doit JAMAIS bloquer ni ralentir visiblement le visiteur
@@ -139,7 +147,7 @@ def log_onboarding_page_view_event(ip_hash: str | None) -> None:
         return
     try:
         admin_client().table("onboarding_preview_events").insert({
-            "input_kind": "page_view",
+            "input_kind": input_kind,
             "linkedin_url": None,
             "website_url": None,
             "used_apify": False,
@@ -148,6 +156,37 @@ def log_onboarding_page_view_event(ip_hash: str | None) -> None:
         }).execute()
     except Exception:
         pass
+
+
+def log_onboarding_page_view_event(ip_hash: str | None) -> None:
+    """Ouverture du tunnel `/onboarding` (et son alias `/founders`).
+
+    Taux de conversion page vue → e-mail laissé :
+        select
+          (select count(*) from onboarding_preview_events where input_kind = 'page_view') as vues,
+          (select count(distinct email) from audit_leads where status = 'founders_optin') as emails;
+    """
+    log_page_view_event(ONBOARDING_PAGE_VIEW_KIND, ip_hash)
+
+
+def log_pilote_page_view_event(ip_hash: str | None) -> None:
+    """Ouverture de la landing `/pilote` (mode Pilote gratuit).
+
+    L'autre moitié du funnel (le compte créé) n'est PAS ici : elle vit dans
+    `auth.users`, marquée à l'inscription par `raw_user_meta_data->>'landing'`
+    (cf. `piloteSignupMetadata` côté front). Compter les comptes par leur seule
+    date de création donnerait un chiffre faux dès qu'une autre porte d'entrée
+    est rouverte — et faux en silence.
+
+        select
+          (select count(*) from onboarding_preview_events
+             where input_kind = 'pilote_page_view') as vues,
+          (select count(distinct ip_hash) from onboarding_preview_events
+             where input_kind = 'pilote_page_view') as visiteurs,
+          (select count(*) from auth.users
+             where raw_user_meta_data->>'landing' = 'pilote') as comptes;
+    """
+    log_page_view_event(PILOTE_PAGE_VIEW_KIND, ip_hash)
 
 
 def insert_audit_lead(lead: dict[str, Any]) -> dict[str, Any] | None:
