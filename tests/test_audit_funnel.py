@@ -237,7 +237,7 @@ class MailerTest(unittest.TestCase):
 class ProcessAuditLeadTest(unittest.TestCase):
     """Le statut en base doit dire la vérité sur ce qui est réellement parti."""
 
-    def test_missing_mail_key_marks_failed_not_sent(self):
+    def test_missing_mail_key_keeps_generated_payload(self):
         lead = {"id": "lead-1", "status": "pending", "email": "a@b.fr", "full_name": "A B"}
         updates: list[dict] = []
         with patch.object(audit_report.db, "get_audit_lead", return_value=lead), \
@@ -246,9 +246,12 @@ class ProcessAuditLeadTest(unittest.TestCase):
              patch.object(audit_report.notion_pages, "create_audit_page_safe", return_value=None), \
              patch.object(audit_report.mailer, "enabled", return_value=False):
             audit_report.process_audit_lead("lead-1", "https://calendly.test")
-        self.assertEqual(updates[-1]["status"], "failed")
-        # L'audit produit n'est pas jeté : il reste rejouable sans repayer l'appel.
-        self.assertIn("audit_payload", updates[-1])
+        # Clé absente = transport manquant, PAS une génération ratée.
+        payloads = [u for u in updates if "audit_payload" in u]
+        self.assertTrue(payloads)
+        self.assertEqual(payloads[-1]["status"], "generated")
+        self.assertIn("RESEND_API_KEY", updates[-1]["error_message"])
+        self.assertNotEqual(updates[-1].get("status"), "failed")
 
     def test_already_sent_lead_is_not_regenerated(self):
         lead = {"id": "lead-1", "status": "sent", "email": "a@b.fr"}
@@ -266,6 +269,66 @@ class ProcessAuditLeadTest(unittest.TestCase):
             audit_report.process_audit_lead("lead-1")
         self.assertEqual(updates[-1]["status"], "failed")
         self.assertIn("modèle indisponible", updates[-1]["error_message"])
+        self.assertNotIn("audit_payload", updates[-1])
+
+    def test_send_failure_keeps_payload_as_generated(self):
+        """Cas Elie Tales : Resend 403 après une génération OK ne doit pas
+        laisser `audit_payload` vide — sinon `/a/{token}` et un rejeu n'ont
+        rien à envoyer, et `error_message` raconte seulement l'envoi."""
+        audit = audit_report.normalize_audit({"headline": "H"})
+        lead = {"id": "lead-1", "status": "pending", "email": "a@b.fr", "full_name": "A B"}
+        updates: list[dict] = []
+        with patch.object(audit_report.db, "get_audit_lead", return_value=lead), \
+             patch.object(audit_report.db, "update_audit_lead", side_effect=lambda _id, patch_: updates.append(patch_)), \
+             patch.object(audit_report, "generate_full_audit", return_value=audit), \
+             patch.object(audit_report.notion_pages, "create_audit_page_safe", return_value=None), \
+             patch.object(audit_report.mailer, "enabled", return_value=True), \
+             patch.object(audit_report.mailer, "send_email", side_effect=RuntimeError("Resend 403")):
+            audit_report.process_audit_lead("lead-1")
+        payloads = [u for u in updates if u.get("audit_payload") is audit]
+        self.assertTrue(payloads, "l'audit produit doit être écrit en base avant l'envoi")
+        self.assertEqual(updates[-1]["status"], "generated")
+        self.assertIn("Resend 403", updates[-1]["error_message"])
+        self.assertNotEqual(updates[-1].get("status"), "failed")
+
+    def test_replay_of_generated_lead_does_not_call_the_model(self):
+        audit = audit_report.normalize_audit({"headline": "déjà là"})
+        lead = {
+            "id": "lead-1",
+            "status": "generated",
+            "email": "a@b.fr",
+            "full_name": "A B",
+            "audit_payload": audit,
+        }
+        with patch.object(audit_report.db, "get_audit_lead", return_value=lead), \
+             patch.object(audit_report.db, "update_audit_lead"), \
+             patch.object(audit_report, "generate_full_audit") as gen, \
+             patch.object(audit_report.notion_pages, "create_audit_page_safe", return_value=None), \
+             patch.object(audit_report.mailer, "enabled", return_value=True), \
+             patch.object(audit_report.mailer, "send_email"):
+            audit_report.process_audit_lead("lead-1")
+        gen.assert_not_called()
+
+    def test_replay_of_legacy_failed_with_payload_skips_the_model(self):
+        """Avant ce lot, clé Resend absente écrivait `failed` + payload.
+        Un rejeu ne doit pas repayer l'appel modèle."""
+        audit = audit_report.normalize_audit({"headline": "legacy"})
+        lead = {
+            "id": "lead-1",
+            "status": "failed",
+            "email": "a@b.fr",
+            "full_name": "A B",
+            "audit_payload": audit,
+        }
+        with patch.object(audit_report.db, "get_audit_lead", return_value=lead), \
+             patch.object(audit_report.db, "update_audit_lead"), \
+             patch.object(audit_report, "generate_full_audit") as gen, \
+             patch.object(audit_report.notion_pages, "create_audit_page_safe") as notion, \
+             patch.object(audit_report.mailer, "enabled", return_value=True), \
+             patch.object(audit_report.mailer, "send_email"):
+            audit_report.process_audit_lead("lead-1")
+        gen.assert_not_called()
+        notion.assert_not_called()
 
     def test_successful_send_marks_sent_and_stores_notion(self):
         lead = {"id": "lead-1", "status": "pending", "email": "a@b.fr", "full_name": "Camille Durand"}
@@ -282,7 +345,10 @@ class ProcessAuditLeadTest(unittest.TestCase):
              patch.object(audit_report.mailer, "send_email", side_effect=lambda *a, **k: sent.append((a, k))):
             audit_report.process_audit_lead("lead-1", "https://calendly.test/15min")
         self.assertEqual(updates[-1]["status"], "sent")
-        self.assertEqual(updates[-1]["notion_url"], "https://clareo.notion.site/abc")
+        notion_writes = [u for u in updates if u.get("notion_url")]
+        self.assertTrue(notion_writes)
+        self.assertEqual(notion_writes[-1]["notion_url"], "https://clareo.notion.site/abc")
+        self.assertTrue(any(u.get("audit_payload") for u in updates))
         self.assertEqual(len(sent), 1)
         self.assertIn("https://calendly.test/15min", sent[0][0][2])
 

@@ -24,7 +24,7 @@ from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_po
 from src import heygen
 from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
-from src import audit_projection, lead_notify, mailer, pilot_plan
+from src import audit_projection, lead_notify, mailer, pilot_plan, skool_invite
 from src.audit_report import start_audit_email_thread
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
@@ -729,6 +729,60 @@ def onboarding_page_view(request: Request) -> dict[str, Any]:
     except Exception:
         pass
     return {"ok": True}
+
+
+# Ouverture de la landing `/pilote` (mode Pilote gratuit). Compteur DÉDIÉ, pas
+# partagé avec celui de `/onboarding` : deux landings vivent des trafics sans
+# rapport, et un plafond commun ferait disparaître les vues de l'une derrière le
+# bruit de l'autre — exactement ce que le compteur est censé rendre visible.
+_PILOTE_PAGE_VIEW_MAX = int(os.environ.get("PILOTE_PAGE_VIEW_MAX_PER_HOUR", "30"))
+_pilote_page_view_hits: dict[str, list[float]] = {}
+_pilote_page_view_lock = threading.Lock()
+
+
+@app.post("/pilote/page-view")
+def pilote_page_view(request: Request) -> dict[str, Any]:
+    """Journalise l'OUVERTURE de la landing `/pilote`.
+
+    Moitié « vues » du funnel demandé par Alex (vues vs comptes créés). La
+    moitié « comptes » ne passe pas par ici : elle est marquée à l'inscription
+    dans les métadonnées du compte (`landing: "pilote"`), lisible en SQL — cf.
+    `db.log_pilote_page_view_event` pour la requête.
+
+    Anonyme et best-effort, comme `/onboarding/page-view` : ni le bruit ni un
+    échec d'écriture ne remontent au visiteur (rien à afficher, rien à bloquer).
+    """
+    try:
+        _rate_limit_ip(
+            request,
+            _pilote_page_view_hits,
+            _pilote_page_view_lock,
+            _PILOTE_PAGE_VIEW_MAX,
+            "Trop de requêtes depuis cette connexion.",
+        )
+    except HTTPException:
+        # Dépassement de bruit seulement : la vue n'est simplement pas comptée,
+        # jamais signalée au visiteur.
+        return {"ok": True}
+    # Seconde protection, même raison que pour `/onboarding/page-view` : le
+    # garde interne de `db` pourrait se perdre dans un refacto, cet endpoint
+    # anonyme ne doit jamais renvoyer un 500.
+    try:
+        db.log_pilote_page_view_event(ip_hash=_client_ip_hash(request))
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@app.get("/pilote/invite")
+def pilote_invite(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Lien d'invitation Skool — uniquement pour un compte connecté.
+
+    Le groupe privé est annoncé sur `/pilote` (copy, pas de href). Le lien
+    n'est servi qu'ici, après inscription. Variable absente ou URL non-https
+    ⇒ `url: null` : le front n'affiche pas de bouton, jamais un lien mort.
+    """
+    return {"url": skool_invite.invite_url()}
 
 
 # --- Tunnel « audit complet gratuit » ----------------------------------------
