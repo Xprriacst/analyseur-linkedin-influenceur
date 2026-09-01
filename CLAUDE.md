@@ -86,6 +86,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-09-01 (dev : `/offre` — verbatims clients Sacha et Joëlle)
+- **Demande d'Alex** : coller sur la page de vente les citations réelles de Sacha (« 100% satisfait de votre accompagnement ») et Joëlle (qualité / disponibilité / réactivité du 1er mois).
+- `/offre` attendait précisément ça (le commentaire du fichier disait « pas de témoignages tant qu'il n'y a pas de vraies citations »). Section « Ce qu'ils en disent » entre les fonctionnalités et la sécurité — **mot pour mot**, prénom seul, ni rôle ni photo inventés.
+- Constantes `CLIENT_TESTIMONIALS` dans `frontend/app/lib/founders.ts` (même fichier que ReShape du tunnel `/onboarding`, qui lui ne change pas).
+- Spec public `offre-landing` : le mot-à-mot est verrouillé. Frontend seul, aucune migration, aucune env var.
+
 ### 2026-08-31 (RELEASE PROD : alertes e-mail `/start` + essai sans carte — PR #472 → release)
 - **Release `dev → main`.** Delta énuméré avant merge : **uniquement #472**. Aucune migration (0067 déjà en prod depuis #462), aucune env var nouvelle, aucun cron à créer.
 - **Pourquoi** : Elie Tales (28/08, tunnel `/start`) n'a prévenu personne. Tom n'a rien reçu — ce n'est pas un spam manqué : **aucun envoi interne n'a été tenté**.

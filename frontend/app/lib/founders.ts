@@ -40,3 +40,21 @@ export const FOUNDERS_TESTIMONIAL = {
   avatar: "/proof/reshape-music.png",
   quote: "oui le service est toop, on a passé les 4k merci les gars !!!",
 } as const;
+
+/**
+ * Verbatims clients de la page de vente (`/offre`).
+ * ⚠️ Citations réelles, collées telles quelles — ne pas inventer de rôle,
+ * d'entreprise, de photo ni paraphraser.
+ */
+export const CLIENT_TESTIMONIALS = [
+  {
+    name: "Sacha",
+    quote:
+      "Pour être honnête avec vous les gars je suis 100% satisfait de votre accompagnement",
+  },
+  {
+    name: "Joëlle",
+    quote:
+      "Je tenais d’abord à vous dire que je suis très contente de ce premier mois de collaboration. J’apprécie la qualité de votre travail, votre disponibilité et votre réactivité",
+  },
+] as const;

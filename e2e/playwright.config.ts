@@ -30,7 +30,7 @@ export default defineConfig({
       // Parcours sans compte : landing, tunnel audit complet de /start et tunnel
       // d'essai /onboarding (alias /founders — backend mocké, aucun login, aucun coût).
       name: "public",
-      testMatch: /smoke\.spec\.ts|audit-funnel\.spec\.ts|founders-funnel\.spec\.ts/,
+      testMatch: /smoke\.spec\.ts|audit-funnel\.spec\.ts|founders-funnel\.spec\.ts|offre-landing\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
     },
     {
