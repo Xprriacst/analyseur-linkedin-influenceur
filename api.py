@@ -24,7 +24,7 @@ from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_po
 from src import heygen
 from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
-from src import audit_projection, lead_notify, mailer, pilot_plan
+from src import audit_projection, lead_notify, mailer, pilot_plan, dashboard_progress
 from src.audit_report import start_audit_email_thread
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
@@ -5415,6 +5415,93 @@ def me_linkedin_outreach_chat_send(
             learn_opt_out=payload.learn_opt_out,
         )
     return {"ok": True, "quota": _outreach_quota(account, *_safe_counts(token))}
+
+
+# Mon profil → Dashboard (backlog Notion, priorité Alex 2026-08-31). Combien de
+# conversations vérifier « qui a répondu ? » à chaque ouverture — un appel Unipile
+# par conversation, borné pour ne pas ralentir le dashboard ni matraquer l'API.
+_DASHBOARD_REPLY_CHECK_CAP = 20
+_DASHBOARD_REPLY_MESSAGES_PEEK = 5
+
+
+@app.get("/me/dashboard/progress")
+def me_dashboard_progress(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Mon profil → Dashboard : abonnés (baseline + progression), invitations,
+    messages, retours — vue d'ensemble en lecture seule de la prospection.
+
+    ⚠️ Les abonnés ne sont JAMAIS re-scrapés ici (coût Apify) : la valeur vient du
+    dernier relevé déjà connu dans le corpus du client (son propre profil LinkedIn,
+    s'il l'a déjà analysé au moins une fois) et un point d'historique quotidien est
+    posé au passage (idempotent, cf. `db.record_follower_snapshot`). Sans profil
+    analysé : section 'indisponible', propre — jamais un 0 qui se ferait passer
+    pour « zéro abonné ».
+
+    Les sections dépendant d'Unipile (conversations, retours) sont best-effort :
+    Unipile non configuré, compte non connecté, ou appel en échec ⇒ section
+    'indisponible' avec sa raison — le reste du dashboard s'affiche quand même.
+    """
+    current_followers = db.own_follower_count(token)
+    if current_followers is not None:
+        db.record_follower_snapshot(token, current_followers)
+    followers = dashboard_progress.follower_progress(db.list_follower_snapshots(token))
+
+    funnel = db.outreach_lead_funnel(token)
+    counts, _counts_ok = _safe_counts(token)  # zéros déjà en cas d'échec de lecture
+
+    account = db.get_linkedin_outreach_account(token)
+    unipile_connected = bool(account and account.get("unipile_account_id"))
+
+    conversations: dict[str, Any] = {"available": False, "reason": "not_configured"}
+    replies: dict[str, Any] = {"available": False, "reason": "not_configured"}
+    if unipile.enabled():
+        if not unipile_connected:
+            conversations = {"available": False, "reason": "not_connected"}
+            replies = {"available": False, "reason": "not_connected"}
+        else:
+            try:
+                chats = unipile.list_chats(account["unipile_account_id"])
+                conversations = {"available": True, "total": len(chats)}
+            except unipile.UnipileError as exc:
+                conversations = {"available": False, "reason": "unipile_error", "error": str(exc)}
+
+            leads_to_check = db.list_messaged_leads_with_chat(token, limit=_DASHBOARD_REPLY_CHECK_CAP)
+            if not leads_to_check:
+                replies = {
+                    "available": True,
+                    "replied": 0,
+                    "checked": 0,
+                    "total_messaged": funnel.get("messaged", 0),
+                    "capped": False,
+                }
+            else:
+                checks: list[bool | None] = []
+                for lead in leads_to_check:
+                    chat_id = lead.get("outreach_chat_id")
+                    try:
+                        msgs = unipile.list_chat_messages(chat_id, limit=_DASHBOARD_REPLY_MESSAGES_PEEK)
+                        checks.append(any(not unipile.normalize_message(m).get("from_me") for m in msgs))
+                    except unipile.UnipileError:
+                        checks.append(None)  # conversation non vérifiable, exclue du compte
+                replies = dashboard_progress.reply_progress(
+                    checks, funnel.get("messaged", 0), _DASHBOARD_REPLY_CHECK_CAP
+                )
+
+    return {
+        "followers": followers,
+        "invitations": {
+            "sent_today": counts.get("invites_today", 0),
+            "sent_week": counts.get("invites_week", 0),
+            "total_invited": funnel.get("invited", 0),
+            "total_connected": funnel.get("connected", 0),
+        },
+        "messages": {
+            "sent_today": counts.get("messages_today", 0),
+            "total_sent": funnel.get("messaged", 0),
+        },
+        "conversations": conversations,
+        "replies": replies,
+        "unipile_connected": unipile_connected,
+    }
 
 
 @app.get("/me/pilot/today")

@@ -6234,6 +6234,141 @@ def get_outreach_lead_name_maps(access_token: str) -> tuple[dict[str, str], dict
     return by_chat, by_provider
 
 
+def outreach_lead_funnel(access_token: str) -> dict[str, int]:
+    """Funnel de prospection (Mon profil → Dashboard) : combien de leads sont
+    invités / connectés / messagés, lu sur `leads.outreach_status`.
+
+    ⚠️ C'est la source de vérité pour l'ACCEPTATION — le journal
+    `linkedin_outreach_actions` ne trace que les envois, jamais si l'invitation a
+    été acceptée. `outreach_status` avance dans un seul sens (none → invite_sent →
+    connected → messaged, cf. `outreach_sender.py`), donc compter les leads dans
+    l'un de ces 3 états donne le total *invité un jour*, sans double-compte."""
+    zero = {"invited": 0, "connected": 0, "messaged": 0}
+    if not supabase_enabled():
+        return zero
+    user = get_user(access_token)
+    if not user:
+        return zero
+    db = client_for_token(access_token)
+    resp = (
+        db.table("leads")
+        .select("outreach_status")
+        .eq("user_id", user["id"])
+        .in_("outreach_status", ["invite_sent", "connected", "messaged"])
+        .limit(20000)
+        .execute()
+    )
+    rows = resp.data or []
+    connected = sum(1 for r in rows if r.get("outreach_status") in ("connected", "messaged"))
+    messaged = sum(1 for r in rows if r.get("outreach_status") == "messaged")
+    return {"invited": len(rows), "connected": connected, "messaged": messaged}
+
+
+def list_messaged_leads_with_chat(access_token: str, limit: int = 20) -> list[dict]:
+    """Leads déjà messagés avec une conversation Unipile connue, les plus récents
+    d'abord — sert au dashboard à vérifier (best-effort, borné) qui a répondu.
+
+    Ne renvoie que ceux avec `outreach_chat_id` : sans lui, impossible d'interroger
+    Unipile sur leur conversation."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("leads")
+        .select("id, outreach_chat_id, outreach_updated_at")
+        .eq("user_id", user["id"])
+        .eq("outreach_status", "messaged")
+        .not_.is_("outreach_chat_id", "null")
+        .order("outreach_updated_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+_FOLLOWER_SNAPSHOT_COLS = "id, captured_on, follower_count, source, created_at"
+
+
+def own_follower_count(access_token: str) -> int | None:
+    """Dernier nombre d'abonnés connu du COMPTE DU CLIENT LUI-MÊME (jamais un scrape).
+
+    Cherché dans son propre corpus d'influenceurs analysés (`influencers`), sur le
+    handle de son `linkedin_url` de profil éditorial — c'est la seule source déjà
+    mesurée pour son propre compte. Ce dashboard ne déclenche JAMAIS d'appel Apify
+    pour se remplir (coût) : s'il n'a jamais analysé son propre profil, il n'y a
+    simplement rien à afficher (section 'indisponible', pas une erreur)."""
+    profile = get_editorial_profile(access_token) or {}
+    linkedin_url = (profile.get("linkedin_url") or "").strip()
+    handle = _handle_from_url(linkedin_url)
+    if not handle:
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("influencers")
+        .select("follower_count")
+        .eq("user_id", user["id"])
+        .eq("handle", handle)
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        return None
+    value = resp.data[0].get("follower_count")
+    return int(value) if value is not None else None
+
+
+def record_follower_snapshot(
+    access_token: str, follower_count: int, source: str = "influencer_analysis"
+) -> None:
+    """Enregistre (best-effort) un point de la progression d'abonnés du jour.
+
+    Idempotent PAR JOUR : `upsert` sur `(user_id, captured_on)` (migration 0071)
+    — ouvrir le dashboard plusieurs fois la même journée ne crée qu'UNE ligne, mise
+    à jour avec la dernière valeur connue. Jamais de scrape déclenché ici : la
+    valeur vient de ce qui est déjà mesuré ailleurs (cf. `own_follower_count`)."""
+    if not supabase_enabled() or follower_count is None:
+        return
+    user = get_user(access_token)
+    if not user:
+        return
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "captured_on": datetime.date.today().isoformat(),
+        "follower_count": int(follower_count),
+        "source": source,
+    }
+    try:
+        db.table("user_follower_snapshots").upsert(row, on_conflict="user_id,captured_on").execute()
+    except Exception as exc:  # noqa: BLE001 — best-effort, ne doit jamais casser le dashboard
+        print(f"[dashboard] snapshot abonnés échoué : {exc}", flush=True)
+
+
+def list_follower_snapshots(access_token: str, limit: int = 180) -> list[dict]:
+    """Historique des relevés d'abonnés du client, du plus ancien au plus récent."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_follower_snapshots")
+        .select(_FOLLOWER_SNAPSHOT_COLS)
+        .eq("user_id", user["id"])
+        .order("captured_on", desc=False)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
 def get_lead(access_token: str, lead_id: str) -> dict | None:
     """Un lead par id (RLS scope)."""
     if not supabase_enabled() or not lead_id:
