@@ -24,7 +24,7 @@ from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_po
 from src import heygen
 from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
-from src import audit_projection, lead_notify, mailer, pilot_plan
+from src import audit_projection, lead_notify, mailer, pilot_plan, skool_invite
 from src.audit_report import start_audit_email_thread
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
@@ -772,6 +772,17 @@ def pilote_page_view(request: Request) -> dict[str, Any]:
     except Exception:
         pass
     return {"ok": True}
+
+
+@app.get("/pilote/invite")
+def pilote_invite(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Lien d'invitation Skool — uniquement pour un compte connecté.
+
+    Le groupe privé est annoncé sur `/pilote` (copy, pas de href). Le lien
+    n'est servi qu'ici, après inscription. Variable absente ou URL non-https
+    ⇒ `url: null` : le front n'affiche pas de bouton, jamais un lien mort.
+    """
+    return {"url": skool_invite.invite_url()}
 
 
 # --- Tunnel « audit complet gratuit » ----------------------------------------
