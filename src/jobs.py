@@ -658,6 +658,18 @@ def process_lead_collection_job(access_token: str, job_id: str) -> None:
         if not source:
             raise RuntimeError("Source de prospection introuvable.")
 
+        # Une source `import` (fichier CSV/Excel, 0070) ne se « recollecte » pas :
+        # le fichier n'existe plus côté serveur. Son traitement passe par
+        # `process_lead_import_job` (qui reçoit les profils parsés en mémoire) —
+        # si un job d'import atterrit malgré tout ici (mauvais aiguillage, rejeu),
+        # on refuse net plutôt que de scraper les « commentaires » d'une URL
+        # `import://…` via Apify (la panne silencieuse de #407, en pire).
+        if job.get("kind") == "import" or source.get("kind") == "import":
+            raise RuntimeError(
+                "Cette source vient d'un fichier importé — re-téléverse le fichier "
+                "pour ajouter de nouveaux prospects."
+            )
+
         # Aiguillage en ceinture ET bretelles : le `kind` du job, mais AUSSI celui
         # de la source. Une source de recherche ne peut jamais être collectée par
         # l'actor de commentaires — se fier au seul job rendait la routine otage
@@ -691,5 +703,63 @@ def start_lead_collection_job_thread(access_token: str, job_id: str) -> None:
     """Lance une collecte de commentateurs dans un thread de fond (non bloquant)."""
     thread = threading.Thread(
         target=process_lead_collection_job, args=(access_token, job_id), daemon=True
+    )
+    thread.start()
+
+
+def process_lead_import_job(
+    access_token: str,
+    job_id: str,
+    source: dict,
+    leads: list[dict],
+    ignored: int,
+    rows: int,
+    truncated: bool = False,
+) -> None:
+    """Persiste un import de fichier de leads en arrière-plan (source 0070).
+
+    Contrairement aux deux autres natures de job, les données arrivent EN
+    MÉMOIRE (le fichier a été parsé dans la requête d'upload) : le job n'existe
+    que pour donner au frontend le même suivi par polling que la recherche —
+    et parce que le scoring ICP (appel IA par lots) peut prendre plus longtemps
+    que le budget d'une requête HTTP sur un gros fichier. Revers assumé : un
+    redémarrage du process en plein import perd les profils pas encore écrits ;
+    le job est alors soldé « délai dépassé » par la réconciliation et le client
+    re-téléverse son fichier (la dédup de `save_leads` rend le rejeu sans danger).
+
+    Aucun débit de crédits, comme la recherche : lire un fichier ne coûte rien.
+    """
+    from src.lead_import import persist_import
+
+    if db.get_lead_collection_job_status(access_token, job_id) == "cancelled":
+        return
+    db.update_lead_collection_job(access_token, job_id, status="running")
+    try:
+        result = persist_import(access_token, source, leads, ignored, rows, truncated)
+        if db.get_lead_collection_job_status(access_token, job_id) == "cancelled":
+            return
+        db.update_lead_collection_job(access_token, job_id, status="done", result=result)
+    except Exception as exc:  # noqa: BLE001 — on isole l'échec d'un job
+        if db.get_lead_collection_job_status(access_token, job_id) == "cancelled":
+            return
+        db.update_lead_collection_job(
+            access_token, job_id, status="error", error=str(exc)[:500]
+        )
+
+
+def start_lead_import_job_thread(
+    access_token: str,
+    job_id: str,
+    source: dict,
+    leads: list[dict],
+    ignored: int,
+    rows: int,
+    truncated: bool = False,
+) -> None:
+    """Lance la persistance d'un import de fichier dans un thread de fond."""
+    thread = threading.Thread(
+        target=process_lead_import_job,
+        args=(access_token, job_id, source, leads, ignored, rows, truncated),
+        daemon=True,
     )
     thread.start()

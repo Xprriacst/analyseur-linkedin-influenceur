@@ -13924,7 +13924,15 @@ type LeadCollectionJob = {
   source_id: string;
   status: "queued" | "running" | "done" | "error" | "cancelled";
   max_comments: number;
-  result: { comments_count?: number; leads?: { inserted?: number; updated?: number }; credits?: number | null } | null;
+  result: {
+    comments_count?: number;
+    leads?: { inserted?: number; updated?: number };
+    credits?: number | null;
+    // Import de fichier (0070) : lignes sans URL de profil, comptées jamais avalées.
+    ignored_rows?: number;
+    total_rows?: number;
+    truncated?: boolean;
+  } | null;
   error: string | null;
 };
 
@@ -14688,6 +14696,166 @@ function LeadSearchImport({
   );
 }
 
+// ─── Import d'un fichier de leads (CSV / Excel) comme source (migration 0070) ───
+// Le client téléverse un export (CRM, outil Sales Navigator tiers, tableur) :
+// chaque ligne portant une URL de profil LinkedIn devient un lead, dédupliqué
+// et noté par le ciblage ICP. Gratuit — le fichier est lu côté serveur, rien ne
+// passe par le compte LinkedIn (aucune connexion requise, contrairement à la
+// recherche).
+const LEAD_IMPORT_MAX_BYTES = 5 * 1024 * 1024; // miroir du backend (lead_import.MAX_FILE_BYTES)
+
+function LeadFileImport({ onImported }: { onImported: () => void | Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [error, setError] = useState("");
+  const [job, setJob] = useState<LeadCollectionJob | null>(null);
+  const active = !!job && (job.status === "queued" || job.status === "running");
+
+  // Polling non-chevauchant (ALE-271) : replanifié APRÈS chaque réponse, jamais
+  // un setInterval — même patron que LeadSearchImport.
+  useEffect(() => {
+    if (!job || (job.status !== "queued" && job.status !== "running")) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/lead-collection-jobs/${job.id}`, {
+          headers: await authHeaders(),
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (res.ok) {
+          setJob(data as LeadCollectionJob);
+          if (data.status === "done") {
+            const found = data.result?.comments_count ?? 0;
+            const added = data.result?.leads?.inserted ?? 0;
+            // Les lignes ignorées sont RESTITUÉES au client (« 13 lignes
+            // ignorées ») : les taire ferait passer un fichier à moitié lu
+            // pour un import complet.
+            const ignored = data.result?.ignored_rows ?? 0;
+            const parts = [
+              `${found} profil${found > 1 ? "s" : ""} importé${found > 1 ? "s" : ""}, dont ${added} nouveau${added > 1 ? "x" : ""} lead${added > 1 ? "s" : ""}.`,
+            ];
+            if (ignored > 0) parts.push(`${ignored} ligne${ignored > 1 ? "s" : ""} ignorée${ignored > 1 ? "s" : ""} (pas d'URL de profil LinkedIn).`);
+            if (data.result?.truncated) parts.push("Fichier tronqué au plafond d'un import — découpe-le pour importer le reste.");
+            setMsg(parts.join(" "));
+            setFile(null);
+            await onImported();
+            return;
+          }
+          if (data.status === "error") {
+            setError(apiDetail(data.error, "Import interrompu."));
+            return;
+          }
+          if (data.status === "cancelled") return;
+        }
+      } catch {
+        /* réseau : on retente au tick suivant */
+      }
+      if (!cancelled) timer = setTimeout(tick, 3000);
+    };
+    timer = setTimeout(tick, 3000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [job?.id, job?.status]);
+
+  const submit = async () => {
+    if (!file) return;
+    setError("");
+    setMsg("");
+    if (file.size > LEAD_IMPORT_MAX_BYTES) {
+      setError("Fichier trop volumineux (5 Mo maximum). Découpe ta liste ou exporte-la en CSV.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const form = new FormData();
+      form.append("file", file, file.name);
+      // Pas de Content-Type explicite : le navigateur pose le boundary multipart.
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-imports`, {
+        method: "POST",
+        headers: await authHeaders(),
+        body: form,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(apiDetail(data.detail, "Import impossible"));
+      setJob(data.job as LeadCollectionJob);
+      if (data.existing) setMsg("Fichier déjà importé — seuls les nouveaux profils s'ajouteront.");
+    } catch (err: any) {
+      setError(err.message || "Import impossible");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+          padding: "12px 16px", background: "none", border: "none", cursor: "pointer",
+          font: "inherit", color: "inherit",
+        }}
+      >
+        <ChevronRight size={18} style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+        <FileText size={16} style={{ flexShrink: 0 }} />
+        <strong>Importer un fichier de leads</strong>
+        <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12.5, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          — Excel ou CSV avec les URLs de profil LinkedIn
+        </span>
+      </button>
+
+      {open && (
+        <div style={{ padding: "0 16px 16px", display: "grid", gap: 10 }}>
+          {active ? (
+            <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px", background: "var(--surface-low)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                <Loader2 size={15} className="spinning" />
+                <span>
+                  Import de {job!.max_comments} profil{job!.max_comments > 1 ? "s" : ""}… Tu peux quitter cet écran,
+                  les leads arriveront dans la liste.
+                </span>
+              </div>
+            </div>
+          ) : (
+            <>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Fichier (.csv ou .xlsx, 5 Mo max)
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  style={{ fontWeight: 400 }}
+                  aria-label="Fichier de leads"
+                />
+              </label>
+              <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+                Gratuit — aucun crédit. Il faut une colonne avec l&apos;URL du profil LinkedIn de chaque
+                prospect (linkedin.com/in/…) ; nom, poste et entreprise sont repris s&apos;ils existent.
+                Les lignes sans URL de profil sont ignorées et comptées.
+              </p>
+              <div>
+                <button type="button" className="primary-button" onClick={submit} disabled={busy || !file}>
+                  {busy ? <Loader2 size={14} className="spinning" /> : <Users size={14} />}{" "}
+                  {busy ? "Lancement…" : "Importer le fichier"}
+                </button>
+              </div>
+            </>
+          )}
+          {msg && <p style={{ margin: 0, fontSize: 12.5, color: "var(--muted)" }}>{msg}</p>}
+          {error && <div className="error" style={{ marginBottom: 0 }}>{error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── ALE-229 : onglet Prospection — liste des leads + panneau latéral de détail ───
 // V1 volontairement sans import (l'alimentation vient de la veille ALE-227 et de
 // Ma bibliothèque ALE-234). Le ciblage ICP + score (ALE-228) sont ici ; l'envoi
@@ -14797,6 +14965,11 @@ function isLinkedInSearchUrl(url?: string | null): boolean {
   } catch {
     return false;
   }
+}
+
+/** Clé synthétique d'une source `kind=import` (fichier CSV/Excel, migration 0070). */
+function isImportSignalUrl(url?: string | null): boolean {
+  return String(url || "").startsWith("import://");
 }
 
 function leadSignals(l: Lead): LeadSignal[] {
@@ -15205,6 +15378,19 @@ function ProspectingView({
         }}
       />
 
+      {/* Import d'un fichier de leads (0070) — la troisième façon d'alimenter la
+          liste : un export Excel/CSV avec les URLs de profil. Pas de condition de
+          compte connecté : rien ne passe par LinkedIn. */}
+      <LeadFileImport
+        onImported={async () => {
+          try {
+            setLeads(await loadLeads());
+          } catch {
+            /* la liste se rechargera au prochain passage */
+          }
+        }}
+      />
+
       {/* ALE-284 — Autopilote : le bouton, et à sa droite le schéma de la séquence
           réellement active. Le schéma n'est pas décoratif — c'est le rappel permanent
           de « qu'est-ce que mon autopilote fait, là, maintenant » : les étapes que le
@@ -15262,6 +15448,7 @@ function ProspectingView({
           {leads.map((l, i) => {
             const sig = leadCaptionSignal(l);
             const fromSearch = leadSignals(l).some((s) => isLinkedInSearchUrl(s.post_url));
+            const fromImport = leadSignals(l).some((s) => isImportSignalUrl(s.post_url));
             const commented = isCommentSignal(sig);
             const multi = (l.signal_count ?? 1) > 1;
             const skipped = l.contact_status === "skip";
@@ -15310,6 +15497,8 @@ function ProspectingView({
                       </>
                     ) : fromSearch ? (
                       <>trouvé dans ta recherche</>
+                    ) : fromImport ? (
+                      <>importé depuis ton fichier</>
                     ) : null}
                     {multi ? <strong style={{ color: "var(--success)" }}> · {l.signal_count} signaux</strong> : null}
                   </span>
@@ -15485,6 +15674,9 @@ function ProspectingView({
                           <> · <a href={safeHttpUrl(sig.post_url)} target="_blank" rel="noreferrer">voir la recherche</a></>
                         ) : null}
                       </>
+                    ) : isImportSignalUrl(sig.post_url) ? (
+                      // Fichier importé (0070) : `author` porte le nom du fichier.
+                      <>fichier importé{sig.author ? <> « {sig.author} »</> : null}</>
                     ) : (
                       <>profil importé</>
                     )}
