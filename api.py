@@ -25,6 +25,7 @@ from src import heygen
 from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
 from src import audit_projection, lead_notify, mailer, pilot_plan, skool_invite
+from src import follow_suggestions
 from src.audit_report import start_audit_email_thread
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
@@ -5624,6 +5625,22 @@ def follow_me_influencer(payload: FollowInfluencerRequest, token: str = Depends(
     if not row:
         raise HTTPException(status_code=400, detail="Impossible de suivre cet influenceur.")
     return row
+
+
+@app.get("/me/follow-suggestions")
+def me_follow_suggestions(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Profils LinkedIn à suivre, suggérés par correspondance de niche.
+
+    Lecture seule : 0 crédit, 0 appel IA, 0 run Apify — on ne fait que relire
+    des fiches DÉJÀ analysées (cache mutualisé) et les filtrer sur les
+    mots-clés du profil éditorial + du ciblage. Renvoie une liste vide (donc
+    une section absente à l'écran) tant que le profil n'est pas renseigné.
+
+    Suivre l'un d'eux passe par `POST /me/followed-influencers`, avec son
+    plafond : cet endpoint ne fait que proposer, il n'écrit rien.
+    """
+    payload = follow_suggestions.build_follow_suggestions(token)
+    return {**payload, "cap": FOLLOWED_INFLUENCERS_CAP}
 
 
 @app.delete("/me/followed-influencers/{follow_id}")

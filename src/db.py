@@ -4473,17 +4473,21 @@ def upsert_cached_posts(
         pass  # La persistance du cache ne doit jamais bloquer l'analyse
 
 
-# ── Suggestions de profils à suivre — cross-user, sans coût (onboarding) ──── #
+# ── Suggestions de profils à suivre — cache mutualisé, sans coût ─────────── #
 
 def list_influencer_cache_candidates(limit: int = 300) -> list[dict]:
-    """Candidats de suggestion « à suivre » depuis le cache cross-user.
+    """Fiches du cache mutualisé, candidates aux suggestions « à suivre ».
 
-    Ne projette QUE des champs publics d'un profil LinkedIn (handle/nom/titre/
-    abonnés) — jamais `raw_profile` ni `synthesis`, et cette table n'a de toute
-    façon pas de `user_id` : impossible d'exposer une donnée privée d'un autre
-    compte par ce chemin. Sert uniquement à proposer, à l'onboarding, des
-    influenceurs DÉJÀ analysés par n'importe quel client (donc gratuit — aucun
-    scrape Apify n'est déclenché ici), matchés ensuite par mots-clés de niche.
+    Ne projette QUE des champs publics d'un profil LinkedIn (handle, nom,
+    titre, abonnés, URL) — jamais `raw_profile` ni `synthesis`. Cette table
+    n'a de toute façon pas de `user_id` : c'est un cache d'analyses mutualisé
+    (migration 0016), pas des données appartenant à un compte. Aucune donnée
+    privée d'un autre client ne peut transiter par ce chemin.
+
+    Gratuit : on relit ce qui a DÉJÀ été analysé, aucun scrape Apify n'est
+    déclenché ici. Le tri par `last_analyzed_at` donne les fiches les plus
+    fraîches ; le filtrage par niche se fait ensuite en mémoire dans
+    `src/follow_suggestions.py`.
     """
     if not admin_enabled():
         return []
@@ -4491,7 +4495,7 @@ def list_influencer_cache_candidates(limit: int = 300) -> list[dict]:
         resp = (
             admin_client()
             .table("influencer_cache")
-            .select("id,handle,name,headline,follower_count")
+            .select("id,handle,name,headline,follower_count,profile_url")
             .eq("platform", "linkedin")
             .order("last_analyzed_at", desc=True)
             .limit(limit)
@@ -4499,6 +4503,7 @@ def list_influencer_cache_candidates(limit: int = 300) -> list[dict]:
         )
         return resp.data or []
     except Exception:
+        # Best-effort : une suggestion manquante n'est jamais une panne.
         return []
 
 

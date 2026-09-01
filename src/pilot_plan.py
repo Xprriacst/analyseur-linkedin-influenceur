@@ -22,168 +22,6 @@ _PILOT_ACCENTS = (
 
 _INVITABLE_OUTREACH = frozenset({None, "", "none"})
 
-# ── Suggestions de profils à suivre — matching niche/ICP, sans IA ni Apify ── #
-# Filtre purement textuel : mots trop courants pour discriminer une niche.
-# Best-effort — un mot manquant à cette liste dégrade la pertinence, jamais
-# la correction (aucune décision facturée ni aucun droit n'en dépend).
-_NICHE_STOPWORDS = frozenset({
-    "pour", "avec", "sans", "dans", "chez", "leur", "leurs", "plus", "tout",
-    "tous", "toute", "toutes", "être", "avoir", "faire", "notre", "votre",
-    "vos", "nos", "cette", "aussi", "comme", "sont", "cela", "donc", "mais",
-    "elle", "elles", "ils", "nous", "vous", "que", "qui", "quoi", "dont",
-    "très", "bien", "peut", "peuvent", "vers", "entre", "sous", "afin",
-    "ainsi", "alors", "ceci", "encore", "leurs", "être", "sera", "seront",
-    "avons", "avez", "ont", "est", "être", "the", "and", "for", "with",
-    "your", "you", "are", "our",
-})
-_NICHE_WORD_RE = re.compile(r"[a-zàâäéèêëïîôöùûüçñ0-9]+")
-
-
-def _handle_from_profile_url(url: str | None) -> str:
-    """Handle LinkedIn décodé depuis une URL de profil, sans dépendre du scraper Apify."""
-    if not url:
-        return ""
-    raw = url.strip().rstrip("/")
-    raw = raw.split("/in/")[-1].split("/")[0].split("?")[0].split("#")[0]
-    return unquote(raw)
-
-
-def extract_niche_keywords(
-    profile: dict[str, Any] | None,
-    targeting: dict[str, Any] | None,
-    max_keywords: int = 25,
-) -> list[str]:
-    """Mots-clés de niche/ICP tirés du profil éditorial + du ciblage prospection.
-
-    Purement textuel, zéro appel IA — sert uniquement à FILTRER/CLASSER une
-    liste de suggestions d'affichage, jamais à décider d'un droit ni à
-    facturer quoi que ce soit. Profil sans ces champs renseignés (onboarding
-    encore vide) ⇒ liste vide, et la section de suggestions cross-user ne
-    s'affichera alors pas du tout, par construction.
-    """
-    texts: list[str] = []
-    for source in (profile, targeting):
-        if not isinstance(source, dict):
-            continue
-        for key in (
-            "industry",
-            "business_description",
-            "target_audience",
-            "core_offer",
-            "topics_to_cover",
-            "ideal_client",
-            "offer",
-        ):
-            value = source.get(key)
-            if isinstance(value, str) and value.strip():
-                texts.append(value)
-
-    raw_keywords = (targeting or {}).get("interest_keywords") if isinstance(targeting, dict) else None
-    if isinstance(raw_keywords, list):
-        texts.extend(str(k) for k in raw_keywords if str(k or "").strip())
-    elif isinstance(raw_keywords, str) and raw_keywords.strip():
-        texts.append(raw_keywords)
-
-    words: list[str] = []
-    seen: set[str] = set()
-    for text in texts:
-        for token in _NICHE_WORD_RE.findall(text.lower()):
-            if len(token) < 4 or token in _NICHE_STOPWORDS or token in seen:
-                continue
-            seen.add(token)
-            words.append(token)
-    return words[:max_keywords]
-
-
-def _score_cross_user_match(candidate: dict[str, Any], keywords: list[str]) -> int:
-    haystack = " ".join(
-        str(candidate.get(field) or "") for field in ("headline", "name")
-    ).lower()
-    if not haystack.strip():
-        return 0
-    return sum(1 for kw in keywords if kw in haystack)
-
-
-def pick_cross_user_follow_profiles(
-    candidates: list[dict[str, Any]],
-    keywords: list[str],
-    excluded_handles: set[str],
-    limit: int,
-    start_index: int = 0,
-) -> list[dict[str, Any]]:
-    """Complète les suggestions avec des influenceurs analysés par D'AUTRES
-    comptes (cache cross-user, aucune donnée privée — champs publics
-    uniquement) dont la fiche correspond à la niche du client. Sans mot-clé,
-    aucune suggestion n'est faite : on préfère une section absente à une liste
-    de profils sans rapport avec l'activité du client.
-    """
-    if limit <= 0 or not keywords:
-        return []
-    scored: list[tuple[int, int, dict[str, Any]]] = []
-    for row in candidates:
-        handle = unquote((row.get("handle") or "").strip())
-        if not handle or handle in excluded_handles:
-            continue
-        score = _score_cross_user_match(row, keywords)
-        if score <= 0:
-            continue
-        scored.append((score, int(row.get("follower_count") or 0), {**row, "handle": handle}))
-    scored.sort(key=lambda item: (-item[0], -item[1]))
-
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for _score, _followers, row in scored:
-        handle = row["handle"]
-        if handle in seen:
-            continue
-        seen.add(handle)
-        headline = (row.get("headline") or "").strip()
-        reason = (
-            f"{headline} — dans ta niche." if headline else "Profil public dans ta niche, repéré sur Cibl."
-        )
-        idx = start_index + len(rows)
-        rows.append({
-            "id": row.get("id") or handle,
-            "name": (row.get("name") or handle).strip(),
-            "handle": f"@{handle}",
-            "reason": reason,
-            "initials": initials(row.get("name"), handle[:2].upper()),
-            "accent": _PILOT_ACCENTS[idx % len(_PILOT_ACCENTS)],
-            "influencer_handle": handle,
-        })
-        if len(rows) >= limit:
-            break
-    return rows
-
-
-def pick_follow_suggestions(
-    library: list[dict[str, Any]],
-    followed_handles: set[str],
-    cross_user_candidates: list[dict[str, Any]],
-    niche_keywords: list[str],
-    own_handle: str = "",
-    limit: int = PILOT_FOLLOW_LIMIT,
-) -> list[dict[str, Any]]:
-    """Jusqu'à `limit` profils à suivre : d'abord ceux déjà analysés par le
-    client (sa bibliothèque perso, comme avant), puis en repli des profils
-    analysés par D'AUTRES comptes (cache cross-user, gratuit) dont la fiche
-    publique correspond à sa niche. Un compte tout juste sorti de l'onboarding
-    n'a presque jamais de bibliothèque perso (elle exige d'avoir lancé une
-    analyse payante) — sans ce repli, la section serait vide pour la quasi-
-    totalité des nouveaux comptes Pilote.
-    """
-    rows = pick_follow_profiles(library, followed_handles, limit)
-    remaining = limit - len(rows)
-    if remaining <= 0:
-        return rows
-    exclude = set(followed_handles) | {r["influencer_handle"] for r in rows}
-    if own_handle:
-        exclude.add(own_handle)
-    extra = pick_cross_user_follow_profiles(
-        cross_user_candidates, niche_keywords, exclude, remaining, start_index=len(rows)
-    )
-    return rows + extra
-
 
 def initials(name: str | None, fallback: str = "?") -> str:
     parts = (name or "").strip().split()
@@ -410,7 +248,6 @@ def compose_pilot_plan(
     publish_connected: bool,
     weekly_done: int,
     weekly_total: int,
-    cross_user_candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     display = (profile or {}).get("display_name") or (profile or {}).get("brand_name") or "toi"
     user_first = first_name(display if display != "toi" else None) if display != "toi" else "toi"
@@ -444,14 +281,7 @@ def compose_pilot_plan(
             media_items = list(post_row.get("media_items") or [])
         post_hook, post_body = split_post_text(post_text)
 
-    own_handle = _handle_from_profile_url((profile or {}).get("linkedin_url"))
-    follow_rows = pick_follow_suggestions(
-        library,
-        followed_handles,
-        cross_user_candidates or [],
-        extract_niche_keywords(profile, targeting),
-        own_handle=own_handle,
-    )
+    follow_rows = pick_follow_profiles(library, followed_handles)
     contact_leads = pick_contacts(leads)
     contacts = []
     for idx, lead in enumerate(contact_leads):
@@ -558,11 +388,6 @@ def build_pilot_today(access_token: str) -> dict[str, Any]:
         outreach_connected = bool(outreach_account and outreach_account.get("unipile_account_id"))
         publish_connected = bool(profile and profile.get("zernio_account_id"))
         weekly_done, weekly_total = weekly_progress(access_token)
-        niche_keywords = extract_niche_keywords(profile, targeting)
-        # Requête cross-user réservée aux cas où elle peut servir : pas de
-        # mot-clé de niche ⇒ pick_follow_suggestions ne s'en servira de toute
-        # façon jamais, autant éviter l'appel service-role pour rien.
-        cross_user_candidates = db.list_influencer_cache_candidates() if niche_keywords else []
         return compose_pilot_plan(
             profile=profile,
             targeting=targeting,
@@ -576,7 +401,6 @@ def build_pilot_today(access_token: str) -> dict[str, Any]:
             publish_connected=publish_connected,
             weekly_done=weekly_done,
             weekly_total=weekly_total,
-            cross_user_candidates=cross_user_candidates,
         )
     except Exception as exc:
         print(f"[pilot] build_pilot_today échoué : {exc}", flush=True)

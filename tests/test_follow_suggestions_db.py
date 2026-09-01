@@ -1,8 +1,13 @@
-"""Tests unitaires — `db.list_influencer_cache_candidates` (onboarding follow suggestions).
+"""Tests unitaires — `db.list_influencer_cache_candidates`.
 
-Vérifie que la source cross-user des suggestions « à suivre » (ticket
-Notion « Onboarding — propositions automatiques de profils LinkedIn à
-suivre ») ne projette que des champs publics et reste fail-safe.
+Source des suggestions « à suivre » (ticket Notion « Onboarding —
+propositions automatiques de profils LinkedIn à suivre »). Ce test verrouille
+la seule chose qui compte vraiment ici : la projection.
+
+`influencer_cache` est un cache d'analyses MUTUALISÉ entre tous les comptes.
+Y ajouter `raw_profile` ou `synthesis` à la projection passerait sans erreur
+et exposerait à un client le contenu brut analysé pour un autre — une fuite
+parfaitement silencieuse. Le test échoue si quelqu'un élargit le `select`.
 """
 import unittest
 from unittest.mock import patch
@@ -54,7 +59,8 @@ class ListInfluencerCacheCandidatesTest(unittest.TestCase):
 
     def test_returns_rows_and_projects_only_public_fields(self):
         rows = [
-            {"id": "c1", "handle": "marie", "name": "Marie", "headline": "Coach B2B", "follower_count": 100},
+            {"id": "c1", "handle": "marie", "name": "Marie", "headline": "Coach B2B",
+             "follower_count": 100, "profile_url": "https://www.linkedin.com/in/marie/"},
         ]
         fake = _FakeAdminClient(rows)
         with patch.object(db, "admin_enabled", return_value=True), \
@@ -67,6 +73,9 @@ class ListInfluencerCacheCandidatesTest(unittest.TestCase):
         self.assertNotIn("raw_profile", cols)
         self.assertNotIn("synthesis", cols)
         self.assertNotIn("user_id", cols)
+        # …mais l'URL publique doit bien y être : l'écran en fait un lien vers
+        # le profil LinkedIn, sans elle la suggestion n'est pas vérifiable.
+        self.assertIn("profile_url", cols)
         self.assertIn(("platform", "linkedin"), fake.captured["eq"])
         self.assertEqual(fake.captured["limit"], 50)
 
