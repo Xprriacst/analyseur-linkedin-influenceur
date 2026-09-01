@@ -87,6 +87,12 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-09-01 (dev : `/offre` — verbatims clients Sacha et Joëlle)
+- **Demande d'Alex** : coller sur la page de vente les citations réelles de Sacha (« 100% satisfait de votre accompagnement ») et Joëlle (qualité / disponibilité / réactivité du 1er mois).
+- `/offre` attendait précisément ça (le commentaire du fichier disait « pas de témoignages tant qu'il n'y a pas de vraies citations »). Section « Ce qu'ils en disent » entre les fonctionnalités et la sécurité — **mot pour mot**, prénom seul, ni rôle ni photo inventés.
+- Constantes `CLIENT_TESTIMONIALS` dans `frontend/app/lib/founders.ts` (partagées avec `/pilote`). ReShape du tunnel `/onboarding` inchangé.
+- Spec public `offre-landing` : le mot-à-mot est verrouillé. Frontend seul, aucune migration, aucune env var.
+
 ### 2026-09-01 (dev : `/start` — l'audit reste en base si Resend refuse l'envoi)
 - **Ticket Notion** « Tunnel /start : l'audit du seul vrai prospect n'a jamais été généré » (Elie Tales, 28/08). En prod : `audit_payload` NULL, `error_message` = Resend 403. Le modèle *avait* répondu — le `except` unique de `process_audit_lead` a tout jeté avec le refus d'envoi.
 - **Cause** : génération + Notion + `send_email` dans le même `try`. Un 403 Resend (domaine `clareo-solutions.fr` non vérifié chez Resend — DNS IONOS) tombait dans le `except` qui n'écrivait que `status=failed` + le message. La page publique `/a/{token}` et un rejeu n'avaient plus rien à afficher ni à renvoyer.

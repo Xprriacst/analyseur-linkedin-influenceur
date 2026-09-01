@@ -31,7 +31,7 @@ export default defineConfig({
       // d'essai /onboarding (alias /founders — backend mocké, aucun login, aucun coût)
       // et landing /pilote (mode Pilote gratuit).
       name: "public",
-      testMatch: /smoke\.spec\.ts|audit-funnel\.spec\.ts|founders-funnel\.spec\.ts|pilote-landing\.spec\.ts/,
+      testMatch: /smoke\.spec\.ts|audit-funnel\.spec\.ts|founders-funnel\.spec\.ts|offre-landing\.spec\.ts|pilote-landing\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
     },
     {
