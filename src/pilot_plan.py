@@ -1,7 +1,9 @@
-"""Mode Pilote — composition du plan du jour (lecture seule, sans LLM ni Apify)."""
+"""Mode Pilote — composition du plan du jour (lecture seule, sans LLM ni Apify)
+et plan « Pilote gratuit » (quotas 1 post/jour, 3 contacts/jour)."""
 from __future__ import annotations
 
 import datetime
+import os
 import re
 from typing import Any
 from urllib.parse import unquote
@@ -11,6 +13,148 @@ from src import db
 PILOT_CONTACT_LIMIT = 3
 PILOT_FOLLOW_LIMIT = 5
 PILOT_WEEKLY_TOTAL = 3
+
+
+# --------------------------------------------------------------------------- #
+# Plan « Pilote gratuit » (décision Alex 2026-09-01)
+#
+# Le gratuit = le Mode Pilote plafonné (1 post / jour, jusqu'à 3 contacts / jour).
+# Le mode Expert (l'app complète) est payant : visible mais grisé pour ces comptes.
+# Remplace « essai 7 j + 1000 crédits » pour les nouveaux inscrits de la landing.
+#
+# ⚠️ Où vit le plan : dans **`app_metadata.plan`**, JAMAIS `user_metadata` — le
+# client peut éditer `user_metadata` depuis son navigateur (`supabase.auth.updateUser`),
+# et c'est précisément là que la landing écrit `landing='pilote'` (compteur funnel).
+# Ce tag NE doit JAMAIS ouvrir un droit : la seule source du plan est `app_metadata`,
+# écrivable uniquement en service-role (même patron que `src/features.py` et le rôle
+# `ideas_only`).
+#
+# Défaut (plan absent) = comportement historique intact : crédits de bienvenue,
+# essai, abonnés Stripe, comptes agence — RIEN ne change pour l'existant. Les
+# quotas ne s'appliquent qu'aux comptes explicitement `plan='pilot_free'`.
+# --------------------------------------------------------------------------- #
+
+PLAN_PILOT_FREE = "pilot_free"
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+
+
+# Quotas quotidiens (fenêtre glissante de 24 h, calculée depuis les données
+# existantes — patron des compteurs outreach : aucun compteur à réinitialiser).
+# Surchargeables par env sans release, comme les autres plafonds du repo.
+PILOT_FREE_POSTS_PER_DAY = _env_int("PILOT_FREE_POSTS_PER_DAY", 1)
+# ⚠️ Aligné sur PILOT_CONTACT_LIMIT : le rail « À contacter » du plan du jour
+# montre exactement le nombre de contacts que le quota autorise. Les faire
+# diverger montrerait au client des contacts qu'il n'a pas le droit d'inviter.
+PILOT_FREE_LEADS_PER_DAY = _env_int("PILOT_FREE_LEADS_PER_DAY", PILOT_CONTACT_LIMIT)
+
+# Fenêtre d'attribution du plan à l'inscription : passé ce délai, un compte
+# existant ne peut plus basculer seul en Pilote gratuit (il garde le modèle
+# historique — crédits de bienvenue puis abonnement/essai).
+PILOT_ENROLL_WINDOW_HOURS = _env_int("PILOT_ENROLL_WINDOW_HOURS", 48)
+
+_UPGRADE_HINT = "Passe en mode Expert (abonnement) pour continuer sans attendre."
+
+
+def plan_of(user: dict[str, Any] | None) -> str | None:
+    """Plan du compte, lu depuis `app_metadata` UNIQUEMENT.
+
+    `user_metadata` n'est jamais consulté : il est modifiable par l'utilisateur
+    lui-même, il ne peut ni ouvrir ni fermer un droit. Absent/illisible → None
+    (= comportement historique, pas de quota)."""
+    meta = (user or {}).get("app_metadata") or {}
+    if not isinstance(meta, dict):
+        return None
+    plan = meta.get("plan")
+    if isinstance(plan, str) and plan.strip():
+        return plan.strip().lower()
+    return None
+
+
+def is_pilot_free(user: dict[str, Any] | None) -> bool:
+    """Ce compte est-il au plan Pilote gratuit ? None/illisible → non (historique)."""
+    return plan_of(user) == PLAN_PILOT_FREE
+
+
+def post_quota_error(used_today: int, requested: int = 1,
+                     limit: int | None = None) -> str | None:
+    """None si la génération est autorisée ; sinon le message d'erreur (402).
+
+    Fonction pure (patron décide/exécute) : le comptage vit dans `src/db.py`,
+    la décision ici — testable sans base ni réseau."""
+    cap = PILOT_FREE_POSTS_PER_DAY if limit is None else limit
+    requested = max(1, int(requested or 1))
+    if int(used_today) + requested <= cap:
+        return None
+    if cap <= 1:
+        return (
+            "Mode Pilote : ton post du jour est déjà généré (1/1 sur 24 h). "
+            "Reviens demain pour le suivant. " + _UPGRADE_HINT
+        )
+    return (
+        f"Mode Pilote : {cap} posts par jour ({used_today}/{cap} sur 24 h). "
+        "Reviens demain. " + _UPGRADE_HINT
+    )
+
+
+def lead_quota_error(used_today: int, limit: int | None = None) -> str | None:
+    """None si l'invitation est autorisée ; sinon le message d'erreur (402)."""
+    cap = PILOT_FREE_LEADS_PER_DAY if limit is None else limit
+    if int(used_today) < cap:
+        return None
+    return (
+        f"Mode Pilote : {cap} contacts par jour ({used_today}/{cap} sur 24 h). "
+        "Reviens demain pour les suivants. " + _UPGRADE_HINT
+    )
+
+
+def can_enroll_pilot_free(
+    *,
+    current_plan: str | None,
+    has_subscription: bool,
+    created_at: str | None,
+    now: datetime.datetime | None = None,
+    window_hours: int | None = None,
+) -> tuple[str, str | None]:
+    """L'attribution du plan `pilot_free` est-elle permise pour ce compte ?
+
+    Retourne ``(statut, message)`` avec statut ∈ {"ok", "already", "refused"}.
+    Fonction pure : l'endpoint lit l'état (plan, abonnement, date de création)
+    et applique la décision.
+
+    Garde-fous — l'endpoint est appelable par le compte lui-même (c'est le point
+    de branchement de la landing /pilote, juste après le signUp), donc il ne doit
+    JAMAIS servir d'échappatoire à un compte existant :
+    - un plan déjà posé (autre que pilot_free) ne se remplace pas ;
+    - un compte qui a déjà touché à l'abonnement/essai Stripe reste sur le modèle
+      historique ;
+    - passé `PILOT_ENROLL_WINDOW_HOURS` après la création, refus — le plan se pose
+      à l'inscription, pas des mois plus tard ;
+    - date de création absente/illisible → refus (fail closed)."""
+    if current_plan == PLAN_PILOT_FREE:
+        return "already", None
+    if current_plan:
+        return "refused", "Un plan est déjà posé sur ce compte."
+    if has_subscription:
+        return "refused", "Ce compte a déjà un abonnement ou un essai — le plan Pilote gratuit est réservé aux nouveaux comptes."
+    window = PILOT_ENROLL_WINDOW_HOURS if window_hours is None else window_hours
+    if not created_at:
+        return "refused", "Date de création du compte illisible — attribution refusée."
+    try:
+        created = datetime.datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    except ValueError:
+        return "refused", "Date de création du compte illisible — attribution refusée."
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=datetime.timezone.utc)
+    ref = now or datetime.datetime.now(datetime.timezone.utc)
+    if ref - created > datetime.timedelta(hours=window):
+        return "refused", "Le plan Pilote gratuit se choisit à l'inscription — ce compte est trop ancien."
+    return "ok", None
 
 _PILOT_ACCENTS = (
     "linear-gradient(135deg, #6366f1, #4338ca)",

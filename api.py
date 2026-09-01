@@ -169,6 +169,114 @@ def me_features(token: str = Depends(require_token)) -> dict[str, Any]:
     return {"features": sorted(features.features_of(db.get_user(token)))}
 
 
+# --------------------------------------------------------------------------- #
+# Plan « Pilote gratuit » (quotas 1 post/j, 3 contacts/j — décision Alex 2026-09-01)
+#
+# Le plan vit dans `app_metadata.plan` (source serveur, jamais `user_metadata`) et
+# les plafonds s'appliquent CÔTÉ SERVEUR sur les endpoints qui coûtent — masquer un
+# bouton ne protège rien (même doctrine que `require_feature`). Défaut (plan absent)
+# = comportement historique : abonnés Stripe, comptes agence, comptes à crédits —
+# rien ne change pour eux.
+# --------------------------------------------------------------------------- #
+
+def _require_pilot_post_quota(token: str, requested: int = 1) -> None:
+    """402 si un compte `pilot_free` dépasse son quota de posts (fenêtre 24 h).
+
+    No-op pour tout autre compte — les compteurs ne sont même pas lus. Lecture des
+    compteurs échouée pour un compte Pilote → 503 (fail closed, patron des quotas
+    outreach : un garde-fou de coût ne s'efface jamais en silence)."""
+    if not pilot_plan.is_pilot_free(db.get_user(token)):
+        return
+    try:
+        used = db.count_recent_generated_posts(token)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] lecture du quota posts échouée : {exc}", flush=True)
+        raise HTTPException(status_code=503, detail="Vérification du quota Pilote indisponible — réessaie dans un instant.") from exc
+    error = pilot_plan.post_quota_error(used, requested)
+    if error:
+        raise HTTPException(status_code=402, detail=error)
+
+
+def _require_pilot_lead_quota(token: str) -> None:
+    """402 si un compte `pilot_free` dépasse ses contacts du jour (fenêtre 24 h)."""
+    if not pilot_plan.is_pilot_free(db.get_user(token)):
+        return
+    try:
+        used = db.count_recent_lead_invites(token)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] lecture du quota contacts échouée : {exc}", flush=True)
+        raise HTTPException(status_code=503, detail="Vérification du quota Pilote indisponible — réessaie dans un instant.") from exc
+    error = pilot_plan.lead_quota_error(used)
+    if error:
+        raise HTTPException(status_code=402, detail=error)
+
+
+@app.get("/me/plan")
+def me_plan(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Plan du compte + état des quotas Pilote — source de vérité pour le front.
+
+    Le front ne lit PAS `session.user.app_metadata` pour ça : le JWT côté client
+    peut être en retard d'un refresh sur une attribution toute fraîche, alors que
+    cet endpoint relit l'utilisateur en direct. Les compteurs sont best-effort ici
+    (affichage seulement — l'application du quota, elle, est fail closed sur les
+    endpoints qui coûtent)."""
+    user = db.get_user(token)
+    plan = pilot_plan.plan_of(user)
+    out: dict[str, Any] = {
+        "plan": plan,
+        "pilot_free": plan == pilot_plan.PLAN_PILOT_FREE,
+        "quotas": None,
+    }
+    if out["pilot_free"]:
+        posts_used = leads_used = None
+        try:
+            posts_used = db.count_recent_generated_posts(token)
+        except Exception:  # noqa: BLE001 — affichage seulement
+            pass
+        try:
+            leads_used = db.count_recent_lead_invites(token)
+        except Exception:  # noqa: BLE001
+            pass
+        out["quotas"] = {
+            "posts_per_day": pilot_plan.PILOT_FREE_POSTS_PER_DAY,
+            "leads_per_day": pilot_plan.PILOT_FREE_LEADS_PER_DAY,
+            "posts_used_today": posts_used,
+            "leads_used_today": leads_used,
+        }
+    return out
+
+
+@app.post("/me/plan/pilot")
+def me_plan_enroll_pilot(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Bascule CE compte sur le plan Pilote gratuit — point de branchement de la
+    landing `/pilote` (PR #479), appelé juste après le `signUp`.
+
+    Auto-service mais jamais une échappatoire : la décision (`can_enroll_pilot_free`)
+    refuse un compte qui a un autre plan, qui a déjà touché à l'abonnement/essai
+    Stripe, ou créé depuis plus de `PILOT_ENROLL_WINDOW_HOURS` (48 h par défaut).
+    Idempotent : re-appeler sur un compte déjà `pilot_free` répond OK sans écrire.
+
+    ⚠️ Ce endpoint ne lit RIEN de `user_metadata` (le tag `landing='pilote'` du
+    funnel est éditable par le client, il n'ouvre aucun droit) : c'est l'appel
+    lui-même, authentifié et gardé par la fenêtre d'inscription, qui fait foi."""
+    user = db.get_user(token) or {}
+    user_id = str(user.get("id") or "")
+    if not db.admin_enabled():
+        raise HTTPException(status_code=503, detail="Attribution du plan indisponible (service-role absent).")
+    status, message = pilot_plan.can_enroll_pilot_free(
+        current_plan=pilot_plan.plan_of(user),
+        has_subscription=bool(db.get_subscription_by_user_admin(user_id)),
+        created_at=db.admin_user_created_at(user_id),
+    )
+    if status == "already":
+        return {"ok": True, "plan": pilot_plan.PLAN_PILOT_FREE, "already": True}
+    if status != "ok":
+        raise HTTPException(status_code=409, detail=message or "Attribution du plan refusée.")
+    if not db.admin_set_user_plan(user_id, pilot_plan.PLAN_PILOT_FREE):
+        raise HTTPException(status_code=502, detail="Écriture du plan échouée — réessaie dans un instant.")
+    return {"ok": True, "plan": pilot_plan.PLAN_PILOT_FREE, "already": False}
+
+
 class AnalyzeRequest(BaseModel):
     profile_url: str = Field(..., min_length=8)
     limit: int = Field(default=25, ge=10, le=50)
@@ -2775,6 +2883,11 @@ def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) ->
     # Débit après toutes les préconditions : un user sans influenceur ne perd pas de crédits.
     credits: int | None = None
     if token:
+        # Plan Pilote gratuit : quota AVANT le débit — un 402 de quota ne doit
+        # jamais avoir déjà consommé des crédits. Couvre /generate ET /generate/stream
+        # (les deux passent ici) : la file de jobs a sa propre garde, aucun chemin
+        # de génération payant ne reste ouvert à un compte plafonné.
+        _require_pilot_post_quota(token, payload.count)
         ok, balance = db.debit_credits(token, "generate_post", payload.count)
         if not ok:
             cost = db.CREDIT_COSTS["generate_post"] * payload.count
@@ -2954,6 +3067,11 @@ def create_generation_job(payload: GenerationJobRequest, token: str = Depends(re
             listing_source_url = preview.get("source_url")
         except ListingError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+
+    # Plan Pilote gratuit : quota AVANT le débit — un refus de quota ne doit jamais
+    # avoir déjà consommé des crédits. Compté sur les jobs créés (fenêtre 24 h),
+    # toutes plateformes : la file est LE chemin de génération de l'UI.
+    _require_pilot_post_quota(token, payload.count)
 
     # Débit après les préconditions : un user sans influenceur ne perd pas de crédits.
     credit_action = "generate_reel" if platform == "instagram" else "generate_post"
@@ -5080,6 +5198,13 @@ def me_lead_invite(
     lead = db.get_lead(token, lead_id)
     if not lead:
         raise HTTPException(status_code=404, detail="Lead introuvable.")
+
+    # Plan Pilote gratuit : jusqu'à 3 contacts/jour. Posé AVANT les deux voies
+    # (file ET soupape immédiate) — le quota borne l'engagement d'un contact, pas
+    # seulement l'envoi. Les premiers MESSAGES à un lead déjà connecté ne sont
+    # volontairement PAS bornés : bloquer la suite d'une invitation acceptée
+    # laisserait le prospect sans réponse.
+    _require_pilot_lead_quota(token)
 
     if not (payload and payload.immediate):
         return _queue_outreach(token, lead, "invite")

@@ -2294,6 +2294,94 @@ def get_generation_job_status(access_token: str, job_id: str) -> str | None:
     return r.data[0]["status"] if r.data else None
 
 
+def count_recent_generated_posts(access_token: str, *, hours: int = 24) -> int:
+    """Posts lancés en génération sur la fenêtre glissante (quota du plan Pilote gratuit).
+
+    Somme des `count` des `generation_jobs` créés sur les dernières `hours` heures —
+    fenêtre glissante calculée depuis les données existantes, patron des compteurs
+    outreach : aucun compteur à réinitialiser, auto-correctif. Les jobs `cancelled`
+    et `error` ne comptent pas (un post jamais produit ne consomme pas le quota du
+    jour — un échec de modèle ne doit pas brûler l'unique post quotidien).
+
+    ⚠️ LÈVE en cas d'échec de lecture (patron `outreach_counts`) : le quota est un
+    garde-fou de coût, il échoue FERMÉ — l'appelant bloque, jamais il ne laisse
+    passer. `supabase_enabled()` False ou pas d'utilisateur → 0 (feature inactive,
+    pas un échec de lecture)."""
+    if not supabase_enabled():
+        return 0
+    user = get_user(access_token)
+    if not user:
+        return 0
+    since = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+    ).isoformat()
+    db = client_for_token(access_token)
+    # Pas de try/except : une erreur de lecture doit remonter (fail closed).
+    resp = (
+        db.table("generation_jobs")
+        .select("count,status")
+        .eq("user_id", user["id"])
+        .gte("created_at", since)
+        .execute()
+    )
+    total = 0
+    for row in resp.data or []:
+        if (row.get("status") or "") in ("cancelled", "error"):
+            continue
+        try:
+            total += max(1, int(row.get("count") or 1))
+        except (TypeError, ValueError):
+            total += 1
+    return total
+
+
+def count_recent_lead_invites(access_token: str, *, hours: int = 24) -> int:
+    """Invitations engagées sur la fenêtre glissante (quota du plan Pilote gratuit).
+
+    Deux sources, SANS double compte :
+    - la file (`linkedin_outreach_queue`, action `invite`, statuts `pending`/`sent`) —
+      un envoi du moteur est journalisé `origin='queue'`, mais sa ligne de file le
+      porte déjà : on ne relit pas le journal pour lui ;
+    - le journal (`linkedin_outreach_actions`, `origin='immediate'`) — la soupape
+      « envoyer maintenant » n'entre jamais en file.
+    Une action annulée (`cancelled`), échouée (`failed`) ou sautée (`skipped` — déjà
+    en relation) rend son créneau : le client ne perd pas un contact du jour sur un
+    hoquet.
+
+    ⚠️ LÈVE en cas d'échec de lecture (fail closed, patron `outreach_counts`)."""
+    if not supabase_enabled():
+        return 0
+    user = get_user(access_token)
+    if not user:
+        return 0
+    since = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+    ).isoformat()
+    db = client_for_token(access_token)
+    queued = (
+        db.table("linkedin_outreach_queue")
+        .select("id,status")
+        .eq("user_id", user["id"])
+        .eq("action_type", "invite")
+        .gte("created_at", since)
+        .execute()
+    )
+    total = sum(
+        1 for row in (queued.data or []) if (row.get("status") or "") in ("pending", "sent")
+    )
+    immediate = (
+        db.table("linkedin_outreach_actions")
+        .select("id")
+        .eq("user_id", user["id"])
+        .eq("action_type", "invite")
+        .eq("status", "sent")
+        .eq("origin", "immediate")
+        .gte("created_at", since)
+        .execute()
+    )
+    return total + len(immediate.data or [])
+
+
 def update_generation_job(access_token: str, job_id: str, **fields: Any) -> None:
     db = client_for_token(access_token)
     fields["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -7073,3 +7161,49 @@ def admin_user_email(user_id: str) -> str:
         return ""
     user = getattr(resp, "user", None)
     return str(getattr(user, "email", "") or "") if user else ""
+
+
+def admin_user_created_at(user_id: str) -> str | None:
+    """Date de création d'un compte (ISO), lue en service-role. None si illisible.
+
+    Sert au garde-fou d'attribution du plan Pilote gratuit : l'appelant doit
+    distinguer « date connue » de « lecture échouée » et REFUSER dans le second
+    cas (fail closed) — jamais supposer qu'un compte illisible est neuf."""
+    if not admin_enabled() or not user_id:
+        return None
+    try:
+        resp = admin_client().auth.admin.get_user_by_id(user_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] lecture created_at échouée ({user_id}) : {exc}", flush=True)
+        return None
+    user = getattr(resp, "user", None)
+    created = getattr(user, "created_at", None) if user else None
+    if created is None:
+        return None
+    return created.isoformat() if hasattr(created, "isoformat") else str(created)
+
+
+def admin_set_user_plan(user_id: str, plan: str) -> bool:
+    """Pose `app_metadata.plan` en service-role, en PRÉSERVANT le reste du metadata.
+
+    ⚠️ Le plan vit dans `app_metadata` (jamais `user_metadata`, modifiable par le
+    client — voir `src/pilot_plan.py`). La fusion est faite ici explicitement :
+    envoyer `{"plan": …}` seul risquerait d'effacer `role: ideas_only` ou les
+    `features` déjà posés (le piège Joëlle documenté au changelog 2026-07-22).
+    Lecture préalable échouée → False, on n'écrit PAS à l'aveugle.
+
+    À savoir : le cache de jetons (`get_user`, TTL 60 s) peut servir l'ancien
+    metadata jusqu'à 60 s après l'écriture — les quotas s'appliquent donc au plus
+    tard une minute après l'attribution."""
+    if not admin_enabled() or not user_id or not plan:
+        return False
+    existing = admin_user_app_metadata(user_id)
+    if existing is None:
+        return False
+    merged = {**existing, "plan": plan}
+    try:
+        admin_client().auth.admin.update_user_by_id(user_id, {"app_metadata": merged})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] écriture du plan échouée ({user_id}) : {exc}", flush=True)
+        return False
+    return True
