@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import PublishConfirmModal from "../PublishConfirmModal";
-import PilotModeView, { type PilotPlan } from "./PilotModeView";
+import PilotModeView, { type PilotPlan, type PilotFollowSuggestion } from "./PilotModeView";
 import { authHeaders } from "../../lib/supabase";
 
 const DIRECT_API_URL =
@@ -65,6 +65,17 @@ export default function PilotShell({
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishing, setPublishing] = useState(false);
 
+  // Suggestions « à suivre » — chargées au PREMIER dépliage seulement.
+  // La requête (lecture du cache mutualisé côté serveur) ne doit pas peser sur
+  // le chargement de l'écran d'accueil, que tout le monde voit tous les jours,
+  // pour un panneau que peu déplieront.
+  const [followSuggestions, setFollowSuggestions] = useState<PilotFollowSuggestion[]>([]);
+  const [followLoading, setFollowLoading] = useState(false);
+  const [followError, setFollowError] = useState("");
+  const [followLoaded, setFollowLoaded] = useState(false);
+  const [followedHandles, setFollowedHandles] = useState<string[]>([]);
+  const [followCapReached, setFollowCapReached] = useState(false);
+
   const loadPlan = useCallback(async () => {
     setLoading(true);
     setLoadError("");
@@ -112,6 +123,45 @@ export default function PilotShell({
       toast.error(err instanceof Error ? err.message : "Publication impossible");
     } finally {
       setPublishing(false);
+    }
+  }
+
+  const loadFollowSuggestions = useCallback(async () => {
+    if (followLoaded || followLoading) return; // une seule fois par session d'écran
+    setFollowLoading(true);
+    setFollowError("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/follow-suggestions`, {
+        headers: await authHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Chargement impossible");
+      setFollowSuggestions(data.suggestions || []);
+      setFollowCapReached((data.followed_count || 0) >= (data.cap || 5));
+      setFollowLoaded(true);
+    } catch (err: unknown) {
+      setFollowError(err instanceof Error ? err.message : "Chargement impossible");
+    } finally {
+      setFollowLoading(false);
+    }
+  }, [followLoaded, followLoading]);
+
+  async function handleFollowProfile(handle: string) {
+    try {
+      // Même endpoint (et même plafond de 5) que la veille côté Expert : aucun
+      // second mécanisme de suivi n'existe.
+      const res = await fetch(`${DIRECT_API_URL}/me/followed-influencers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ handle }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Impossible de suivre ce profil");
+      setFollowedHandles((prev) => (prev.includes(handle) ? prev : [...prev, handle]));
+      toast.success("Ajouté à ta veille");
+    } catch (err: unknown) {
+      // Le plafond de 5 remonte ici en 422 avec son message explicite.
+      toast.error(err instanceof Error ? err.message : "Impossible de suivre ce profil");
     }
   }
 
@@ -192,6 +242,13 @@ export default function PilotShell({
             postId: meta?.post_id || undefined,
           });
         }}
+        followSuggestions={followSuggestions}
+        followLoading={followLoading}
+        followError={followError}
+        followedHandles={followedHandles}
+        followCapReached={followCapReached}
+        onFollowPanelOpen={() => void loadFollowSuggestions()}
+        onFollowProfile={(handle) => void handleFollowProfile(handle)}
         onRegeneratePost={() => {
           const topic = plan.post.hook || plan.post.body.slice(0, 120) || "";
           onOpenAssistant(postText || topic);
