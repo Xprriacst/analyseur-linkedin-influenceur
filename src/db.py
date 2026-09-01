@@ -4434,6 +4434,35 @@ def upsert_cached_posts(
         pass  # La persistance du cache ne doit jamais bloquer l'analyse
 
 
+# ── Suggestions de profils à suivre — cross-user, sans coût (onboarding) ──── #
+
+def list_influencer_cache_candidates(limit: int = 300) -> list[dict]:
+    """Candidats de suggestion « à suivre » depuis le cache cross-user.
+
+    Ne projette QUE des champs publics d'un profil LinkedIn (handle/nom/titre/
+    abonnés) — jamais `raw_profile` ni `synthesis`, et cette table n'a de toute
+    façon pas de `user_id` : impossible d'exposer une donnée privée d'un autre
+    compte par ce chemin. Sert uniquement à proposer, à l'onboarding, des
+    influenceurs DÉJÀ analysés par n'importe quel client (donc gratuit — aucun
+    scrape Apify n'est déclenché ici), matchés ensuite par mots-clés de niche.
+    """
+    if not admin_enabled():
+        return []
+    try:
+        resp = (
+            admin_client()
+            .table("influencer_cache")
+            .select("id,handle,name,headline,follower_count")
+            .eq("platform", "linkedin")
+            .order("last_analyzed_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return resp.data or []
+    except Exception:
+        return []
+
+
 # ── Monitoring influenceurs (ALE-214) ─────────────────────────────────────── #
 
 def list_followed_influencers(access_token: str) -> list[dict]:
