@@ -16,6 +16,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -35,9 +36,10 @@ from src.audit_report import start_audit_email_thread
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
-from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread, start_lead_collection_job_thread, start_avatar_video_job_thread
+from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread, start_lead_collection_job_thread, start_avatar_video_job_thread, start_lead_import_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters, lead_collect_credit_cost, effective_max_comments
 from src import lead_search
+from src import lead_import
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, extract_reel_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
 from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures, IG_TRAMES
 from src.llm import adapt_post_for_x, adapt_post_for_reddit
@@ -4497,6 +4499,17 @@ def collect_me_lead_source(
     if not source:
         raise HTTPException(status_code=404, detail="Source introuvable.")
     requested = payload.max_comments if payload else None
+    if source.get("kind") == "import":
+        # Le fichier n'est pas conservé côté serveur : il n'y a rien à
+        # « recollecter ». Re-téléverser le même fichier retombe sur cette source
+        # (clé = hash du contenu) et n'ajoute que les nouveaux profils.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Cette source vient d'un fichier importé — re-téléverse le fichier "
+                "(bloc « Importer un fichier de leads ») pour ajouter de nouveaux prospects."
+            ),
+        )
     if source.get("kind") == "search":
         # Relancer une recherche déjà importée : nouveaux profils seulement
         # (dédup par personne côté `save_leads`).
@@ -4532,6 +4545,90 @@ def add_me_lead_search(payload: LeadSearchRequest, token: str = Depends(require_
 
     job = _create_lead_search_job(token, source, payload.max_results)
     return {"source": source, "job": job, "existing": existing}
+
+
+@app.post("/me/lead-imports")
+async def add_me_lead_import(
+    request: Request,
+    file: UploadFile = File(...),
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Importe un fichier de leads (CSV ou Excel .xlsx) — backlog Notion.
+
+    Les lignes portant une URL de profil LinkedIn deviennent des leads
+    (dédupliqués par personne, notés par le ciblage ICP) ; les lignes sans URL
+    valide sont ignorées ET COMPTÉES — le résumé est rendu au client, jamais
+    avalé. Gratuit (aucun crédit) : lire un fichier ne coûte rien.
+
+    Le parsing est synchrone (rapide, tout est en mémoire) ; la persistance +
+    le scoring partent en job de fond `kind='import'` (migration 0070) que le
+    frontend suit par le polling existant des `lead_collection_jobs`.
+
+    Contrairement à la recherche (0062), AUCUN compte LinkedIn connecté n'est
+    requis : rien ne passe par Unipile.
+    """
+    # Refus rapide sur la taille annoncée, avant de lire le corps en mémoire
+    # (même garde que l'upload de vidéo de reel).
+    content_length = request.headers.get("content-length")
+    mb = lead_import.MAX_FILE_BYTES // (1024 * 1024)
+    try:
+        if content_length and int(content_length) > lead_import.MAX_FILE_BYTES + 64 * 1024:
+            raise HTTPException(status_code=413, detail=f"Fichier trop volumineux ({mb} Mo maximum).")
+    except ValueError:
+        pass
+    data = await file.read()
+    if len(data) > lead_import.MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail=f"Fichier trop volumineux ({mb} Mo maximum).")
+
+    # ⚠️ Le parsing est du CPU pur, et il n'est pas instantané : un .xlsx proche
+    # du plafond se décompresse en dizaines de Mo de XML (mesuré ~7,5 s). Le
+    # laisser dans la coroutine bloquerait la boucle d'évènements — c'est-à-dire
+    # TOUS les autres clients de l'unique instance Render, invisiblement.
+    try:
+        parsed = await run_in_threadpool(lead_import.parse_leads_file, file.filename, data)
+    except lead_import.LeadImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Clé = hash du contenu : re-téléverser LE MÊME fichier retombe sur la même
+    # source (dédup naturelle par (user_id, post_url), comme la recherche 0062).
+    key = lead_import.import_source_key(data)
+    source = db.get_lead_source_by_url(token, key)
+    existing = bool(source)
+    if not source:
+        source = db.add_lead_source(
+            token,
+            key,
+            # Le nom du fichier est le seul « visage » de cette source : il part
+            # dans les signaux du lead (« fichier importé « clients.csv » »).
+            author=((file.filename or "").strip()[:200] or None),
+            kind="import",
+            origin="manual",
+        )
+    if not source:
+        raise HTTPException(status_code=500, detail="Impossible d'enregistrer l'import.")
+
+    job = db.create_lead_collection_job(
+        token, source["id"], key, len(parsed["leads"]), kind="import"
+    )
+    if not job:
+        raise HTTPException(status_code=500, detail="Création du job d'import impossible.")
+    start_lead_import_job_thread(
+        token,
+        job["id"],
+        source,
+        parsed["leads"],
+        parsed["ignored"],
+        parsed["rows"],
+        parsed["truncated"],
+    )
+    return {
+        "source": source,
+        "job": job,
+        "existing": existing,
+        "profiles_count": len(parsed["leads"]),
+        "ignored_rows": parsed["ignored"],
+        "truncated": parsed["truncated"],
+    }
 
 
 @app.get("/me/lead-collection-jobs")
