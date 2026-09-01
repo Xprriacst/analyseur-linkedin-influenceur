@@ -24,7 +24,13 @@ from src import db, slack as slack_client, zernio, manychat, ig_agent, weekly_po
 from src import heygen
 from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
-from src import audit_projection, lead_notify, mailer, pilot_plan, skool_invite, dashboard_progress
+from src import audit_projection, lead_notify, mailer, pilot_plan, skool_invite
+# ⚠️ Alias OBLIGATOIRE : le nom `dashboard_progress` est déjà pris dans ce fichier
+# par l'endpoint `GET /dashboard/progress` (def dashboard_progress, plus bas). Un
+# `from src import dashboard_progress` serait silencieusement ÉCRASÉ par ce `def`
+# au chargement du module, et chaque appel `dashboard_progress.xxx()` lèverait un
+# AttributeError à l'exécution — invisible pour py_compile comme pour le build.
+from src import dashboard_progress as dashboard_fmt
 from src.audit_report import start_audit_email_thread
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
@@ -5469,11 +5475,16 @@ def me_linkedin_outreach_chat_send(
             learn_opt_out=payload.learn_opt_out,
         )
     return {"ok": True, "quota": _outreach_quota(account, *_safe_counts(token))}
-
-
-# Mon profil → Dashboard (backlog Notion, priorité Alex 2026-08-31). Combien de
-# conversations vérifier « qui a répondu ? » à chaque ouverture — un appel Unipile
-# par conversation, borné pour ne pas ralentir le dashboard ni matraquer l'API.
+# Mon profil → Dashboard (backlog Notion, priorité Alex 2026-08-31).
+#
+# ⚠️ DEUX endpoints, pas un seul, et ce n'est pas un détail de découpage : vérifier
+# « qui a répondu ? » coûte UN appel Unipile PAR conversation (leur API n'expose
+# aucun indicateur de réponse dans la liste des chats — vérifié dans
+# `unipile.normalize_chat`). Vingt conversations = vingt allers-retours réseau
+# séquentiels, soit plusieurs secondes. Les mettre dans le même endpoint que les
+# abonnés et les compteurs d'envoi ferait attendre TOUT le dashboard derrière la
+# section la plus lente et la plus fragile — et une panne Unipile retarderait des
+# chiffres qui, eux, viennent de notre propre base et sont disponibles tout de suite.
 _DASHBOARD_REPLY_CHECK_CAP = 20
 _DASHBOARD_REPLY_MESSAGES_PEEK = 5
 
@@ -5481,7 +5492,8 @@ _DASHBOARD_REPLY_MESSAGES_PEEK = 5
 @app.get("/me/dashboard/progress")
 def me_dashboard_progress(token: str = Depends(require_token)) -> dict[str, Any]:
     """Mon profil → Dashboard : abonnés (baseline + progression), invitations,
-    messages, retours — vue d'ensemble en lecture seule de la prospection.
+    messages — vue d'ensemble en lecture seule de la prospection. Aucun appel
+    réseau sortant : répond immédiatement, uniquement sur notre base.
 
     ⚠️ Les abonnés ne sont JAMAIS re-scrapés ici (coût Apify) : la valeur vient du
     dernier relevé déjà connu dans le corpus du client (son propre profil LinkedIn,
@@ -5490,55 +5502,29 @@ def me_dashboard_progress(token: str = Depends(require_token)) -> dict[str, Any]
     analysé : section 'indisponible', propre — jamais un 0 qui se ferait passer
     pour « zéro abonné ».
 
-    Les sections dépendant d'Unipile (conversations, retours) sont best-effort :
-    Unipile non configuré, compte non connecté, ou appel en échec ⇒ section
-    'indisponible' avec sa raison — le reste du dashboard s'affiche quand même.
+    Aucun crédit débité, aucun appel modèle : c'est de la lecture.
     """
-    current_followers = db.own_follower_count(token)
-    if current_followers is not None:
-        db.record_follower_snapshot(token, current_followers)
-    followers = dashboard_progress.follower_progress(db.list_follower_snapshots(token))
+    try:
+        current_followers = db.own_follower_count(token)
+        if current_followers is not None:
+            db.record_follower_snapshot(token, current_followers, source="dashboard")
+        followers = dashboard_fmt.follower_progress(db.list_follower_snapshots(token))
+    except Exception as exc:  # noqa: BLE001 — une section en panne n'emporte pas le dashboard
+        print(f"[dashboard] section abonnés indisponible : {exc}", flush=True)
+        followers = {"available": False, "reason": "read_error"}
 
-    funnel = db.outreach_lead_funnel(token)
-    counts, _counts_ok = _safe_counts(token)  # zéros déjà en cas d'échec de lecture
+    try:
+        funnel = db.outreach_lead_funnel(token)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[dashboard] funnel de prospection illisible : {exc}", flush=True)
+        funnel = {"invited": 0, "connected": 0, "messaged": 0}
+    counts, counts_ok = _safe_counts(token)
 
-    account = db.get_linkedin_outreach_account(token)
+    try:
+        account = db.get_linkedin_outreach_account(token)
+    except Exception:  # noqa: BLE001 — au pire la section « Retours » se dit non reliée
+        account = None
     unipile_connected = bool(account and account.get("unipile_account_id"))
-
-    conversations: dict[str, Any] = {"available": False, "reason": "not_configured"}
-    replies: dict[str, Any] = {"available": False, "reason": "not_configured"}
-    if unipile.enabled():
-        if not unipile_connected:
-            conversations = {"available": False, "reason": "not_connected"}
-            replies = {"available": False, "reason": "not_connected"}
-        else:
-            try:
-                chats = unipile.list_chats(account["unipile_account_id"])
-                conversations = {"available": True, "total": len(chats)}
-            except unipile.UnipileError as exc:
-                conversations = {"available": False, "reason": "unipile_error", "error": str(exc)}
-
-            leads_to_check = db.list_messaged_leads_with_chat(token, limit=_DASHBOARD_REPLY_CHECK_CAP)
-            if not leads_to_check:
-                replies = {
-                    "available": True,
-                    "replied": 0,
-                    "checked": 0,
-                    "total_messaged": funnel.get("messaged", 0),
-                    "capped": False,
-                }
-            else:
-                checks: list[bool | None] = []
-                for lead in leads_to_check:
-                    chat_id = lead.get("outreach_chat_id")
-                    try:
-                        msgs = unipile.list_chat_messages(chat_id, limit=_DASHBOARD_REPLY_MESSAGES_PEEK)
-                        checks.append(any(not unipile.normalize_message(m).get("from_me") for m in msgs))
-                    except unipile.UnipileError:
-                        checks.append(None)  # conversation non vérifiable, exclue du compte
-                replies = dashboard_progress.reply_progress(
-                    checks, funnel.get("messaged", 0), _DASHBOARD_REPLY_CHECK_CAP
-                )
 
     return {
         "followers": followers,
@@ -5552,11 +5538,72 @@ def me_dashboard_progress(token: str = Depends(require_token)) -> dict[str, Any]
             "sent_today": counts.get("messages_today", 0),
             "total_sent": funnel.get("messaged", 0),
         },
-        "conversations": conversations,
-        "replies": replies,
+        # Les compteurs du jour/semaine viennent du journal d'envoi : s'il est
+        # illisible, `_safe_counts` renvoie des zéros. Le dire à l'écran plutôt que
+        # d'afficher « 0 invitation aujourd'hui » à quelqu'un qui vient d'en envoyer.
+        "counts_reliable": counts_ok,
         "unipile_connected": unipile_connected,
     }
 
+
+@app.get("/me/dashboard/replies")
+def me_dashboard_replies(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Mon profil → Dashboard, section « Retours » : conversations ouvertes et
+    combien de prospects contactés ont répondu.
+
+    Volontairement SÉPARÉ de `/me/dashboard/progress` (cf. le commentaire au-dessus) :
+    cet endpoint parle à Unipile et peut être lent. Best-effort de bout en bout —
+    Unipile non configuré, compte non connecté, ou appel en échec ⇒ section
+    'indisponible' avec sa raison, jamais une erreur qui casse l'écran.
+
+    ⚠️ L'échantillon est BORNÉ à `_DASHBOARD_REPLY_CHECK_CAP` conversations (les plus
+    récentes). `capped` dit à l'écran que le chiffre porte sur un échantillon et pas
+    sur la totalité : un « 3 réponses » présenté comme un total alors qu'on n'a
+    regardé que 20 conversations sur 200 serait un chiffre faux.
+    """
+    if not unipile.enabled():
+        return {
+            "conversations": {"available": False, "reason": "not_configured"},
+            "replies": {"available": False, "reason": "not_configured"},
+        }
+
+    account = db.get_linkedin_outreach_account(token)
+    if not account or not account.get("unipile_account_id"):
+        return {
+            "conversations": {"available": False, "reason": "not_connected"},
+            "replies": {"available": False, "reason": "not_connected"},
+        }
+
+    try:
+        chats = unipile.list_chats(account["unipile_account_id"])
+        conversations: dict[str, Any] = {"available": True, "total": len(chats)}
+    except unipile.UnipileError as exc:
+        conversations = {"available": False, "reason": "unipile_error", "error": str(exc)}
+
+    try:
+        total_messaged = db.outreach_lead_funnel(token).get("messaged", 0)
+    except Exception:  # noqa: BLE001
+        total_messaged = 0
+
+    leads_to_check = db.list_messaged_leads_with_chat(token, limit=_DASHBOARD_REPLY_CHECK_CAP)
+    checks: list[bool | None] = []
+    for lead in leads_to_check:
+        chat_id = lead.get("outreach_chat_id")
+        try:
+            msgs = unipile.list_chat_messages(chat_id, limit=_DASHBOARD_REPLY_MESSAGES_PEEK)
+            checks.append(any(not unipile.normalize_message(m).get("from_me") for m in msgs))
+        except unipile.UnipileError:
+            # Conversation non vérifiable : exclue du compte plutôt que comptée
+            # « pas de réponse » — une panne réseau ne doit pas faire mentir le
+            # chiffre à la baisse (verrouillé par tests/test_dashboard_progress.py).
+            checks.append(None)
+
+    return {
+        "conversations": conversations,
+        "replies": dashboard_fmt.reply_progress(
+            checks, total_messaged, _DASHBOARD_REPLY_CHECK_CAP
+        ),
+    }
 
 @app.get("/me/pilot/today")
 def me_pilot_today(token: str = Depends(require_token)) -> dict[str, Any]:

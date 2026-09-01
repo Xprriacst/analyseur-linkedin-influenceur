@@ -95,5 +95,227 @@ class ReplyProgressTest(unittest.TestCase):
         self.assertFalse(result["capped"])
 
 
+class _FakeResponse:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeQuery:
+    """Client Supabase fluide de test : enregistre les filtres appliqués.
+
+    Chaque méthode chaînable renvoie `self` ; `execute()` rend la réponse canned.
+    `not_` est une propriété (patron `.not_.is_(...)` de supabase-py)."""
+
+    def __init__(self, data):
+        self._data = data
+        self.calls: list[tuple] = []
+
+    def table(self, name):
+        self.calls.append(("table", name))
+        return self
+
+    def select(self, cols):
+        self.calls.append(("select", cols))
+        return self
+
+    def eq(self, col, val):
+        self.calls.append(("eq", col, val))
+        return self
+
+    def in_(self, col, vals):
+        self.calls.append(("in_", col, tuple(vals)))
+        return self
+
+    def is_(self, col, val):
+        self.calls.append(("is_", col, val))
+        return self
+
+    def order(self, col, desc=False):
+        self.calls.append(("order", col, desc))
+        return self
+
+    def limit(self, n):
+        self.calls.append(("limit", n))
+        return self
+
+    def upsert(self, row, on_conflict=None):
+        self.calls.append(("upsert", tuple(sorted(row.items())), on_conflict))
+        return self
+
+    @property
+    def not_(self):
+        return self
+
+    def execute(self):
+        return _FakeResponse(self._data)
+
+
+class _DbPatch:
+    """Neutralise les accès réseau/base de `src.db` le temps d'un test."""
+
+    def __init__(self, testcase, *, profile, rows):
+        from src import db as db_module
+
+        self.db = db_module
+        self.fake = _FakeQuery(rows)
+        self._originals = {
+            "get_editorial_profile": db_module.get_editorial_profile,
+            "get_user": db_module.get_user,
+            "client_for_token": db_module.client_for_token,
+            "supabase_enabled": db_module.supabase_enabled,
+        }
+        db_module.get_editorial_profile = lambda _t: profile
+        db_module.get_user = lambda _t: {"id": "user-1"}
+        db_module.client_for_token = lambda _t: self.fake
+        db_module.supabase_enabled = lambda: True
+        testcase.addCleanup(self.restore)
+
+    def restore(self):
+        for name, fn in self._originals.items():
+            setattr(self.db, name, fn)
+
+
+class OwnFollowerCountTest(unittest.TestCase):
+    """`db.own_follower_count` — la source du chiffre d'abonnés du dashboard."""
+
+    def test_zero_is_unknown_not_zero_followers(self) -> None:
+        # Régression : quand le scrape de profil échoue (permissions de l'acteur
+        # Apify, plafond mensuel), `_influencer_row` écrit `follower_count = 0`
+        # SANS erreur. Le prendre au mot poserait une baseline à 0, puis un bond de
+        # « +1 200 abonnés » à la première analyse réussie — un chiffre faux sur son
+        # propre compte, affiché comme un fait.
+        from src import db as db_module
+
+        _DbPatch(
+            self,
+            profile={"linkedin_url": "https://www.linkedin.com/in/alex/"},
+            rows=[{"follower_count": 0}],
+        )
+        self.assertIsNone(db_module.own_follower_count("tok"))
+
+    def test_real_count_is_returned(self) -> None:
+        from src import db as db_module
+
+        _DbPatch(
+            self,
+            profile={"linkedin_url": "https://www.linkedin.com/in/alex/"},
+            rows=[{"follower_count": 1200}],
+        )
+        self.assertEqual(db_module.own_follower_count("tok"), 1200)
+
+    def test_query_is_scoped_to_linkedin_platform(self) -> None:
+        # Le même handle peut exister en ligne Instagram (analyse IG) : sans ce
+        # filtre, le nombre d'abonnés Instagram pourrait s'afficher comme LinkedIn.
+        from src import db as db_module
+
+        patch = _DbPatch(
+            self,
+            profile={"linkedin_url": "https://www.linkedin.com/in/alex/"},
+            rows=[{"follower_count": 1200}],
+        )
+        db_module.own_follower_count("tok")
+        self.assertIn(("eq", "platform", "linkedin"), patch.fake.calls)
+
+    def test_no_linkedin_url_means_unavailable(self) -> None:
+        from src import db as db_module
+
+        _DbPatch(self, profile={"linkedin_url": ""}, rows=[])
+        self.assertIsNone(db_module.own_follower_count("tok"))
+
+    def test_profile_never_analyzed_means_unavailable(self) -> None:
+        from src import db as db_module
+
+        _DbPatch(
+            self,
+            profile={"linkedin_url": "https://www.linkedin.com/in/alex/"},
+            rows=[],
+        )
+        self.assertIsNone(db_module.own_follower_count("tok"))
+
+
+class RecordFollowerSnapshotTest(unittest.TestCase):
+    def test_upsert_is_idempotent_per_day(self) -> None:
+        # Ouvrir le dashboard trois fois dans la journée ne doit créer qu'UNE ligne :
+        # c'est `on_conflict="user_id,captured_on"` (migration 0071) qui le garantit,
+        # pas un `select` préalable. Sans lui, l'historique se remplirait de doublons
+        # et la « progression » deviendrait illisible.
+        import datetime as _dt
+
+        from src import db as db_module
+
+        patch = _DbPatch(self, profile={}, rows=[])
+        db_module.record_follower_snapshot("tok", 1200, source="dashboard")
+        upserts = [c for c in patch.fake.calls if c[0] == "upsert"]
+        self.assertEqual(len(upserts), 1)
+        self.assertEqual(upserts[0][2], "user_id,captured_on")
+        row = dict(upserts[0][1])
+        self.assertEqual(row["captured_on"], _dt.date.today().isoformat())
+        self.assertEqual(row["follower_count"], 1200)
+        self.assertEqual(row["source"], "dashboard")
+
+    def test_write_failure_never_raises(self) -> None:
+        # Best-effort : un relevé de suivi ne doit jamais faire tomber le dashboard
+        # (ni, via `save_analysis`, une analyse déjà payée en scrape et en modèle).
+        from src import db as db_module
+
+        patch = _DbPatch(self, profile={}, rows=[])
+
+        def boom(*_a, **_k):
+            raise RuntimeError("table absente")
+
+        patch.fake.upsert = boom
+        db_module.record_follower_snapshot("tok", 1200)  # ne doit pas lever
+
+
+class OutreachLeadFunnelTest(unittest.TestCase):
+    def test_counts_without_double_counting(self) -> None:
+        # `outreach_status` avance dans un seul sens : un lead « messaged » a été
+        # invité ET connecté. Le total « invité » est donc le nombre de lignes, pas
+        # la somme des trois statuts (qui compterait le même lead trois fois).
+        from src import db as db_module
+
+        _DbPatch(
+            self,
+            profile={},
+            rows=[
+                {"outreach_status": "invite_sent"},
+                {"outreach_status": "invite_sent"},
+                {"outreach_status": "connected"},
+                {"outreach_status": "messaged"},
+                {"outreach_status": "messaged"},
+            ],
+        )
+        funnel = db_module.outreach_lead_funnel("tok")
+        self.assertEqual(funnel, {"invited": 5, "connected": 3, "messaged": 2})
+
+    def test_empty_funnel_is_zeros_not_error(self) -> None:
+        from src import db as db_module
+
+        _DbPatch(self, profile={}, rows=[])
+        self.assertEqual(
+            db_module.outreach_lead_funnel("tok"),
+            {"invited": 0, "connected": 0, "messaged": 0},
+        )
+
+
+class ApiModuleAliasTest(unittest.TestCase):
+    def test_dashboard_progress_module_is_imported_under_an_alias(self) -> None:
+        """`api.py` définit DÉJÀ `def dashboard_progress` (endpoint
+        `GET /dashboard/progress`). Un `from src import dashboard_progress` y serait
+        silencieusement écrasé par ce `def` au chargement, et chaque appel
+        `dashboard_progress.follower_progress(...)` lèverait un AttributeError EN
+        PRODUCTION — invisible pour py_compile comme pour le build front. Ce test
+        verrouille l'alias ; il tombe si quelqu'un « nettoie » l'import."""
+        import pathlib
+
+        source = pathlib.Path(__file__).resolve().parents[1] / "api.py"
+        text = source.read_text(encoding="utf-8")
+        self.assertIn("from src import dashboard_progress as dashboard_fmt", text)
+        self.assertNotIn("from src import dashboard_progress\n", text)
+        # Le nom nu ne doit plus servir à appeler le module de mise en forme.
+        self.assertNotIn("dashboard_progress.follower_progress(", text)
+        self.assertNotIn("dashboard_progress.reply_progress(", text)
+
+
 if __name__ == "__main__":
     unittest.main()
