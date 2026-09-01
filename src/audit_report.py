@@ -484,6 +484,17 @@ def process_audit_lead(lead_id: str, calendly_url: str = "") -> None:
     ceci s'exécute. Toute erreur est consignée sur la ligne du lead (`status`,
     `error_message`) — un audit qui n'est pas parti doit être visible et rejouable,
     pas silencieusement perdu.
+
+    ⚠️ Génération et envoi sont DEUX étapes. Un 403 Resend (domaine non
+    vérifié) ne doit JAMAIS jeter un audit déjà produit : `audit_payload`
+    est persisté dès que le modèle a répondu, AVANT tout appel réseau
+    d'envoi. Statuts :
+    - `failed` = la génération n'a pas abouti (rien à envoyer, rien à
+      afficher sur `/a/{token}`) ;
+    - `generated` = l'audit est en base, l'e-mail n'est pas parti ;
+    - `sent` = les deux ont réussi.
+    Rejouer un `generated` (ou un `failed` dont le payload a survécu)
+    reprend l'envoi sans rappeler le modèle.
     """
     lead = db.get_audit_lead(lead_id)
     if not lead:
@@ -491,13 +502,30 @@ def process_audit_lead(lead_id: str, calendly_url: str = "") -> None:
     if lead.get("status") in {"generating", "sent"}:
         return  # déjà pris en charge (rejeu, double thread)
 
+    already = lead.get("audit_payload")
+    already = already if isinstance(already, dict) and already else None
+
     db.update_audit_lead(lead_id, {"status": "generating"})
     try:
         _ensure_public_token(lead)
         lead = db.get_audit_lead(lead_id) or lead
+        if already:
+            audit = already
+            notion_fields: dict[str, str] = {}
+        else:
+            audit = generate_full_audit(lead.get("preview"), lead.get("profile"))
+            notion_fields = _publish_notion(lead, audit, calendly_url)
+        db.update_audit_lead(lead_id, {
+            "status": "generated",
+            "audit_payload": audit,
+            **{k: v for k, v in notion_fields.items() if v},
+        })
+    except Exception as exc:
+        print(f"[audit-lead] génération impossible ({lead_id}) : {exc}", file=sys.stderr)
+        db.update_audit_lead(lead_id, {"status": "failed", "error_message": str(exc)[:500]})
+        return
 
-        audit = generate_full_audit(lead.get("preview"), lead.get("profile"))
-        notion_fields = _publish_notion(lead, audit, calendly_url)
+    try:
         html = render_audit_html(
             lead.get("full_name") or "",
             audit,
@@ -505,12 +533,8 @@ def process_audit_lead(lead_id: str, calendly_url: str = "") -> None:
             calendly_url,
         )
         if not mailer.enabled():
-            # L'audit (+ Notion) est généré et stocké ; il ne manque que le transport.
             db.update_audit_lead(lead_id, {
-                "status": "failed",
-                "audit_payload": audit,
                 "error_message": "RESEND_API_KEY absent : audit généré mais non envoyé.",
-                **{k: v for k, v in notion_fields.items() if v},
             })
             return
         mailer.send_email(
@@ -521,14 +545,16 @@ def process_audit_lead(lead_id: str, calendly_url: str = "") -> None:
         )
         db.update_audit_lead(lead_id, {
             "status": "sent",
-            "audit_payload": audit,
             "error_message": None,
             "sent_at": db.now_iso(),
-            **{k: v for k, v in notion_fields.items() if v},
         })
     except Exception as exc:
-        print(f"[audit-lead] génération/envoi impossible ({lead_id}) : {exc}", file=sys.stderr)
-        db.update_audit_lead(lead_id, {"status": "failed", "error_message": str(exc)[:500]})
+        print(f"[audit-lead] envoi impossible ({lead_id}) : {exc}", file=sys.stderr)
+        # Payload déjà en base : on ne rétrograde PAS en `failed`.
+        db.update_audit_lead(lead_id, {
+            "status": "generated",
+            "error_message": str(exc)[:500],
+        })
 
 
 def start_audit_email_thread(lead_id: str, calendly_url: str = "") -> None:
