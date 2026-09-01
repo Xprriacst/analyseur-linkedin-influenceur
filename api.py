@@ -731,6 +731,49 @@ def onboarding_page_view(request: Request) -> dict[str, Any]:
     return {"ok": True}
 
 
+# Ouverture de la landing `/pilote` (mode Pilote gratuit). Compteur DÉDIÉ, pas
+# partagé avec celui de `/onboarding` : deux landings vivent des trafics sans
+# rapport, et un plafond commun ferait disparaître les vues de l'une derrière le
+# bruit de l'autre — exactement ce que le compteur est censé rendre visible.
+_PILOTE_PAGE_VIEW_MAX = int(os.environ.get("PILOTE_PAGE_VIEW_MAX_PER_HOUR", "30"))
+_pilote_page_view_hits: dict[str, list[float]] = {}
+_pilote_page_view_lock = threading.Lock()
+
+
+@app.post("/pilote/page-view")
+def pilote_page_view(request: Request) -> dict[str, Any]:
+    """Journalise l'OUVERTURE de la landing `/pilote`.
+
+    Moitié « vues » du funnel demandé par Alex (vues vs comptes créés). La
+    moitié « comptes » ne passe pas par ici : elle est marquée à l'inscription
+    dans les métadonnées du compte (`landing: "pilote"`), lisible en SQL — cf.
+    `db.log_pilote_page_view_event` pour la requête.
+
+    Anonyme et best-effort, comme `/onboarding/page-view` : ni le bruit ni un
+    échec d'écriture ne remontent au visiteur (rien à afficher, rien à bloquer).
+    """
+    try:
+        _rate_limit_ip(
+            request,
+            _pilote_page_view_hits,
+            _pilote_page_view_lock,
+            _PILOTE_PAGE_VIEW_MAX,
+            "Trop de requêtes depuis cette connexion.",
+        )
+    except HTTPException:
+        # Dépassement de bruit seulement : la vue n'est simplement pas comptée,
+        # jamais signalée au visiteur.
+        return {"ok": True}
+    # Seconde protection, même raison que pour `/onboarding/page-view` : le
+    # garde interne de `db` pourrait se perdre dans un refacto, cet endpoint
+    # anonyme ne doit jamais renvoyer un 500.
+    try:
+        db.log_pilote_page_view_event(ip_hash=_client_ip_hash(request))
+    except Exception:
+        pass
+    return {"ok": True}
+
+
 # --- Tunnel « audit complet gratuit » ----------------------------------------
 #
 # Suite immédiate de l'audit léger : on montre au visiteur ce qu'il gagnerait à

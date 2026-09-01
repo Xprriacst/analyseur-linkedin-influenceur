@@ -86,6 +86,23 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-09-01 (dev : funnel `/pilote` — compteur pages vues vs comptes créés)
+- **Demande d'Alex** (ticket Notion « Funnel /pilote ») : sur la future landing **`/pilote`**, savoir en continu combien de visiteurs **ouvrent la page** et combien **créent un compte**. Le compteur est livré **avant** la landing : c'est la leçon du tunnel `/onboarding`, dont le compteur n'est arrivé que le 2026-08-19 — tout le trafic antérieur est définitivement non mesuré.
+- **Vues** : `POST /pilote/page-view`, anonyme, best-effort (aucun 429 ni 500 visible), **rate-limit dédié** (`PILOTE_PAGE_VIEW_MAX_PER_HOUR`, défaut 30/h/IP). Écrit dans `onboarding_preview_events` (migration 0055, service-role only) avec le discriminant **`input_kind='pilote_page_view'`**. ⚠️ **Aucune migration** : le schéma existant (colonnes nullable, RLS sans policy) couvre déjà ce besoin.
+- ⚠️ **`page_view` (sans préfixe) reste `/onboarding`** — nom historique, porté par les lignes déjà en base. Le renommer par symétrie ferait disparaître d'un coup les vues déjà comptées. Un test verrouille les deux valeurs **et le fait qu'elles diffèrent** : les deux landings partagent une table, une collision rendrait les DEUX taux de conversion faux en silence.
+- **Comptes** : marqués **à l'inscription** (`piloteSignupMetadata()` → `raw_user_meta_data.landing = 'pilote'`), pas déduits de leur date de création. ⚠️ **La requête cible du ticket (`count(*) from auth.users where created_at >= date_lancement`) est un piège** : elle compte aussi les comptes de test et tout signup venu d'une autre porte d'entrée — et se met à mentir sans rien signaler le jour où `/onboarding` est rouvert.
+- ⚠️ **`landing` vit dans `user_metadata`, que l'utilisateur peut MODIFIER lui-même** depuis son navigateur. Acceptable pour un compteur d'acquisition ; **jamais** pour ouvrir un droit (quota Pilote gratuit, feature, plan) — ces décisions restent dans `app_metadata`, côté serveur, comme le rôle et les feature flags. Écrit noir sur blanc dans `frontend/app/lib/funnel.ts` à l'attention du ticket quotas.
+- **Une vue par chargement de page, pas par rendu** (`trackLandingPageView`) : sans ce garde, un remontage de composant (StrictMode en dev, changement d'état en prod) recompterait le même visiteur — le compteur gonflerait tout seul et le taux s'effondrerait sans qu'aucune visite n'ait bougé.
+- **Lecture (service-role)** :
+  ```sql
+  select
+    (select count(*) from onboarding_preview_events where input_kind = 'pilote_page_view') as vues,
+    (select count(distinct ip_hash) from onboarding_preview_events where input_kind = 'pilote_page_view') as visiteurs,
+    (select count(*) from auth.users where raw_user_meta_data->>'landing' = 'pilote') as comptes;
+  ```
+- **Tests** : `tests/test_pilote_funnel.py` (10 cas : discriminant, champs neutres, non-collision avec `/onboarding`, compteur de rate-limit dédié et non partagé, dépassement qui répond OK sans écrire, échec DB jamais remonté au visiteur, no-op sans Supabase/service-role). **542 unitaires verts** (venv scratch — le venv du repo est cassé, cohérent avec les entrées précédentes), `py_compile` vert, `npm run build` vert, zéro marqueur de conflit.
+- **Reste à faire, dans la landing (ticket séparé, DoD « maquette validée par Alex »)** : appeler `trackPilotePageView()` au montage de `/pilote` et passer `piloteSignupMetadata()` à `supabase.auth.signUp` — **sans ces deux lignes, le compteur reste à zéro**. Le spec e2e du funnel appartient à cette PR-là (il n'y a rien à piloter tant que la page n'existe pas). **Non fait volontairement** : écran `/admin` de lecture du ratio (V2 du ticket — la requête SQL ci-dessus est la V1 demandée).
+
 ### 2026-08-31 (RELEASE PROD : alertes e-mail `/start` + essai sans carte — PR #472 → release)
 - **Release `dev → main`.** Delta énuméré avant merge : **uniquement #472**. Aucune migration (0067 déjà en prod depuis #462), aucune env var nouvelle, aucun cron à créer.
 - **Pourquoi** : Elie Tales (28/08, tunnel `/start`) n'a prévenu personne. Tom n'a rien reçu — ce n'est pas un spam manqué : **aucun envoi interne n'a été tenté**.
