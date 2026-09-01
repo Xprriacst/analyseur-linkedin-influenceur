@@ -62,9 +62,12 @@ const MOCK_PILOT = {
   },
 };
 
-async function mockPilotBackend(page: import("@playwright/test").Page) {
+async function mockPilotBackend(
+  page: import("@playwright/test").Page,
+  payload: unknown = MOCK_PILOT,
+) {
   await page.route("**/me/pilot/today", (route) =>
-    route.fulfill({ contentType: "application/json", body: JSON.stringify(MOCK_PILOT) }),
+    route.fulfill({ contentType: "application/json", body: JSON.stringify(payload) }),
   );
   await page.route("**/me/profile", (route) =>
     route.fulfill({
@@ -124,5 +127,81 @@ test.describe("Mode Pilote", () => {
     await page.getByRole("button", { name: /^Inviter$/i }).click();
     await expect.poll(() => inviteCalled).toBe(true);
     await expect(page.getByRole("button", { name: /Invitation envoyée/i })).toBeVisible();
+  });
+});
+
+// ── Pool partagé de prospects (compte SANS LinkedIn connecté) ────────────────
+// Ce que ces specs verrouillent est la partie VISIBLE de la frontière
+// d'anonymisation : les tests unitaires garantissent que le contexte privé du
+// compte source ne sort pas du backend ; ceux-ci garantissent que l'écran
+// n'invente pas ce qui manque. Un score affiché sur un prospect du pool serait
+// le symptôme d'une fuite — ou, aussi grave, un chiffre inventé présenté au
+// client comme sa propre notation.
+const MOCK_PILOT_POOL = {
+  ...MOCK_PILOT,
+  plan: {
+    ...MOCK_PILOT.plan,
+    contacts: [
+      {
+        id: "https://www.linkedin.com/in/prospect-pool",
+        name: "Sofia Marchand",
+        role: "Fondatrice",
+        company: "Northwind",
+        // null = le score ICP appartient au compte qui a identifié le prospect.
+        score: null,
+        initials: "SM",
+        accent: "linear-gradient(135deg, #6366f1, #4338ca)",
+        message: "Bonjour Sofia — ton profil correspond à mon ICP.",
+        source: "pool",
+        profile_url: "https://www.linkedin.com/in/prospect-pool",
+      },
+    ],
+  },
+  meta: {
+    ...MOCK_PILOT.meta,
+    linkedin_outreach_connected: false,
+    contacts_source: "pool",
+    contacts_blocked_reason:
+      "Connecte ton compte LinkedIn (Mon profil → Connexions) pour inviter ces prospects — ils te sont réservés aujourd’hui.",
+  },
+};
+
+test.describe("Mode Pilote — pool partagé de prospects", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("lkd_interface_mode", "pilot");
+    });
+    await mockPilotBackend(page, MOCK_PILOT_POOL);
+    await page.goto("/");
+  });
+
+  test("un prospect du pool s’affiche sans score ICP", async ({ page }) => {
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(page.getByRole("button", { name: /Sofia Marchand/i })).toBeVisible();
+    // Le repère du pool remplace la pastille de score…
+    await expect(page.locator(".pilot-pool-chip")).toHaveText(/Repéré pour toi/i);
+    // …et AUCUNE pastille de score n’est rendue : le score du compte source ne
+    // doit jamais traverser, et on n’en invente pas un pour combler le vide.
+    await expect(page.locator(".pilot-score")).toHaveCount(0);
+  });
+
+  test("Inviter est désactivé tant que LinkedIn n’est pas connecté", async ({ page }) => {
+    let inviteCalled = false;
+    await page.route("**/me/leads/*/invite", (route) => {
+      inviteCalled = true;
+      route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    });
+
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await page.getByRole("button", { name: /Sofia Marchand/i }).click();
+    // Un prospect du pool n’est pas encore un lead du compte : l’inviter passe
+    // par le circuit leads + file cadencée, qui exige LinkedIn connecté.
+    await expect(page.getByRole("button", { name: /^Inviter$/i })).toBeDisabled();
+    await expect(page.getByText(/ils te sont réservés aujourd’hui/i)).toBeVisible();
+    expect(inviteCalled).toBe(false);
   });
 });
