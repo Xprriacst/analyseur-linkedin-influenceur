@@ -87,6 +87,18 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-09-01 (dev : `/start` — l'audit reste en base si Resend refuse l'envoi)
+- **Ticket Notion** « Tunnel /start : l'audit du seul vrai prospect n'a jamais été généré » (Elie Tales, 28/08). En prod : `audit_payload` NULL, `error_message` = Resend 403. Le modèle *avait* répondu — le `except` unique de `process_audit_lead` a tout jeté avec le refus d'envoi.
+- **Cause** : génération + Notion + `send_email` dans le même `try`. Un 403 Resend (domaine `clareo-solutions.fr` non vérifié chez Resend — DNS IONOS) tombait dans le `except` qui n'écrivait que `status=failed` + le message. La page publique `/a/{token}` et un rejeu n'avaient plus rien à afficher ni à renvoyer.
+- **Fix** : `audit_payload` (et champs Notion) persistés **juste après** `generate_full_audit`, avant tout envoi. Statuts (colonne texte libre, **aucune migration**) :
+  - `failed` = la génération n'a pas abouti ;
+  - `generated` = payload en base, e-mail pas encore / en échec ;
+  - `sent` inchangé.
+  Un 403 Resend **ne rétrograde plus** un payload déjà écrit. Rejouer un `generated` retente l'envoi **sans** rappeler le modèle ni recréer la page Notion.
+- `/leads` : pastille « Généré, non envoyé » (ambre) vs « Échec génération » — avant, `failed` disait « Échec envoi », ce qui recouvrait les deux pannes.
+- ⚠️ **Hors de cette PR** : régénérer l'audit d'Elie Tales. Son payload est encore NULL en prod — un rejeu `process_audit_lead(id)` après ce deploy **rappelle** le modèle (c'est le cas `failed` sans payload). Une fois Resend OK (ticket DNS IONOS), les prochains 403 ne perdent plus l'audit.
+- Tests : `tests/test_audit_funnel.py` (+2 : send lève → `generated` + payload ; rejeu sans appel modèle). Backend + libellés `/leads`. Aucune migration, aucune env var.
+
 ### 2026-09-01 (dev : landing `/pilote` — page de vente du mode Pilote gratuit)
 - **Ticket Notion** « Landing page type Freelance Mention + accès gratuit ». URI canonique **`/pilote`**. C'est **cette** page — pas `/offre`, pas `/onboarding` — qui porte désormais le funnel (vues + inscriptions taguées `landing: pilote`), les verbatims Sacha/Joëlle, et l'accès au groupe privé Skool.
 - **Écran d'entrée** calqué sur [app.freelancemention.fr](https://app.freelancemention.fr) : argument + preuve à **gauche**, création de compte à **droite** (formulaire sur le premier écran — le funnel mesure vue → compte). DA du Mode Pilote (encre + aurore `#64d2ff` / `#0071e3` / `#bf5af2`), pas le bleu/blanc de la référence. Accent éditorial en serif italique.
