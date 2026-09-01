@@ -16,6 +16,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -26,13 +27,20 @@ from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
 from src import audit_projection, lead_notify, mailer, pilot_plan, skool_invite
 from src import follow_suggestions
+# ⚠️ Alias OBLIGATOIRE : le nom `dashboard_progress` est déjà pris dans ce fichier
+# par l'endpoint `GET /dashboard/progress` (def dashboard_progress, plus bas). Un
+# `from src import dashboard_progress` serait silencieusement ÉCRASÉ par ce `def`
+# au chargement du module, et chaque appel `dashboard_progress.xxx()` lèverait un
+# AttributeError à l'exécution — invisible pour py_compile comme pour le build.
+from src import dashboard_progress as dashboard_fmt
 from src.audit_report import start_audit_email_thread
 from src.benchmark import build_benchmark, enrich_influencers
 from src.pipeline import run_analysis
 from src import jobs as jobs_module
-from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread, start_lead_collection_job_thread, start_avatar_video_job_thread
+from src.jobs import start_job_thread, start_generation_job_thread, start_image_job_thread, start_lead_collection_job_thread, start_avatar_video_job_thread, start_lead_import_job_thread
 from src.lead_finder import DEFAULT_MAX_ITEMS as LEAD_COMMENTS_DEFAULT, fetch_post_commenters, lead_collect_credit_cost, effective_max_comments
 from src import lead_search
+from src import lead_import
 from src.llm import generate_ideas, generate_one_line_ideas, generate_posts, analyze_dashboard_strategy, draft_editorial_profile, draft_onboarding_preview, chat_stream, extract_post_template, extract_reel_template, classify_lead_magnet, score_leads, generate_first_message, generate_reply
 from src.llm import ROLE_SPECS, recommend_editorial_role, suggest_angle_from_post, suggest_structures, IG_TRAMES
 from src.llm import adapt_post_for_x, adapt_post_for_reddit
@@ -4492,6 +4500,17 @@ def collect_me_lead_source(
     if not source:
         raise HTTPException(status_code=404, detail="Source introuvable.")
     requested = payload.max_comments if payload else None
+    if source.get("kind") == "import":
+        # Le fichier n'est pas conservé côté serveur : il n'y a rien à
+        # « recollecter ». Re-téléverser le même fichier retombe sur cette source
+        # (clé = hash du contenu) et n'ajoute que les nouveaux profils.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Cette source vient d'un fichier importé — re-téléverse le fichier "
+                "(bloc « Importer un fichier de leads ») pour ajouter de nouveaux prospects."
+            ),
+        )
     if source.get("kind") == "search":
         # Relancer une recherche déjà importée : nouveaux profils seulement
         # (dédup par personne côté `save_leads`).
@@ -4527,6 +4546,90 @@ def add_me_lead_search(payload: LeadSearchRequest, token: str = Depends(require_
 
     job = _create_lead_search_job(token, source, payload.max_results)
     return {"source": source, "job": job, "existing": existing}
+
+
+@app.post("/me/lead-imports")
+async def add_me_lead_import(
+    request: Request,
+    file: UploadFile = File(...),
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Importe un fichier de leads (CSV ou Excel .xlsx) — backlog Notion.
+
+    Les lignes portant une URL de profil LinkedIn deviennent des leads
+    (dédupliqués par personne, notés par le ciblage ICP) ; les lignes sans URL
+    valide sont ignorées ET COMPTÉES — le résumé est rendu au client, jamais
+    avalé. Gratuit (aucun crédit) : lire un fichier ne coûte rien.
+
+    Le parsing est synchrone (rapide, tout est en mémoire) ; la persistance +
+    le scoring partent en job de fond `kind='import'` (migration 0070) que le
+    frontend suit par le polling existant des `lead_collection_jobs`.
+
+    Contrairement à la recherche (0062), AUCUN compte LinkedIn connecté n'est
+    requis : rien ne passe par Unipile.
+    """
+    # Refus rapide sur la taille annoncée, avant de lire le corps en mémoire
+    # (même garde que l'upload de vidéo de reel).
+    content_length = request.headers.get("content-length")
+    mb = lead_import.MAX_FILE_BYTES // (1024 * 1024)
+    try:
+        if content_length and int(content_length) > lead_import.MAX_FILE_BYTES + 64 * 1024:
+            raise HTTPException(status_code=413, detail=f"Fichier trop volumineux ({mb} Mo maximum).")
+    except ValueError:
+        pass
+    data = await file.read()
+    if len(data) > lead_import.MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail=f"Fichier trop volumineux ({mb} Mo maximum).")
+
+    # ⚠️ Le parsing est du CPU pur, et il n'est pas instantané : un .xlsx proche
+    # du plafond se décompresse en dizaines de Mo de XML (mesuré ~7,5 s). Le
+    # laisser dans la coroutine bloquerait la boucle d'évènements — c'est-à-dire
+    # TOUS les autres clients de l'unique instance Render, invisiblement.
+    try:
+        parsed = await run_in_threadpool(lead_import.parse_leads_file, file.filename, data)
+    except lead_import.LeadImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Clé = hash du contenu : re-téléverser LE MÊME fichier retombe sur la même
+    # source (dédup naturelle par (user_id, post_url), comme la recherche 0062).
+    key = lead_import.import_source_key(data)
+    source = db.get_lead_source_by_url(token, key)
+    existing = bool(source)
+    if not source:
+        source = db.add_lead_source(
+            token,
+            key,
+            # Le nom du fichier est le seul « visage » de cette source : il part
+            # dans les signaux du lead (« fichier importé « clients.csv » »).
+            author=((file.filename or "").strip()[:200] or None),
+            kind="import",
+            origin="manual",
+        )
+    if not source:
+        raise HTTPException(status_code=500, detail="Impossible d'enregistrer l'import.")
+
+    job = db.create_lead_collection_job(
+        token, source["id"], key, len(parsed["leads"]), kind="import"
+    )
+    if not job:
+        raise HTTPException(status_code=500, detail="Création du job d'import impossible.")
+    start_lead_import_job_thread(
+        token,
+        job["id"],
+        source,
+        parsed["leads"],
+        parsed["ignored"],
+        parsed["rows"],
+        parsed["truncated"],
+    )
+    return {
+        "source": source,
+        "job": job,
+        "existing": existing,
+        "profiles_count": len(parsed["leads"]),
+        "ignored_rows": parsed["ignored"],
+        "truncated": parsed["truncated"],
+    }
 
 
 @app.get("/me/lead-collection-jobs")
@@ -5470,7 +5573,135 @@ def me_linkedin_outreach_chat_send(
             learn_opt_out=payload.learn_opt_out,
         )
     return {"ok": True, "quota": _outreach_quota(account, *_safe_counts(token))}
+# Mon profil → Dashboard (backlog Notion, priorité Alex 2026-08-31).
+#
+# ⚠️ DEUX endpoints, pas un seul, et ce n'est pas un détail de découpage : vérifier
+# « qui a répondu ? » coûte UN appel Unipile PAR conversation (leur API n'expose
+# aucun indicateur de réponse dans la liste des chats — vérifié dans
+# `unipile.normalize_chat`). Vingt conversations = vingt allers-retours réseau
+# séquentiels, soit plusieurs secondes. Les mettre dans le même endpoint que les
+# abonnés et les compteurs d'envoi ferait attendre TOUT le dashboard derrière la
+# section la plus lente et la plus fragile — et une panne Unipile retarderait des
+# chiffres qui, eux, viennent de notre propre base et sont disponibles tout de suite.
+_DASHBOARD_REPLY_CHECK_CAP = 20
+_DASHBOARD_REPLY_MESSAGES_PEEK = 5
 
+
+@app.get("/me/dashboard/progress")
+def me_dashboard_progress(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Mon profil → Dashboard : abonnés (baseline + progression), invitations,
+    messages — vue d'ensemble en lecture seule de la prospection. Aucun appel
+    réseau sortant : répond immédiatement, uniquement sur notre base.
+
+    ⚠️ Les abonnés ne sont JAMAIS re-scrapés ici (coût Apify) : la valeur vient du
+    dernier relevé déjà connu dans le corpus du client (son propre profil LinkedIn,
+    s'il l'a déjà analysé au moins une fois) et un point d'historique quotidien est
+    posé au passage (idempotent, cf. `db.record_follower_snapshot`). Sans profil
+    analysé : section 'indisponible', propre — jamais un 0 qui se ferait passer
+    pour « zéro abonné ».
+
+    Aucun crédit débité, aucun appel modèle : c'est de la lecture.
+    """
+    try:
+        current_followers = db.own_follower_count(token)
+        if current_followers is not None:
+            db.record_follower_snapshot(token, current_followers, source="dashboard")
+        followers = dashboard_fmt.follower_progress(db.list_follower_snapshots(token))
+    except Exception as exc:  # noqa: BLE001 — une section en panne n'emporte pas le dashboard
+        print(f"[dashboard] section abonnés indisponible : {exc}", flush=True)
+        followers = {"available": False, "reason": "read_error"}
+
+    try:
+        funnel = db.outreach_lead_funnel(token)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[dashboard] funnel de prospection illisible : {exc}", flush=True)
+        funnel = {"invited": 0, "connected": 0, "messaged": 0}
+    counts, counts_ok = _safe_counts(token)
+
+    try:
+        account = db.get_linkedin_outreach_account(token)
+    except Exception:  # noqa: BLE001 — au pire la section « Retours » se dit non reliée
+        account = None
+    unipile_connected = bool(account and account.get("unipile_account_id"))
+
+    return {
+        "followers": followers,
+        "invitations": {
+            "sent_today": counts.get("invites_today", 0),
+            "sent_week": counts.get("invites_week", 0),
+            "total_invited": funnel.get("invited", 0),
+            "total_connected": funnel.get("connected", 0),
+        },
+        "messages": {
+            "sent_today": counts.get("messages_today", 0),
+            "total_sent": funnel.get("messaged", 0),
+        },
+        # Les compteurs du jour/semaine viennent du journal d'envoi : s'il est
+        # illisible, `_safe_counts` renvoie des zéros. Le dire à l'écran plutôt que
+        # d'afficher « 0 invitation aujourd'hui » à quelqu'un qui vient d'en envoyer.
+        "counts_reliable": counts_ok,
+        "unipile_connected": unipile_connected,
+    }
+
+
+@app.get("/me/dashboard/replies")
+def me_dashboard_replies(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Mon profil → Dashboard, section « Retours » : conversations ouvertes et
+    combien de prospects contactés ont répondu.
+
+    Volontairement SÉPARÉ de `/me/dashboard/progress` (cf. le commentaire au-dessus) :
+    cet endpoint parle à Unipile et peut être lent. Best-effort de bout en bout —
+    Unipile non configuré, compte non connecté, ou appel en échec ⇒ section
+    'indisponible' avec sa raison, jamais une erreur qui casse l'écran.
+
+    ⚠️ L'échantillon est BORNÉ à `_DASHBOARD_REPLY_CHECK_CAP` conversations (les plus
+    récentes). `capped` dit à l'écran que le chiffre porte sur un échantillon et pas
+    sur la totalité : un « 3 réponses » présenté comme un total alors qu'on n'a
+    regardé que 20 conversations sur 200 serait un chiffre faux.
+    """
+    if not unipile.enabled():
+        return {
+            "conversations": {"available": False, "reason": "not_configured"},
+            "replies": {"available": False, "reason": "not_configured"},
+        }
+
+    account = db.get_linkedin_outreach_account(token)
+    if not account or not account.get("unipile_account_id"):
+        return {
+            "conversations": {"available": False, "reason": "not_connected"},
+            "replies": {"available": False, "reason": "not_connected"},
+        }
+
+    try:
+        chats = unipile.list_chats(account["unipile_account_id"])
+        conversations: dict[str, Any] = {"available": True, "total": len(chats)}
+    except unipile.UnipileError as exc:
+        conversations = {"available": False, "reason": "unipile_error", "error": str(exc)}
+
+    try:
+        total_messaged = db.outreach_lead_funnel(token).get("messaged", 0)
+    except Exception:  # noqa: BLE001
+        total_messaged = 0
+
+    leads_to_check = db.list_messaged_leads_with_chat(token, limit=_DASHBOARD_REPLY_CHECK_CAP)
+    checks: list[bool | None] = []
+    for lead in leads_to_check:
+        chat_id = lead.get("outreach_chat_id")
+        try:
+            msgs = unipile.list_chat_messages(chat_id, limit=_DASHBOARD_REPLY_MESSAGES_PEEK)
+            checks.append(any(not unipile.normalize_message(m).get("from_me") for m in msgs))
+        except unipile.UnipileError:
+            # Conversation non vérifiable : exclue du compte plutôt que comptée
+            # « pas de réponse » — une panne réseau ne doit pas faire mentir le
+            # chiffre à la baisse (verrouillé par tests/test_dashboard_progress.py).
+            checks.append(None)
+
+    return {
+        "conversations": conversations,
+        "replies": dashboard_fmt.reply_progress(
+            checks, total_messaged, _DASHBOARD_REPLY_CHECK_CAP
+        ),
+    }
 
 @app.get("/me/pilot/today")
 def me_pilot_today(token: str = Depends(require_token)) -> dict[str, Any]:
