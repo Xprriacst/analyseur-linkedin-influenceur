@@ -40,7 +40,8 @@ type PilotTodayResponse = {
 };
 
 export type PilotShellProps = {
-  mode: "pilot" | "expert";
+  interfaceMode: "pilot" | "expert";
+  onInterfaceModeChange: (mode: "pilot" | "expert") => void;
   onOpenGenerator: (seed: { topic: string; postText?: string; postId?: string }) => void;
   onOpenAssistant: (postText: string) => void;
   onUpgrade: () => void;
@@ -69,7 +70,8 @@ function mediaToAttachments(items: PilotMeta["media_items"]): LinkedInImageAttac
 }
 
 export default function PilotShell({
-  mode,
+  interfaceMode,
+  onInterfaceModeChange,
   onOpenGenerator,
   onOpenAssistant,
   onUpgrade,
@@ -117,11 +119,11 @@ export default function PilotShell({
   }, []);
 
   useEffect(() => {
-    if (mode !== "pilot") return;
+    if (interfaceMode !== "pilot") return;
     void loadPlan();
     const id = window.setInterval(() => void loadPlan({ silent: true }), PILOT_POLL_MS);
     return () => window.clearInterval(id);
-  }, [mode, loadPlan]);
+  }, [interfaceMode, loadPlan]);
 
   const postText = meta?.post_text || (plan ? `${plan.post.hook}\n\n${plan.post.body}`.trim() : "");
   const images = mediaToAttachments(meta?.media_items);
@@ -230,6 +232,8 @@ export default function PilotShell({
           onTabChange={setNavTab}
           onUpgrade={onUpgrade}
           upgradeBusy={upgradeBusy}
+          interfaceMode={interfaceMode}
+          onInterfaceModeChange={onInterfaceModeChange}
         />
         <div className="pilot-app-main">
           <div className="pilot-inner" style={{ padding: "48px 24px", textAlign: "center", color: "#86868b" }}>
@@ -248,6 +252,8 @@ export default function PilotShell({
           onTabChange={setNavTab}
           onUpgrade={onUpgrade}
           upgradeBusy={upgradeBusy}
+          interfaceMode={interfaceMode}
+          onInterfaceModeChange={onInterfaceModeChange}
         />
         <div className="pilot-app-main">
           <div className="pilot-inner" style={{ padding: "48px 24px", textAlign: "center" }}>
@@ -270,6 +276,8 @@ export default function PilotShell({
         onTabChange={setNavTab}
         onUpgrade={onUpgrade}
         upgradeBusy={upgradeBusy}
+        interfaceMode={interfaceMode}
+        onInterfaceModeChange={onInterfaceModeChange}
       />
       <div className="pilot-app-main">
         {navTab === "profile" ? (
@@ -288,7 +296,7 @@ export default function PilotShell({
         ) : (
           <PilotModeView
             plan={plan}
-            mode={mode}
+            mode="pilot"
             hideModeToggle
             postEmpty={Boolean(meta?.post_empty)}
             contactsBlockedReason={meta?.contacts_blocked_reason || undefined}
