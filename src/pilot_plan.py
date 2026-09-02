@@ -1,4 +1,10 @@
-"""Mode Pilote — composition du plan du jour (lecture seule, sans LLM ni Apify)."""
+"""Mode Pilote — composition du plan du jour.
+
+`compose_pilot_plan` reste de la logique pure (0 LLM, 0 Apify) : testable
+sans réseau. `build_pilot_today` agrège, puis — une fois les 3 contacts
+choisis — demande un appel modèle pour les accroches manquantes (persistées,
+0 crédit). Une panne modèle n'empêche pas d'afficher le plan.
+"""
 from __future__ import annotations
 
 import datetime
@@ -8,6 +14,7 @@ from urllib.parse import unquote
 
 from src import db
 from src.daily_ideas import maybe_bootstrap_daily_idea
+from src.invite_openers import PILOT_INVITE_PREVIEW_CAP, fill_invite_previews
 
 PILOT_CONTACT_LIMIT = 3
 PILOT_FOLLOW_LIMIT = 5
@@ -103,7 +110,7 @@ def pick_follow_profiles(
 
 
 def contact_message_preview(lead: dict[str, Any], targeting: dict[str, Any] | None) -> str:
-    """Aperçu court sans appel LLM — le vrai message IA reste sur Prospection."""
+    """Gabarit de repli — utilisé seulement si le modèle n'a pas produit d'accroche."""
     name = first_name(lead.get("name"))
     offer = (targeting or {}).get("offer") or (targeting or {}).get("ideal_client") or "ton activité"
     comment = (lead.get("comment_text") or "").strip()
@@ -122,6 +129,14 @@ def contact_message_preview(lead: dict[str, Any], targeting: dict[str, Any] | No
             f"On échange rapidement sur {offer} ?"
         )
     return f"Bonjour {name} — ton profil correspond à mon ICP. Curieux d'échanger 15 min ?"
+
+
+def contact_opener(lead: dict[str, Any], targeting: dict[str, Any] | None) -> str:
+    """Texte affiché sur la carte : accroche générée si elle existe, sinon gabarit."""
+    stored = str(lead.get("invite_preview") or "").strip()
+    if stored:
+        return stored[:PILOT_INVITE_PREVIEW_CAP]
+    return contact_message_preview(lead, targeting)
 
 
 def split_post_text(text: str) -> tuple[str, str]:
@@ -480,7 +495,7 @@ def compose_pilot_plan(
             "score": int(lead.get("score") or 0),
             "initials": initials(lead.get("name")),
             "accent": _PILOT_ACCENTS[idx % len(_PILOT_ACCENTS)],
-            "message": contact_message_preview(lead, targeting),
+            "message": contact_opener(lead, targeting),
             "simulated": False,
         })
 
@@ -622,6 +637,7 @@ def build_pilot_today(access_token: str) -> dict[str, Any]:
         outreach_connected = bool(outreach_account and outreach_account.get("unipile_account_id"))
         publish_connected = bool(profile and profile.get("zernio_account_id"))
         weekly_done, weekly_total = weekly_progress(access_token)
+        fill_invite_previews(access_token, targeting, pick_contacts(leads))
         return compose_pilot_plan(
             profile=profile,
             targeting=targeting,
