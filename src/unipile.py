@@ -274,6 +274,68 @@ def is_first_degree(profile: dict[str, Any] | None) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Posts du compte connecté (mémoire du post du jour)
+# --------------------------------------------------------------------------- #
+
+
+def list_own_posts(account_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Posts LinkedIn du compte connecté (`GET /users/me/posts`).
+
+    `me` = le propriétaire du `account_id`. Pagination non suivie : le cron
+    n'a besoin que des ~10 plus récents. Lève `UnipileError` ; l'appelant
+    rattrape — un hoquet Unipile ne doit jamais casser la génération du jour.
+    """
+    if not account_id:
+        raise UnipileError("account_id requis pour lister tes posts.")
+    data = _request(
+        "GET",
+        "/users/me/posts",
+        params={"account_id": account_id, "limit": max(1, min(int(limit), 20))},
+    )
+    items = data.get("items") if isinstance(data, dict) else None
+    if items is None and isinstance(data, list):
+        items = data
+    return [row for row in (items or []) if isinstance(row, dict)]
+
+
+def normalize_own_post(item: dict[str, Any] | None, text_cap: int = 400) -> dict[str, Any] | None:
+    """Transforme un item Unipile en entrée de mémoire. Pure, schéma tolérant.
+
+    `text` est une chaîne dans le schéma documenté ; certains wraps le rangent
+    encore en `{text: …}`. Sans texte → None (un post image-only n'aide pas
+    l'anti-répétition).
+    """
+    if not isinstance(item, dict):
+        return None
+    raw_text = _pick(item, "text", "content", "commentary", "message")
+    if isinstance(raw_text, dict):
+        raw_text = _pick(raw_text, "text", "body")
+    text = str(raw_text or "").strip()
+    if not text:
+        return None
+    date_raw = _pick(item, "parsed_datetime", "date", "created_at", "posted_at")
+    date = str(date_raw)[:10] if date_raw else None
+    if date and not date[:4].isdigit():
+        date = None
+    return {
+        "text": text[: max(1, int(text_cap))],
+        "status": "publié sur LinkedIn",
+        "date": date,
+        "card": None,
+    }
+
+
+def own_posts_to_memory(items: list[dict[str, Any]] | None, text_cap: int = 400) -> list[dict[str, Any]]:
+    """Liste d'entrées mémoire depuis la réponse Unipile. Ignore les items vides."""
+    out: list[dict[str, Any]] = []
+    for item in items or []:
+        entry = normalize_own_post(item, text_cap=text_cap)
+        if entry:
+            out.append(entry)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Invitations
 # --------------------------------------------------------------------------- #
 

@@ -320,5 +320,37 @@ class BuildPilotStrategyTest(unittest.TestCase):
         self.assertIn("structureHint", out)
 
 
+class ContactOpenerTest(unittest.TestCase):
+    def test_invite_preview_wins_over_the_bateau_template(self):
+        lead = _lead(
+            comment_text="",
+            invite_preview="Charlie, inventory still a Sunday-night job?",
+        )
+        self.assertEqual(
+            pp.contact_opener(lead, {"offer": "IA"}),
+            "Charlie, inventory still a Sunday-night job?",
+        )
+
+    def test_compose_uses_stored_preview_on_the_card(self):
+        out = pp.compose_pilot_plan(
+            profile={"display_name": "Alex"},
+            targeting={"offer": "IA pharmacie"},
+            generated_posts=[],
+            daily_ideas=[],
+            leads=[_lead(comment_text="", invite_preview="Léa, tu valides encore les commandes à la main ?")],
+            library=[],
+            followed_handles=set(),
+            schedule=[],
+            outreach_connected=True,
+            publish_connected=True,
+            weekly_done=0,
+            weekly_total=3,
+        )
+        self.assertEqual(
+            out["plan"]["contacts"][0]["message"],
+            "Léa, tu valides encore les commandes à la main ?",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

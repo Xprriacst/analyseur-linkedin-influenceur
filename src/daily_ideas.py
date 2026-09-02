@@ -20,6 +20,54 @@ from src.listing import ListingError, build_listing_topic, fetch_listing_preview
 from src.llm import ROLE_SPECS, generate_posts
 
 
+def _unipile_own_posts_memory(account_id: str | None) -> list[dict]:
+    """Posts live du compte Unipile → mémoire. Fail-safe, 0 Apify.
+
+    Uniquement quand le profil n'a pas encore été analysé dans Cibl : Unipile
+    n'est PAS appelé à chaque `/generate` (JWT). Cron + bootstrap seulement.
+    """
+    if not account_id:
+        return []
+    try:
+        from src import unipile
+        if not unipile.enabled():
+            return []
+        items = unipile.list_own_posts(account_id, limit=10)
+        return unipile.own_posts_to_memory(items, text_cap=db.POST_MEMORY_TEXT_CAP)
+    except Exception as exc:
+        print(f"[daily_ideas] posts Unipile illisibles ({exc})", flush=True)
+        return []
+
+
+def recent_posts_for_generation(
+    *,
+    user_id: str | None = None,
+    access_token: str | None = None,
+) -> list[dict] | None:
+    """Mémoire pour le post du jour : corpus Cibl, Unipile seulement en repli.
+
+    Si la mémoire contient déjà un « publié sur LinkedIn » (profil analysé),
+    Unipile n'est pas appelé. Liste vide ⇒ None (generate_posts omet le bloc).
+    """
+    account_id = None
+    if access_token:
+        entries = db.get_recent_post_memory(access_token) or []
+        account = db.get_linkedin_outreach_account(access_token) or {}
+        account_id = account.get("unipile_account_id")
+    elif user_id:
+        entries = db.get_recent_post_memory_for_user(user_id) or []
+        account = db.admin_linkedin_outreach_account(user_id) or {}
+        account_id = account.get("unipile_account_id")
+    else:
+        return None
+    if db.has_own_linkedin_memory(entries):
+        return entries or None
+    extra = _unipile_own_posts_memory(account_id)
+    if extra:
+        entries = db.dedupe_post_memory(list(extra) + list(entries))
+    return entries or None
+
+
 def _render_idea_markdown(idea: dict, seed_text: str | None) -> str:
     """Render a single idea dict into the markdown stored in `daily_ideas`."""
     title = idea.get("title") or "Idée du jour"
@@ -104,8 +152,8 @@ def _generate_for_user(user_id: str, today: str) -> bool:
         user_context=context,
         editorial_role=daily_role,
         count=1,
-        # Mémoire des posts déjà créés/publiés (service-role : pas de JWT ici).
-        recent_posts=db.get_recent_post_memory_for_user(user_id) or None,
+        # Mémoire : posts live LinkedIn (profil analysé, sinon Unipile) + Cibl.
+        recent_posts=recent_posts_for_generation(user_id=user_id),
     )
     if not posts:
         print(f"  · {user_id}: génération vide, skip")
@@ -180,6 +228,7 @@ def maybe_bootstrap_daily_idea(access_token: str) -> bool:
             user_context=context,
             editorial_role=daily_role,
             count=1,
+            recent_posts=recent_posts_for_generation(access_token=access_token),
         )
         if not posts:
             return False

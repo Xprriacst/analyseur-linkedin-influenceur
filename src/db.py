@@ -1361,6 +1361,10 @@ def list_generated_posts(
 
 POST_MEMORY_LIMIT = 12  # entrées max injectées dans un prompt
 POST_MEMORY_TEXT_CAP = 400  # caractères gardés par post côté db (le prompt retronque)
+# Statut des posts réellement publiés sur LinkedIn (profil analysé ou Unipile).
+# Distinct de « publié » (via Cibl) : le prompt s'en sert pour faire la suite
+# du fil live, pas seulement éviter de recycler un brouillon de l'app.
+OWN_LINKEDIN_STATUS = "publié sur LinkedIn"
 
 
 def _build_memory_card(text: str) -> dict | None:
@@ -1410,19 +1414,122 @@ def dedupe_post_memory(entries: list[dict], limit: int = POST_MEMORY_LIMIT) -> l
     return out
 
 
+def own_posts_to_memory_entries(rows: list[dict] | None) -> list[dict]:
+    """Posts du profil LinkedIn du client → entrées mémoire. Pure.
+
+    Ordre conservé (l'appelant trie par `posted_at` desc). 0 est un chiffre
+    d'engagement possible, pas un filtre — on veut ce qu'il a DIT récemment,
+    pas ses meilleurs posts.
+    """
+    entries: list[dict] = []
+    for row in rows or []:
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        date = str(row.get("posted_at") or row.get("date") or "")[:10] or None
+        entries.append({
+            "text": text[:POST_MEMORY_TEXT_CAP],
+            "status": OWN_LINKEDIN_STATUS,
+            "date": date,
+            "card": None,
+        })
+    return entries
+
+
+def has_own_linkedin_memory(entries: list[dict] | None) -> bool:
+    """Vrai si la mémoire contient déjà un post live LinkedIn (pas la peine d'appeler Unipile)."""
+    return any(
+        (e.get("status") or "") == OWN_LINKEDIN_STATUS
+        for e in (entries or [])
+        if isinstance(e, dict)
+    )
+
+
+def _own_linkedin_posts_from_client(db: Any, user_id: str, limit: int = 8) -> list[dict]:
+    """Posts du COMPTE DU CLIENT, lus dans son corpus déjà analysé. 0 Apify.
+
+    Handle déduit du `linkedin_url` du profil éditorial — même source que le
+    dashboard abonnés. Profil jamais analysé ⇒ liste vide, pas une erreur.
+    """
+    try:
+        prof = (
+            db.table("user_editorial_profiles")
+            .select("linkedin_url")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        handle = _handle_from_url(((prof.data or [{}])[0].get("linkedin_url") or "").strip())
+        if not handle:
+            return []
+        inf = (
+            db.table("influencers")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("handle", handle)
+            .eq("platform", "linkedin")
+            .limit(1)
+            .execute()
+        )
+        if not inf.data:
+            return []
+        posts = (
+            db.table("posts")
+            .select("text, posted_at")
+            .eq("influencer_id", inf.data[0]["id"])
+            .eq("platform", "linkedin")
+            .order("posted_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return own_posts_to_memory_entries(posts.data or [])
+    except Exception:
+        return []
+
+
+def _daily_ideas_memory_from_client(db: Any, user_id: str, limit: int = POST_MEMORY_LIMIT) -> list[dict]:
+    """Idées du jour déjà écrites — sinon le cron de demain ignore le post d'hier."""
+    try:
+        resp = (
+            db.table("daily_ideas")
+            .select("idea_markdown, post_text, idea_date")
+            .eq("user_id", user_id)
+            .order("idea_date", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        entries: list[dict] = []
+        for row in resp.data or []:
+            text = str(row.get("post_text") or row.get("idea_markdown") or "").strip()
+            if not text:
+                continue
+            entries.append({
+                "text": text[:POST_MEMORY_TEXT_CAP],
+                "status": "idée du jour",
+                "date": str(row.get("idea_date") or "")[:10] or None,
+                "card": None,
+            })
+        return entries
+    except Exception:
+        return []
+
+
 def _post_memory_from_client(
     db: Any, user_id: str, platform: str = "linkedin", limit: int = POST_MEMORY_LIMIT
 ) -> list[dict]:
     """Charge la mémoire des posts récents d'un user avec le client fourni.
 
-    Deux sources, chacune best-effort (l'échec de l'une n'empêche pas l'autre) :
-    - `scheduled_posts` publiés (LinkedIn uniquement) → statut « publié » ;
-    - `generated_posts` récents de la plateforme → « publié » (zernio_post_id),
-      « sauvegardé » (saved) ou « généré ».
+    Sources, chacune best-effort (l'échec de l'une n'empêche pas l'autre).
+    L'ordre décide qui gagne au dédoublonnage :
+    1. posts réellement publiés sur LinkedIn (profil déjà analysé) ;
+    2. `scheduled_posts` publiés via Cibl ;
+    3. `generated_posts` ;
+    4. `daily_ideas` (le post d'hier, même jamais sauvegardé).
     """
     entries: list[dict] = []
 
     if platform == "linkedin":
+        entries.extend(_own_linkedin_posts_from_client(db, user_id, limit=min(8, limit)))
         try:
             resp = (
                 db.table("scheduled_posts")
@@ -1474,6 +1581,9 @@ def _post_memory_from_client(
             })
     except Exception:
         pass
+
+    if platform == "linkedin":
+        entries.extend(_daily_ideas_memory_from_client(db, user_id, limit=limit))
 
     return dedupe_post_memory(entries, limit=limit)
 
@@ -6103,6 +6213,27 @@ def get_linkedin_outreach_account(access_token: str) -> dict | None:
     return resp.data[0] if resp.data else None
 
 
+def admin_linkedin_outreach_account(user_id: str) -> dict | None:
+    """Compte Unipile d'un user, lu en service-role (cron idée du jour).
+
+    Filtre `user_id` obligatoire : la clé service-role contourne la RLS.
+    """
+    if not admin_enabled() or not user_id:
+        return None
+    try:
+        resp = (
+            admin_client()
+            .table("linkedin_outreach_accounts")
+            .select("unipile_account_id")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception:
+        return None
+
+
 def upsert_linkedin_outreach_account(
     access_token: str,
     *,
@@ -6530,6 +6661,26 @@ def set_lead_contact_status(
     }
     resp = db.table("leads").update(payload).eq("id", lead_id).execute()
     return resp.data[0] if resp.data else None
+
+
+def save_lead_invite_preview(access_token: str, lead_id: str, preview: str) -> None:
+    """Persiste l'accroche d'invitation générée. Ne touche PAS outreach_updated_at.
+
+    Une relance du Mode Pilote le lendemain ne doit pas re-payer un appel modèle
+    pour le même lead. Best-effort : un échec d'écriture n'empêche pas d'afficher
+    le texte de cette requête.
+    """
+    if not supabase_enabled() or not lead_id:
+        return
+    text = str(preview or "").strip()
+    if not text:
+        return
+    try:
+        client_for_token(access_token).table("leads").update(
+            {"invite_preview": text[:1500]}
+        ).eq("id", lead_id).execute()
+    except Exception:
+        return
 
 
 def update_lead_outreach(access_token: str, lead_id: str, fields: dict[str, Any]) -> dict | None:
