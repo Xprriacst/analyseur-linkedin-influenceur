@@ -143,13 +143,25 @@ test.describe("Mode Pilote", () => {
     await expect(modeToggle.getByRole("tab", { name: "Expert" })).toHaveAttribute("aria-selected", "false");
   });
 
-  test("le toggle Expert ouvre l'interface complète", async ({ page }) => {
+  test("le toggle Expert ouvre l'aperçu lecture seule (tier gratuit)", async ({ page }) => {
     await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
       timeout: 45_000,
     });
     await page.getByRole("tab", { name: "Expert" }).click();
-    await expect(page.locator(".sidebar")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByRole("navigation", { name: "Navigation Mode Pilote" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: /Tu vois l'interface complète, en lecture seule/i })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator(".app-shell.pilot-expert-preview-active")).toBeVisible();
+    await expect(page.locator(".sidebar")).toBeVisible();
+  });
+
+  test("tier gratuit : Publier, Modifier et Autre angle sont grisés", async ({ page }) => {
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(page.getByRole("button", { name: /^Publier$/i })).toBeDisabled({ timeout: 15_000 });
+    await expect(page.getByRole("button", { name: /^Modifier$/i })).toBeDisabled();
+    await expect(page.getByRole("button", { name: /^Autre angle$/i })).toBeDisabled();
   });
 
   test("la carte agent IA prospects est visible", async ({ page }) => {
@@ -169,7 +181,33 @@ test.describe("Mode Pilote", () => {
     await expect(page.getByRole("button", { name: "Ta stratégie" })).toHaveCount(0);
   });
 
-  test("Inviter appelle l’API outreach existante (file, pas d’envoi immédiat)", async ({ page }) => {
+  test("tier gratuit : Inviter est grisé", async ({ page }) => {
+    let inviteCalled = false;
+    await page.route("**/me/leads/*/invite", (route) => {
+      inviteCalled = true;
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, queued: true, status: "invite_queued" }),
+      });
+    });
+
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await page.getByRole("button", { name: /Camille Dupont/i }).click();
+    const inviteBtn = page.getByRole("button", { name: /^Inviter$/i });
+    await expect(inviteBtn).toBeDisabled({ timeout: 15_000 });
+    await inviteBtn.click({ force: true });
+    expect(inviteCalled).toBe(false);
+  });
+
+  test("Inviter appelle l’API outreach existante quand l’abonnement est actif", async ({ page }) => {
+    await page.route("**/me/billing", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ enabled: true, subscribed: true, plan: { amount: 49, credits: 1000 } }),
+      }),
+    );
     let inviteCalled = false;
     await page.route("**/me/leads/*/invite", (route) => {
       inviteCalled = true;

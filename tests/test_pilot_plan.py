@@ -65,7 +65,34 @@ class PickContactsTest(unittest.TestCase):
 
 
 class ComposePlanTest(unittest.TestCase):
-    def test_empty_post_and_contacts_non_pilote(self):
+    def test_empty_post_shows_agent_for_all_pilot_accounts(self):
+        """Comptes in-app (sans tag landing pilote) : agent + pas de message « Connecte LinkedIn »."""
+        created = pp.datetime.datetime.now(pp.datetime.timezone.utc) - pp.datetime.timedelta(minutes=5)
+        out = pp.compose_pilot_plan(
+            profile={"display_name": "Alex"},
+            targeting={"ideal_client": "SaaS B2B"},
+            generated_posts=[],
+            daily_ideas=[],
+            leads=[],
+            library=[],
+            followed_handles=set(),
+            schedule=[],
+            outreach_connected=False,
+            publish_connected=False,
+            weekly_done=0,
+            weekly_total=3,
+            is_pilote_landing=False,
+            simulate_prospects=True,
+            account_created_at=created,
+        )
+        self.assertTrue(out["meta"]["post_empty"])
+        self.assertIsNone(out["meta"]["contacts_blocked_reason"])
+        agent = out["meta"]["prospect_agent"]
+        self.assertTrue(agent["active"])
+        self.assertIn(agent["status"], ("starting", "searching", "warming"))
+        self.assertTrue(all(c["simulated"] for c in out["plan"]["contacts"]))
+
+    def test_simulation_disabled_shows_connect_message(self):
         out = pp.compose_pilot_plan(
             profile={"display_name": "Alex"},
             targeting=None,
@@ -79,8 +106,8 @@ class ComposePlanTest(unittest.TestCase):
             publish_connected=False,
             weekly_done=0,
             weekly_total=3,
+            simulate_prospects=False,
         )
-        self.assertTrue(out["meta"]["post_empty"])
         self.assertEqual(out["plan"]["contacts"], [])
         self.assertIn("Connecte ton compte", out["meta"]["contacts_blocked_reason"] or "")
 

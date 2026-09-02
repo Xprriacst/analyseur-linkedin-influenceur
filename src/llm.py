@@ -858,6 +858,127 @@ def score_leads(
     return results
 
 
+# Suggestions « Influenceurs à suivre » : Haiku suffit pour juger l'adéquation
+# niche (headline vs profil client). Surchargeable par FOLLOW_SUGGESTIONS_MODEL.
+_FOLLOW_SUGGESTIONS_BATCH = 25
+FOLLOW_SUGGESTIONS_MIN_SCORE = 60
+
+
+def _follow_suggestions_model() -> str:
+    return os.environ.get("FOLLOW_SUGGESTIONS_MODEL", "claude-haiku-4-5")
+
+
+def score_follow_suggestions(
+    profile: dict[str, Any] | None,
+    targeting: dict[str, Any] | None,
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Note chaque influenceur 0–100 vs la niche/ICP du client.
+
+    Remplace le matching textuel naïf (faux positifs « expert », « réseaux »,
+    « linkedin »…) par un jugement sémantique léger. Un lot en échec renvoie
+    score 0 plutôt que de faire échouer toute la liste.
+    """
+    if not candidates:
+        return []
+
+    ctx_parts: list[str] = []
+    if isinstance(profile, dict):
+        for key, label in (
+            ("industry", "Secteur"),
+            ("business_description", "Activité"),
+            ("target_audience", "Audience"),
+            ("core_offer", "Offre"),
+            ("topics_to_cover", "Sujets"),
+        ):
+            value = profile.get(key)
+            if isinstance(value, str) and value.strip():
+                ctx_parts.append(f"{label} : {value.strip()}")
+    if isinstance(targeting, dict):
+        for key, label in (("ideal_client", "Client idéal"), ("offer", "Offre")):
+            value = targeting.get(key)
+            if isinstance(value, str) and value.strip():
+                ctx_parts.append(f"{label} : {value.strip()}")
+        raw_keywords = targeting.get("interest_keywords")
+        if isinstance(raw_keywords, list):
+            kws = ", ".join(str(k).strip() for k in raw_keywords if str(k or "").strip())
+        elif isinstance(raw_keywords, str) and raw_keywords.strip():
+            kws = raw_keywords.strip()
+        else:
+            kws = ""
+        if kws:
+            ctx_parts.append(f"Mots-clés d'intérêt : {kws}")
+
+    context = "\n".join(ctx_parts) or "(profil encore peu renseigné)"
+    system = (
+        "Tu es un analyste de veille LinkedIn. On te donne le profil éditorial "
+        "d'un utilisateur et une liste d'influenceurs déjà analysés par d'autres "
+        "comptes. Pour chaque influenceur, note de 0 à 100 s'il est pertinent à "
+        "SUIVRE pour la niche de cet utilisateur (même secteur, même cible, "
+        "contenu utile pour s'inspirer).\n\n"
+        "Règles strictes :\n"
+        "- IGNORE les mots génériques LinkedIn (expert, réseaux, linkedin, "
+        "marketing digital générique, personal branding…) : seuls ne suffisent PAS.\n"
+        "- PÉNALISE fortement les secteurs incohérents (ex. pharmacie vs SaaS B2B, "
+        "jardinage vs coaching business).\n"
+        "- 100 = même niche, contenu clairement aligné. 0 = hors sujet.\n"
+        "- Sois discriminant : n'attribue pas 80 à tout le monde.\n"
+        "- `matched_aspects` = 1 à 3 mots ou courtes expressions (niche réelle) "
+        "qui justifient le score, en français.\n"
+        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown."
+    )
+
+    results: list[dict[str, Any]] = [
+        {"score": 0, "reason": "", "matched_aspects": []} for _ in candidates
+    ]
+    for start in range(0, len(candidates), _FOLLOW_SUGGESTIONS_BATCH):
+        chunk = candidates[start : start + _FOLLOW_SUGGESTIONS_BATCH]
+        payload = [
+            {
+                "index": i,
+                "name": (row.get("name") or "")[:120],
+                "headline": (row.get("headline") or "")[:240],
+            }
+            for i, row in enumerate(chunk)
+        ]
+        user = (
+            f"PROFIL UTILISATEUR :\n{context}\n\n"
+            "Influenceurs à noter :\n"
+            + json.dumps(payload, ensure_ascii=False)
+            + '\n\nSchéma JSON attendu :\n'
+            + '{"scores": [{"index": int, "score": int (0-100), '
+            + '"reason": "phrase courte (max 20 mots)", '
+            + '"matched_aspects": ["aspect1", "aspect2"]}, ...]}'
+        )
+        try:
+            data = _call(
+                system,
+                user,
+                max_tokens=2048,
+                temperature=0.0,
+                model=_follow_suggestions_model(),
+            )
+            for row in data.get("scores") or []:
+                idx = row.get("index")
+                if not isinstance(idx, int) or idx < 0 or idx >= len(chunk):
+                    continue
+                aspects = row.get("matched_aspects") or []
+                if not isinstance(aspects, list):
+                    aspects = []
+                results[start + idx] = {
+                    "score": _clamp_score(row.get("score")),
+                    "reason": str(row.get("reason") or "").strip()[:300],
+                    "matched_aspects": [
+                        str(a).strip()[:40]
+                        for a in aspects
+                        if str(a or "").strip()
+                    ][:3],
+                }
+        except Exception as exc:  # noqa: BLE001
+            print(f"[follow-suggestions] scoring lot {start} échoué : {exc}", flush=True)
+    return results
+
+
 def generate_first_message(targeting: dict, lead: dict) -> str:
     """Rédige le premier message LinkedIn à envoyer à un lead accepté (ALE-230).
 

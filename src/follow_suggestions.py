@@ -10,10 +10,11 @@ niche du client.
 
 Trois propriétés à conserver si ce fichier est retouché :
 
-1. **Zéro appel IA, zéro Apify, zéro crédit.** Le matching est purement
-   textuel : des mots-clés tirés du profil éditorial et du ciblage de
-   prospection, cherchés dans le titre/nom des fiches déjà en base. Un
-   scrape déclenché ici transformerait une aide à la découverte en coût.
+1. **Haiku léger, zéro Apify, zéro crédit débité.** Le classement passe par
+   un appel Haiku (tâche annexe, modèle surchargeable via
+   `FOLLOW_SUGGESTIONS_MODEL`) pour éviter les faux positifs textuels
+   (« expert », « réseaux », « linkedin »…) et les secteurs incohérents.
+   Aucun scrape : on relit le cache mutualisé déjà en base.
 2. **Best-effort assumé.** Ça ne sert qu'à *filtrer et classer une liste
    d'affichage* — jamais à ouvrir un droit, jamais à facturer. Un mot-clé
    raté dégrade la pertinence, jamais la correction.
@@ -33,7 +34,7 @@ import re
 from typing import Any
 from urllib.parse import unquote
 
-from src import db
+from src import db, llm
 
 # Ce que l'écran affiche au maximum. Volontairement court : une liste longue
 # de profils « peut-être » pertinents se parcourt moins qu'une poignée.
@@ -42,6 +43,9 @@ FOLLOW_SUGGESTIONS_LIMIT = 6
 # Combien de fiches du cache mutualisé on inspecte (les plus récemment
 # analysées). Le filtrage est en mémoire : inutile de ramener toute la table.
 _CANDIDATE_POOL = 300
+
+# Plafond envoyé à Haiku par requête (coût marginal faible, latence bornée).
+_LLM_CANDIDATE_CAP = 40
 
 # Mots trop courants pour discriminer une niche. Best-effort : un mot manquant
 # ici ne fait qu'ajouter du bruit dans le classement, il ne casse rien.
@@ -128,39 +132,6 @@ def extract_niche_keywords(
     return words
 
 
-def _keyword_patterns(keywords: list[str]) -> list[tuple[str, re.Pattern[str]]]:
-    """Un motif par mot-clé, ancré sur un DÉBUT de mot.
-
-    ⚠️ Pas une simple recherche de sous-chaîne : « vente » ne doit pas matcher
-    « inventaire », sinon des profils hors sujet remontent avec un score élevé
-    et la liste perd toute crédibilité. L'ancrage n'est mis qu'au début, pas à
-    la fin : « consultant » doit continuer de matcher « consultants » et
-    « coach » « coaching » — le pluriel et les dérivés sont le cas NORMAL sur
-    une fiche LinkedIn.
-    """
-    patterns: list[tuple[str, re.Pattern[str]]] = []
-    for kw in keywords:
-        if not kw:
-            continue
-        try:
-            patterns.append((kw, re.compile(r"\b" + re.escape(kw))))
-        except re.error:  # pragma: no cover - re.escape rend ce cas improbable
-            continue
-    return patterns
-
-
-def _matched_keywords(
-    candidate: dict[str, Any],
-    patterns: list[tuple[str, re.Pattern[str]]],
-) -> list[str]:
-    haystack = " ".join(
-        str(candidate.get(field) or "") for field in ("headline", "name")
-    ).lower()
-    if not haystack.strip():
-        return []
-    return [kw for kw, pattern in patterns if pattern.search(haystack)]
-
-
 def _profile_url(row: dict[str, Any], raw_handle: str) -> str:
     url = (row.get("profile_url") or "").strip()
     if url:
@@ -168,39 +139,24 @@ def _profile_url(row: dict[str, Any], raw_handle: str) -> str:
     return f"https://www.linkedin.com/in/{raw_handle}/"
 
 
-def rank_suggestions(
+def _prepare_candidate_pool(
     candidates: list[dict[str, Any]],
-    keywords: list[str],
     excluded_handles: set[str],
-    limit: int = FOLLOW_SUGGESTIONS_LIMIT,
+    cap: int = _LLM_CANDIDATE_CAP,
 ) -> list[dict[str, Any]]:
-    """Classe les fiches du cache mutualisé par correspondance avec la niche.
-
-    Tri : nombre de mots-clés distincts touchés (décroissant), puis nombre
-    d'abonnés (décroissant) pour départager. ⚠️ Les abonnés ne départagent
-    QUE des scores égaux : un gros compte hors sujet ne doit jamais passer
-    devant un petit compte de la niche, sinon on suggère les mêmes
-    célébrités LinkedIn à tout le monde.
-    """
-    if limit <= 0 or not keywords:
-        return []
-    patterns = _keyword_patterns(keywords)
-    if not patterns:
-        return []
-    # Normalisé ici plutôt que de faire confiance à l'appelant : une exclusion
-    # ratée sur une différence de casse proposerait de suivre quelqu'un qu'on
-    # suit déjà — visible pour le client, muet côté serveur.
+    """Exclut les handles déjà suivis / bibliothèque / soi, déduplique."""
     excluded = {h.strip().lower() for h in excluded_handles if h}
-
-    scored: list[tuple[int, int, str, dict[str, Any]]] = []
+    pool: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in candidates:
         raw_handle = (row.get("handle") or "").strip()
         handle = unquote(raw_handle).strip()
         if not handle or handle.lower() in excluded or handle.lower() in seen:
             continue
-        matched = _matched_keywords(row, patterns)
-        if not matched:
+        haystack = " ".join(
+            str(row.get(field) or "") for field in ("headline", "name")
+        ).strip()
+        if not haystack:
             continue
         seen.add(handle.lower())
         followers = row.get("follower_count")
@@ -208,25 +164,62 @@ def rank_suggestions(
             followers = int(followers or 0)
         except (TypeError, ValueError):
             followers = 0
+        pool.append({
+            **row,
+            "_raw_handle": raw_handle,
+            "_handle": handle,
+            "_followers": followers,
+        })
+        if len(pool) >= cap:
+            break
+    return pool
+
+
+def rank_suggestions(
+    candidates: list[dict[str, Any]],
+    profile: dict[str, Any] | None,
+    targeting: dict[str, Any] | None,
+    excluded_handles: set[str],
+    limit: int = FOLLOW_SUGGESTIONS_LIMIT,
+) -> list[dict[str, Any]]:
+    """Classe les fiches du cache mutualisé via Haiku (adéquation niche/ICP).
+
+    Tri : score Haiku (décroissant), puis abonnés pour départager. Les abonnés
+    ne départagent QUE des scores égaux — un gros compte hors sujet ne passe
+    pas devant un petit compte de la niche.
+    """
+    if limit <= 0:
+        return []
+    pool = _prepare_candidate_pool(candidates, excluded_handles)
+    if not pool:
+        return []
+
+    llm_scores = llm.score_follow_suggestions(profile, targeting, pool)
+    scored: list[tuple[int, int, str, dict[str, Any]]] = []
+    for row, rating in zip(pool, llm_scores):
+        score = int(rating.get("score") or 0)
+        if score < llm.FOLLOW_SUGGESTIONS_MIN_SCORE:
+            continue
+        handle = row["_handle"]
+        raw_handle = row["_raw_handle"]
+        aspects = rating.get("matched_aspects") or []
+        if not isinstance(aspects, list):
+            aspects = []
+        matched = [str(a).strip() for a in aspects if str(a or "").strip()][:3]
         scored.append((
-            len(matched),
-            followers,
+            score,
+            row["_followers"],
             handle,
             {
                 "handle": handle,
                 "name": (row.get("name") or "").strip() or handle,
                 "headline": (row.get("headline") or "").strip(),
                 "profile_url": _profile_url(row, raw_handle),
-                "follower_count": followers,
-                # Les 3 premiers suffisent : l'écran affiche « correspond à
-                # ta niche : x · y · z », pas la liste complète.
-                "matched_keywords": matched[:3],
+                "follower_count": row["_followers"],
+                "matched_keywords": matched,
             },
         ))
 
-    # `handle` en 3e clé : à score ET abonnés égaux, l'ordre reste stable d'un
-    # appel à l'autre (une liste qui se réordonne toute seule à chaque
-    # rafraîchissement donne l'impression d'un bug).
     scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
     return [row for _score, _followers, _handle, row in scored[:limit]]
 
@@ -282,7 +275,8 @@ def build_follow_suggestions(access_token: str) -> dict[str, Any]:
         candidates = db.list_influencer_cache_candidates(limit=_CANDIDATE_POOL)
         suggestions = rank_suggestions(
             candidates,
-            keywords,
+            profile,
+            targeting,
             excluded_handles(library, followed_handles, own_handle),
         )
         return {"suggestions": suggestions, "followed_count": len(followed_handles)}

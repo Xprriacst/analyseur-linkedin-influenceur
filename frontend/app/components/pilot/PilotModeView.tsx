@@ -98,6 +98,8 @@ type PilotModeViewProps = {
   contactsBlockedReason?: string;
   prospectAgent?: PilotProspectAgent | null;
   hideModeToggle?: boolean;
+  /** Tier Pilote gratuit : boutons d'action visibles mais inactifs. */
+  actionsLocked?: boolean;
   onPublish?: () => void;
   onEditPost?: () => void;
   onRegeneratePost?: () => void;
@@ -113,6 +115,7 @@ export default function PilotModeView({
   contactsBlockedReason,
   prospectAgent,
   hideModeToggle = false,
+  actionsLocked = false,
   onPublish,
   onEditPost,
   onRegeneratePost,
@@ -133,12 +136,16 @@ export default function PilotModeView({
 
   const handleAction = useCallback(
     (label: string, fn?: () => void) => {
+      if (actionsLocked) {
+        toast.message("Réservé aux abonnés premium — passe en premium pour débloquer.");
+        return;
+      }
       fn?.();
       if (preview) {
         toast(`${label} — simulé`);
       }
     },
-    [preview],
+    [preview, actionsLocked],
   );
 
   const hasPostContent = !postEmpty && Boolean(plan.post.hook.trim() || plan.post.body.trim());
@@ -300,11 +307,17 @@ export default function PilotModeView({
                   </p>
                 </div>
               )}
-              <div className="pilot-actions">
+              <div className={`pilot-actions${actionsLocked ? " pilot-actions-locked" : ""}`}>
                 <button
                   type="button"
                   className={`pilot-btn pilot-btn-primary${published ? " done" : ""}`}
+                  disabled={actionsLocked}
+                  title={actionsLocked ? "Réservé aux abonnés premium" : undefined}
                   onClick={() => {
+                    if (actionsLocked) {
+                      handleAction("Publication", undefined);
+                      return;
+                    }
                     if (hasPostContent) setPublished(true);
                     handleAction("Publication", onPublish);
                   }}
@@ -317,6 +330,8 @@ export default function PilotModeView({
                     <button
                       type="button"
                       className="pilot-btn pilot-btn-ghost"
+                      disabled={actionsLocked}
+                      title={actionsLocked ? "Réservé aux abonnés premium" : undefined}
                       onClick={() => handleAction("Modification", onEditPost)}
                     >
                       <PenLine size={15} />
@@ -325,6 +340,8 @@ export default function PilotModeView({
                     <button
                       type="button"
                       className="pilot-btn pilot-btn-ghost"
+                      disabled={actionsLocked}
+                      title={actionsLocked ? "Réservé aux abonnés premium" : undefined}
                       onClick={() => handleAction("Régénération", onRegeneratePost)}
                     >
                       <RefreshCw size={15} />
@@ -429,7 +446,8 @@ export default function PilotModeView({
                                   onInvite?.(contact.id),
                                 );
                               }}
-                              disabled={isInvited || Boolean(contactsBlockedReason)}
+                              disabled={isInvited || Boolean(contactsBlockedReason) || actionsLocked}
+                              title={actionsLocked ? "Réservé aux abonnés premium" : undefined}
                             >
                               {isInvited ? <Check size={15} /> : <UserPlus size={15} />}
                               {isInvited ? "Invitation envoyée" : "Inviter"}

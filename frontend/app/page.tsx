@@ -16612,6 +16612,16 @@ export default function Home() {
     } catch { /* ignore */ }
   }, []);
 
+  /** Compte passé par le funnel Pilote gratuit (landing /pilote ou onboarding in-app). */
+  const [pilotFunnel, setPilotFunnel] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return localStorage.getItem("lkd_interface_mode") === "pilot";
+    } catch {
+      return false;
+    }
+  });
+
   /** Ferme l'onboarding et le marque comme fait — qu'il ait été rempli ou passé.
    *  ⚠️ Force le Mode Pilote : sans ça, un « expert » resté dans le
    *  localStorage du navigateur (autre compte testé au même endroit) fait
@@ -16621,10 +16631,14 @@ export default function Home() {
     setShowOnboarding(false);
     setView("content");
     setInterfaceModePersist("pilot");
-    // Marque l'onboarding comme fait (dans les métadonnées Supabase) → il ne
-    // réapparaîtra plus, même après refresh, sans dépendre du backend.
-    supabase.auth.updateUser({ data: { onboarding_pending: false, onboarding_done: true } }).catch(() => {});
-  }, [setInterfaceModePersist]);
+    setPilotFunnel(true);
+    const meta = (session?.user?.user_metadata || {}) as Record<string, unknown>;
+    const patch: Record<string, unknown> = { onboarding_pending: false, onboarding_done: true };
+    // Aligner le tier gratuit backend (contacts simulés, gating UI) sans
+    // écraser un landing founders ou autre porte d'entrée déjà posée.
+    if (!meta.landing) patch.landing = "pilote";
+    supabase.auth.updateUser({ data: patch }).catch(() => {});
+  }, [setInterfaceModePersist, session]);
 
   useEffect(() => {
     if (restricted && interfaceMode === "pilot") setInterfaceMode("expert");
@@ -16635,18 +16649,32 @@ export default function Home() {
 
   const isPiloteLandingUser =
     ((session?.user?.user_metadata as Record<string, unknown> | undefined)?.landing) === "pilote";
-  const pilotBilling = useBilling(isAuthed && isPiloteLandingUser);
+
+  useEffect(() => {
+    if (isPiloteLandingUser) setPilotFunnel(true);
+  }, [isPiloteLandingUser]);
+
+  useEffect(() => {
+    if (showPilotShell) setPilotFunnel(true);
+  }, [showPilotShell]);
+
+  const isPilotFunnelUser = isPiloteLandingUser || pilotFunnel;
+  const pilotBilling = useBilling(isAuthed && !restricted && isPilotFunnelUser);
   const isPilotPremium = Boolean(pilotBilling.status?.subscribed);
+  /** Ne verrouille qu'une fois l'abonnement lu — évite un flash grisé chez les premium. */
+  const isPilotFreeLocked =
+    isPilotFunnelUser && pilotBilling.status !== null && !isPilotPremium;
   const showExpertPreview =
     isAuthed
     && !restricted
     && !showOnboarding
     && !checkingProfile
     && interfaceMode === "expert"
-    && isPiloteLandingUser
-    && !isPilotPremium;
+    && isPilotFunnelUser
+    && isPilotFreeLocked;
 
   function openGeneratorFromPilot(seed: { topic: string; postText?: string; postId?: string }) {
+    if (isPilotFreeLocked) return;
     setInterfaceModePersist("expert");
     setGeneratorSeed({ topic: seed.topic || seed.postText?.slice(0, 120) || "", nonce: Date.now() });
     setContentTab("generator");
@@ -16655,6 +16683,7 @@ export default function Home() {
   }
 
   function openAssistantFromPilot(postText: string) {
+    if (isPilotFreeLocked) return;
     setInterfaceModePersist("expert");
     reworkWithAssistant(postText);
   }
@@ -17402,6 +17431,7 @@ export default function Home() {
           onOpenAssistant={openAssistantFromPilot}
           onUpgrade={() => void pilotBilling.subscribe()}
           upgradeBusy={pilotBilling.busy}
+          actionsLocked={isPilotFreeLocked}
           devBanner={IS_DEV_ENV}
           userEmail={session?.user?.email ?? undefined}
           onSignOut={() => supabase.auth.signOut()}
