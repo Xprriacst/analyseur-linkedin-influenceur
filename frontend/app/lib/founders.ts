@@ -48,6 +48,10 @@ export const FOUNDERS_TESTIMONIAL = {
  */
 export const CLIENT_TESTIMONIALS = [
   {
+    name: "ReShape",
+    quote: "oui le service est toop, on a passé les 4k merci les gars !!!",
+  },
+  {
     name: "Sacha",
     quote:
       "Pour être honnête avec vous les gars je suis 100% satisfait de votre accompagnement",

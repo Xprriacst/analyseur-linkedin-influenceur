@@ -243,57 +243,6 @@
   color: rgba(245, 245, 247, 0.55);
 }
 
-.pilote-quote-featured {
-  margin: 0 0 12px;
-  padding: 16px 18px;
-  border-radius: 16px;
-  background: rgba(0, 0, 0, 0.34);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-}
-
-.pilote-quote-featured-link {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  text-decoration: none;
-  color: inherit;
-  margin-bottom: 12px;
-}
-
-.pilote-quote-featured-link:hover .pilote-quote-featured-name {
-  color: #fff;
-}
-
-.pilote-quote-featured-avatar {
-  border-radius: 50%;
-  object-fit: cover;
-  flex-shrink: 0;
-}
-
-.pilote-quote-featured-meta {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.pilote-quote-featured-name {
-  font-size: 14px;
-  font-weight: 700;
-  color: rgba(245, 245, 247, 0.95);
-}
-
-.pilote-quote-featured-handle {
-  font-size: 12px;
-  color: rgba(245, 245, 247, 0.5);
-  margin-top: 2px;
-}
-
-.pilote-quote-featured-text {
-  padding: 0;
-  background: none;
-  border: none;
-}
-
 .pilote-proof-foot {
   margin-top: auto;
   font-size: 12px;
