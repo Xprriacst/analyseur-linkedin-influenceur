@@ -11,6 +11,8 @@ type PilotNavProps = {
   onTabChange: (tab: PilotNavTab) => void;
   onUpgrade: () => void;
   upgradeBusy?: boolean;
+  /** Masqué dès que /me/billing confirme un abonnement actif. */
+  showUpgradeButton?: boolean;
   interfaceMode: InterfaceMode;
   onInterfaceModeChange: (mode: InterfaceMode) => void;
   /** Pastilles futures (posts, leads, missions) — réservé phase 2. */
@@ -22,6 +24,7 @@ export function PilotNav({
   onTabChange,
   onUpgrade,
   upgradeBusy = false,
+  showUpgradeButton = true,
   interfaceMode,
   onInterfaceModeChange,
   badges,
@@ -100,15 +103,19 @@ export function PilotNav({
             Expert
           </button>
         </div>
-        <button
-          type="button"
-          className="pilot-nav-upgrade"
-          onClick={onUpgrade}
-          disabled={upgradeBusy}
-        >
-          <Zap size={16} aria-hidden="true" />
-          {upgradeBusy ? "Redirection…" : "Passer en premium"}
-        </button>
+        {showUpgradeButton ? (
+          <button
+            type="button"
+            className="pilot-nav-upgrade"
+            onClick={onUpgrade}
+            disabled={upgradeBusy}
+          >
+            <Zap size={16} aria-hidden="true" />
+            {upgradeBusy ? "Redirection…" : "Passer en premium"}
+          </button>
+        ) : (
+          <p className="pilot-nav-premium-badge">Abonnement actif</p>
+        )}
       </div>
     </nav>
   );

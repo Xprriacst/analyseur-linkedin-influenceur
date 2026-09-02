@@ -46,8 +46,10 @@ export type PilotShellProps = {
   onOpenAssistant: (postText: string) => void;
   onUpgrade: () => void;
   upgradeBusy?: boolean;
+  showUpgradeButton?: boolean;
   /** Tier Pilote gratuit : actions réelles désactivées (aperçu seulement). */
   actionsLocked?: boolean;
+  isPremium?: boolean;
   /** Site dev : le bandeau fixe de 30 px recouvrirait le haut de la nav. */
   devBanner?: boolean;
   /** Compte connecté + déconnexion : le Mode Pilote n'a pas d'entête. */
@@ -78,7 +80,9 @@ export default function PilotShell({
   onOpenAssistant,
   onUpgrade,
   upgradeBusy = false,
+  showUpgradeButton = true,
   actionsLocked = false,
+  isPremium = false,
   devBanner = false,
   userEmail,
   onSignOut,
@@ -245,6 +249,7 @@ export default function PilotShell({
           onTabChange={setNavTab}
           onUpgrade={onUpgrade}
           upgradeBusy={upgradeBusy}
+          showUpgradeButton={showUpgradeButton}
           interfaceMode={interfaceMode}
           onInterfaceModeChange={onInterfaceModeChange}
         />
@@ -265,6 +270,7 @@ export default function PilotShell({
           onTabChange={setNavTab}
           onUpgrade={onUpgrade}
           upgradeBusy={upgradeBusy}
+          showUpgradeButton={showUpgradeButton}
           interfaceMode={interfaceMode}
           onInterfaceModeChange={onInterfaceModeChange}
         />
@@ -289,6 +295,7 @@ export default function PilotShell({
         onTabChange={setNavTab}
         onUpgrade={onUpgrade}
         upgradeBusy={upgradeBusy}
+        showUpgradeButton={showUpgradeButton}
         interfaceMode={interfaceMode}
         onInterfaceModeChange={onInterfaceModeChange}
       />
@@ -297,6 +304,7 @@ export default function PilotShell({
           <PilotProfilePane
             userEmail={userEmail}
             onSignOut={onSignOut}
+            isPremium={isPremium}
             strategy={plan.strategy}
             followSuggestions={followSuggestions}
             followLoading={followLoading}
