@@ -18,6 +18,9 @@ from src.daily_ideas import maybe_bootstrap_daily_idea
 from src.invite_openers import PILOT_INVITE_PREVIEW_CAP, fill_invite_previews
 
 PILOT_CONTACT_LIMIT = 3
+# Sans LinkedIn : le vivier peut contenir des dizaines de fiches (l'admin
+# en colle plein d'un coup). On n'en montre qu'UNE par jour calendaire.
+PILOT_UNCONNECTED_DAILY_LIMIT = 1
 PILOT_FOLLOW_LIMIT = 5
 PILOT_WEEKLY_TOTAL = 3
 
@@ -68,16 +71,34 @@ def lead_invitable(lead: dict[str, Any]) -> bool:
     return status in _INVITABLE_OUTREACH
 
 
-def pick_contacts(leads: list[dict[str, Any]], limit: int = PILOT_CONTACT_LIMIT) -> list[dict[str, Any]]:
-    """Jusqu'à ``limit`` leads scorés verts/oranges, jamais contactés ni écartés."""
-    picked: list[dict[str, Any]] = []
+def pick_contacts(
+    leads: list[dict[str, Any]],
+    limit: int = PILOT_CONTACT_LIMIT,
+    *,
+    outreach_connected: bool = True,
+    now: datetime.datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Leads scorés verts/oranges, jamais contactés ni écartés.
+
+    Compte LinkedIn relié : jusqu'à ``limit`` (3). Sans LinkedIn : **1 seul**,
+    et si le vivier a copié quelqu'un aujourd'hui c'est LUI — pas les N
+    fiches que l'admin vient de coller dans un autre compte.
+    """
+    invitables: list[dict[str, Any]] = []
     for lead in leads:
         if not lead_invitable(lead):
             continue
-        picked.append(lead)
-        if len(picked) >= limit:
-            break
-    return picked
+        invitables.append(lead)
+    if outreach_connected:
+        return invitables[:limit]
+    today_pool = [
+        lead for lead in invitables
+        if prospect_pool.is_pool_lead(lead)
+        and prospect_pool.assigned_from_pool_today([lead], now)
+    ]
+    if today_pool:
+        return today_pool[:PILOT_UNCONNECTED_DAILY_LIMIT]
+    return invitables[:PILOT_UNCONNECTED_DAILY_LIMIT]
 
 
 def pick_follow_profiles(
@@ -355,9 +376,22 @@ def build_prospect_agent_meta(
     reveal_count: int,
     outreach_connected: bool,
 ) -> dict[str, Any]:
-    """État de l'agent IA de recherche de prospects (Mode Pilote gratuit)."""
+    """État de l'agent IA de recherche de prospects (Mode Pilote gratuit).
+
+    Chemin réel (vivier) : la carte « en recherche » s'affiche tant qu'on
+    n'a personne à proposer aujourd'hui. Pas de noms inventés — juste le
+    signal que l'agent travaille. Une fois un vrai profil copié, la carte
+    disparaît : c'est la personne qui parle.
+    """
     if not simulate_prospects:
-        return {"active": False, "status": "idle", "message": None, "detail": None}
+        if outreach_connected or real_contact_count >= 1:
+            return {"active": False, "status": "idle", "message": None, "detail": None}
+        return {
+            "active": True,
+            "status": "searching",
+            "message": "Ton agent cherche des prospects qui correspondent à ta cible.",
+            "detail": "Un profil par jour — dès qu'un compte de ta niche est trouvé.",
+        }
 
     if real_contact_count >= PILOT_CONTACT_LIMIT:
         return {"active": False, "status": "ready", "message": None, "detail": None}
@@ -436,6 +470,7 @@ def compose_pilot_plan(
     is_pilote_landing: bool = False,
     simulate_prospects: bool = False,
     account_created_at: datetime.datetime | None = None,
+    now: datetime.datetime | None = None,
 ) -> dict[str, Any]:
     display = (profile or {}).get("display_name") or (profile or {}).get("brand_name") or "toi"
     user_first = first_name(display if display != "toi" else None) if display != "toi" else "toi"
@@ -474,7 +509,9 @@ def compose_pilot_plan(
         post_hook, post_body = split_post_text(post_text)
 
     follow_rows = pick_follow_profiles(library, followed_handles)
-    contact_leads = pick_contacts(leads)
+    contact_leads = pick_contacts(
+        leads, outreach_connected=outreach_connected, now=now,
+    )
     contacts = []
     for idx, lead in enumerate(contact_leads):
         company = ""
@@ -644,13 +681,16 @@ def build_pilot_today(access_token: str) -> dict[str, Any]:
         # les noms inventés de `_PILOT_SIM_PROSPECTS` (`simulate_prospects`
         # reste False).
         if not outreach_connected and (user or {}).get("id"):
-            if len(pick_contacts(leads)) < PILOT_CONTACT_LIMIT:
-                assigned = prospect_pool.maybe_assign_one(
-                    user["id"], profile, targeting, leads,
-                )
-                if assigned:
-                    leads = db.list_leads(access_token, limit=200)
-        fill_invite_previews(access_token, targeting, pick_contacts(leads))
+            # maybe_assign_one borne déjà à 1/jour UTC, même si le vivier
+            # vient d'être rempli de 50 URLs. On n'attend plus d'avoir 3
+            # cases vides : sans LinkedIn la vue n'en montre qu'une.
+            assigned = prospect_pool.maybe_assign_one(
+                user["id"], profile, targeting, leads,
+            )
+            if assigned:
+                leads = db.list_leads(access_token, limit=200)
+        chosen = pick_contacts(leads, outreach_connected=outreach_connected)
+        fill_invite_previews(access_token, targeting, chosen)
         return compose_pilot_plan(
             profile=profile,
             targeting=targeting,

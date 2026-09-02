@@ -42,6 +42,18 @@ class LeadInvitableTest(unittest.TestCase):
         self.assertFalse(pp.lead_invitable(_lead(outreach_status="connected")))
 
 
+def _pool_lead(**kwargs):
+    now = kwargs.pop("created_at", "2026-09-02T09:00:00Z")
+    base = _lead(
+        score=75,
+        comment_text="",
+        created_at=now,
+        signals=[{"origin": "prospect_pool"}],
+    )
+    base.update(kwargs)
+    return base
+
+
 class PickContactsTest(unittest.TestCase):
     def test_max_three(self):
         leads = [_lead(id=f"l{i}", score=70 + i) for i in range(10)]
@@ -63,10 +75,39 @@ class PickContactsTest(unittest.TestCase):
     def test_empty_when_none_eligible(self):
         self.assertEqual(pp.pick_contacts([_lead(score=10)]), [])
 
+    def test_unconnected_caps_at_one_even_if_pool_is_full(self):
+        now = pp.datetime.datetime(2026, 9, 2, 12, 0, tzinfo=pp.datetime.timezone.utc)
+        leads = [
+            _pool_lead(id=f"p{i}", name=f"Prospect {i}", created_at="2026-09-02T08:00:00Z")
+            for i in range(8)
+        ]
+        picked = pp.pick_contacts(leads, outreach_connected=False, now=now)
+        self.assertEqual(len(picked), 1)
+        self.assertEqual(picked[0]["id"], "p0")
+
+    def test_unconnected_prefers_today_pool_over_other_invitables(self):
+        now = pp.datetime.datetime(2026, 9, 2, 12, 0, tzinfo=pp.datetime.timezone.utc)
+        leads = [
+            _lead(id="import-1", name="Importé", score=90),
+            _pool_lead(id="yesterday", name="Hier", created_at="2026-09-01T10:00:00Z"),
+            _pool_lead(id="today", name="Léa Moreau", created_at="2026-09-02T08:00:00Z"),
+        ]
+        picked = pp.pick_contacts(leads, outreach_connected=False, now=now)
+        self.assertEqual([p["id"] for p in picked], ["today"])
+
+    def test_connected_still_shows_three(self):
+        now = pp.datetime.datetime(2026, 9, 2, 12, 0, tzinfo=pp.datetime.timezone.utc)
+        leads = [
+            _pool_lead(id=f"p{i}", created_at="2026-09-02T08:00:00Z")
+            for i in range(5)
+        ]
+        picked = pp.pick_contacts(leads, outreach_connected=True, now=now)
+        self.assertEqual(len(picked), 3)
+
 
 class ComposePlanTest(unittest.TestCase):
-    def test_empty_post_shows_connect_when_not_simulating(self):
-        """Sans simulation : pas de contacts fictifs ni carte agent — message LinkedIn."""
+    def test_empty_post_shows_searching_agent_when_not_simulating(self):
+        """Sans simulation : pas de noms fictifs, mais l'agent cherche — pas un vide silencieux."""
         created = pp.datetime.datetime.now(pp.datetime.timezone.utc) - pp.datetime.timedelta(minutes=5)
         out = pp.compose_pilot_plan(
             profile={"display_name": "Alex"},
@@ -87,10 +128,12 @@ class ComposePlanTest(unittest.TestCase):
         self.assertTrue(out["meta"]["post_empty"])
         self.assertIn("Connecte ton compte", out["meta"]["contacts_blocked_reason"] or "")
         agent = out["meta"]["prospect_agent"]
-        self.assertFalse(agent["active"])
+        self.assertTrue(agent["active"])
+        self.assertIn("cherche des prospects", agent["message"] or "")
+        self.assertIn("Un profil par jour", agent["detail"] or "")
         self.assertEqual(out["plan"]["contacts"], [])
 
-    def test_simulation_disabled_shows_connect_message(self):
+    def test_simulation_disabled_shows_agent_not_empty_column(self):
         out = pp.compose_pilot_plan(
             profile={"display_name": "Alex"},
             targeting=None,
@@ -107,6 +150,7 @@ class ComposePlanTest(unittest.TestCase):
             simulate_prospects=False,
         )
         self.assertEqual(out["plan"]["contacts"], [])
+        self.assertTrue(out["meta"]["prospect_agent"]["active"])
         self.assertIn("Connecte ton compte", out["meta"]["contacts_blocked_reason"] or "")
 
     def test_pilote_landing_shows_agent_not_connect_message(self):
@@ -381,6 +425,7 @@ class PoolContactIsRealTest(unittest.TestCase):
         self.assertFalse(contact["simulated"])
         self.assertNotIn(contact["name"], {"Camille Martin", "Thomas Leroy", "Sarah Benali"})
         self.assertIn("Connecte", out["meta"]["contacts_blocked_reason"] or "")
+        self.assertFalse(out["meta"]["prospect_agent"]["active"])
 
     def test_simulation_off_never_fills_with_fake_names(self):
         out = pp.compose_pilot_plan(
@@ -399,6 +444,38 @@ class PoolContactIsRealTest(unittest.TestCase):
             simulate_prospects=False,
         )
         self.assertEqual(out["plan"]["contacts"], [])
+        self.assertTrue(out["meta"]["prospect_agent"]["active"])
+        self.assertNotIn("Camille Martin", str(out))
+
+    def test_unconnected_compose_shows_one_even_if_many_pool_leads(self):
+        now = pp.datetime.datetime(2026, 9, 2, 12, 0, tzinfo=pp.datetime.timezone.utc)
+        leads = [
+            _pool_lead(
+                id=f"p{i}",
+                name=f"Prospect {i}",
+                headline="Pharmacien titulaire",
+                created_at="2026-09-02T08:00:00Z",
+            )
+            for i in range(6)
+        ]
+        out = pp.compose_pilot_plan(
+            profile={"display_name": "Alex"},
+            targeting={"ideal_client": "pharmaciens"},
+            generated_posts=[],
+            daily_ideas=[],
+            leads=leads,
+            library=[],
+            followed_handles=set(),
+            schedule=[],
+            outreach_connected=False,
+            publish_connected=False,
+            weekly_done=0,
+            weekly_total=3,
+            simulate_prospects=False,
+            now=now,
+        )
+        self.assertEqual(len(out["plan"]["contacts"]), 1)
+        self.assertEqual(out["plan"]["contacts"][0]["name"], "Prospect 0")
 
 
 class BuildPilotTodayPoolGateTest(unittest.TestCase):
