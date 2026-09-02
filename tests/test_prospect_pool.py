@@ -209,6 +209,28 @@ class MaybeAssignOneTest(unittest.TestCase):
         self.assertIsNone(out)
         self.assertEqual(writes["n"], 0)
 
+    def test_many_candidates_in_the_pool_still_insert_only_one(self):
+        writes = {"n": 0}
+
+        def writer(*_a, **kwargs):
+            writes["n"] += 1
+            return {"id": "lead-1", "user_id": "user-lia", **kwargs}
+
+        out = pp.maybe_assign_one(
+            "user-lia",
+            _profile(),
+            None,
+            [],
+            list_candidates=lambda **_k: [
+                _pool_row("marie"),
+                _pool_row("jean", headline="Pharmacien"),
+                _pool_row("lea", headline="Pharmacienne titulaire"),
+            ],
+            insert_lead=writer,
+        )
+        self.assertEqual(writes["n"], 1)
+        self.assertIsNotNone(out)
+
     def test_second_call_same_day_is_noop_after_insert(self):
         """Le 2ᵉ passage du jour voit le lead fraîchement copié → zéro 2ᵉ insert."""
         now = datetime.datetime(2026, 9, 2, 12, 0, tzinfo=datetime.timezone.utc)

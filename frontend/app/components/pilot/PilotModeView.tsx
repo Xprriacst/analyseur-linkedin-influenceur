@@ -245,7 +245,9 @@ export default function PilotModeView({
             <h1 className="pilot-greeting">Bonjour {plan.userName}.</h1>
             <p className="pilot-greeting-sub">
               {hasPostContent
-                ? <>Ton post est prêt. {plan.contacts.length} personne{plan.contacts.length > 1 ? "s" : ""} à contacter.<span className="pilot-greeting-rest"> C’est tout.</span></>
+                ? prospectAgent?.active
+                  ? <>Ton post est prêt. Ton agent cherche des prospects.</>
+                  : <>Ton post est prêt. {plan.contacts.length} personne{plan.contacts.length > 1 ? "s" : ""} à contacter.<span className="pilot-greeting-rest"> C’est tout.</span></>
                 : <>Pas encore de post du jour — ton agent le prépare.<span className="pilot-greeting-rest"> Le reste de ton plan avance en parallèle.</span></>}
             </p>
           </div>

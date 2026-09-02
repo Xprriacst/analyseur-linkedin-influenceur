@@ -165,11 +165,48 @@ test.describe("Mode Pilote", () => {
     await expect(page.getByRole("button", { name: /^Autre angle$/i })).toBeDisabled();
   });
 
-  test("sans simulation, pas de carte agent IA fictive", async ({ page }) => {
+  test("LinkedIn connecté : pas de carte agent en recherche", async ({ page }) => {
     await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
       timeout: 45_000,
     });
     await expect(page.getByText(/Agent IA en recherche/i)).toHaveCount(0);
+  });
+
+  test("sans prospect du jour, l'agent cherche — zéro nom inventé", async ({ page }) => {
+    const searchingPilot = {
+      ...MOCK_PILOT,
+      plan: {
+        ...MOCK_PILOT.plan,
+        contacts: [],
+      },
+      meta: {
+        ...MOCK_PILOT.meta,
+        linkedin_outreach_connected: false,
+        contacts_blocked_reason:
+          "Connecte ton compte LinkedIn de prospection (Mon profil → Connexions) pour inviter des leads.",
+        prospect_agent: {
+          active: true,
+          status: "searching",
+          message: "Ton agent cherche des prospects qui correspondent à ta cible.",
+          detail: "Un profil par jour — dès qu'un compte de ta niche est trouvé.",
+        },
+      },
+    };
+    await page.route("**/me/pilot/today", (route) =>
+      route.fulfill({ contentType: "application/json", body: JSON.stringify(searchingPilot) }),
+    );
+    await page.reload();
+
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(page.getByText(/Agent IA en recherche/i)).toBeVisible();
+    await expect(page.getByText(/Un profil par jour/i)).toBeVisible();
+    await expect(page.getByText(/Ton agent cherche des prospects/i).first()).toBeVisible();
+    await expect(page.getByText("0 personne à contacter")).toHaveCount(0);
+    await expect(page.getByText("Camille Martin")).toHaveCount(0);
+    await expect(page.getByText("Thomas Leroy")).toHaveCount(0);
+    await expect(page.getByText("Sarah Benali")).toHaveCount(0);
   });
 
   test("un prospect du vivier est réel : Inviter bloqué sans LinkedIn, aucun nom inventé", async ({

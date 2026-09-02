@@ -88,6 +88,13 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-09-02 #4 (dev : agent « en recherche » + 1 prospect affiché / jour, même si le vivier est plein)
+
+- **Retour d'Alex** (compte Test, vue du jour) : colonne « À contacter » vide + « Connecte LinkedIn » — l'utilisateur ne voyait pas que l'agent cherchait. Et coller plein d'URLs dans le vivier (depuis `/leads`) ne doit **jamais** en déverser plusieurs d'un coup.
+- **Carte agent** : tant que LinkedIn n'est pas relié **et** qu'aucun prospect du jour n'est proposé, `prospect_agent.active` — « Ton agent cherche des prospects qui correspondent à ta cible. » / « Un profil par jour ». Accueil : « Ton post est prêt. Ton agent cherche des prospects. » plus « 0 personne à contacter. C'est tout. » **Toujours zéro nom inventé** (`simulate_prospects` reste False). Dès qu'un vrai profil est copié, la carte disparaît : c'est la personne qui parle, Inviter reste grisé.
+- ⚠️ **Affichage borné à 1 sans LinkedIn**, même si `leads` en contient 8 du vivier (l'admin vient d'en coller 50). `pick_contacts(..., outreach_connected=False)` préfère le lead `origin=prospect_pool` **créé aujourd'hui (UTC)**. Compte relié : le plafond 3 inchangé (ce sont SES leads).
+- Attribution : `maybe_assign_one` toujours 1/jour — on ne attend plus d'avoir 3 cases vides pour copier. Deux clients peuvent toujours partager la même fiche.
+
 ### 2026-09-02 #3 (dev : vivier partagé de prospects — 1 vrai profil / jour en Mode Pilote)
 
 - **Décision d'Alex du 2026-09-02** : tant que le LinkedIn n'est pas connecté, le Mode Pilote propose **un prospect réel par jour**, tiré d'un stock **rempli par l'admin** (CSV / xlsx / URLs collées). Pas Unipile, pas Fable, pas n8n ; pas non plus les leads des autres clients (ce serait leurs commentaires / leur ICP, pas un stock public).
