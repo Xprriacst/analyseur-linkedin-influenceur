@@ -179,8 +179,9 @@ async function reachSimulation(page: Page): Promise<{ projectionBody: () => any;
   await page.getByPlaceholder("Dis-le avec tes mots…").fill("Mon marché est ultra saturé");
   await page.getByRole("button", { name: "Continuer", exact: true }).click();
 
-  // Audit léger (écran 1) puis son détail (écran 2).
-  await page.getByRole("button", { name: "Voir mon potentiel" }).click();
+  // Audit léger : UN seul écran désormais. Le détail (accroche + hashtags +
+  // forts/à améliorer) ne subsiste que dans le tunnel d'audit /start, où ces
+  // deux listes SONT le lead-magnet promis.
   await page.getByRole("button", { name: "Continuer", exact: true }).click();
 
   // (3) Questions de la variante SaaS : cible précise, pas le jargon ICP.
@@ -339,7 +340,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await expect(page.locator(".onb-scan-quiz")).toHaveCount(0);
     await expect(page.locator(".onb-orb")).toBeVisible();
     // …puis l'écran d'analyse arrive TOUT SEUL quand le serveur répond.
-    await expect(page.getByRole("button", { name: "Voir mon potentiel" })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole("heading", { name: "Analyse IA" })).toBeVisible({ timeout: 15000 });
   });
 
   test("projection injoignable : le tunnel mène quand même à l'essai", async ({ page }) => {
@@ -352,7 +353,6 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await page.getByRole("button", { name: "Analyser" }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
-    await page.getByRole("button", { name: "Voir mon potentiel" }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: /Voir ce que je pourrais gagner/ }).click();
@@ -413,7 +413,7 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await expect(page.getByText("Qu'est-ce qui te bloque le plus ?")).toHaveCount(0);
 
     // Analyse : les vrais compteurs du profil scrapé, pas le badge « site ».
-    await expect(page.getByRole("button", { name: "Voir mon potentiel" })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole("heading", { name: "Analyse IA" })).toBeVisible({ timeout: 15000 });
 
     // L'URL part bien en linkedin_url + Apify activé — jamais en website_url.
     expect(draftBody).toMatchObject({
@@ -426,7 +426,6 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await expect(page.getByText("Analysé depuis ton site")).toHaveCount(0);
     await expect(page.getByText("Analysé depuis ta description")).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Voir mon potentiel" }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
     await page.getByRole("button", { name: "Une cible précise" }).click();
     await page.getByRole("button", { name: "CTO & équipes tech" }).click();
@@ -483,7 +482,6 @@ test.describe("Tunnel fondateurs SaaS (anonyme)", () => {
     await page.getByRole("button", { name: "Je lance dans le silence" }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
 
-    await page.getByRole("button", { name: "Voir mon potentiel" }).click();
     await page.getByRole("button", { name: "Continuer", exact: true }).click();
 
     await page.getByRole("button", { name: "Une cible précise" }).click();

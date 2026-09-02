@@ -835,7 +835,14 @@ def get_editorial_profile(access_token: str) -> dict | None:
 
 
 def upsert_editorial_profile(access_token: str, payload: dict[str, Any]) -> dict | None:
-    """Create or update the user's editorial profile."""
+    """Create or update the user's editorial profile.
+
+    ⚠️ À la CRÉATION seulement (fin d'onboarding), le post quotidien est activé
+    d'office : c'est la promesse du Mode Pilote (« 1 post par jour »), et un
+    compte neuf qui la découvre sur un écran vide n'a aucune raison d'aller
+    chercher un interrupteur dont il ignore l'existence. Un profil déjà en base
+    garde son réglage — on ne rallume jamais ce que quelqu'un a coupé.
+    """
     user = get_user(access_token)
     if not user:
         return None
@@ -845,6 +852,8 @@ def upsert_editorial_profile(access_token: str, payload: dict[str, Any]) -> dict
         **_clean_editorial_profile(payload),
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
+    if not get_editorial_profile(access_token):
+        row.setdefault("daily_ideas_enabled", True)
     resp = (
         db.table("user_editorial_profiles")
         .upsert(row, on_conflict="user_id")

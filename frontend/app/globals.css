@@ -761,6 +761,118 @@ a { color: inherit; text-decoration: none; }
 }
 .onb-analysis-skip:hover { color: var(--ink); }
 
+/* --- Révélation de fin d'onboarding : « ton plan est prêt » ----------------- */
+/* L'agent annonce ce qu'il va faire (stratégie + comptes à suivre) avant de
+   lâcher le client dans l'app. L'animation dure le temps des deux lectures
+   serveur — elle ne meuble pas, elle accompagne une attente réelle. */
+
+.onb-plan { display: flex; flex-direction: column; gap: 16px; }
+
+.onb-plan-building {
+  display: flex; flex-direction: column; align-items: center; gap: 18px;
+  padding: 28px 0 12px; text-align: center;
+}
+
+.onb-plan-orb {
+  width: 76px; height: 76px; border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--primary), #6a6cf0, #9b8cff, var(--primary));
+  filter: blur(1px);
+  animation: onb-plan-spin 3.2s linear infinite;
+  box-shadow: 0 12px 40px rgba(70, 72, 212, .32);
+}
+
+@keyframes onb-plan-spin { to { transform: rotate(360deg); } }
+
+.onb-plan-title {
+  margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.02em;
+}
+
+.onb-plan-lead { margin: -6px 0 4px; font-size: 14.5px; line-height: 1.6; opacity: .8; }
+
+.onb-plan-steps {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 10px;
+  text-align: left; min-width: min(340px, 100%);
+}
+
+.onb-plan-steps li {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 14.5px; line-height: 1.4;
+  transition: opacity .25s ease;
+}
+
+.onb-plan-steps li.todo { opacity: .38; }
+.onb-plan-steps li.current { opacity: 1; font-weight: 600; }
+.onb-plan-steps li.done { opacity: .72; }
+.onb-plan-steps li.done svg { color: #16a34a; }
+
+.onb-plan-dot {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid currentColor; opacity: .4;
+  flex-shrink: 0;
+}
+
+.onb-plan-cards { display: grid; gap: 10px; }
+
+.onb-plan-card {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 14px 16px; border-radius: 14px;
+  background: rgba(70, 72, 212, .05);
+  border: 1px solid rgba(70, 72, 212, .16);
+  animation: onb-plan-rise .5s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+.onb-plan-card-label {
+  font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--primary);
+}
+
+.onb-plan-card-value { font-size: 15px; font-weight: 600; line-height: 1.45; }
+
+@keyframes onb-plan-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+.onb-plan-block { margin-top: 6px; }
+.onb-plan-hint { margin: -4px 0 10px; font-size: 13px; line-height: 1.5; opacity: .7; }
+
+.onb-plan-follows { display: flex; flex-direction: column; gap: 8px; }
+
+.onb-plan-follow {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border-radius: 12px;
+  border: 1px solid var(--line, rgba(0, 0, 0, .1));
+  animation: onb-plan-rise .5s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+.onb-plan-follow-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.onb-plan-follow-info strong { font-size: 14.5px; font-weight: 650; }
+.onb-plan-follow-info span {
+  font-size: 12.5px; line-height: 1.4; opacity: .68;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.onb-plan-follow-btn {
+  flex-shrink: 0; padding: 8px 16px; border-radius: 999px;
+  border: 1px solid rgba(70, 72, 212, .28); background: #fff;
+  color: var(--primary); font-size: 13px; font-weight: 650; cursor: pointer;
+  transition: background .15s ease, opacity .15s ease;
+}
+.onb-plan-follow-btn:hover:not(:disabled) { background: rgba(70, 72, 212, .07); }
+.onb-plan-follow-btn.done { color: #16a34a; border-color: rgba(22, 163, 74, .3); cursor: default; }
+
+/* L'ambiance s'efface, l'information reste — même règle que le reste du tunnel. */
+@media (prefers-reduced-motion: reduce) {
+  .onb-plan-orb { animation: none; }
+  .onb-plan-card,
+  .onb-plan-follow { animation: none; }
+}
+
+@media (min-width: 860px) {
+  .onb-plan-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
 /* --- Tunnel « audit complet » : gains, simulation, formulaire --------------- */
 
 /* Encart d'hypothèses. Il porte les conditions de la projection affichée

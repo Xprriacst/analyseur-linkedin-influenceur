@@ -1,7 +1,9 @@
 import { test, expect } from "@playwright/test";
 
 // Mode Pilote — câblage réel (backend mocké, 0 Anthropic / 0 Apify).
-// Vérifie : atterrissage Pilote, nav simplifiée, agent IA prospects, bascule Expert, invite → file outreach.
+// Vérifie : atterrissage Pilote, nav simplifiée (sans « Mode Expert »), agent IA
+// prospects, invite → file outreach, et stratégie + influenceurs à suivre dans
+// « Mon profil » (plus dans la vue du jour).
 
 const MOCK_PILOT = {
   plan: {
@@ -135,6 +137,9 @@ test.describe("Mode Pilote", () => {
     await expect(page.locator(".sidebar")).toHaveCount(0);
     await expect(page.getByRole("navigation", { name: "Navigation Mode Pilote" })).toBeVisible();
     await expect(page.getByRole("button", { name: /Vue pilote/i })).toBeVisible();
+    // Plus d'entrée « Mode Expert » : le Mode Pilote est la seule vue proposée
+    // tant que le compte n'est pas premium.
+    await expect(page.getByRole("button", { name: /Mode Expert/i })).toHaveCount(0);
   });
 
   test("la carte agent IA prospects est visible", async ({ page }) => {
@@ -144,13 +149,14 @@ test.describe("Mode Pilote", () => {
     await expect(page.getByRole("status")).toContainText(/agent IA analyse LinkedIn/i);
   });
 
-  test("Mode Expert affiche la sidebar", async ({ page }) => {
+  test("la vue du jour ne porte plus stratégie ni influenceurs à suivre", async ({ page }) => {
     await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
       timeout: 45_000,
     });
-    await page.getByRole("button", { name: /Mode Expert/i }).click();
-    await expect(page.locator(".sidebar")).toBeVisible();
-    await expect(page.locator(".nav-item", { hasText: "Contenu" })).toBeVisible();
+    // Elles ont déménagé dans « Mon profil » : la vue du jour ne garde que ce
+    // qu'il y a à faire aujourd'hui (le post, les gens à contacter).
+    await expect(page.getByRole("button", { name: "Influenceurs à suivre" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Ta stratégie" })).toHaveCount(0);
   });
 
   test("Inviter appelle l’API outreach existante (file, pas d’envoi immédiat)", async ({ page }) => {
@@ -173,7 +179,7 @@ test.describe("Mode Pilote", () => {
     await expect(page.getByRole("button", { name: /Invitation envoyée/i })).toBeVisible();
   });
 
-  test("les suggestions à suivre sont repliées, chargées au clic, et suivies via l’API existante", async ({
+  test("les suggestions à suivre vivent dans Mon profil, chargées à l’ouverture, et suivies via l’API existante", async ({
     page,
   }) => {
     const counter = { calls: 0 };
@@ -197,21 +203,17 @@ test.describe("Mode Pilote", () => {
       timeout: 45_000,
     });
 
-    // 1. La vue simplifiée reste épurée : le rail « À suivre » ne revient PAS…
+    // 1. La vue du jour reste épurée : ni rail « À suivre », ni suggestions.
     await expect(page.getByRole("region", { name: "À suivre" })).toHaveCount(0);
-    // …et rien n'est affiché tant qu'on n'a pas cliqué.
-    const toggle = page.getByRole("button", { name: "Influenceurs à suivre" });
-    await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await expect(page.getByText("Marie Coach")).toHaveCount(0);
 
-    // 2. ⚠️ Chargement PARESSEUX : aucun appel serveur avant le dépliage. Sans
-    //    ce garde, l'écran d'accueil paierait la requête tous les jours pour un
-    //    panneau que peu de gens ouvrent — le gaspillage qu'on cherche à éviter.
+    // 2. ⚠️ Chargement PARESSEUX : aucun appel serveur tant qu'on est sur la vue
+    //    du jour. Sans ce garde, l'écran d'accueil relirait le cache mutualisé
+    //    tous les jours, pour tout le monde — le gaspillage qu'on évite.
     expect(counter.calls).toBe(0);
 
-    // 3. Au clic, les suggestions arrivent, avec le motif du match.
-    await toggle.click();
-    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    // 3. Elles vivent dans « Mon profil », chargées à l'ouverture de l'onglet.
+    await page.getByRole("button", { name: /Mon profil/i }).click();
     await expect(page.getByText("Marie Coach")).toBeVisible();
     await expect(page.getByText(/correspond à ta niche : coaching · indépendants/i)).toBeVisible();
     await expect.poll(() => counter.calls).toBe(1);
@@ -222,11 +224,34 @@ test.describe("Mode Pilote", () => {
     expect(followBody).toMatchObject({ handle: "marie-coach" });
     await expect(page.getByRole("button", { name: "Suivre Marie Coach" })).toContainText("Suivi");
 
-    // 5. Refermer puis rouvrir ne rappelle pas le serveur (une fois par écran).
-    await toggle.click();
-    await toggle.click();
+    // 5. Aller-retour entre les deux onglets : une seule requête par session.
+    await page.getByRole("button", { name: /Vue pilote/i }).click();
+    await page.getByRole("button", { name: /Mon profil/i }).click();
     await expect(page.getByText("Marie Coach")).toBeVisible();
     expect(counter.calls).toBe(1);
+  });
+
+  test("Mon profil affiche la stratégie du plan", async ({ page }) => {
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await page.getByRole("button", { name: /Mon profil/i }).click();
+    await expect(page.getByRole("heading", { name: "Ta stratégie" })).toBeVisible();
+    await expect(page.getByText("Fondateurs SaaS · outbound assisté")).toBeVisible();
+    await expect(page.getByText("3 posts / semaine · lun 9h, mer 9h")).toBeVisible();
+  });
+
+  test("Mon profil permet de se déconnecter", async ({ page }) => {
+    // ⚠️ Le Mode Pilote n'a pas d'entête d'application : sans cette ligne, un
+    // client n'a AUCUN moyen de sortir de son compte.
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await page.getByRole("button", { name: /Mon profil/i }).click();
+    await expect(page.getByRole("heading", { name: "Ton compte" })).toBeVisible();
+    await page.getByRole("button", { name: /Se déconnecter/i }).click();
+    // Retour sur la landing publique : plus de navigation Pilote.
+    await expect(page.getByRole("navigation", { name: "Navigation Mode Pilote" })).toHaveCount(0);
   });
 
   test("profil éditorial vide : le panneau existe mais explique quoi faire", async ({ page }) => {
@@ -236,7 +261,7 @@ test.describe("Mode Pilote", () => {
     await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
       timeout: 45_000,
     });
-    await page.getByRole("button", { name: "Influenceurs à suivre" }).click();
+    await page.getByRole("button", { name: /Mon profil/i }).click();
     // Pas de liste vide muette : on dit pourquoi et quoi faire.
     await expect(page.getByText(/complète ton profil éditorial/i)).toBeVisible();
   });

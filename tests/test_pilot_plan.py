@@ -1,5 +1,6 @@
 """Tests unitaires — composition du plan Mode Pilote."""
 import unittest
+from unittest.mock import patch
 
 from src import pilot_plan as pp
 
@@ -185,6 +186,111 @@ class ComposePlanTest(unittest.TestCase):
             weekly_total=3,
         )
         self.assertEqual(out["plan"]["followProfiles"], [])
+
+
+class WeeklyFrequencyTest(unittest.TestCase):
+    """⚠️ Le rythme annoncé doit refléter l'idée du jour, sinon un compte neuf
+    (aucun créneau hebdo) lit « Aucun créneau programmé » alors qu'un post lui
+    est écrit chaque matin — un rythme réel présenté comme une absence."""
+
+    def test_no_slot_no_daily_says_nothing_scheduled(self):
+        self.assertIn("Aucun créneau", pp.format_weekly_frequency([]))
+
+    def test_no_slot_but_daily_announces_the_daily_post(self):
+        out = pp.format_weekly_frequency([], daily_ideas_enabled=True)
+        self.assertEqual(out, pp.DAILY_POST_LABEL)
+        self.assertNotIn("Aucun créneau", out)
+
+    def test_slots_alone_keep_the_weekly_wording(self):
+        out = pp.format_weekly_frequency([{"day_of_week": 0, "hour": 9}])
+        self.assertEqual(out, "1 posts / semaine · lun 9h")
+
+    def test_slots_and_daily_mention_both(self):
+        out = pp.format_weekly_frequency(
+            [{"day_of_week": 2, "hour": 8}], daily_ideas_enabled=True
+        )
+        self.assertIn("1 post par jour", out)
+        self.assertIn("mer 8h", out)
+
+    def test_unparsable_slot_falls_back_on_the_daily_post(self):
+        # Un créneau illisible ne doit pas effacer le rythme réel du client.
+        out = pp.format_weekly_frequency(
+            [{"day_of_week": "?", "hour": None}], daily_ideas_enabled=True
+        )
+        self.assertEqual(out, pp.DAILY_POST_LABEL)
+
+
+class BuildStrategyTest(unittest.TestCase):
+    def test_uses_targeting_then_profile(self):
+        out = pp.build_strategy(
+            {"target_audience": "Coachs", "core_offer": "Formation"},
+            {"ideal_client": "Dirigeants de PME", "offer": "Audit IA"},
+            [],
+        )
+        self.assertEqual(out["target"], "Dirigeants de PME · Audit IA")
+
+    def test_empty_profile_says_what_to_do(self):
+        out = pp.build_strategy(None, None, [])
+        self.assertIn("Complète ton ciblage", out["target"])
+        self.assertTrue(out["structureHint"])
+
+    def test_keeps_at_most_three_handles(self):
+        out = pp.build_strategy(None, None, [], ["a", "b", "c", "d"])
+        self.assertEqual(out["profiles"], ["a", "b", "c"])
+
+    def test_daily_flag_reaches_the_frequency(self):
+        out = pp.build_strategy(None, None, [], daily_ideas_enabled=True)
+        self.assertEqual(out["frequency"], pp.DAILY_POST_LABEL)
+
+
+class PlanStrategyMirrorsProfileFlagTest(unittest.TestCase):
+    """La stratégie du plan du jour lit l'opt-in sur la ligne de profil
+    (`select("*")`) — pas un paramètre séparé qu'on oublierait de passer."""
+
+    def _plan(self, profile):
+        return pp.compose_pilot_plan(
+            profile=profile,
+            targeting=None,
+            generated_posts=[],
+            daily_ideas=[],
+            leads=[],
+            library=[],
+            followed_handles=set(),
+            schedule=[],
+            outreach_connected=False,
+            publish_connected=False,
+            weekly_done=0,
+            weekly_total=3,
+        )["plan"]["strategy"]
+
+    def test_daily_enabled_profile(self):
+        self.assertEqual(
+            self._plan({"daily_ideas_enabled": True})["frequency"], pp.DAILY_POST_LABEL
+        )
+
+    def test_daily_disabled_profile(self):
+        self.assertIn("Aucun créneau", self._plan({"daily_ideas_enabled": False})["frequency"])
+
+
+class BuildPilotStrategyTest(unittest.TestCase):
+    """`GET /me/pilot/strategy` — appelé pendant la révélation de fin
+    d'onboarding. Il ne doit JAMAIS lever : l'écran qui le porte est le dernier
+    d'un tunnel, une exception y enfermerait le client dehors."""
+
+    def test_reads_profile_targeting_and_schedule(self):
+        with patch.object(pp.db, "get_editorial_profile", return_value={"daily_ideas_enabled": True}), \
+             patch.object(pp.db, "get_lead_targeting", return_value={"ideal_client": "Coachs"}), \
+             patch.object(pp.db, "get_weekly_schedule", return_value=[]):
+            out = pp.build_pilot_strategy("tok")
+        self.assertEqual(out["target"], "Coachs")
+        self.assertEqual(out["frequency"], pp.DAILY_POST_LABEL)
+
+    def test_supabase_down_returns_the_generic_strategy(self):
+        with patch.object(pp.db, "get_editorial_profile", side_effect=RuntimeError("boom")):
+            out = pp.build_pilot_strategy("tok")
+        self.assertIn("Complète ton ciblage", out["target"])
+        self.assertIn("frequency", out)
+        self.assertIn("structureHint", out)
 
 
 if __name__ == "__main__":

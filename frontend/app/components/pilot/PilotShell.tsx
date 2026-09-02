@@ -41,11 +41,15 @@ type PilotTodayResponse = {
 
 export type PilotShellProps = {
   mode: "pilot" | "expert";
-  onModeChange: (mode: "pilot" | "expert") => void;
   onOpenGenerator: (seed: { topic: string; postText?: string; postId?: string }) => void;
   onOpenAssistant: (postText: string) => void;
   onUpgrade: () => void;
   upgradeBusy?: boolean;
+  /** Site dev : le bandeau fixe de 30 px recouvrirait le haut de la nav. */
+  devBanner?: boolean;
+  /** Compte connecté + déconnexion : le Mode Pilote n'a pas d'entête. */
+  userEmail?: string;
+  onSignOut?: () => void;
 };
 
 function mediaToAttachments(items: PilotMeta["media_items"]): LinkedInImageAttachment[] {
@@ -66,12 +70,15 @@ function mediaToAttachments(items: PilotMeta["media_items"]): LinkedInImageAttac
 
 export default function PilotShell({
   mode,
-  onModeChange,
   onOpenGenerator,
   onOpenAssistant,
   onUpgrade,
   upgradeBusy = false,
+  devBanner = false,
+  userEmail,
+  onSignOut,
 }: PilotShellProps) {
+  const layoutClass = `pilot-app-layout${devBanner ? " pilot-dev-offset" : ""}`;
   const [navTab, setNavTab] = useState<PilotNavTab>("today");
   const [plan, setPlan] = useState<PilotPlan | null>(null);
   const [meta, setMeta] = useState<PilotMeta | null>(null);
@@ -217,11 +224,10 @@ export default function PilotShell({
 
   if (loading && !plan) {
     return (
-      <div className="pilot-app-layout">
+      <div className={layoutClass}>
         <PilotNav
           activeTab={navTab}
           onTabChange={setNavTab}
-          onExpertMode={() => onModeChange("expert")}
           onUpgrade={onUpgrade}
           upgradeBusy={upgradeBusy}
         />
@@ -236,11 +242,10 @@ export default function PilotShell({
 
   if (loadError && !plan) {
     return (
-      <div className="pilot-app-layout">
+      <div className={layoutClass}>
         <PilotNav
           activeTab={navTab}
           onTabChange={setNavTab}
-          onExpertMode={() => onModeChange("expert")}
           onUpgrade={onUpgrade}
           upgradeBusy={upgradeBusy}
         />
@@ -259,22 +264,31 @@ export default function PilotShell({
   if (!plan) return null;
 
   return (
-    <div className="pilot-app-layout">
+    <div className={layoutClass}>
       <PilotNav
         activeTab={navTab}
         onTabChange={setNavTab}
-        onExpertMode={() => onModeChange("expert")}
         onUpgrade={onUpgrade}
         upgradeBusy={upgradeBusy}
       />
       <div className="pilot-app-main">
         {navTab === "profile" ? (
-          <PilotProfilePane />
+          <PilotProfilePane
+            userEmail={userEmail}
+            onSignOut={onSignOut}
+            strategy={plan.strategy}
+            followSuggestions={followSuggestions}
+            followLoading={followLoading}
+            followError={followError}
+            followedHandles={followedHandles}
+            followCapReached={followCapReached}
+            onFollowPanelOpen={loadFollowSuggestions}
+            onFollowProfile={(handle) => void handleFollowProfile(handle)}
+          />
         ) : (
           <PilotModeView
             plan={plan}
             mode={mode}
-            onModeChange={onModeChange}
             hideModeToggle
             postEmpty={Boolean(meta?.post_empty)}
             contactsBlockedReason={meta?.contacts_blocked_reason || undefined}
@@ -291,13 +305,6 @@ export default function PilotShell({
                 postId: meta?.post_id || undefined,
               });
             }}
-            followSuggestions={followSuggestions}
-            followLoading={followLoading}
-            followError={followError}
-            followedHandles={followedHandles}
-            followCapReached={followCapReached}
-            onFollowPanelOpen={() => void loadFollowSuggestions()}
-            onFollowProfile={(handle) => void handleFollowProfile(handle)}
             onRegeneratePost={() => {
               const topic = plan.post.hook || plan.post.body.slice(0, 120) || "";
               onOpenAssistant(postText || topic);

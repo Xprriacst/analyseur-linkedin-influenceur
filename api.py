@@ -5709,6 +5709,17 @@ def me_pilot_today(token: str = Depends(require_token)) -> dict[str, Any]:
     return pilot_plan.build_pilot_today(token)
 
 
+@app.get("/me/pilot/strategy")
+def me_pilot_strategy(token: str = Depends(require_token)) -> dict[str, Any]:
+    """Stratégie éditoriale seule (Mode Pilote) — lecture seule, 0 crédit.
+
+    Même composition que `plan.strategy` de `/me/pilot/today`, sans le reste du
+    plan : appelée à la fin de l'onboarding, quand le compte n'a encore ni lead
+    ni post à agréger.
+    """
+    return pilot_plan.build_pilot_strategy(token)
+
+
 @app.get("/me/daily-ideas")
 def me_daily_ideas(
     limit: int = 30,

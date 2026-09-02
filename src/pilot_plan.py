@@ -142,12 +142,33 @@ def split_post_text(text: str) -> tuple[str, str]:
     return raw[:180].strip(), raw[180:].strip() if len(raw) > 180 else ""
 
 
-def format_weekly_frequency(slots: list[dict[str, Any]]) -> str:
-    if not slots:
-        return "Aucun créneau programmé — règle ton rythme dans Mon profil."
+DAILY_POST_LABEL = "1 post par jour — ton agent l'écrit chaque matin"
+
+
+def format_weekly_frequency(
+    slots: list[dict[str, Any]],
+    daily_ideas_enabled: bool = False,
+) -> str:
+    """Rythme de publication annoncé au client.
+
+    ⚠️ L'idée du jour compte comme un rythme à part entière : sans elle,
+    un compte tout neuf (aucun créneau hebdo programmé) lisait « Aucun créneau
+    programmé » alors qu'un post lui est écrit chaque matin — un rythme réel
+    présenté comme une absence de rythme.
+    """
     day_labels = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
     parts: list[str] = []
-    for slot in sorted(slots, key=lambda s: int(s.get("day_of_week") or 0)):
+
+    def _sort_key(slot: dict[str, Any]) -> int:
+        # ⚠️ La clé de tri s'exécute AVANT le try/except de la boucle : un
+        # `day_of_week` illisible y levait, et emportait tout le plan du jour
+        # (rattrapé par le fail-safe de `build_pilot_today`, donc en silence).
+        try:
+            return int(slot.get("day_of_week") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    for slot in sorted(slots or [], key=_sort_key):
         try:
             dow = int(slot.get("day_of_week", 0))
             hour = int(slot.get("hour", 9))
@@ -156,8 +177,34 @@ def format_weekly_frequency(slots: list[dict[str, Any]]) -> str:
         if 0 <= dow < len(day_labels):
             parts.append(f"{day_labels[dow]} {hour}h")
     if not parts:
+        if daily_ideas_enabled:
+            return DAILY_POST_LABEL
         return "Aucun créneau programmé — règle ton rythme dans Mon profil."
-    return f"{len(slots)} posts / semaine · {', '.join(parts)}"
+    weekly = f"{len(parts)} posts / semaine · {', '.join(parts)}"
+    if daily_ideas_enabled:
+        return f"1 post par jour · {weekly} programmés"
+    return weekly
+
+
+def build_strategy(
+    profile: dict[str, Any] | None,
+    targeting: dict[str, Any] | None,
+    schedule: list[dict[str, Any]] | None,
+    follow_handles: list[str] | None = None,
+    daily_ideas_enabled: bool = False,
+) -> dict[str, Any]:
+    """Stratégie affichée dans Mon profil (et révélée en fin d'onboarding).
+
+    Une seule composition pour les deux surfaces : deux versions finiraient par
+    se contredire sous les yeux du client — l'onboarding lui promettrait un
+    rythme que sa page profil dément le lendemain.
+    """
+    return {
+        "profiles": list(follow_handles or [])[:3],
+        "frequency": format_weekly_frequency(schedule or [], daily_ideas_enabled),
+        "target": strategy_target(profile, targeting),
+        "structureHint": strategy_structure_hint(profile),
+    }
 
 
 def strategy_target(profile: dict[str, Any] | None, targeting: dict[str, Any] | None) -> str:
@@ -378,6 +425,10 @@ def compose_pilot_plan(
     author_name = (profile or {}).get("display_name") or (profile or {}).get("brand_name") or "Toi"
     author_headline = (profile or {}).get("business_description") or (profile or {}).get("linkedin_objective") or ""
 
+    # `get_editorial_profile` fait un `select("*")` : l'opt-in idée du jour est
+    # déjà dans la ligne, aucun aller-retour supplémentaire.
+    daily_ideas_enabled = bool((profile or {}).get("daily_ideas_enabled"))
+
     post_row, post_kind = pick_post_of_day(generated_posts, daily_ideas)
     post_empty = post_row is None
     post_text = ""
@@ -481,12 +532,13 @@ def compose_pilot_plan(
         },
         "followProfiles": follow_rows,
         "contacts": contacts,
-        "strategy": {
-            "profiles": [f["handle"] for f in follow_rows[:3]],
-            "frequency": format_weekly_frequency(schedule),
-            "target": strategy_target(profile, targeting),
-            "structureHint": strategy_structure_hint(profile),
-        },
+        "strategy": build_strategy(
+            profile,
+            targeting,
+            schedule,
+            [f["handle"] for f in follow_rows],
+            daily_ideas_enabled,
+        ),
     }
 
     meta = {
@@ -520,6 +572,31 @@ def empty_pilot_response() -> dict[str, Any]:
         weekly_done=0,
         weekly_total=PILOT_WEEKLY_TOTAL,
     )
+
+
+def build_pilot_strategy(access_token: str) -> dict[str, Any]:
+    """Stratégie seule — sans le plan du jour (leads, posts, veille).
+
+    Sert la révélation de fin d'onboarding : à cet instant, le compte n'a ni
+    lead ni post, et `build_pilot_today` ferait une dizaine de lectures pour
+    n'en garder que trois lignes. Lecture seule : 0 crédit, 0 LLM, 0 Apify.
+
+    Fail-safe : profil illisible ou Supabase en panne ⇒ la stratégie générique,
+    jamais une erreur — l'écran qui la porte ne doit pas tomber pour ça.
+    """
+    try:
+        profile = db.get_editorial_profile(access_token)
+        targeting = db.get_lead_targeting(access_token)
+        schedule = db.get_weekly_schedule(access_token)
+        return build_strategy(
+            profile,
+            targeting,
+            schedule,
+            daily_ideas_enabled=bool((profile or {}).get("daily_ideas_enabled")),
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort, jamais bloquant
+        print(f"[pilot] strategy indisponible: {exc}")
+        return build_strategy(None, None, [])
 
 
 def build_pilot_today(access_token: str) -> dict[str, Any]:

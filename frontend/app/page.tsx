@@ -16545,14 +16545,6 @@ export default function Home() {
   // Le temps de vérifier (côté serveur) si le profil est vide, on affiche un
   // écran de chargement neutre plutôt que l'app qui "flashe" puis l'onboarding.
   const [checkingProfile, setCheckingProfile] = useState(false);
-  /** Ferme l'onboarding et le marque comme fait — qu'il ait été rempli ou passé. */
-  const finishOnboarding = useCallback(() => {
-    setShowOnboarding(false);
-    setView("content");
-    // Marque l'onboarding comme fait (dans les métadonnées Supabase) → il ne
-    // réapparaîtra plus, même après refresh, sans dépendre du backend.
-    supabase.auth.updateUser({ data: { onboarding_pending: false, onboarding_done: true } }).catch(() => {});
-  }, []);
   const userIdRef = useRef<string | null>(null);
 
   // Un post en préparation vit en mémoire de la page : recharger ou fermer
@@ -16604,6 +16596,35 @@ export default function Home() {
     if (restricted) return;
     try { localStorage.setItem("lkd_interface_mode", mode); } catch { /* ignore */ }
   }, [restricted]);
+
+  /** Le profil a-t-il déjà été écrit pendant l'onboarding (écran de plan) ? */
+  const onboardingSavedRef = useRef(false);
+
+  /** Écrit le profil éditorial sans quitter l'onboarding. Best-effort. */
+  const saveOnboardingProfile = useCallback(async (profile: Record<string, string>) => {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify(profile),
+      });
+      if (res.ok) onboardingSavedRef.current = true;
+    } catch { /* ignore */ }
+  }, []);
+
+  /** Ferme l'onboarding et le marque comme fait — qu'il ait été rempli ou passé.
+   *  ⚠️ Force le Mode Pilote : sans ça, un « expert » resté dans le
+   *  localStorage du navigateur (autre compte testé au même endroit) fait
+   *  atterrir un compte tout neuf sur l'interface complète, alors que tout
+   *  l'onboarding vient de lui promettre sa vue du jour. */
+  const finishOnboarding = useCallback(() => {
+    setShowOnboarding(false);
+    setView("content");
+    setInterfaceModePersist("pilot");
+    // Marque l'onboarding comme fait (dans les métadonnées Supabase) → il ne
+    // réapparaîtra plus, même après refresh, sans dépendre du backend.
+    supabase.auth.updateUser({ data: { onboarding_pending: false, onboarding_done: true } }).catch(() => {});
+  }, [setInterfaceModePersist]);
 
   useEffect(() => {
     if (restricted && interfaceMode === "pilot") setInterfaceMode("expert");
@@ -17051,6 +17072,9 @@ export default function Home() {
       setView("content");
       setShowOnboarding(false);
       setCheckingProfile(false);
+      // Sinon, un 2e compte onboardé dans le même onglet croirait son profil
+      // déjà écrit (drapeau du compte précédent) et repartirait sans rien saver.
+      onboardingSavedRef.current = false;
       const loadUserData = () => {
         loadReports(); loadJobs(); loadInfluencerLibrary(); loadGenerationJobs();
       };
@@ -17348,16 +17372,18 @@ export default function Home() {
       )}
       {showOnboarding && isAuthed && (
         <OnboardingScreen
+          // Même jeu de questions et de formulations que la landing /onboarding :
+          // un seul onboarding, pas deux versions qui divergent à chaque retouche.
+          variant="saas"
+          finishLabel="Voir ma vue du jour"
+          // Le profil est écrit AVANT l'écran de plan : c'est lui qui alimente la
+          // stratégie et les comptes suggérés que l'agent y révèle.
+          onSave={saveOnboardingProfile}
           onFinish={async (profile) => {
-            // Le composant ne persiste plus rien lui-même : ici on a un compte, donc
-            // on enregistre. Best effort — on n'empêche jamais d'entrer dans l'app.
-            try {
-              await fetch(`${DIRECT_API_URL}/me/profile`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                body: JSON.stringify(profile),
-              });
-            } catch { /* ignore */ }
+            // Filet : si `onSave` a échoué (réseau), on retente à la sortie plutôt
+            // que de perdre les réponses. Best effort — on n'empêche jamais
+            // d'entrer dans l'app.
+            if (!onboardingSavedRef.current) await saveOnboardingProfile(profile);
             finishOnboarding();
           }}
           onSkip={finishOnboarding}
@@ -17371,11 +17397,13 @@ export default function Home() {
       {showPilotShell ? (
         <PilotShell
           mode="pilot"
-          onModeChange={setInterfaceModePersist}
           onOpenGenerator={openGeneratorFromPilot}
           onOpenAssistant={openAssistantFromPilot}
           onUpgrade={() => void pilotBilling.subscribe()}
           upgradeBusy={pilotBilling.busy}
+          devBanner={IS_DEV_ENV}
+          userEmail={session?.user?.email ?? undefined}
+          onSignOut={() => supabase.auth.signOut()}
         />
       ) : (
       <div

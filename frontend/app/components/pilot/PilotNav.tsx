@@ -1,20 +1,12 @@
 "use client";
 
-import {
-  Compass,
-  Lock,
-  Sparkles,
-  UserRound,
-  Users,
-  Zap,
-} from "lucide-react";
+import { Compass, Lock, UserRound, Users, Zap } from "lucide-react";
 
 export type PilotNavTab = "today" | "profile";
 
 type PilotNavProps = {
   activeTab: PilotNavTab;
   onTabChange: (tab: PilotNavTab) => void;
-  onExpertMode: () => void;
   onUpgrade: () => void;
   upgradeBusy?: boolean;
   /** Pastilles futures (posts, leads, missions) — réservé phase 2. */
@@ -24,7 +16,6 @@ type PilotNavProps = {
 export function PilotNav({
   activeTab,
   onTabChange,
-  onExpertMode,
   onUpgrade,
   upgradeBusy = false,
   badges,
@@ -78,6 +69,10 @@ export function PilotNav({
         </button>
       </div>
 
+      {/* Plus d'entrée « Mode Expert » ici : le Mode Pilote est la seule vue
+          proposée tant que le compte n'est pas premium. L'aperçu Expert reste
+          atteignable par les actions qui en ont besoin (Générateur, Agent IA),
+          et son bandeau porte le retour au Mode Pilote. */}
       <div className="pilot-nav-footer">
         <button
           type="button"
@@ -87,11 +82,6 @@ export function PilotNav({
         >
           <Zap size={16} aria-hidden="true" />
           {upgradeBusy ? "Redirection…" : "Passer en premium"}
-        </button>
-        <button type="button" className="pilot-nav-expert" onClick={onExpertMode}>
-          <Sparkles size={16} aria-hidden="true" />
-          Mode Expert
-          <span className="pilot-nav-expert-hint">aperçu</span>
         </button>
       </div>
     </nav>

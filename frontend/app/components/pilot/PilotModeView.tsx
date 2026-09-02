@@ -10,9 +10,7 @@ import {
   RefreshCw,
   Send,
   Sparkles,
-  Target,
   UserPlus,
-  Users,
 } from "lucide-react";
 import "./pilot-mode.css";
 
@@ -89,15 +87,6 @@ export type PilotPlan = {
   strategy: PilotStrategy;
 };
 
-/** Initiales d'un nom — les suggestions arrivent du serveur sans champ `initials`
- *  (contrairement aux lignes du plan du jour, qui sont composées côté backend). */
-function initialsOf(name: string): string {
-  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
 type InterfaceMode = "pilot" | "expert";
 
 type PilotModeViewProps = {
@@ -113,16 +102,6 @@ type PilotModeViewProps = {
   onEditPost?: () => void;
   onRegeneratePost?: () => void;
   onInvite?: (contactId: string) => void;
-  // Suggestions « à suivre » : chargées PARESSEUSEMENT, au premier dépliage.
-  // La vue simplifiée reste épurée (décision du 2026-08-31, « rail contacts
-  // seuls ») ; on ne paie donc rien tant que le client ne demande pas à voir.
-  followSuggestions?: PilotFollowSuggestion[];
-  followLoading?: boolean;
-  followError?: string;
-  followedHandles?: string[];
-  followCapReached?: boolean;
-  onFollowPanelOpen?: () => void;
-  onFollowProfile?: (handle: string) => void;
 };
 
 export default function PilotModeView({
@@ -138,20 +117,11 @@ export default function PilotModeView({
   onEditPost,
   onRegeneratePost,
   onInvite,
-  followSuggestions = [],
-  followLoading = false,
-  followError = "",
-  followedHandles = [],
-  followCapReached = false,
-  onFollowPanelOpen,
-  onFollowProfile,
 }: PilotModeViewProps) {
   const [internalMode, setInternalMode] = useState<InterfaceMode>("pilot");
   const mode = controlledMode ?? internalMode;
   const setMode = onModeChange ?? setInternalMode;
 
-  const [strategyOpen, setStrategyOpen] = useState(false);
-  const [followOpen, setFollowOpen] = useState(false);
   const [expandedContactId, setExpandedContactId] = useState<string | null>(null);
   const [invited, setInvited] = useState<Set<string>>(new Set());
   const [published, setPublished] = useState(false);
@@ -476,146 +446,9 @@ export default function PilotModeView({
         </aside>
         </div>
 
-        {/* Influenceurs à suivre — REPLIÉ par défaut. La vue simplifiée garde le rail
-            contacts seul (décision du 2026-08-31) ; les suggestions existent
-            bien en Mode Pilote, mais il faut cliquer pour les afficher.
-            ⚠️ `<section>` SANS `aria-labelledby`, comme « Ta stratégie » : elle
-            ne devient donc pas une `region` accessible, et l'assertion du spec
-            e2e sur l'absence de la région « À suivre » reste vraie. */}
-        <section className="pilot-section-strategy">
-          <button
-            type="button"
-            className={`pilot-strategy-toggle${followOpen ? " open" : ""}`}
-            aria-expanded={followOpen}
-            aria-controls="pilot-follow-panel"
-            onClick={() => {
-              setFollowOpen((v) => {
-                // Chargement paresseux : la requête ne part qu'à l'ouverture,
-                // jamais au chargement de l'accueil.
-                if (!v) onFollowPanelOpen?.();
-                return !v;
-              });
-            }}
-          >
-            <span>
-              <Users size={15} strokeWidth={2.2} />
-              Influenceurs à suivre
-            </span>
-            <ChevronDown size={16} className="chevron" />
-          </button>
-          <div
-            id="pilot-follow-panel"
-            className={`pilot-strategy-panel${followOpen ? " open" : ""}`}
-          >
-            <div className="pilot-strategy-panel-inner">
-              {followOpen && (
-                <div style={{ padding: "0 4px 12px" }}>
-                  {followLoading && (
-                    <div className="pilot-empty-block pilot-empty-block-inline">
-                      <p className="pilot-empty-copy">
-                        <Loader2 size={14} className="spinning" /> Recherche de profils de ta niche…
-                      </p>
-                    </div>
-                  )}
-                  {!followLoading && followError && (
-                    <div className="pilot-empty-block pilot-empty-block-inline">
-                      <p className="pilot-empty-copy">{followError}</p>
-                    </div>
-                  )}
-                  {!followLoading && !followError && followSuggestions.length === 0 && (
-                    <div className="pilot-empty-block pilot-empty-block-inline">
-                      <p className="pilot-empty-copy">
-                        Aucun profil à te proposer pour l’instant — complète ton profil éditorial
-                        (ton secteur, ta cible, ton offre) et on te suggérera des comptes de ta niche.
-                      </p>
-                    </div>
-                  )}
-                  {!followLoading && followSuggestions.length > 0 && (
-                    <div className="pilot-follow-list">
-                      {followSuggestions.map((profile) => {
-                        const isFollowed = followedHandles.includes(profile.handle);
-                        return (
-                          <div key={profile.handle} className="pilot-follow-row">
-                            <div className="pilot-avatar" aria-hidden>
-                              {initialsOf(profile.name)}
-                            </div>
-                            <div className="pilot-follow-info">
-                              <h3>{profile.name}</h3>
-                              <p>
-                                {profile.headline || profile.handle}
-                                {profile.matched_keywords.length > 0
-                                  ? ` — correspond à ta niche : ${profile.matched_keywords.join(" · ")}`
-                                  : ""}
-                              </p>
-                            </div>
-                            {/* `aria-label` : plusieurs boutons « Suivre » identiques
-                                sont indistinguables au lecteur d'écran (et au test). */}
-                            <button
-                              type="button"
-                              className={`pilot-btn pilot-btn-follow${isFollowed ? " done" : ""}`}
-                              aria-label={`Suivre ${profile.name}`}
-                              disabled={isFollowed || (followCapReached && !isFollowed)}
-                              title={
-                                followCapReached && !isFollowed
-                                  ? "Tu suis déjà le maximum d’influenceurs. Retires-en un pour en ajouter."
-                                  : "Surveiller ses nouveaux posts"
-                              }
-                              onClick={() =>
-                                handleAction(`Suivre ${profile.name}`, () =>
-                                  onFollowProfile?.(profile.handle),
-                                )
-                              }
-                            >
-                              {isFollowed ? <Check size={14} /> : <UserPlus size={14} />}
-                              {isFollowed ? "Suivi" : "Suivre"}
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
-
-        <section className="pilot-section-strategy">
-          <button
-            type="button"
-            className={`pilot-strategy-toggle${strategyOpen ? " open" : ""}`}
-            aria-expanded={strategyOpen}
-            aria-controls="pilot-strategy-panel"
-            onClick={() => setStrategyOpen((v) => !v)}
-          >
-            <span>
-              <Target size={15} strokeWidth={2.2} />
-              Ta stratégie
-            </span>
-            <ChevronDown size={16} className="chevron" />
-          </button>
-          <div
-            id="pilot-strategy-panel"
-            className={`pilot-strategy-panel${strategyOpen ? " open" : ""}`}
-          >
-            <div className="pilot-strategy-panel-inner">
-              <ul className="pilot-strategy-list">
-                <li>
-                  <strong>Cible</strong>
-                  {plan.strategy.target}
-                </li>
-                <li>
-                  <strong>Rythme</strong>
-                  {plan.strategy.frequency}
-                </li>
-                <li>
-                  <strong>Structure</strong>
-                  {plan.strategy.structureHint}
-                </li>
-              </ul>
-            </div>
-          </div>
-        </section>
+        {/* « Influenceurs à suivre » et « Ta stratégie » vivent désormais dans
+            Mon profil (PilotProfilePane) : la vue du jour ne porte que ce qu'il
+            y a à faire aujourd'hui — le post, et les gens à contacter. */}
       </div>
     </div>
   );
