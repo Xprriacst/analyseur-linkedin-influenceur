@@ -1357,7 +1357,7 @@ export default function OnboardingScreen({
             sur un écran d'accueil vide. Tout ce qui s'affiche ici est LU sur le
             serveur : rien n'est inventé pour la mise en scène. */}
         {step === "plan" && (
-          <div className="onb-screen onb-plan" key="plan">
+          <div className="onb-screen onb-plan-reveal" key="plan">
             {!planReady ? (
               <div className="onb-plan-building" role="status" aria-live="polite">
                 <div className="onb-plan-orb" aria-hidden="true" />

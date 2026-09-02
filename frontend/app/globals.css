@@ -766,7 +766,9 @@ a { color: inherit; text-decoration: none; }
    lâcher le client dans l'app. L'animation dure le temps des deux lectures
    serveur — elle ne meuble pas, elle accompagne une attente réelle. */
 
-.onb-plan { display: flex; flex-direction: column; gap: 16px; }
+/* Écran de révélation de fin d'onboarding — NE PAS réutiliser `.onb-plan` :
+   cette classe sert aussi à la carte tarif du tunnel /founders (flex row). */
+.onb-plan-reveal { display: flex; flex-direction: column; gap: 16px; }
 
 .onb-plan-building {
   display: flex; flex-direction: column; align-items: center; gap: 18px;
