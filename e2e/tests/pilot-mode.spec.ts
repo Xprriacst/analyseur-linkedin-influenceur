@@ -172,6 +172,74 @@ test.describe("Mode Pilote", () => {
     await expect(page.getByText(/Agent IA en recherche/i)).toHaveCount(0);
   });
 
+  test("un prospect du vivier est réel : Inviter bloqué sans LinkedIn, aucun nom inventé", async ({
+    page,
+  }) => {
+    // LinkedIn pas encore relié : le Mode Pilote copie 1 vrai profil du vivier
+    // dans les leads du compte, mais l'invitation reste fermée. Les trois
+    // noms de théâtre (Camille Martin / Thomas Leroy / Sarah Benali) ne
+    // doivent plus jamais apparaître à côté d'une vraie carte.
+    const poolPilot = {
+      ...MOCK_PILOT,
+      plan: {
+        ...MOCK_PILOT.plan,
+        contacts: [
+          {
+            id: "lead-pool-1",
+            name: "Léa Moreau",
+            role: "Pharmacienne titulaire",
+            company: "Officine",
+            score: 75,
+            initials: "LM",
+            accent: "linear-gradient(135deg, #10b981, #047857)",
+            message: "Léa, tu valides encore les commandes à la main ?",
+            simulated: false,
+          },
+        ],
+      },
+      meta: {
+        ...MOCK_PILOT.meta,
+        linkedin_outreach_connected: false,
+        contacts_blocked_reason:
+          "Connecte ton compte LinkedIn de prospection (Mon profil → Connexions) pour inviter des leads.",
+      },
+    };
+    await page.route("**/me/pilot/today", (route) =>
+      route.fulfill({ contentType: "application/json", body: JSON.stringify(poolPilot) }),
+    );
+    await page.route("**/me/billing", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ enabled: true, subscribed: true, plan: { amount: 49, credits: 1000 } }),
+      }),
+    );
+    let inviteCalled = false;
+    await page.route("**/me/leads/*/invite", (route) => {
+      inviteCalled = true;
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, queued: true, status: "invite_queued" }),
+      });
+    });
+    await page.reload();
+
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(page.getByRole("button", { name: /Léa Moreau/i })).toBeVisible();
+    await expect(page.getByText("Camille Martin")).toHaveCount(0);
+    await expect(page.getByText("Thomas Leroy")).toHaveCount(0);
+    await expect(page.getByText("Sarah Benali")).toHaveCount(0);
+    await expect(page.locator(".pilot-contact-block.simulated")).toHaveCount(0);
+    await expect(page.getByText(/Connecte ton compte LinkedIn/i)).toBeVisible();
+
+    await page.getByRole("button", { name: /Léa Moreau/i }).click();
+    const inviteBtn = page.getByRole("button", { name: /^Inviter$/i });
+    await expect(inviteBtn).toBeDisabled({ timeout: 15_000 });
+    await inviteBtn.click({ force: true });
+    expect(inviteCalled).toBe(false);
+  });
+
   test("la vue du jour ne porte plus stratégie ni influenceurs à suivre", async ({ page }) => {
     await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
       timeout: 45_000,

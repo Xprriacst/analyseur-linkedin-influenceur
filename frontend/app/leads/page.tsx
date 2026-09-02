@@ -5,7 +5,7 @@
  * Accès réservé aux e-mails de l'équipe (gating serveur).
  */
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import Link from "next/link";
 import { Loader2, RefreshCw } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
@@ -34,6 +34,14 @@ type Lead = {
   followers?: number | null;
   notion_url?: string | null;
   public_token?: string | null;
+};
+
+type PoolProspect = {
+  id: string;
+  profile_url: string;
+  name?: string | null;
+  headline?: string | null;
+  created_at?: string;
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -79,6 +87,13 @@ export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [count, setCount] = useState(0);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [poolCount, setPoolCount] = useState(0);
+  const [pool, setPool] = useState<PoolProspect[]>([]);
+  const [poolUrls, setPoolUrls] = useState("");
+  const [poolFile, setPoolFile] = useState<File | null>(null);
+  const [poolBusy, setPoolBusy] = useState(false);
+  const [poolMsg, setPoolMsg] = useState("");
+  const [poolErr, setPoolErr] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -118,12 +133,107 @@ export default function LeadsPage() {
     }
   }, []);
 
+  const loadPool = useCallback(async () => {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/admin/prospect-pool?limit=80`, {
+        headers: await authHeaders(),
+      });
+      if (res.status === 404) return;
+      if (!res.ok) return;
+      const data = await res.json();
+      setPool(Array.isArray(data.prospects) ? data.prospects : []);
+      setPoolCount(typeof data.count === "number" ? data.count : 0);
+    } catch {
+      /* best-effort : le tableau onboarding reste lisible si le vivier manque */
+    }
+  }, []);
+
+  const summarizePoolResult = (data: {
+    inserted?: number;
+    updated?: number;
+    skipped?: number;
+    ignored?: number;
+    truncated?: boolean;
+  }) => {
+    const bits = [
+      `${data.inserted ?? 0} ajouté${(data.inserted ?? 0) === 1 ? "" : "s"}`,
+      `${data.updated ?? 0} enrichi${(data.updated ?? 0) === 1 ? "" : "s"}`,
+    ];
+    if (data.skipped) bits.push(`${data.skipped} déjà en stock`);
+    if (data.ignored) bits.push(`${data.ignored} ligne${data.ignored === 1 ? "" : "s"} ignorée${data.ignored === 1 ? "" : "s"} (pas d'URL LinkedIn)`);
+    if (data.truncated) bits.push("fichier tronqué au plafond");
+    return bits.join(" · ");
+  };
+
+  const importPoolFile = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!poolFile) {
+      setPoolErr("Choisis un fichier CSV ou Excel.");
+      return;
+    }
+    setPoolBusy(true);
+    setPoolErr("");
+    setPoolMsg("");
+    try {
+      const body = new FormData();
+      body.append("file", poolFile);
+      const res = await fetch(`${DIRECT_API_URL}/admin/prospect-pool`, {
+        method: "POST",
+        headers: await authHeaders(),
+        body,
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(text || `Erreur ${res.status}`);
+      }
+      const data = JSON.parse(text);
+      setPoolMsg(summarizePoolResult(data));
+      setPoolFile(null);
+      await loadPool();
+    } catch (exc: unknown) {
+      setPoolErr(exc instanceof Error ? exc.message : "Import impossible.");
+    } finally {
+      setPoolBusy(false);
+    }
+  };
+
+  const importPoolUrls = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!poolUrls.trim()) {
+      setPoolErr("Colle au moins une URL linkedin.com/in/…");
+      return;
+    }
+    setPoolBusy(true);
+    setPoolErr("");
+    setPoolMsg("");
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/admin/prospect-pool/urls`, {
+        method: "POST",
+        headers: { ...(await authHeaders()), "Content-Type": "application/json" },
+        body: JSON.stringify({ urls: poolUrls }),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(text || `Erreur ${res.status}`);
+      }
+      const data = JSON.parse(text);
+      setPoolMsg(summarizePoolResult(data));
+      setPoolUrls("");
+      await loadPool();
+    } catch (exc: unknown) {
+      setPoolErr(exc instanceof Error ? exc.message : "Import impossible.");
+    } finally {
+      setPoolBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!ready) return;
     void load();
+    void loadPool();
     const id = window.setInterval(() => void load(), 30_000);
     return () => window.clearInterval(id);
-  }, [ready, load]);
+  }, [ready, load, loadPool]);
 
   const filteredLeads = useMemo(() => {
     if (typeFilter === "all") return leads;
@@ -178,6 +288,103 @@ export default function LeadsPage() {
 
         {!denied && (
           <>
+            <section
+              style={{
+                border: "1px solid var(--border)",
+                borderRadius: 12,
+                padding: 18,
+                background: "var(--surface)",
+                display: "grid",
+                gap: 14,
+              }}
+            >
+              <div>
+                <h2 style={{ margin: 0, fontSize: 16, fontWeight: 650 }}>
+                  Vivier de prospects — Mode Pilote
+                </h2>
+                <p style={{ margin: "6px 0 0", color: "var(--muted)", fontSize: 13.5 }}>
+                  Cartes publiques (nom, titre, URL LinkedIn). Un client en voit{" "}
+                  <strong>une par jour</strong> tant que son LinkedIn n&apos;est pas connecté.
+                  Ça n&apos;écrit pas dans tes leads — seulement dans le stock partagé.
+                </p>
+                <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--muted)" }}>
+                  {poolCount} profil{poolCount === 1 ? "" : "s"} en stock
+                </p>
+              </div>
+              <form
+                onSubmit={(e) => void importPoolFile(e)}
+                style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}
+              >
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  onChange={(e) => setPoolFile(e.target.files?.[0] ?? null)}
+                  style={{ fontSize: 13 }}
+                />
+                <button type="submit" disabled={poolBusy} style={btn}>
+                  {poolBusy ? <Loader2 className="spin" size={14} /> : null}
+                  Importer le fichier
+                </button>
+              </form>
+              <form onSubmit={(e) => void importPoolUrls(e)} style={{ display: "grid", gap: 8 }}>
+                <label style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                  Ou colle des URLs (une par ligne)
+                  <textarea
+                    value={poolUrls}
+                    onChange={(e) => setPoolUrls(e.target.value)}
+                    rows={4}
+                    placeholder={"https://www.linkedin.com/in/marie-pharmacienne\nhttps://www.linkedin.com/in/jean-titulaire"}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      marginTop: 6,
+                      padding: "8px 10px",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--surface-low)",
+                      font: "inherit",
+                      fontSize: 13,
+                      resize: "vertical",
+                    }}
+                  />
+                </label>
+                <button type="submit" disabled={poolBusy} style={{ ...btn, justifySelf: "start" }}>
+                  {poolBusy ? <Loader2 className="spin" size={14} /> : null}
+                  Ajouter les URLs
+                </button>
+              </form>
+              {poolErr ? <div style={bannerErr}>{poolErr}</div> : null}
+              {poolMsg ? (
+                <p style={{ margin: 0, fontSize: 13, color: "var(--muted)" }}>{poolMsg}</p>
+              ) : null}
+              {pool.length > 0 ? (
+                <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: 10 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ background: "var(--surface-low)", textAlign: "left" }}>
+                        {["Nom", "Titre", "Profil"].map((h) => (
+                          <th key={h} style={th}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pool.map((p) => (
+                        <tr key={p.id} style={{ borderTop: "1px solid var(--border)" }}>
+                          <td style={td}><strong>{p.name?.trim() || "—"}</strong></td>
+                          <td style={td}>{p.headline?.trim() || "—"}</td>
+                          <td style={td}>
+                            <a href={p.profile_url} target="_blank" rel="noreferrer" style={{ color: "var(--primary)" }}>
+                              {p.profile_url.replace("https://www.linkedin.com/in/", "/in/")}
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </section>
+
             <div
               style={{
                 display: "flex",

@@ -352,5 +352,101 @@ class ContactOpenerTest(unittest.TestCase):
         )
 
 
+class PoolContactIsRealTest(unittest.TestCase):
+    def test_pool_lead_is_not_a_simulated_name(self):
+        """Un prospect du vivier est une vraie carte : pas de badge simulé, invite bloquée sans LinkedIn."""
+        out = pp.compose_pilot_plan(
+            profile={"display_name": "Alex"},
+            targeting={"ideal_client": "pharmaciens"},
+            generated_posts=[],
+            daily_ideas=[],
+            leads=[_lead(
+                id="pool-1",
+                name="Léa Moreau",
+                headline="Pharmacienne titulaire · Officine",
+                score=75,
+                comment_text="",
+            )],
+            library=[],
+            followed_handles=set(),
+            schedule=[],
+            outreach_connected=False,
+            publish_connected=False,
+            weekly_done=0,
+            weekly_total=3,
+            simulate_prospects=False,
+        )
+        contact = out["plan"]["contacts"][0]
+        self.assertEqual(contact["name"], "Léa Moreau")
+        self.assertFalse(contact["simulated"])
+        self.assertNotIn(contact["name"], {"Camille Martin", "Thomas Leroy", "Sarah Benali"})
+        self.assertIn("Connecte", out["meta"]["contacts_blocked_reason"] or "")
+
+    def test_simulation_off_never_fills_with_fake_names(self):
+        out = pp.compose_pilot_plan(
+            profile={"display_name": "Alex"},
+            targeting={"ideal_client": "pharmaciens"},
+            generated_posts=[],
+            daily_ideas=[],
+            leads=[],
+            library=[],
+            followed_handles=set(),
+            schedule=[],
+            outreach_connected=False,
+            publish_connected=False,
+            weekly_done=0,
+            weekly_total=3,
+            simulate_prospects=False,
+        )
+        self.assertEqual(out["plan"]["contacts"], [])
+
+
+class BuildPilotTodayPoolGateTest(unittest.TestCase):
+    def _run(self, *, outreach_connected: bool, assign):
+        from contextlib import ExitStack
+
+        account = {"unipile_account_id": "acc-1"} if outreach_connected else None
+        patches = [
+            patch.object(pp.db, "get_user", return_value={"id": "u1", "user_metadata": {}, "created_at": None}),
+            patch.object(pp.db, "get_editorial_profile", return_value={"industry": "pharmacie"}),
+            patch.object(pp.db, "get_lead_targeting", return_value={"ideal_client": "titulaires"}),
+            patch.object(pp.db, "list_generated_posts", return_value=[]),
+            patch.object(pp.db, "list_daily_ideas", return_value=[]),
+            patch.object(pp.db, "list_leads", return_value=[]),
+            patch.object(pp.db, "list_influencer_library", return_value=[]),
+            patch.object(pp.db, "list_followed_influencers", return_value=[]),
+            patch.object(pp.db, "get_weekly_schedule", return_value=[]),
+            patch.object(pp.db, "get_linkedin_outreach_account", return_value=account),
+            patch.object(pp, "maybe_bootstrap_daily_idea"),
+            patch.object(pp, "fill_invite_previews"),
+            patch.object(pp, "weekly_progress", return_value=(0, 3)),
+            patch.object(pp.prospect_pool, "maybe_assign_one", side_effect=assign),
+        ]
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            return pp.build_pilot_today("tok")
+
+    def test_assigns_from_pool_when_linkedin_is_not_connected(self):
+        calls = {"n": 0}
+
+        def assign(*_a, **_k):
+            calls["n"] += 1
+            return None
+
+        self._run(outreach_connected=False, assign=assign)
+        self.assertEqual(calls["n"], 1)
+
+    def test_does_not_touch_pool_when_linkedin_is_connected(self):
+        calls = {"n": 0}
+
+        def assign(*_a, **_k):
+            calls["n"] += 1
+            return {"id": "x"}
+
+        self._run(outreach_connected=True, assign=assign)
+        self.assertEqual(calls["n"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
