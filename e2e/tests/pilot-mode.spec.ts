@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 // Mode Pilote — câblage réel (backend mocké, 0 Anthropic / 0 Apify).
-// Vérifie : atterrissage Pilote, nav simplifiée (sans « Mode Expert »), agent IA
+// Vérifie : atterrissage Pilote, toggle Pilote/Expert, agent IA
 // prospects, invite → file outreach, et stratégie + influenceurs à suivre dans
 // « Mon profil » (plus dans la vue du jour).
 
@@ -137,9 +137,19 @@ test.describe("Mode Pilote", () => {
     await expect(page.locator(".sidebar")).toHaveCount(0);
     await expect(page.getByRole("navigation", { name: "Navigation Mode Pilote" })).toBeVisible();
     await expect(page.getByRole("button", { name: /Vue pilote/i })).toBeVisible();
-    // Plus d'entrée « Mode Expert » : le Mode Pilote est la seule vue proposée
-    // tant que le compte n'est pas premium.
-    await expect(page.getByRole("button", { name: /Mode Expert/i })).toHaveCount(0);
+    const modeToggle = page.getByRole("tablist", { name: "Mode d'interface" });
+    await expect(modeToggle).toBeVisible();
+    await expect(modeToggle.getByRole("tab", { name: "Pilote" })).toHaveAttribute("aria-selected", "true");
+    await expect(modeToggle.getByRole("tab", { name: "Expert" })).toHaveAttribute("aria-selected", "false");
+  });
+
+  test("le toggle Expert ouvre l'interface complète", async ({ page }) => {
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await page.getByRole("tab", { name: "Expert" }).click();
+    await expect(page.locator(".sidebar")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("navigation", { name: "Navigation Mode Pilote" })).toHaveCount(0);
   });
 
   test("la carte agent IA prospects est visible", async ({ page }) => {

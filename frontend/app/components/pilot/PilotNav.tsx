@@ -4,11 +4,15 @@ import { Compass, Lock, UserRound, Users, Zap } from "lucide-react";
 
 export type PilotNavTab = "today" | "profile";
 
+type InterfaceMode = "pilot" | "expert";
+
 type PilotNavProps = {
   activeTab: PilotNavTab;
   onTabChange: (tab: PilotNavTab) => void;
   onUpgrade: () => void;
   upgradeBusy?: boolean;
+  interfaceMode: InterfaceMode;
+  onInterfaceModeChange: (mode: InterfaceMode) => void;
   /** Pastilles futures (posts, leads, missions) — réservé phase 2. */
   badges?: { posts?: number; leads?: number; group?: number };
 };
@@ -18,6 +22,8 @@ export function PilotNav({
   onTabChange,
   onUpgrade,
   upgradeBusy = false,
+  interfaceMode,
+  onInterfaceModeChange,
   badges,
 }: PilotNavProps) {
   return (
@@ -69,11 +75,31 @@ export function PilotNav({
         </button>
       </div>
 
-      {/* Plus d'entrée « Mode Expert » ici : le Mode Pilote est la seule vue
-          proposée tant que le compte n'est pas premium. L'aperçu Expert reste
-          atteignable par les actions qui en ont besoin (Générateur, Agent IA),
-          et son bandeau porte le retour au Mode Pilote. */}
       <div className="pilot-nav-footer">
+        <div
+          className="pilot-mode-toggle pilot-nav-mode-toggle"
+          role="tablist"
+          aria-label="Mode d'interface"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={interfaceMode === "pilot"}
+            className={interfaceMode === "pilot" ? "active" : ""}
+            onClick={() => onInterfaceModeChange("pilot")}
+          >
+            Pilote
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={interfaceMode === "expert"}
+            className={interfaceMode === "expert" ? "active" : ""}
+            onClick={() => onInterfaceModeChange("expert")}
+          >
+            Expert
+          </button>
+        </div>
         <button
           type="button"
           className="pilot-nav-upgrade"

@@ -17396,7 +17396,8 @@ export default function Home() {
       )}
       {showPilotShell ? (
         <PilotShell
-          mode="pilot"
+          interfaceMode={interfaceMode}
+          onInterfaceModeChange={setInterfaceModePersist}
           onOpenGenerator={openGeneratorFromPilot}
           onOpenAssistant={openAssistantFromPilot}
           onUpgrade={() => void pilotBilling.subscribe()}
