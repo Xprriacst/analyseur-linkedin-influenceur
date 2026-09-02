@@ -27,6 +27,7 @@ from src import outreach_engine, outreach_autopilot, features
 from src import crosspost
 from src import audit_projection, lead_notify, mailer, pilot_plan, skool_invite
 from src import follow_suggestions
+from src import prospect_pool
 # ⚠️ Alias OBLIGATOIRE : le nom `dashboard_progress` est déjà pris dans ce fichier
 # par l'endpoint `GET /dashboard/progress` (def dashboard_progress, plus bas). Un
 # `from src import dashboard_progress` serait silencieusement ÉCRASÉ par ce `def`
@@ -1042,6 +1043,74 @@ def admin_onboarding_leads(
         for row in rows
     ]
     return {"count": len(leads), "leads": leads}
+
+
+class ProspectPoolUrlsBody(BaseModel):
+    urls: str = Field(..., min_length=1)
+
+
+@app.get("/admin/prospect-pool")
+def admin_prospect_pool_list(
+    token: str = Depends(require_token),
+    limit: int = 80,
+) -> dict[str, Any]:
+    """Dashboard interne : fiches du vivier partagé (cartes publiques)."""
+    require_audit_leads_admin(token)
+    cap = max(1, min(int(limit or 80), 200))
+    rows = db.list_prospect_cache_candidates(limit=500)
+    return {"count": len(rows), "prospects": rows[:cap]}
+
+
+@app.post("/admin/prospect-pool")
+async def admin_prospect_pool_import_file(
+    request: Request,
+    file: UploadFile = File(...),
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Remplit le vivier depuis un CSV/xlsx — mêmes règles que l'import client.
+
+    Écrit dans `prospect_cache`, PAS dans les leads de l'admin. Gratuit.
+    Les lignes sans URL de profil sont comptées et restituées.
+    """
+    require_audit_leads_admin(token)
+    content_length = request.headers.get("content-length")
+    mb = lead_import.MAX_FILE_BYTES // (1024 * 1024)
+    try:
+        if content_length and int(content_length) > lead_import.MAX_FILE_BYTES + 64 * 1024:
+            raise HTTPException(status_code=413, detail=f"Fichier trop volumineux ({mb} Mo maximum).")
+    except ValueError:
+        pass
+    data = await file.read()
+    if len(data) > lead_import.MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail=f"Fichier trop volumineux ({mb} Mo maximum).")
+    try:
+        parsed = await run_in_threadpool(lead_import.parse_leads_file, file.filename, data)
+    except lead_import.LeadImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result = prospect_pool.ingest_rows(parsed["leads"])
+    return {
+        **result,
+        "ignored": parsed["ignored"],
+        "rows": parsed["rows"],
+        "truncated": parsed["truncated"],
+    }
+
+
+@app.post("/admin/prospect-pool/urls")
+def admin_prospect_pool_import_urls(
+    payload: ProspectPoolUrlsBody,
+    token: str = Depends(require_token),
+) -> dict[str, Any]:
+    """Remplit le vivier depuis une liste d'URLs (une par ligne)."""
+    require_audit_leads_admin(token)
+    parsed = prospect_pool.parse_profile_urls(payload.urls)
+    if not parsed["leads"]:
+        raise HTTPException(
+            status_code=422,
+            detail="Aucune URL de profil LinkedIn (linkedin.com/in/…) dans le texte.",
+        )
+    result = prospect_pool.ingest_rows(parsed["leads"])
+    return {**result, "ignored": parsed["ignored"], "rows": parsed["rows"]}
 
 
 @app.get("/public/audit/{token}")

@@ -4648,6 +4648,144 @@ def list_influencer_cache_candidates(limit: int = 300) -> list[dict]:
         return []
 
 
+# ── Vivier partagé de prospects (Mode Pilote) ─────────────────────────────── #
+# Cartes publiques uniquement. La table n'a pas de user_id (stock admin, comme
+# influencer_cache). La projection est volontairement étroite : y ajouter une
+# colonne privée un jour n'aurait rien à exposer aujourd'hui, mais le test de
+# projection échoue si le select s'élargit — même discipline que 0016.
+
+_PROSPECT_CACHE_COLS = "id,profile_url,name,headline,created_at"
+
+
+def list_prospect_cache_candidates(limit: int = 500) -> list[dict]:
+    """Fiches du vivier, candidates à une attribution Mode Pilote.
+
+    Ne projette QUE des champs publics d'un profil LinkedIn. Gratuit : on
+    relit ce que l'admin a déjà déposé, aucun scrape.
+    """
+    if not admin_enabled():
+        return []
+    try:
+        resp = (
+            admin_client()
+            .table("prospect_cache")
+            .select(_PROSPECT_CACHE_COLS)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return resp.data or []
+    except Exception:
+        return []
+
+
+def upsert_prospect_cache(rows: list[dict]) -> dict:
+    """Insert ou enrichit le vivier. Ne vide JAMAIS un nom/titre déjà remplis.
+
+    Re-coller les mêmes URLs (sans nom) ne doit pas écraser une fiche déjà
+    annotée — ce serait une perte silencieuse au prochain import « URLs seules ».
+    """
+    if not admin_enabled() or not rows:
+        return {"inserted": 0, "updated": 0, "skipped": 0}
+    db = admin_client()
+    urls = [r["profile_url"] for r in rows if r.get("profile_url")]
+    existing_by_url: dict[str, dict] = {}
+    for i in range(0, len(urls), 100):
+        try:
+            resp = (
+                db.table("prospect_cache")
+                .select(_PROSPECT_CACHE_COLS)
+                .in_("profile_url", urls[i : i + 100])
+                .execute()
+            )
+        except Exception:
+            return {"inserted": 0, "updated": 0, "skipped": 0}
+        for row in resp.data or []:
+            if row.get("profile_url"):
+                existing_by_url[row["profile_url"]] = row
+
+    inserted = updated = skipped = 0
+    to_insert: list[dict] = []
+    for row in rows:
+        url = row.get("profile_url")
+        if not url:
+            continue
+        current = existing_by_url.get(url)
+        if current is None:
+            to_insert.append({
+                "profile_url": url,
+                "name": row.get("name"),
+                "headline": row.get("headline"),
+            })
+            continue
+        patch: dict[str, Any] = {}
+        if row.get("name") and not (current.get("name") or "").strip():
+            patch["name"] = row["name"]
+        elif row.get("name") and row["name"] != current.get("name"):
+            patch["name"] = row["name"]
+        if row.get("headline") and not (current.get("headline") or "").strip():
+            patch["headline"] = row["headline"]
+        elif row.get("headline") and row["headline"] != current.get("headline"):
+            patch["headline"] = row["headline"]
+        if not patch:
+            skipped += 1
+            continue
+        try:
+            db.table("prospect_cache").update(patch).eq("id", current["id"]).execute()
+            updated += 1
+        except Exception:
+            skipped += 1
+
+    for i in range(0, len(to_insert), 100):
+        try:
+            resp = db.table("prospect_cache").insert(to_insert[i : i + 100]).execute()
+            inserted += len(resp.data or [])
+        except Exception:
+            skipped += len(to_insert[i : i + 100])
+    return {"inserted": inserted, "updated": updated, "skipped": skipped}
+
+
+def admin_insert_pool_lead(
+    user_id: str,
+    *,
+    profile_url: str,
+    name: str | None,
+    headline: str | None,
+    score: int,
+    score_reason: str | None,
+    matched_keywords: list[str],
+) -> dict | None:
+    """Copie une carte du vivier dans `leads` du receveur (service-role).
+
+    `user_id` EST le compte qui ouvre le Mode Pilote, jamais l'admin qui a
+    rempli le vivier. Unique `(user_id, profile_url)` : déjà présent ⇒ None,
+    pas d'exception. Pose un score vert pour que `pick_contacts` le voie.
+    """
+    if not admin_enabled() or not user_id or not profile_url:
+        return None
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    row = {
+        "user_id": user_id,
+        "profile_url": profile_url,
+        "name": name,
+        "headline": headline,
+        "comment_text": None,
+        "signals": [{
+            "origin": "prospect_pool",
+            "matched_keywords": list(matched_keywords or [])[:5],
+        }],
+        "signal_count": 1,
+        "score": int(score),
+        "score_reason": score_reason,
+        "scored_at": now,
+    }
+    try:
+        resp = admin_client().table("leads").insert(row).execute()
+        return resp.data[0] if resp.data else None
+    except Exception:
+        return None
+
+
 # ── Monitoring influenceurs (ALE-214) ─────────────────────────────────────── #
 
 def list_followed_influencers(access_token: str) -> list[dict]:
