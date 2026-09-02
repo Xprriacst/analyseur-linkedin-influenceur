@@ -115,21 +115,29 @@ def log_onboarding_preview_event(
         pass
 
 
-def log_onboarding_page_view_event(ip_hash: str | None) -> None:
-    """Journalise l'OUVERTURE de la page /onboarding (et son alias /founders).
+# Discriminants `onboarding_preview_events.input_kind` réservés aux OUVERTURES
+# de page. Ils ne décrivent pas une analyse (les autres valeurs — `linkedin`,
+# `website`, `description` — le font) : la table est réutilisée comme journal de
+# vues parce que son schéma (colonnes nullable, RLS sans policy = service-role
+# only) couvre déjà exactement ce besoin.
+#
+# ⚠️ `page_view` (sans préfixe) reste la landing `/onboarding` : le nom est
+# historique (elle était la seule quand le compteur a été livré le 2026-08-17) et
+# des lignes portent déjà cette valeur en prod. Le renommer casserait le
+# comptage des vues déjà enregistrées — chaque nouvelle landing prend donc un
+# discriminant préfixé, jamais l'inverse.
+ONBOARDING_PAGE_VIEW_KIND = "page_view"
+PILOTE_PAGE_VIEW_KIND = "pilote_page_view"
 
-    Réutilise `onboarding_preview_events` (migration 0055) avec
-    `input_kind='page_view'` comme discriminant, plutôt qu'une nouvelle table :
-    le schéma existant (colonnes nullable, RLS sans policy = service-role only)
-    couvre déjà ce besoin — seul `linkedin_url`/`website_url`/`used_apify`/
-    `preview_ok` n'ont pas de sens pour une simple vue de page et restent à
-    leur valeur neutre (`None`/`False`).
 
-    Compter `input_kind='page_view'` vs les lignes de `audit_leads` au statut
-    `founders_optin` donne le taux de conversion page vue → e-mail laissé :
-        select
-          (select count(*) from onboarding_preview_events where input_kind = 'page_view') as vues,
-          (select count(distinct email) from audit_leads where status = 'founders_optin') as emails;
+def log_page_view_event(input_kind: str, ip_hash: str | None) -> None:
+    """Journalise l'OUVERTURE d'une landing publique (anonyme, best-effort).
+
+    Réutilise `onboarding_preview_events` (migration 0055) avec `input_kind`
+    comme discriminant de landing, plutôt qu'une table par tunnel : le schéma
+    existant couvre déjà ce besoin — `linkedin_url`/`website_url`/`used_apify`/
+    `preview_ok` n'ont pas de sens pour une simple vue de page et restent à leur
+    valeur neutre (`None`/`False`).
 
     Best-effort : le visiteur n'a pas de session, on écrit donc en service-role.
     Un échec de log ne doit JAMAIS bloquer ni ralentir visiblement le visiteur
@@ -139,7 +147,7 @@ def log_onboarding_page_view_event(ip_hash: str | None) -> None:
         return
     try:
         admin_client().table("onboarding_preview_events").insert({
-            "input_kind": "page_view",
+            "input_kind": input_kind,
             "linkedin_url": None,
             "website_url": None,
             "used_apify": False,
@@ -148,6 +156,37 @@ def log_onboarding_page_view_event(ip_hash: str | None) -> None:
         }).execute()
     except Exception:
         pass
+
+
+def log_onboarding_page_view_event(ip_hash: str | None) -> None:
+    """Ouverture du tunnel `/onboarding` (et son alias `/founders`).
+
+    Taux de conversion page vue → e-mail laissé :
+        select
+          (select count(*) from onboarding_preview_events where input_kind = 'page_view') as vues,
+          (select count(distinct email) from audit_leads where status = 'founders_optin') as emails;
+    """
+    log_page_view_event(ONBOARDING_PAGE_VIEW_KIND, ip_hash)
+
+
+def log_pilote_page_view_event(ip_hash: str | None) -> None:
+    """Ouverture de la landing `/pilote` (mode Pilote gratuit).
+
+    L'autre moitié du funnel (le compte créé) n'est PAS ici : elle vit dans
+    `auth.users`, marquée à l'inscription par `raw_user_meta_data->>'landing'`
+    (cf. `piloteSignupMetadata` côté front). Compter les comptes par leur seule
+    date de création donnerait un chiffre faux dès qu'une autre porte d'entrée
+    est rouverte — et faux en silence.
+
+        select
+          (select count(*) from onboarding_preview_events
+             where input_kind = 'pilote_page_view') as vues,
+          (select count(distinct ip_hash) from onboarding_preview_events
+             where input_kind = 'pilote_page_view') as visiteurs,
+          (select count(*) from auth.users
+             where raw_user_meta_data->>'landing' = 'pilote') as comptes;
+    """
+    log_page_view_event(PILOTE_PAGE_VIEW_KIND, ip_hash)
 
 
 def insert_audit_lead(lead: dict[str, Any]) -> dict[str, Any] | None:
@@ -344,6 +383,8 @@ def _copy_user(entry: dict) -> dict:
     copied = dict(entry)
     meta = copied.get("app_metadata")
     copied["app_metadata"] = dict(meta) if isinstance(meta, dict) else {}
+    user_meta = copied.get("user_metadata")
+    copied["user_metadata"] = dict(user_meta) if isinstance(user_meta, dict) else {}
     return copied
 
 
@@ -374,10 +415,13 @@ def get_user(access_token: str) -> dict | None:
     if not user:
         return None
     raw_meta = getattr(user, "app_metadata", None)
+    raw_user_meta = getattr(user, "user_metadata", None)
     entry = {
         "id": user.id,
         "email": getattr(user, "email", None),
         "app_metadata": dict(raw_meta) if isinstance(raw_meta, dict) else {},
+        "user_metadata": dict(raw_user_meta) if isinstance(raw_user_meta, dict) else {},
+        "created_at": getattr(user, "created_at", None),
     }
     with _USER_CACHE_LOCK:
         if len(_USER_CACHE) >= _USER_CACHE_MAX:
@@ -516,6 +560,23 @@ def save_analysis(access_token: str, result: dict, posts_limit: int | None = Non
         .execute()
     )
     analysis_id = an_resp.data[0]["id"] if an_resp.data else None
+
+    # Mon profil → Dashboard : si le profil qui vient d'être analysé est CELUI DU
+    # CLIENT, on pose ici le point d'historique de ses abonnés. C'est le seul
+    # instant où la valeur change réellement — sans ce branchement, la courbe de
+    # progression ne bougerait QUE les jours où il ouvre le dashboard, et resterait
+    # plate à vie s'il ne l'ouvre pas ce jour-là : une panne parfaitement
+    # silencieuse (aucune erreur, juste un graphe faux). Best-effort à tous les
+    # étages — une analyse qui a coûté du scrape et du modèle ne doit jamais
+    # échouer pour un relevé de suivi.
+    try:
+        if platform == "linkedin" and result.get("handle") == own_handle(access_token):
+            followers = int((result.get("profile") or {}).get("follower_count") or 0)
+            if followers > 0:  # 0 = scrape de profil en échec, pas « zéro abonné »
+                record_follower_snapshot(access_token, followers, source="analysis")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[dashboard] relevé d'abonnés à l'analyse échoué : {exc}", flush=True)
+
     return {"influencer_id": influencer_id, "analysis_id": analysis_id}
 
 
@@ -774,7 +835,14 @@ def get_editorial_profile(access_token: str) -> dict | None:
 
 
 def upsert_editorial_profile(access_token: str, payload: dict[str, Any]) -> dict | None:
-    """Create or update the user's editorial profile."""
+    """Create or update the user's editorial profile.
+
+    ⚠️ À la CRÉATION seulement (fin d'onboarding), le post quotidien est activé
+    d'office : c'est la promesse du Mode Pilote (« 1 post par jour »), et un
+    compte neuf qui la découvre sur un écran vide n'a aucune raison d'aller
+    chercher un interrupteur dont il ignore l'existence. Un profil déjà en base
+    garde son réglage — on ne rallume jamais ce que quelqu'un a coupé.
+    """
     user = get_user(access_token)
     if not user:
         return None
@@ -784,6 +852,8 @@ def upsert_editorial_profile(access_token: str, payload: dict[str, Any]) -> dict
         **_clean_editorial_profile(payload),
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
+    if not get_editorial_profile(access_token):
+        row.setdefault("daily_ideas_enabled", True)
     resp = (
         db.table("user_editorial_profiles")
         .upsert(row, on_conflict="user_id")
@@ -4434,6 +4504,40 @@ def upsert_cached_posts(
         pass  # La persistance du cache ne doit jamais bloquer l'analyse
 
 
+# ── Suggestions de profils à suivre — cache mutualisé, sans coût ─────────── #
+
+def list_influencer_cache_candidates(limit: int = 300) -> list[dict]:
+    """Fiches du cache mutualisé, candidates aux suggestions « à suivre ».
+
+    Ne projette QUE des champs publics d'un profil LinkedIn (handle, nom,
+    titre, abonnés, URL) — jamais `raw_profile` ni `synthesis`. Cette table
+    n'a de toute façon pas de `user_id` : c'est un cache d'analyses mutualisé
+    (migration 0016), pas des données appartenant à un compte. Aucune donnée
+    privée d'un autre client ne peut transiter par ce chemin.
+
+    Gratuit : on relit ce qui a DÉJÀ été analysé, aucun scrape Apify n'est
+    déclenché ici. Le tri par `last_analyzed_at` donne les fiches les plus
+    fraîches ; le filtrage par niche se fait ensuite en mémoire dans
+    `src/follow_suggestions.py`.
+    """
+    if not admin_enabled():
+        return []
+    try:
+        resp = (
+            admin_client()
+            .table("influencer_cache")
+            .select("id,handle,name,headline,follower_count,profile_url")
+            .eq("platform", "linkedin")
+            .order("last_analyzed_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return resp.data or []
+    except Exception:
+        # Best-effort : une suggestion manquante n'est jamais une panne.
+        return []
+
+
 # ── Monitoring influenceurs (ALE-214) ─────────────────────────────────────── #
 
 def list_followed_influencers(access_token: str) -> list[dict]:
@@ -6232,6 +6336,160 @@ def get_outreach_lead_name_maps(access_token: str) -> tuple[dict[str, str], dict
         if pid:
             by_provider[pid] = name
     return by_chat, by_provider
+
+
+def outreach_lead_funnel(access_token: str) -> dict[str, int]:
+    """Funnel de prospection (Mon profil → Dashboard) : combien de leads sont
+    invités / connectés / messagés, lu sur `leads.outreach_status`.
+
+    ⚠️ C'est la source de vérité pour l'ACCEPTATION — le journal
+    `linkedin_outreach_actions` ne trace que les envois, jamais si l'invitation a
+    été acceptée. `outreach_status` avance dans un seul sens (none → invite_sent →
+    connected → messaged, cf. `outreach_sender.py`), donc compter les leads dans
+    l'un de ces 3 états donne le total *invité un jour*, sans double-compte."""
+    zero = {"invited": 0, "connected": 0, "messaged": 0}
+    if not supabase_enabled():
+        return zero
+    user = get_user(access_token)
+    if not user:
+        return zero
+    db = client_for_token(access_token)
+    resp = (
+        db.table("leads")
+        .select("outreach_status")
+        .eq("user_id", user["id"])
+        .in_("outreach_status", ["invite_sent", "connected", "messaged"])
+        .limit(20000)
+        .execute()
+    )
+    rows = resp.data or []
+    connected = sum(1 for r in rows if r.get("outreach_status") in ("connected", "messaged"))
+    messaged = sum(1 for r in rows if r.get("outreach_status") == "messaged")
+    return {"invited": len(rows), "connected": connected, "messaged": messaged}
+
+
+def list_messaged_leads_with_chat(access_token: str, limit: int = 20) -> list[dict]:
+    """Leads déjà messagés avec une conversation Unipile connue, les plus récents
+    d'abord — sert au dashboard à vérifier (best-effort, borné) qui a répondu.
+
+    Ne renvoie que ceux avec `outreach_chat_id` : sans lui, impossible d'interroger
+    Unipile sur leur conversation."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("leads")
+        .select("id, outreach_chat_id, outreach_updated_at")
+        .eq("user_id", user["id"])
+        .eq("outreach_status", "messaged")
+        .not_.is_("outreach_chat_id", "null")
+        .order("outreach_updated_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
+_FOLLOWER_SNAPSHOT_COLS = "id, captured_on, follower_count, source, created_at"
+
+
+def own_handle(access_token: str) -> str | None:
+    """Handle LinkedIn du client lui-même, déduit du `linkedin_url` de son profil
+    éditorial. Sert à reconnaître SON profil parmi les influenceurs analysés."""
+    profile = get_editorial_profile(access_token) or {}
+    return _handle_from_url((profile.get("linkedin_url") or "").strip())
+
+
+def own_follower_count(access_token: str) -> int | None:
+    """Dernier nombre d'abonnés connu du COMPTE DU CLIENT LUI-MÊME (jamais un scrape).
+
+    Cherché dans son propre corpus d'influenceurs analysés (`influencers`), sur le
+    handle de son `linkedin_url` de profil éditorial — c'est la seule source déjà
+    mesurée pour son propre compte. Ce dashboard ne déclenche JAMAIS d'appel Apify
+    pour se remplir (coût) : s'il n'a jamais analysé son propre profil, il n'y a
+    simplement rien à afficher (section 'indisponible', pas une erreur).
+
+    ⚠️ **0 est traité comme « inconnu », pas comme « zéro abonné »** : quand le
+    scrape de profil échoue (cas documenté — permissions de l'acteur Apify refusées,
+    plafond mensuel atteint), `_influencer_row` écrit `follower_count = 0` sans la
+    moindre erreur. Le prendre au mot poserait une baseline à 0, puis afficherait un
+    bond de « +1 200 abonnés » le jour d'une analyse réussie — un chiffre faux sur
+    son propre compte, exactement ce que ce dashboard doit éviter.
+
+    ⚠️ Filtré sur `platform = 'linkedin'` : le même handle peut exister en ligne
+    Instagram (analyse IG), dont le nombre d'abonnés n'a rien à voir."""
+    handle = own_handle(access_token)
+    if not handle:
+        return None
+    user = get_user(access_token)
+    if not user:
+        return None
+    db = client_for_token(access_token)
+    resp = (
+        db.table("influencers")
+        .select("follower_count")
+        .eq("user_id", user["id"])
+        .eq("handle", handle)
+        .eq("platform", "linkedin")
+        .limit(1)
+        .execute()
+    )
+    if not resp.data:
+        return None
+    value = resp.data[0].get("follower_count")
+    if value is None:
+        return None
+    count = int(value)
+    return count if count > 0 else None
+
+
+def record_follower_snapshot(
+    access_token: str, follower_count: int, source: str = "influencer_analysis"
+) -> None:
+    """Enregistre (best-effort) un point de la progression d'abonnés du jour.
+
+    Idempotent PAR JOUR : `upsert` sur `(user_id, captured_on)` (migration 0071)
+    — ouvrir le dashboard plusieurs fois la même journée ne crée qu'UNE ligne, mise
+    à jour avec la dernière valeur connue. Jamais de scrape déclenché ici : la
+    valeur vient de ce qui est déjà mesuré ailleurs (cf. `own_follower_count`)."""
+    if not supabase_enabled() or follower_count is None:
+        return
+    user = get_user(access_token)
+    if not user:
+        return
+    db = client_for_token(access_token)
+    row = {
+        "user_id": user["id"],
+        "captured_on": datetime.date.today().isoformat(),
+        "follower_count": int(follower_count),
+        "source": source,
+    }
+    try:
+        db.table("user_follower_snapshots").upsert(row, on_conflict="user_id,captured_on").execute()
+    except Exception as exc:  # noqa: BLE001 — best-effort, ne doit jamais casser le dashboard
+        print(f"[dashboard] snapshot abonnés échoué : {exc}", flush=True)
+
+
+def list_follower_snapshots(access_token: str, limit: int = 180) -> list[dict]:
+    """Historique des relevés d'abonnés du client, du plus ancien au plus récent."""
+    if not supabase_enabled():
+        return []
+    user = get_user(access_token)
+    if not user:
+        return []
+    db = client_for_token(access_token)
+    resp = (
+        db.table("user_follower_snapshots")
+        .select(_FOLLOWER_SNAPSHOT_COLS)
+        .eq("user_id", user["id"])
+        .order("captured_on", desc=False)
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
 
 
 def get_lead(access_token: str, lead_id: str) -> dict | None:

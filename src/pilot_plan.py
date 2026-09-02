@@ -142,12 +142,33 @@ def split_post_text(text: str) -> tuple[str, str]:
     return raw[:180].strip(), raw[180:].strip() if len(raw) > 180 else ""
 
 
-def format_weekly_frequency(slots: list[dict[str, Any]]) -> str:
-    if not slots:
-        return "Aucun créneau programmé — règle ton rythme dans Mon profil."
+DAILY_POST_LABEL = "1 post par jour — ton agent l'écrit chaque matin"
+
+
+def format_weekly_frequency(
+    slots: list[dict[str, Any]],
+    daily_ideas_enabled: bool = False,
+) -> str:
+    """Rythme de publication annoncé au client.
+
+    ⚠️ L'idée du jour compte comme un rythme à part entière : sans elle,
+    un compte tout neuf (aucun créneau hebdo programmé) lisait « Aucun créneau
+    programmé » alors qu'un post lui est écrit chaque matin — un rythme réel
+    présenté comme une absence de rythme.
+    """
     day_labels = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
     parts: list[str] = []
-    for slot in sorted(slots, key=lambda s: int(s.get("day_of_week") or 0)):
+
+    def _sort_key(slot: dict[str, Any]) -> int:
+        # ⚠️ La clé de tri s'exécute AVANT le try/except de la boucle : un
+        # `day_of_week` illisible y levait, et emportait tout le plan du jour
+        # (rattrapé par le fail-safe de `build_pilot_today`, donc en silence).
+        try:
+            return int(slot.get("day_of_week") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    for slot in sorted(slots or [], key=_sort_key):
         try:
             dow = int(slot.get("day_of_week", 0))
             hour = int(slot.get("hour", 9))
@@ -156,8 +177,34 @@ def format_weekly_frequency(slots: list[dict[str, Any]]) -> str:
         if 0 <= dow < len(day_labels):
             parts.append(f"{day_labels[dow]} {hour}h")
     if not parts:
+        if daily_ideas_enabled:
+            return DAILY_POST_LABEL
         return "Aucun créneau programmé — règle ton rythme dans Mon profil."
-    return f"{len(slots)} posts / semaine · {', '.join(parts)}"
+    weekly = f"{len(parts)} posts / semaine · {', '.join(parts)}"
+    if daily_ideas_enabled:
+        return f"1 post par jour · {weekly} programmés"
+    return weekly
+
+
+def build_strategy(
+    profile: dict[str, Any] | None,
+    targeting: dict[str, Any] | None,
+    schedule: list[dict[str, Any]] | None,
+    follow_handles: list[str] | None = None,
+    daily_ideas_enabled: bool = False,
+) -> dict[str, Any]:
+    """Stratégie affichée dans Mon profil (et révélée en fin d'onboarding).
+
+    Une seule composition pour les deux surfaces : deux versions finiraient par
+    se contredire sous les yeux du client — l'onboarding lui promettrait un
+    rythme que sa page profil dément le lendemain.
+    """
+    return {
+        "profiles": list(follow_handles or [])[:3],
+        "frequency": format_weekly_frequency(schedule or [], daily_ideas_enabled),
+        "target": strategy_target(profile, targeting),
+        "structureHint": strategy_structure_hint(profile),
+    }
 
 
 def strategy_target(profile: dict[str, Any] | None, targeting: dict[str, Any] | None) -> str:
@@ -234,6 +281,127 @@ def weekly_progress(access_token: str) -> tuple[int, int]:
     return min(PILOT_WEEKLY_TOTAL, done), PILOT_WEEKLY_TOTAL
 
 
+_PILOT_SIM_PROSPECTS: tuple[dict[str, str], ...] = (
+    {
+        "id": "sim-1",
+        "name": "Camille Martin",
+        "role": "Consultante IA",
+        "company": "Indépendante",
+        "headline": "Consultante IA · Indépendante",
+    },
+    {
+        "id": "sim-2",
+        "name": "Thomas Leroy",
+        "role": "Directeur marketing",
+        "company": "ScaleUp B2B",
+        "headline": "Directeur marketing · ScaleUp B2B",
+    },
+    {
+        "id": "sim-3",
+        "name": "Sarah Benali",
+        "role": "Fondatrice",
+        "company": "Studio NoCode",
+        "headline": "Fondatrice · Studio NoCode",
+    },
+)
+
+
+def _parse_user_created_at(raw: str | None) -> datetime.datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def simulated_prospect_reveal_count(created_at: datetime.datetime | None) -> int:
+    """Nombre de prospects « découverts » simulés selon l'ancienneté du compte."""
+    if not created_at:
+        return 0
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+    age_min = (datetime.datetime.now(datetime.timezone.utc) - created_at).total_seconds() / 60
+    if age_min < 1:
+        return 0
+    if age_min < 4:
+        return 1
+    if age_min < 8:
+        return 2
+    return PILOT_CONTACT_LIMIT
+
+
+def build_prospect_agent_meta(
+    *,
+    is_pilote_landing: bool,
+    real_contact_count: int,
+    reveal_count: int,
+    outreach_connected: bool,
+) -> dict[str, Any]:
+    """État de l'agent IA de recherche de prospects (Mode Pilote gratuit)."""
+    if not is_pilote_landing:
+        return {"active": False, "status": "idle", "message": None, "detail": None}
+
+    if real_contact_count >= PILOT_CONTACT_LIMIT:
+        return {"active": False, "status": "ready", "message": None, "detail": None}
+
+    if reveal_count <= 0:
+        return {
+            "active": True,
+            "status": "starting",
+            "message": "Ton agent IA analyse LinkedIn pour trouver des prospects.",
+            "detail": "Les profils correspondant à ton ICP apparaîtront ici au fur et à mesure.",
+        }
+
+    if real_contact_count < reveal_count:
+        return {
+            "active": True,
+            "status": "searching",
+            "message": "Recherche en cours — de nouveaux profils arrivent.",
+            "detail": f"{reveal_count} prospect{'s' if reveal_count > 1 else ''} identifié{'s' if reveal_count > 1 else ''} pour l'instant.",
+        }
+
+    if not outreach_connected:
+        return {
+            "active": True,
+            "status": "warming",
+            "message": "Prospects repérés — connexion LinkedIn requise pour inviter.",
+            "detail": "Relie ton compte dans Mon profil → Connexions quand tu es prêt à contacter.",
+        }
+
+    return {"active": False, "status": "ready", "message": None, "detail": None}
+
+
+def build_simulated_contacts(
+    *,
+    reveal_count: int,
+    existing_count: int,
+    targeting: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Complète la liste avec des prospects simulés (Mode Pilote, en attendant le vrai pipeline)."""
+    need = max(0, reveal_count - existing_count)
+    if need <= 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    for idx, seed in enumerate(_PILOT_SIM_PROSPECTS[:need]):
+        score = 78 - idx * 4
+        rows.append({
+            "id": seed["id"],
+            "name": seed["name"],
+            "role": seed["role"],
+            "company": seed["company"],
+            "score": score,
+            "initials": initials(seed["name"]),
+            "accent": _PILOT_ACCENTS[(existing_count + idx) % len(_PILOT_ACCENTS)],
+            "message": contact_message_preview(
+                {"name": seed["name"], "headline": seed["headline"], "comment_text": ""},
+                targeting,
+            ),
+            "simulated": True,
+        })
+    return rows
+
+
 def compose_pilot_plan(
     *,
     profile: dict[str, Any] | None,
@@ -248,12 +416,18 @@ def compose_pilot_plan(
     publish_connected: bool,
     weekly_done: int,
     weekly_total: int,
+    is_pilote_landing: bool = False,
+    account_created_at: datetime.datetime | None = None,
 ) -> dict[str, Any]:
     display = (profile or {}).get("display_name") or (profile or {}).get("brand_name") or "toi"
     user_first = first_name(display if display != "toi" else None) if display != "toi" else "toi"
 
     author_name = (profile or {}).get("display_name") or (profile or {}).get("brand_name") or "Toi"
     author_headline = (profile or {}).get("business_description") or (profile or {}).get("linkedin_objective") or ""
+
+    # `get_editorial_profile` fait un `select("*")` : l'opt-in idée du jour est
+    # déjà dans la ligne, aucun aller-retour supplémentaire.
+    daily_ideas_enabled = bool((profile or {}).get("daily_ideas_enabled"))
 
     post_row, post_kind = pick_post_of_day(generated_posts, daily_ideas)
     post_empty = post_row is None
@@ -305,7 +479,36 @@ def compose_pilot_plan(
             "initials": initials(lead.get("name")),
             "accent": _PILOT_ACCENTS[idx % len(_PILOT_ACCENTS)],
             "message": contact_message_preview(lead, targeting),
+            "simulated": False,
         })
+
+    reveal_count = (
+        simulated_prospect_reveal_count(account_created_at) if is_pilote_landing else 0
+    )
+    contacts.extend(
+        build_simulated_contacts(
+            reveal_count=reveal_count,
+            existing_count=len(contacts),
+            targeting=targeting,
+        )
+    )
+
+    prospect_agent = build_prospect_agent_meta(
+        is_pilote_landing=is_pilote_landing,
+        real_contact_count=len(contact_leads),
+        reveal_count=reveal_count,
+        outreach_connected=outreach_connected,
+    )
+
+    if is_pilote_landing:
+        blocked_reason = None
+    elif outreach_connected:
+        blocked_reason = None
+    else:
+        blocked_reason = (
+            "Connecte ton compte LinkedIn de prospection (Mon profil → Connexions) "
+            "pour inviter des leads."
+        )
 
     now = datetime.datetime.now()
     iso = now.isocalendar()
@@ -329,12 +532,13 @@ def compose_pilot_plan(
         },
         "followProfiles": follow_rows,
         "contacts": contacts,
-        "strategy": {
-            "profiles": [f["handle"] for f in follow_rows[:3]],
-            "frequency": format_weekly_frequency(schedule),
-            "target": strategy_target(profile, targeting),
-            "structureHint": strategy_structure_hint(profile),
-        },
+        "strategy": build_strategy(
+            profile,
+            targeting,
+            schedule,
+            [f["handle"] for f in follow_rows],
+            daily_ideas_enabled,
+        ),
     }
 
     meta = {
@@ -346,11 +550,9 @@ def compose_pilot_plan(
         "follow_handles": {f["id"]: f.get("influencer_handle") for f in follow_rows},
         "linkedin_outreach_connected": outreach_connected,
         "linkedin_publish_connected": publish_connected,
-        "contacts_blocked_reason": (
-            None
-            if outreach_connected
-            else "Connecte ton compte LinkedIn de prospection (Mon profil → Connexions) pour inviter des leads."
-        ),
+        "contacts_blocked_reason": blocked_reason,
+        "prospect_agent": prospect_agent,
+        "is_pilote_landing": is_pilote_landing,
     }
     return {"plan": plan, "meta": meta}
 
@@ -372,9 +574,38 @@ def empty_pilot_response() -> dict[str, Any]:
     )
 
 
+def build_pilot_strategy(access_token: str) -> dict[str, Any]:
+    """Stratégie seule — sans le plan du jour (leads, posts, veille).
+
+    Sert la révélation de fin d'onboarding : à cet instant, le compte n'a ni
+    lead ni post, et `build_pilot_today` ferait une dizaine de lectures pour
+    n'en garder que trois lignes. Lecture seule : 0 crédit, 0 LLM, 0 Apify.
+
+    Fail-safe : profil illisible ou Supabase en panne ⇒ la stratégie générique,
+    jamais une erreur — l'écran qui la porte ne doit pas tomber pour ça.
+    """
+    try:
+        profile = db.get_editorial_profile(access_token)
+        targeting = db.get_lead_targeting(access_token)
+        schedule = db.get_weekly_schedule(access_token)
+        return build_strategy(
+            profile,
+            targeting,
+            schedule,
+            daily_ideas_enabled=bool((profile or {}).get("daily_ideas_enabled")),
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort, jamais bloquant
+        print(f"[pilot] strategy indisponible: {exc}")
+        return build_strategy(None, None, [])
+
+
 def build_pilot_today(access_token: str) -> dict[str, Any]:
     """Agrège le plan du jour pour l'utilisateur authentifié (fail-safe)."""
     try:
+        user = db.get_user(access_token)
+        user_meta = (user or {}).get("user_metadata") or {}
+        is_pilote_landing = user_meta.get("landing") == "pilote"
+        account_created_at = _parse_user_created_at((user or {}).get("created_at"))
         profile = db.get_editorial_profile(access_token)
         targeting = db.get_lead_targeting(access_token)
         generated = db.list_generated_posts(access_token, limit=30, platform="linkedin")
@@ -401,6 +632,8 @@ def build_pilot_today(access_token: str) -> dict[str, Any]:
             publish_connected=publish_connected,
             weekly_done=weekly_done,
             weekly_total=weekly_total,
+            is_pilote_landing=is_pilote_landing,
+            account_created_at=account_created_at,
         )
     except Exception as exc:
         print(f"[pilot] build_pilot_today échoué : {exc}", flush=True)

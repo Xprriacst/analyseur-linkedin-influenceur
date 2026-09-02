@@ -28,9 +28,10 @@ export default defineConfig({
     { name: "setup", testMatch: /auth\.setup\.ts/ },
     {
       // Parcours sans compte : landing, tunnel audit complet de /start et tunnel
-      // d'essai /onboarding (alias /founders — backend mocké, aucun login, aucun coût).
+      // d'essai /onboarding (alias /founders — backend mocké, aucun login, aucun coût)
+      // et landing /pilote (mode Pilote gratuit).
       name: "public",
-      testMatch: /smoke\.spec\.ts|audit-funnel\.spec\.ts|founders-funnel\.spec\.ts/,
+      testMatch: /smoke\.spec\.ts|audit-funnel\.spec\.ts|founders-funnel\.spec\.ts|offre-landing\.spec\.ts|pilote-landing\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
     },
     {
@@ -39,6 +40,7 @@ export default defineConfig({
         /smoke\.spec\.ts/,
         /audit-funnel\.spec\.ts/,
         /founders-funnel\.spec\.ts/,
+        /pilote-landing\.spec\.ts/,
         /cross-user-isolation\.spec\.ts/,
       ],
       dependencies: ["setup"],

@@ -8,12 +8,14 @@
  * ni e-mail ni carte avant d'avoir montré le travail fait.
  *
  * Preuve affichée dans le hero : le volume analysé (INFLUENCERS_ANALYZED /
- * POSTS_ANALYZED), qui inclut le travail fait hors app par Alex. Pas de témoignages
- * tant qu'il n'y a pas de vraies citations de vrais clients.
+ * POSTS_ANALYZED), qui inclut le travail fait hors app par Alex. Les
+ * témoignages sous les fonctionnalités sont des verbatims clients réels
+ * (`CLIENT_TESTIMONIALS`) — ne pas paraphraser.
  */
 
 import { useState } from "react";
 import Link from "next/link";
+import { CLIENT_TESTIMONIALS } from "../lib/founders";
 import {
   ArrowRight,
   BarChart3,
@@ -200,6 +202,7 @@ export default function OffrePage() {
         <div className="lp-nav-actions">
           <a href="#comment" className="lp-navlink lp-navlink-anchor">Comment ça marche</a>
           <a href="#fonctionnalites" className="lp-navlink lp-navlink-anchor">Fonctionnalités</a>
+          <a href="#temoignages" className="lp-navlink lp-navlink-anchor">Témoignages</a>
           <a href="#securite" className="lp-navlink lp-navlink-anchor">Sécurité</a>
           <a href="#faq" className="lp-navlink lp-navlink-anchor">FAQ</a>
           <Link href="/" className="lp-navlink lp-navlink-login">Se connecter</Link>
@@ -308,6 +311,24 @@ export default function OffrePage() {
               </div>
             ))}
           </div>
+        </div>
+      </section>
+
+      {/* ── Verbatims clients — citations réelles, mot pour mot ── */}
+      <section id="temoignages" className="lp-section">
+        <div className="lp-section-inner">
+          <h2 className="lp-section-title">Ce qu&apos;ils en disent</h2>
+          <p className="lp-section-desc">
+            Des clients, dans leurs mots — pas une accroche marketing.
+          </p>
+          <ul className="lp-quotes">
+            {CLIENT_TESTIMONIALS.map((t) => (
+              <li key={t.name} className="lp-quote">
+                <p className="lp-quote-text">«&nbsp;{t.quote}&nbsp;»</p>
+                <p className="lp-quote-name">{t.name}</p>
+              </li>
+            ))}
+          </ul>
         </div>
       </section>
 
@@ -629,6 +650,7 @@ export default function OffrePage() {
         }
         .lp-section-inner .lp-steps,
         .lp-section-inner .lp-features,
+        .lp-section-inner .lp-quotes,
         .lp-section-inner .lp-trust,
         .lp-section-inner .lp-faq { text-align: left; }
         .lp-section-title {
@@ -781,6 +803,37 @@ export default function OffrePage() {
           line-height: 1.6;
           color: var(--muted);
         }
+        .lp-quotes {
+          list-style: none;
+          padding: 0;
+          margin: 44px 0 0;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 18px;
+        }
+        .lp-quote {
+          margin: 0;
+          padding: 24px 22px 20px;
+          border-radius: 14px;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+        .lp-quote-text {
+          margin: 0;
+          font-size: 16px;
+          line-height: 1.55;
+          letter-spacing: -0.012em;
+        }
+        .lp-quote-name {
+          margin: 0;
+          font-size: 13px;
+          font-weight: 700;
+          color: var(--muted);
+        }
 
         /* ── CTA + footer ── */
         .lp-cta {
@@ -863,6 +916,7 @@ export default function OffrePage() {
           .lp-hero-mac { margin: 4px auto 0; }
           .lp-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
           .lp-features,
+          .lp-quotes,
           .lp-trust { grid-template-columns: 1fr; }
         }
         @media (max-width: 640px) {
@@ -880,6 +934,7 @@ export default function OffrePage() {
           .lp-proof { padding: 16px 14px; gap: 12px; }
           .lp-steps,
           .lp-features,
+          .lp-quotes,
           .lp-trust { grid-template-columns: 1fr; margin-top: 32px; }
           .lp-faq-q { font-size: 14px; padding: 14px 14px; }
           .lp-footer {

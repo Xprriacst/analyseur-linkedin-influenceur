@@ -18,13 +18,27 @@ lève jamais, et sans `RESEND_API_KEY` la fonction ne fait simplement rien.
 
 ⚠️ Exactement-une-fois : garanti par l'index unique de `lead_notifications`
 (migration 0067), pas par un test préalable. Voir `db.admin_claim_lead_notification`.
+
+**Slack (décision Alex 2026-09-01)** : en PLUS de l'e-mail, chaque alerte est
+postée sur Slack (webhook entrant, `LEAD_NOTIFY_SLACK_WEBHOOK_URL`). Le Slack
+part dans le MÊME passage que l'e-mail, juste APRÈS son succès — il hérite donc
+de la garantie exactement-une-fois de la réservation sans en ajouter une
+seconde. Un échec Slack ne rend jamais la réservation (l'e-mail est déjà parti,
+la rendre le re-enverrait) ; un e-mail en échec ⇒ pas de Slack ce passage-ci
+(le retry renverra les deux). Sans la variable : no-op propre, rien ne casse.
+⚠️ Cette alerte INTERNE est indépendante du flag produit `SLACK_FEATURE_ENABLED`
+(qui gouverne la validation Slack des posts clients, `src/slack.py`) — ne pas
+les coupler.
 """
 from __future__ import annotations
 
 import datetime
 import html as html_lib
+import json
 import os
 import sys
+import urllib.error
+import urllib.request
 from typing import Any
 
 from src import db, mailer
@@ -161,11 +175,93 @@ def render_subscription(
     return subject, f"<h2 style='margin:0 0 12px'>{_esc(label)}</h2>" + _table(rows)
 
 
+# --- Slack (webhook entrant, EN PLUS de l'e-mail — jamais à sa place) ---------
+
+SLACK_WEBHOOK_ENV = "LEAD_NOTIFY_SLACK_WEBHOOK_URL"
+SLACK_TIMEOUT_S = 10
+
+# User-Agent explicite sur TOUT client urllib du projet (leçon Resend/Cloudflare
+# du 2026-08-19, cf. `mailer.USER_AGENT`) : le défaut `Python-urllib/3.x` se fait
+# refuser par les protections anti-bot avec un 403 « error code: 1010 » qui ne
+# met sur aucune piste. Capturé à l'import : les tests remplacent le module
+# `mailer` par un faux, la constante doit survivre au remplacement.
+SLACK_USER_AGENT = mailer.USER_AGENT
+
+_SLACK_EMOJI = {"signup": "🆕", "optin": "✉️", "subscription": "💳"}
+
+
+def slack_enabled() -> bool:
+    return bool(os.environ.get(SLACK_WEBHOOK_ENV, "").strip())
+
+
+def _slack_esc(value: Any) -> str:
+    """Échappement Slack (`&` puis `<` et `>`, dans cet ordre — API chat/mrkdwn).
+
+    Le sujet porte du texte issu d'une analyse IA d'une page publique (le nom du
+    profil) : il n'est pas de confiance, même patron que `_esc` pour le HTML.
+    """
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def render_slack_message(kind: str, subject: str) -> str:
+    """Message Slack une ligne, dérivé du sujet de l'e-mail (fonction pure)."""
+    return f"{_SLACK_EMOJI.get(kind, '🔔')} {_slack_esc(subject)}"
+
+
+def _post_slack(text: str) -> bool:
+    """POST au webhook entrant. Ne lève jamais ; logge la raison VERBATIM.
+
+    « Envoi échoué » sans le pourquoi est indiagnosticable (leçon PR #460) : un
+    webhook révoqué (`no_service`), un 403 anti-bot et une panne réseau se
+    corrigent à l'opposé les uns des autres.
+    """
+    url = os.environ.get(SLACK_WEBHOOK_ENV, "").strip()
+    if not url:
+        return False
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"text": text}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": SLACK_USER_AGENT},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=SLACK_TIMEOUT_S) as response:
+            response.read()
+        return True
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+        except Exception:  # noqa: BLE001
+            detail = ""
+        print(
+            f"[lead-notify] Slack refusé ({exc.code}) : {detail or exc}", file=sys.stderr
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 — réseau, DNS, timeout
+        print(f"[lead-notify] envoi Slack échoué : {exc}", file=sys.stderr)
+        return False
+
+
+def _notify_slack(kind: str, subject: str) -> bool:
+    """Best-effort séparé : un pépin ici ne doit RIEN changer au sort de l'e-mail.
+
+    ⚠️ Alerte INTERNE, volontairement indépendante du flag produit
+    `SLACK_FEATURE_ENABLED` (validation Slack des posts clients, `src/slack.py`).
+    """
+    if not slack_enabled():
+        return False
+    try:
+        return _post_slack(render_slack_message(kind, subject))
+    except Exception as exc:  # noqa: BLE001 — double rempart, cf. _post_slack
+        print(f"[lead-notify] slack ({kind}) : {exc}", file=sys.stderr)
+        return False
+
+
 # --- Envoi (best-effort de bout en bout) -------------------------------------
 
 
 def _send(kind: str, ref: str, subject: str, html: str, reply_to: str | None = None) -> bool:
-    """Réserve, envoie, et rend la réservation si l'envoi échoue."""
+    """Réserve, envoie (e-mail puis Slack), et rend la réservation si l'E-MAIL échoue."""
     if not mailer.enabled():
         return False
     targets = recipients()
@@ -179,11 +275,18 @@ def _send(kind: str, ref: str, subject: str, html: str, reply_to: str | None = N
     # domaine non vérifié et une panne réseau se diagnostiquent à l'opposé.
     try:
         mailer.send_email(targets, subject, html, reply_to=reply_to)
-        return True
     except Exception as exc:  # noqa: BLE001 — best-effort, on ne remonte jamais
         db.admin_release_lead_notification(kind, ref)
         print(f"[lead-notify] envoi échoué ({kind}/{ref}) : {exc} — sera retenté.", file=sys.stderr)
+        # Pas de Slack ce passage-ci : la réservation vient d'être rendue, le
+        # retry renverra les DEUX canaux — poster maintenant doublerait Slack.
         return False
+    # Slack APRÈS le succès e-mail et HORS du try ci-dessus : la réservation est
+    # consommée (l'e-mail est parti), la rendre re-enverrait l'e-mail. Le Slack
+    # hérite ainsi de l'exactement-une-fois sans machinerie supplémentaire ; en
+    # contrepartie, un échec Slack isolé n'est pas retenté (l'e-mail a prévenu).
+    _notify_slack(kind, subject)
+    return True
 
 
 def notify_optin(email: str, source: str = "onboarding") -> bool:

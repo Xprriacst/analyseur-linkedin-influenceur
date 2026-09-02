@@ -390,10 +390,15 @@ type ContentTab = "analyses" | "generator" | "library";
 
 // « Mon profil » empilait sur une seule page trois métiers sans rapport : le contexte
 // éditorial, les comptes à relier, et ce qui tourne tout seul. Un onglet par métier.
-type ProfileTab = "profile" | "connections" | "automations";
+type ProfileTab = "profile" | "dashboard" | "connections" | "automations";
 
 const PROFILE_TABS: { key: ProfileTab; label: string; icon: React.ReactNode }[] = [
   { key: "profile", label: "Mon profil", icon: <UserRound size={14} /> },
+  // Tableau de bord : où j'en suis (lecture seule). Volontairement PAS l'onglet par
+  // défaut — l'écran d'entrée de « Mon profil » reste le contexte éditorial, celui
+  // qu'on vient remplir. (Une itération passée l'avait mis par défaut et avait cassé
+  // les 3 specs e2e du profil, cf. CLAUDE.md.)
+  { key: "dashboard", label: "Tableau de bord", icon: <BarChart3 size={14} /> },
   { key: "connections", label: "Connexions", icon: <Link2 size={14} /> },
   { key: "automations", label: "Automatisations", icon: <Zap size={14} /> },
 ];
@@ -12014,6 +12019,384 @@ function SelfPhotosCard() {
   );
 }
 
+// --------------------------------------------------------------------------- //
+// Mon profil → Tableau de bord (backlog Notion, priorité Alex 2026-08-31)
+//
+// Vue d'ensemble EN LECTURE SEULE de la prospection : abonnés (baseline +
+// progression), invitations, messages, retours. Aucune action, aucun crédit,
+// aucun appel modèle — c'est un miroir, pas un poste de pilotage.
+// --------------------------------------------------------------------------- //
+
+type FollowerPoint = { date: string; followers: number };
+type FollowerProgress =
+  | { available: false; reason: string }
+  | {
+      available: true;
+      current: number;
+      current_at: string | null;
+      baseline: number;
+      baseline_at: string | null;
+      delta: number;
+      history: FollowerPoint[];
+    };
+
+type DashboardProgress = {
+  followers: FollowerProgress;
+  invitations: { sent_today: number; sent_week: number; total_invited: number; total_connected: number };
+  messages: { sent_today: number; total_sent: number };
+  counts_reliable: boolean;
+  unipile_connected: boolean;
+};
+
+type DashboardReplies = {
+  conversations: { available: false; reason: string; error?: string } | { available: true; total: number };
+  replies:
+    | { available: false; reason: string }
+    | { available: true; replied: number; checked: number; total_messaged: number; capped: boolean };
+};
+
+/** « 12 août » — les relevés d'abonnés arrivent en `YYYY-MM-DD`. */
+function fmtDay(value: string | null | undefined) {
+  if (!value) return "—";
+  const d = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+}
+
+/** Delta signé : « +150 », « −40 », « = ». Le signe est l'information. */
+function fmtDelta(delta: number) {
+  if (delta === 0) return "=";
+  return `${delta > 0 ? "+" : "−"}${Math.abs(delta).toLocaleString("fr-FR")}`;
+}
+
+/**
+ * Courbe des abonnés — SVG inline, aucune dépendance.
+ *
+ * ⚠️ L'axe vertical est cadré sur le min/max RÉELS, pas sur zéro : sur un compte
+ * qui passe de 1 200 à 1 350, un axe partant de 0 écraserait la courbe en ligne
+ * plate et donnerait à lire « il ne se passe rien ». À l'inverse on ne prétend
+ * jamais tracer une progression avec un seul point : sous 2 relevés, pas de courbe.
+ */
+function FollowerSparkline({ points }: { points: FollowerPoint[] }) {
+  if (points.length < 2) return null;
+  const w = 560;
+  const h = 90;
+  const pad = 6;
+  const values = points.map((p) => p.followers);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const coords = points.map((p, i) => {
+    const x = pad + (i * (w - pad * 2)) / (points.length - 1);
+    const y = h - pad - ((p.followers - min) / span) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const last = coords[coords.length - 1].split(",");
+  return (
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      preserveAspectRatio="none"
+      style={{ width: "100%", height: 90, display: "block", marginTop: 12 }}
+      role="img"
+      aria-label={`Progression des abonnés : ${points.length} relevés, de ${values[0]} à ${values[values.length - 1]}`}
+      data-testid="dash-follower-curve"
+    >
+      <polyline
+        points={coords.join(" ")}
+        fill="none"
+        stroke="var(--primary)"
+        strokeWidth={2}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      <circle cx={last[0]} cy={last[1]} r={3.5} fill="var(--primary)" />
+    </svg>
+  );
+}
+
+function DashStat({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: React.ReactNode;
+  hint?: string;
+}) {
+  return (
+    <div className="kpi-card">
+      <span>{label}</span>
+      <div className="metric">{value}</div>
+      {hint ? (
+        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{hint}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProgressDashboard({ isAuthed }: { isAuthed: boolean }) {
+  const [data, setData] = useState<DashboardProgress | null>(null);
+  const [error, setError] = useState("");
+  const [replies, setReplies] = useState<DashboardReplies | null>(null);
+  const [repliesLoading, setRepliesLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthed) {
+      setData(null);
+      return;
+    }
+    let cancelled = false;
+    setError("");
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/dashboard/progress`, {
+          headers: await authHeaders(),
+        });
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.detail || "Tableau de bord indisponible");
+        if (!cancelled) setData(payload);
+      } catch (err: any) {
+        if (!cancelled) setError(err.message || "Tableau de bord indisponible");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthed]);
+
+  // Les « retours » sont chargés À PART, après le reste, et seulement si un compte
+  // LinkedIn est relié : vérifier qui a répondu coûte un appel Unipile par
+  // conversation (leur liste de chats ne porte aucun indicateur de réponse). Les
+  // mettre dans le même appel ferait attendre les abonnés et les compteurs — qui,
+  // eux, viennent de notre base — derrière la section la plus lente.
+  useEffect(() => {
+    if (!isAuthed || !data?.unipile_connected) {
+      setReplies(null);
+      return;
+    }
+    let cancelled = false;
+    setRepliesLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/dashboard/replies`, {
+          headers: await authHeaders(),
+        });
+        if (!res.ok) return;
+        const payload = await res.json();
+        if (!cancelled) setReplies(payload);
+      } catch {
+        // Section best-effort : un échec laisse « Retours » muet, jamais d'erreur
+        // à l'écran — le reste du tableau de bord reste juste.
+      } finally {
+        if (!cancelled) setRepliesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthed, data?.unipile_connected]);
+
+  if (!isAuthed) {
+    return (
+      <p className="section-desc" style={{ marginTop: 0 }}>
+        Connecte-toi pour voir où tu en es.
+      </p>
+    );
+  }
+
+  if (error) return <div className="error">{error}</div>;
+
+  if (!data) {
+    return (
+      <div className="card sk-list" data-testid="dash-skeleton">
+        <Sk w="40%" h={14} />
+        <Sk w="70%" h={10} style={{ marginTop: 10 }} />
+        <Sk w="100%" h={72} style={{ marginTop: 14 }} />
+      </div>
+    );
+  }
+
+  const followers = data.followers;
+  const conversations = replies?.conversations;
+  const replyStats = replies?.replies;
+
+  return (
+    <div data-testid="profile-dashboard">
+      <div className="section-header">
+        <div>
+          <h2 className="section-title">
+            <BarChart3 size={20} /> Où j&apos;en suis
+          </h2>
+          <p className="section-desc">
+            Ta prospection en un coup d&apos;œil. Lecture seule — rien ne s&apos;envoie
+            depuis cet écran, et l&apos;afficher ne coûte aucun crédit.
+          </p>
+        </div>
+      </div>
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Abonnés — baseline + progression                                  */}
+      {/* ---------------------------------------------------------------- */}
+      <section className="card" style={{ marginBottom: 12 }}>
+        <h3 style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <TrendingUp size={16} /> Abonnés LinkedIn
+        </h3>
+        {followers.available ? (
+          <>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                flexWrap: "wrap",
+                gap: 16,
+                marginTop: 10,
+              }}
+            >
+              <div>
+                <div className="metric" style={{ fontSize: 30 }} data-testid="dash-followers-current">
+                  {fmt(followers.current)}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                  au {fmtDay(followers.current_at)}
+                </div>
+              </div>
+              <div
+                data-testid="dash-followers-delta"
+                style={{
+                  fontSize: 15,
+                  fontWeight: 700,
+                  color: followers.delta > 0 ? "var(--primary)" : "var(--muted)",
+                }}
+              >
+                {fmtDelta(followers.delta)}
+                <span style={{ fontWeight: 500, color: "var(--muted)", marginLeft: 6 }}>
+                  depuis le {fmtDay(followers.baseline_at)} ({fmt(followers.baseline)})
+                </span>
+              </div>
+            </div>
+            <FollowerSparkline points={followers.history} />
+            {followers.history.length < 2 ? (
+              <p className="section-desc" style={{ marginTop: 10, marginBottom: 0 }}>
+                Un seul relevé pour l&apos;instant : c&apos;est ton point de départ. La
+                courbe apparaîtra dès la prochaine analyse de ton propre profil.
+              </p>
+            ) : null}
+          </>
+        ) : (
+          // ⚠️ Jamais « 0 abonné » ici. Le chiffre vient de TON profil déjà analysé ;
+          // sans analyse, on n'a rien mesuré — le dire, plutôt qu'afficher un zéro
+          // qui se ferait passer pour un fait. Aucun scrape n'est déclenché depuis
+          // cet écran (coût Apify), c'est délibéré.
+          <p className="section-desc" style={{ marginTop: 8, marginBottom: 0 }}>
+            {followers.reason === "read_error"
+              ? "Impossible de lire tes relevés d'abonnés pour le moment. Réessaie plus tard — rien n'est perdu."
+              : "Pas encore de relevé. Analyse ton propre profil LinkedIn (onglet Analyser, avec l'URL de ton profil renseignée dans Mon profil) : on posera le point de départ, puis la progression se remplira toute seule."}
+          </p>
+        )}
+      </section>
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Invitations & messages                                            */}
+      {/* ---------------------------------------------------------------- */}
+      {!data.counts_reliable ? (
+        <p
+          className="section-desc"
+          style={{ marginTop: 0, marginBottom: 8, color: "var(--coral)" }}
+          data-testid="dash-counts-warning"
+        >
+          Les compteurs du jour et de la semaine n&apos;ont pas pu être lus — ils
+          s&apos;affichent à 0 sans que ça veuille dire que tu n&apos;as rien envoyé.
+        </p>
+      ) : null}
+
+      <div className="kpi-grid">
+        <DashStat
+          label="Invitations aujourd'hui"
+          value={fmt(data.invitations.sent_today)}
+          hint="envoyées depuis minuit"
+        />
+        <DashStat
+          label="Invitations cette semaine"
+          value={fmt(data.invitations.sent_week)}
+          hint="7 jours glissants"
+        />
+        <DashStat
+          label="Prospects invités"
+          value={fmt(data.invitations.total_invited)}
+          hint="depuis le début"
+        />
+        <DashStat
+          label="Invitations acceptées"
+          value={fmt(data.invitations.total_connected)}
+          hint={
+            data.invitations.total_invited > 0
+              ? `${Math.round((data.invitations.total_connected / data.invitations.total_invited) * 100)} % des invités`
+              : undefined
+          }
+        />
+        <DashStat
+          label="Messages envoyés"
+          value={fmt(data.messages.total_sent)}
+          hint={`${fmt(data.messages.sent_today)} aujourd'hui`}
+        />
+      </div>
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Retours — dépend d'Unipile, chargé à part                          */}
+      {/* ---------------------------------------------------------------- */}
+      <section className="card" style={{ marginTop: 12 }}>
+        <h3 style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <MessageSquare size={16} /> Retours
+        </h3>
+        {!data.unipile_connected ? (
+          <p className="section-desc" style={{ marginTop: 8, marginBottom: 0 }}>
+            Relie ton compte LinkedIn dans <strong>Connexions</strong> pour voir tes
+            conversations et qui t&apos;a répondu.
+          </p>
+        ) : repliesLoading || !replies ? (
+          <div className="sk-list" style={{ marginTop: 10 }} data-testid="dash-replies-skeleton">
+            <Sk w="60%" h={10} />
+            <Sk w="40%" h={10} style={{ marginTop: 8 }} />
+          </div>
+        ) : (
+          <div style={{ marginTop: 10 }}>
+            {conversations?.available ? (
+              <p style={{ margin: 0, fontSize: 13 }} data-testid="dash-conversations">
+                <strong>{fmt(conversations.total)}</strong> conversation
+                {conversations.total > 1 ? "s" : ""} ouverte
+                {conversations.total > 1 ? "s" : ""} sur ton compte LinkedIn.
+              </p>
+            ) : (
+              <p className="section-desc" style={{ margin: 0 }}>
+                Conversations indisponibles pour le moment (LinkedIn n&apos;a pas
+                répondu). Le reste du tableau de bord reste juste.
+              </p>
+            )}
+            {replyStats?.available ? (
+              <p style={{ marginTop: 8, marginBottom: 0, fontSize: 13 }} data-testid="dash-replies">
+                <strong>{fmt(replyStats.replied)}</strong> réponse
+                {replyStats.replied > 1 ? "s" : ""} sur {fmt(replyStats.checked)}{" "}
+                conversation{replyStats.checked > 1 ? "s" : ""} vérifiée
+                {replyStats.checked > 1 ? "s" : ""}.
+                {/* ⚠️ Le « capped » n'est pas cosmétique : présenter un chiffre
+                    d'échantillon comme un total (« 3 réponses » quand on n'a
+                    regardé que 20 conversations sur 200) serait un chiffre faux. */}
+                {replyStats.capped ? (
+                  <span style={{ color: "var(--muted)" }}>
+                    {" "}
+                    Échantillon des plus récentes — tu as contacté{" "}
+                    {fmt(replyStats.total_messaged)} prospects au total.
+                  </span>
+                ) : null}
+              </p>
+            ) : null}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function ProfileView({
   isAuthed,
   requireAuth,
@@ -12369,6 +12752,8 @@ function ProfileView({
           </button>
         ))}
       </div>
+
+      {tab === "dashboard" && <ProgressDashboard isAuthed={isAuthed} />}
 
       {tab === "connections" && (
         <div>
@@ -13180,6 +13565,16 @@ function InfluencerTrendsBlock({
   );
 }
 
+/** Suggestion « à suivre » — profil déjà analysé par un autre compte, matché sur la niche. */
+type FollowSuggestion = {
+  handle: string;
+  name: string;
+  headline: string;
+  profile_url: string;
+  follower_count: number;
+  matched_keywords: string[];
+};
+
 function InfluencersView({
   entries,
   loading,
@@ -13206,6 +13601,10 @@ function InfluencersView({
   const [checking, setChecking] = useState(false);
   const [checkMsg, setCheckMsg] = useState("");
 
+  // Suggestions d'influenceurs à suivre (matching niche/ICP, 0 crédit) : la seule
+  // chose à voir sur cet écran pour un compte qui n'a encore rien analysé.
+  const [suggestions, setSuggestions] = useState<FollowSuggestion[]>([]);
+
   useEffect(() => {
     if (!isAuthed) { setFollowed({}); return; }
     let cancelled = false;
@@ -13220,6 +13619,22 @@ function InfluencersView({
           if (data.cap) setFollowCap(data.cap);
         })
         .catch(() => {})
+    );
+    return () => { cancelled = true; };
+  }, [isAuthed]);
+
+  useEffect(() => {
+    if (!isAuthed) { setSuggestions([]); return; }
+    let cancelled = false;
+    authHeaders().then((h) =>
+      fetch(`${DIRECT_API_URL}/me/follow-suggestions`, { headers: h })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!cancelled && data) setSuggestions(data.suggestions || []);
+        })
+        .catch(() => {
+          /* best-effort : une suggestion manquante n'est pas une panne d'écran */
+        })
     );
     return () => { cancelled = true; };
   }, [isAuthed]);
@@ -13290,6 +13705,8 @@ function InfluencersView({
   }
 
   const followedCount = Object.keys(followed).length;
+  const visibleSuggestions = suggestions.filter((sg) => !followed[sg.handle]);
+  const capReached = followedCount >= followCap;
 
   if (!isAuthed) {
     return (
@@ -13474,6 +13891,75 @@ function InfluencersView({
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Suggestions « à suivre » — profils déjà analysés par d'autres comptes,
+          filtrés sur la niche du client (0 crédit, 0 IA, 0 Apify). La section
+          n'existe PAS quand la liste est vide : profil éditorial pas encore
+          rempli, ou aucun profil de la niche dans le cache mutualisé. */}
+      {visibleSuggestions.length > 0 && (
+        <div className="card" style={{ padding: 0, overflow: "hidden", marginTop: 24 }}>
+          <div className="tr-table-head">
+            <h3 style={{ margin: 0, fontSize: 16 }}>Influenceurs suggérés à suivre</h3>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>
+              Repérés dans ta niche · déjà analysés sur Cibl · gratuit
+            </span>
+          </div>
+          <div>
+            {visibleSuggestions.map((sg, i) => (
+              <div
+                key={sg.handle}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "12px 16px",
+                  borderTop: i === 0 ? "none" : "1px solid var(--border)",
+                }}
+              >
+                <span className="tr-avatar" aria-hidden="true">{initialsOf(sg.name)}</span>
+                <span style={{ minWidth: 0, flex: 1 }}>
+                  <a
+                    href={safeHttpUrl(sg.profile_url)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="tr-name"
+                    title="Voir le profil LinkedIn"
+                  >
+                    {sg.name}
+                  </a>
+                  <span className="tr-sub" style={{ display: "block" }}>
+                    {sg.headline || decodeHandle(sg.handle)}
+                    {sg.follower_count ? ` · ${fmt(sg.follower_count)} abonnés` : ""}
+                  </span>
+                  {sg.matched_keywords.length > 0 && (
+                    <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                      Correspond à ta niche : {sg.matched_keywords.join(" · ")}
+                    </span>
+                  )}
+                </span>
+                {/* `aria-label` : sans lui, six boutons « Suivre » identiques sont
+                    indistinguables au lecteur d'écran (et au test e2e). */}
+                <button
+                  type="button"
+                  className="secondary-button"
+                  style={{ padding: "4px 10px", fontSize: 12, whiteSpace: "nowrap" }}
+                  disabled={togglingHandle === sg.handle || capReached}
+                  aria-label={`Suivre ${sg.name}`}
+                  title={capReached
+                    ? `Tu suis déjà ${followCap} influenceurs (maximum). Retires-en un pour en ajouter.`
+                    : `Surveiller ses nouveaux posts (max ${followCap} influenceurs)`}
+                  onClick={() => toggleFollow(sg.handle)}
+                >
+                  {togglingHandle === sg.handle
+                    ? <Loader2 size={12} className="spinning" />
+                    : <Eye size={12} />}
+                  {" Suivre"}
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -13924,7 +14410,15 @@ type LeadCollectionJob = {
   source_id: string;
   status: "queued" | "running" | "done" | "error" | "cancelled";
   max_comments: number;
-  result: { comments_count?: number; leads?: { inserted?: number; updated?: number }; credits?: number | null } | null;
+  result: {
+    comments_count?: number;
+    leads?: { inserted?: number; updated?: number };
+    credits?: number | null;
+    // Import de fichier (0070) : lignes sans URL de profil, comptées jamais avalées.
+    ignored_rows?: number;
+    total_rows?: number;
+    truncated?: boolean;
+  } | null;
   error: string | null;
 };
 
@@ -14688,6 +15182,166 @@ function LeadSearchImport({
   );
 }
 
+// ─── Import d'un fichier de leads (CSV / Excel) comme source (migration 0070) ───
+// Le client téléverse un export (CRM, outil Sales Navigator tiers, tableur) :
+// chaque ligne portant une URL de profil LinkedIn devient un lead, dédupliqué
+// et noté par le ciblage ICP. Gratuit — le fichier est lu côté serveur, rien ne
+// passe par le compte LinkedIn (aucune connexion requise, contrairement à la
+// recherche).
+const LEAD_IMPORT_MAX_BYTES = 5 * 1024 * 1024; // miroir du backend (lead_import.MAX_FILE_BYTES)
+
+function LeadFileImport({ onImported }: { onImported: () => void | Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [error, setError] = useState("");
+  const [job, setJob] = useState<LeadCollectionJob | null>(null);
+  const active = !!job && (job.status === "queued" || job.status === "running");
+
+  // Polling non-chevauchant (ALE-271) : replanifié APRÈS chaque réponse, jamais
+  // un setInterval — même patron que LeadSearchImport.
+  useEffect(() => {
+    if (!job || (job.status !== "queued" && job.status !== "running")) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${DIRECT_API_URL}/me/lead-collection-jobs/${job.id}`, {
+          headers: await authHeaders(),
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (res.ok) {
+          setJob(data as LeadCollectionJob);
+          if (data.status === "done") {
+            const found = data.result?.comments_count ?? 0;
+            const added = data.result?.leads?.inserted ?? 0;
+            // Les lignes ignorées sont RESTITUÉES au client (« 13 lignes
+            // ignorées ») : les taire ferait passer un fichier à moitié lu
+            // pour un import complet.
+            const ignored = data.result?.ignored_rows ?? 0;
+            const parts = [
+              `${found} profil${found > 1 ? "s" : ""} importé${found > 1 ? "s" : ""}, dont ${added} nouveau${added > 1 ? "x" : ""} lead${added > 1 ? "s" : ""}.`,
+            ];
+            if (ignored > 0) parts.push(`${ignored} ligne${ignored > 1 ? "s" : ""} ignorée${ignored > 1 ? "s" : ""} (pas d'URL de profil LinkedIn).`);
+            if (data.result?.truncated) parts.push("Fichier tronqué au plafond d'un import — découpe-le pour importer le reste.");
+            setMsg(parts.join(" "));
+            setFile(null);
+            await onImported();
+            return;
+          }
+          if (data.status === "error") {
+            setError(apiDetail(data.error, "Import interrompu."));
+            return;
+          }
+          if (data.status === "cancelled") return;
+        }
+      } catch {
+        /* réseau : on retente au tick suivant */
+      }
+      if (!cancelled) timer = setTimeout(tick, 3000);
+    };
+    timer = setTimeout(tick, 3000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [job?.id, job?.status]);
+
+  const submit = async () => {
+    if (!file) return;
+    setError("");
+    setMsg("");
+    if (file.size > LEAD_IMPORT_MAX_BYTES) {
+      setError("Fichier trop volumineux (5 Mo maximum). Découpe ta liste ou exporte-la en CSV.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const form = new FormData();
+      form.append("file", file, file.name);
+      // Pas de Content-Type explicite : le navigateur pose le boundary multipart.
+      const res = await fetch(`${DIRECT_API_URL}/me/lead-imports`, {
+        method: "POST",
+        headers: await authHeaders(),
+        body: form,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(apiDetail(data.detail, "Import impossible"));
+      setJob(data.job as LeadCollectionJob);
+      if (data.existing) setMsg("Fichier déjà importé — seuls les nouveaux profils s'ajouteront.");
+    } catch (err: any) {
+      setError(err.message || "Import impossible");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+          padding: "12px 16px", background: "none", border: "none", cursor: "pointer",
+          font: "inherit", color: "inherit",
+        }}
+      >
+        <ChevronRight size={18} style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+        <FileText size={16} style={{ flexShrink: 0 }} />
+        <strong>Importer un fichier de leads</strong>
+        <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: 12.5, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          — Excel ou CSV avec les URLs de profil LinkedIn
+        </span>
+      </button>
+
+      {open && (
+        <div style={{ padding: "0 16px 16px", display: "grid", gap: 10 }}>
+          {active ? (
+            <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px", background: "var(--surface-low)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                <Loader2 size={15} className="spinning" />
+                <span>
+                  Import de {job!.max_comments} profil{job!.max_comments > 1 ? "s" : ""}… Tu peux quitter cet écran,
+                  les leads arriveront dans la liste.
+                </span>
+              </div>
+            </div>
+          ) : (
+            <>
+              <label style={{ display: "grid", gap: 4, fontSize: 13, fontWeight: 600 }}>
+                Fichier (.csv ou .xlsx, 5 Mo max)
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  style={{ fontWeight: 400 }}
+                  aria-label="Fichier de leads"
+                />
+              </label>
+              <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+                Gratuit — aucun crédit. Il faut une colonne avec l&apos;URL du profil LinkedIn de chaque
+                prospect (linkedin.com/in/…) ; nom, poste et entreprise sont repris s&apos;ils existent.
+                Les lignes sans URL de profil sont ignorées et comptées.
+              </p>
+              <div>
+                <button type="button" className="primary-button" onClick={submit} disabled={busy || !file}>
+                  {busy ? <Loader2 size={14} className="spinning" /> : <Users size={14} />}{" "}
+                  {busy ? "Lancement…" : "Importer le fichier"}
+                </button>
+              </div>
+            </>
+          )}
+          {msg && <p style={{ margin: 0, fontSize: 12.5, color: "var(--muted)" }}>{msg}</p>}
+          {error && <div className="error" style={{ marginBottom: 0 }}>{error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── ALE-229 : onglet Prospection — liste des leads + panneau latéral de détail ───
 // V1 volontairement sans import (l'alimentation vient de la veille ALE-227 et de
 // Ma bibliothèque ALE-234). Le ciblage ICP + score (ALE-228) sont ici ; l'envoi
@@ -14797,6 +15451,11 @@ function isLinkedInSearchUrl(url?: string | null): boolean {
   } catch {
     return false;
   }
+}
+
+/** Clé synthétique d'une source `kind=import` (fichier CSV/Excel, migration 0070). */
+function isImportSignalUrl(url?: string | null): boolean {
+  return String(url || "").startsWith("import://");
 }
 
 function leadSignals(l: Lead): LeadSignal[] {
@@ -15205,6 +15864,19 @@ function ProspectingView({
         }}
       />
 
+      {/* Import d'un fichier de leads (0070) — la troisième façon d'alimenter la
+          liste : un export Excel/CSV avec les URLs de profil. Pas de condition de
+          compte connecté : rien ne passe par LinkedIn. */}
+      <LeadFileImport
+        onImported={async () => {
+          try {
+            setLeads(await loadLeads());
+          } catch {
+            /* la liste se rechargera au prochain passage */
+          }
+        }}
+      />
+
       {/* ALE-284 — Autopilote : le bouton, et à sa droite le schéma de la séquence
           réellement active. Le schéma n'est pas décoratif — c'est le rappel permanent
           de « qu'est-ce que mon autopilote fait, là, maintenant » : les étapes que le
@@ -15262,6 +15934,7 @@ function ProspectingView({
           {leads.map((l, i) => {
             const sig = leadCaptionSignal(l);
             const fromSearch = leadSignals(l).some((s) => isLinkedInSearchUrl(s.post_url));
+            const fromImport = leadSignals(l).some((s) => isImportSignalUrl(s.post_url));
             const commented = isCommentSignal(sig);
             const multi = (l.signal_count ?? 1) > 1;
             const skipped = l.contact_status === "skip";
@@ -15310,6 +15983,8 @@ function ProspectingView({
                       </>
                     ) : fromSearch ? (
                       <>trouvé dans ta recherche</>
+                    ) : fromImport ? (
+                      <>importé depuis ton fichier</>
                     ) : null}
                     {multi ? <strong style={{ color: "var(--success)" }}> · {l.signal_count} signaux</strong> : null}
                   </span>
@@ -15485,6 +16160,9 @@ function ProspectingView({
                           <> · <a href={safeHttpUrl(sig.post_url)} target="_blank" rel="noreferrer">voir la recherche</a></>
                         ) : null}
                       </>
+                    ) : isImportSignalUrl(sig.post_url) ? (
+                      // Fichier importé (0070) : `author` porte le nom du fichier.
+                      <>fichier importé{sig.author ? <> « {sig.author} »</> : null}</>
                     ) : (
                       <>profil importé</>
                     )}
@@ -15867,14 +16545,6 @@ export default function Home() {
   // Le temps de vérifier (côté serveur) si le profil est vide, on affiche un
   // écran de chargement neutre plutôt que l'app qui "flashe" puis l'onboarding.
   const [checkingProfile, setCheckingProfile] = useState(false);
-  /** Ferme l'onboarding et le marque comme fait — qu'il ait été rempli ou passé. */
-  const finishOnboarding = useCallback(() => {
-    setShowOnboarding(false);
-    setView("content");
-    // Marque l'onboarding comme fait (dans les métadonnées Supabase) → il ne
-    // réapparaîtra plus, même après refresh, sans dépendre du backend.
-    supabase.auth.updateUser({ data: { onboarding_pending: false, onboarding_done: true } }).catch(() => {});
-  }, []);
   const userIdRef = useRef<string | null>(null);
 
   // Un post en préparation vit en mémoire de la page : recharger ou fermer
@@ -15927,12 +16597,54 @@ export default function Home() {
     try { localStorage.setItem("lkd_interface_mode", mode); } catch { /* ignore */ }
   }, [restricted]);
 
+  /** Le profil a-t-il déjà été écrit pendant l'onboarding (écran de plan) ? */
+  const onboardingSavedRef = useRef(false);
+
+  /** Écrit le profil éditorial sans quitter l'onboarding. Best-effort. */
+  const saveOnboardingProfile = useCallback(async (profile: Record<string, string>) => {
+    try {
+      const res = await fetch(`${DIRECT_API_URL}/me/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify(profile),
+      });
+      if (res.ok) onboardingSavedRef.current = true;
+    } catch { /* ignore */ }
+  }, []);
+
+  /** Ferme l'onboarding et le marque comme fait — qu'il ait été rempli ou passé.
+   *  ⚠️ Force le Mode Pilote : sans ça, un « expert » resté dans le
+   *  localStorage du navigateur (autre compte testé au même endroit) fait
+   *  atterrir un compte tout neuf sur l'interface complète, alors que tout
+   *  l'onboarding vient de lui promettre sa vue du jour. */
+  const finishOnboarding = useCallback(() => {
+    setShowOnboarding(false);
+    setView("content");
+    setInterfaceModePersist("pilot");
+    // Marque l'onboarding comme fait (dans les métadonnées Supabase) → il ne
+    // réapparaîtra plus, même après refresh, sans dépendre du backend.
+    supabase.auth.updateUser({ data: { onboarding_pending: false, onboarding_done: true } }).catch(() => {});
+  }, [setInterfaceModePersist]);
+
   useEffect(() => {
     if (restricted && interfaceMode === "pilot") setInterfaceMode("expert");
   }, [restricted, interfaceMode]);
 
   const showPilotShell =
     isAuthed && !restricted && !showOnboarding && !checkingProfile && interfaceMode === "pilot";
+
+  const isPiloteLandingUser =
+    ((session?.user?.user_metadata as Record<string, unknown> | undefined)?.landing) === "pilote";
+  const pilotBilling = useBilling(isAuthed && isPiloteLandingUser);
+  const isPilotPremium = Boolean(pilotBilling.status?.subscribed);
+  const showExpertPreview =
+    isAuthed
+    && !restricted
+    && !showOnboarding
+    && !checkingProfile
+    && interfaceMode === "expert"
+    && isPiloteLandingUser
+    && !isPilotPremium;
 
   function openGeneratorFromPilot(seed: { topic: string; postText?: string; postId?: string }) {
     setInterfaceModePersist("expert");
@@ -16360,6 +17072,9 @@ export default function Home() {
       setView("content");
       setShowOnboarding(false);
       setCheckingProfile(false);
+      // Sinon, un 2e compte onboardé dans le même onglet croirait son profil
+      // déjà écrit (drapeau du compte précédent) et repartirait sans rien saver.
+      onboardingSavedRef.current = false;
       const loadUserData = () => {
         loadReports(); loadJobs(); loadInfluencerLibrary(); loadGenerationJobs();
       };
@@ -16657,16 +17372,18 @@ export default function Home() {
       )}
       {showOnboarding && isAuthed && (
         <OnboardingScreen
+          // Même jeu de questions et de formulations que la landing /onboarding :
+          // un seul onboarding, pas deux versions qui divergent à chaque retouche.
+          variant="saas"
+          finishLabel="Voir ma vue du jour"
+          // Le profil est écrit AVANT l'écran de plan : c'est lui qui alimente la
+          // stratégie et les comptes suggérés que l'agent y révèle.
+          onSave={saveOnboardingProfile}
           onFinish={async (profile) => {
-            // Le composant ne persiste plus rien lui-même : ici on a un compte, donc
-            // on enregistre. Best effort — on n'empêche jamais d'entrer dans l'app.
-            try {
-              await fetch(`${DIRECT_API_URL}/me/profile`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-                body: JSON.stringify(profile),
-              });
-            } catch { /* ignore */ }
+            // Filet : si `onSave` a échoué (réseau), on retente à la sortie plutôt
+            // que de perdre les réponses. Best effort — on n'empêche jamais
+            // d'entrer dans l'app.
+            if (!onboardingSavedRef.current) await saveOnboardingProfile(profile);
             finishOnboarding();
           }}
           onSkip={finishOnboarding}
@@ -16680,12 +17397,18 @@ export default function Home() {
       {showPilotShell ? (
         <PilotShell
           mode="pilot"
-          onModeChange={setInterfaceModePersist}
           onOpenGenerator={openGeneratorFromPilot}
           onOpenAssistant={openAssistantFromPilot}
+          onUpgrade={() => void pilotBilling.subscribe()}
+          upgradeBusy={pilotBilling.busy}
+          devBanner={IS_DEV_ENV}
+          userEmail={session?.user?.email ?? undefined}
+          onSignOut={() => supabase.auth.signOut()}
         />
       ) : (
-      <div className={IS_DEV_ENV ? "app-shell dev-env" : "app-shell"}>
+      <div
+        className={`${IS_DEV_ENV ? "app-shell dev-env" : "app-shell"}${showExpertPreview ? " pilot-expert-preview-active" : ""}`}
+      >
         <Sidebar
           health={health}
           reports={reports}
@@ -16830,6 +17553,36 @@ export default function Home() {
             </>
           )}
         </main>
+        {showExpertPreview ? (
+          <div className="pilot-expert-preview-banner" role="region" aria-labelledby="pilot-expert-preview-title">
+            <div className="pilot-expert-preview-banner-inner">
+              <div>
+                <p className="pilot-expert-preview-kicker">Mode Expert — aperçu</p>
+                <h2 id="pilot-expert-preview-title">Tu vois l’interface complète, en lecture seule</h2>
+                <p className="pilot-expert-preview-copy">
+                  Passe en premium pour publier, connecter LinkedIn et utiliser tous les outils.
+                </p>
+              </div>
+              <div className="pilot-expert-preview-actions">
+                <button
+                  type="button"
+                  className="pilot-btn pilot-btn-ghost"
+                  onClick={() => setInterfaceModePersist("pilot")}
+                >
+                  Retour au Mode Pilote
+                </button>
+                <button
+                  type="button"
+                  className="pilot-btn pilot-btn-primary"
+                  onClick={() => void pilotBilling.subscribe()}
+                  disabled={pilotBilling.busy}
+                >
+                  {pilotBilling.busy ? "Redirection…" : "Passer en premium"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
       )}
       <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} reason={authReason} defaultMode={authMode} />

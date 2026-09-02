@@ -59,6 +59,35 @@ export type OnboardingPreview = {
   improvements: string[];
 };
 
+/** Stratégie révélée à la fin de l'onboarding (`GET /me/pilot/strategy`).
+ *  Même forme que `plan.strategy` du Mode Pilote : le client doit retrouver
+ *  mot pour mot, dans Mon profil, ce qu'on vient de lui annoncer. */
+export type OnbPlanStrategy = {
+  target: string;
+  frequency: string;
+  structureHint: string;
+};
+
+/** Compte suggéré à suivre (`GET /me/follow-suggestions`). */
+export type OnbPlanFollow = {
+  handle: string;
+  name: string;
+  headline: string;
+  matched_keywords: string[];
+};
+
+/** Étapes annoncées pendant que l'agent compose le plan. Chaque ligne dit une
+ *  chose qui se passe VRAIMENT (lecture du profil, composition, recherche de
+ *  comptes) — pas une animation de complaisance. */
+const ONB_PLAN_STEPS = [
+  "On relit ce que tu viens de nous dire…",
+  "On compose ta stratégie éditoriale…",
+  "On cherche les comptes qui parlent à ta cible…",
+  "On prépare ton premier post…",
+];
+
+const ONB_PLAN_STEP_MS = 850;
+
 /** Fourchette basse/haute — le tunnel n'affiche jamais de valeur unique. */
 export type OnbRange = { low: number; high: number };
 
@@ -95,6 +124,7 @@ type OnbStep =
   | "analysis_detail"
   | "page1"
   | "page2"
+  | "plan"
   | "gains"
   | "simulation"
   | "lead_form"
@@ -466,6 +496,7 @@ export default function OnboardingScreen({
   funnel = "app",
   variant: variantKey = "default",
   onFinish,
+  onSave,
   onSkip,
   finishLabel = "C'est parti",
 }: {
@@ -485,6 +516,14 @@ export default function OnboardingScreen({
   variant?: "default" | "saas";
   /** Reçoit le profil complet. L'appelant décide : enregistrer, ou emmener vers l'inscription. */
   onFinish: (profile: OnboardingProfile) => void | Promise<void>;
+  /**
+   * Enregistre le profil SANS quitter l'onboarding (funnel `app` uniquement).
+   *
+   * Sa présence déclenche l'écran de plan final : la stratégie et les comptes à
+   * suivre y sont lus sur le serveur, donc le profil doit y être arrivé avant.
+   * Sans cette étape en deux temps, la révélation parlerait d'un profil vide.
+   */
+  onSave?: (profile: OnboardingProfile) => Promise<void>;
   /** « Passer » — l'utilisateur refuse de répondre. */
   onSkip: () => void;
   finishLabel?: string;
@@ -493,6 +532,14 @@ export default function OnboardingScreen({
   // Les écrans de projection sont communs aux deux tunnels de landing ; seul ce
   // qui les suit diffère.
   const showsProjection = funnel === "audit" || funnel === "trial";
+  /**
+   * L'écran d'analyse détaillée (accroche + hashtags + forts/à améliorer) ne
+   * subsiste que dans le tunnel d'audit : là, ces deux listes SONT le
+   * lead-magnet promis. Ailleurs, on enchaîne directement sur les questions.
+   */
+  const showsAnalysisDetail = funnel === "audit";
+  /** Révélation de fin d'onboarding : stratégie + comptes à suivre (in-app). */
+  const showsPlan = funnel === "app" && typeof onSave === "function";
   const [step, setStep] = useState<OnbStep>("intro");
   const [aiInput, setAiInput] = useState("");
   const [error, setError] = useState("");
@@ -501,6 +548,12 @@ export default function OnboardingScreen({
   const [sel, setSel] = useState(() => onbInitSel({}, variant));
   const [saving, setSaving] = useState(false);
   const [scanIdx, setScanIdx] = useState(0);
+  // ── Écran de plan (fin d'onboarding in-app) ────────────────────────────────
+  const [planReady, setPlanReady] = useState(false);
+  const [planStepIdx, setPlanStepIdx] = useState(0);
+  const [planStrategy, setPlanStrategy] = useState<OnbPlanStrategy | null>(null);
+  const [planFollows, setPlanFollows] = useState<OnbPlanFollow[]>([]);
+  const [planFollowed, setPlanFollowed] = useState<string[]>([]);
   /**
    * Résultat de l'analyse, en attente d'être appliqué (tunnel SaaS uniquement).
    *
@@ -714,6 +767,88 @@ export default function OnboardingScreen({
   }
 
   /**
+   * Enregistre le profil, PUIS bascule sur la révélation du plan.
+   *
+   * L'ordre compte : la stratégie et les comptes suggérés sont calculés côté
+   * serveur à partir du profil qu'on vient d'écrire. Révéler avant d'écrire
+   * afficherait la stratégie générique d'un compte vide — au moment précis où
+   * on promet au client qu'elle est faite pour lui.
+   */
+  async function toPlan() {
+    setSaving(true);
+    try {
+      await onSave?.(mergedProfile());
+    } catch {
+      // Best-effort : on n'enferme pas le client dans l'onboarding parce que la
+      // sauvegarde a hoqueté. `onFinish` la retentera à la sortie.
+    }
+    setSaving(false);
+    setStep("plan");
+  }
+
+  /** Défilement des étapes annoncées pendant la composition du plan. */
+  useEffect(() => {
+    if (step !== "plan" || planReady) return;
+    const id = setInterval(
+      () => setPlanStepIdx((i) => Math.min(i + 1, ONB_PLAN_STEPS.length - 1)),
+      ONB_PLAN_STEP_MS,
+    );
+    return () => clearInterval(id);
+  }, [step, planReady]);
+
+  /**
+   * Charge la stratégie + les comptes à suivre, et ne révèle qu'une fois les
+   * deux arrivés ET l'animation déroulée.
+   *
+   * ⚠️ Les deux lectures sont best-effort et INDÉPENDANTES : un cache
+   * mutualisé vide (cas normal d'une base neuve) ne doit pas priver le client
+   * de sa stratégie, et l'inverse non plus. Un échec des deux laisse un écran
+   * qui dit quoi faire, jamais un spinner sans fin.
+   */
+  useEffect(() => {
+    if (step !== "plan") return;
+    let cancelled = false;
+    const minDelay = new Promise<void>((resolve) =>
+      setTimeout(resolve, ONB_PLAN_STEPS.length * ONB_PLAN_STEP_MS),
+    );
+    (async () => {
+      const headers = await authHeaders();
+      const [strategy, follows] = await Promise.all([
+        fetch(`${DIRECT_API_URL}/me/pilot/strategy`, { headers })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
+        fetch(`${DIRECT_API_URL}/me/follow-suggestions`, { headers })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
+      ]);
+      await minDelay;
+      if (cancelled) return;
+      if (strategy) setPlanStrategy(strategy as OnbPlanStrategy);
+      if (Array.isArray(follows?.suggestions)) {
+        setPlanFollows((follows.suggestions as OnbPlanFollow[]).slice(0, 5));
+      }
+      setPlanReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [step]);
+
+  /** « Suivre » depuis la révélation — même endpoint (et même plafond) que l'app. */
+  async function followFromPlan(handle: string) {
+    setPlanFollowed((prev) => (prev.includes(handle) ? prev : [...prev, handle]));
+    try {
+      await fetch(`${DIRECT_API_URL}/me/followed-influencers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ handle }),
+      });
+    } catch {
+      // Best-effort : la veille se règle aussi depuis Mon profil.
+    }
+  }
+
+  /**
    * Charge les gains projetés (un jeu par palier de panier moyen).
    *
    * Best-effort assumé : si le calcul est injoignable, on saute directement au
@@ -809,16 +944,20 @@ export default function OnboardingScreen({
   const isWideStep =
     step === "analysis" ||
     step === "analysis_detail" ||
+    step === "plan" ||
     step === "gains" ||
     step === "simulation" ||
     step === "lead_form";
   const isAnalysis =
     step === "analysis" ||
     step === "analysis_detail" ||
+    step === "plan" ||
     step === "gains" ||
     step === "simulation" ||
     step === "lead_form" ||
     step === "lead_done";
+  /** Prénom pour la révélation — celui que le client vient de confirmer. */
+  const planFirstName = (sel.displayName || "").trim().split(/\s+/)[0] || "";
 
   return (
     <div className={"onb-overlay" + (isAnalysis ? " onb-overlay-analysis" : "")}>
@@ -1043,14 +1182,15 @@ export default function OnboardingScreen({
             <button
               type="button"
               className="onb-analysis-cta"
-              onClick={() => setStep("analysis_detail")}
+              onClick={() => setStep(showsAnalysisDetail ? "analysis_detail" : "page1")}
             >
-              Voir mon potentiel
+              {showsAnalysisDetail ? "Voir mon potentiel" : "Continuer"}
+              {showsAnalysisDetail ? null : <ChevronRight size={16} />}
             </button>
           </div>
         )}
 
-        {step === "analysis_detail" && preview && (
+        {step === "analysis_detail" && showsAnalysisDetail && preview && (
           <div className="onb-screen onb-analysis" key="analysis_detail">
             {preview.hook && (
               <div className="onb-analysis-card">
@@ -1198,13 +1338,133 @@ export default function OnboardingScreen({
               <button
                 type="button"
                 className="onb-cta"
-                onClick={showsProjection ? toGains : finish}
+                onClick={showsProjection ? toGains : showsPlan ? toPlan : finish}
                 disabled={saving}
               >
                 {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />}{" "}
-                {showsProjection ? "Voir ce que je pourrais gagner" : finishLabel}
+                {showsProjection
+                  ? "Voir ce que je pourrais gagner"
+                  : showsPlan
+                    ? "Composer mon plan"
+                    : finishLabel}
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Révélation de fin d'onboarding (in-app). L'agent annonce ce qu'il va
+            faire — stratégie et comptes à suivre — au lieu de lâcher le client
+            sur un écran d'accueil vide. Tout ce qui s'affiche ici est LU sur le
+            serveur : rien n'est inventé pour la mise en scène. */}
+        {step === "plan" && (
+          <div className="onb-screen onb-plan" key="plan">
+            {!planReady ? (
+              <div className="onb-plan-building" role="status" aria-live="polite">
+                <div className="onb-plan-orb" aria-hidden="true" />
+                <h2 className="onb-plan-title">Ton agent compose ton plan…</h2>
+                <ul className="onb-plan-steps">
+                  {ONB_PLAN_STEPS.map((label, i) => (
+                    <li
+                      key={label}
+                      className={
+                        i < planStepIdx ? "done" : i === planStepIdx ? "current" : "todo"
+                      }
+                    >
+                      {i < planStepIdx ? (
+                        <CheckCircle2 size={16} aria-hidden="true" />
+                      ) : i === planStepIdx ? (
+                        <Loader2 size={16} className="spinning" aria-hidden="true" />
+                      ) : (
+                        <span className="onb-plan-dot" aria-hidden="true" />
+                      )}
+                      <span>{label}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <>
+                <h2 className="onb-plan-title">
+                  Ton plan est prêt{planFirstName ? `, ${planFirstName}` : ""}.
+                </h2>
+                <p className="onb-plan-lead">
+                  Voilà ce que ton agent fait pour toi à partir de maintenant.
+                </p>
+
+                {planStrategy && (
+                  <div className="onb-plan-cards">
+                    {[
+                      { key: "target", label: "Ta cible", value: planStrategy.target },
+                      { key: "frequency", label: "Ton rythme", value: planStrategy.frequency },
+                      { key: "structure", label: "Ton angle", value: planStrategy.structureHint },
+                    ].map((card, i) => (
+                      <div
+                        key={card.key}
+                        className="onb-plan-card"
+                        style={{ animationDelay: `${i * 120}ms` }}
+                      >
+                        <span className="onb-plan-card-label">{card.label}</span>
+                        <strong className="onb-plan-card-value">{card.value}</strong>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Aucune suggestion = section absente. Une liste vide avec un
+                    titre laisserait croire à une panne ; et proposer des comptes
+                    au hasard abîmerait la confiance dans tout le reste. */}
+                {planFollows.length > 0 && (
+                  <div className="onb-plan-block">
+                    <div className="onb-analysis-label">Les comptes à suivre</div>
+                    <p className="onb-plan-hint">
+                      On surveille leurs posts pour nourrir tes idées. Tu pourras en changer
+                      dans Mon profil.
+                    </p>
+                    <div className="onb-plan-follows">
+                      {planFollows.map((profile, i) => {
+                        const followed = planFollowed.includes(profile.handle);
+                        return (
+                          <div
+                            key={profile.handle}
+                            className="onb-plan-follow"
+                            style={{ animationDelay: `${360 + i * 90}ms` }}
+                          >
+                            <div className="onb-plan-follow-info">
+                              <strong>{profile.name}</strong>
+                              <span>
+                                {profile.headline || profile.handle}
+                                {profile.matched_keywords.length > 0
+                                  ? ` — ${profile.matched_keywords.join(" · ")}`
+                                  : ""}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              className={`onb-plan-follow-btn${followed ? " done" : ""}`}
+                              aria-label={`Suivre ${profile.name}`}
+                              disabled={followed}
+                              onClick={() => void followFromPlan(profile.handle)}
+                            >
+                              {followed ? "Suivi" : "Suivre"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  className="onb-analysis-cta"
+                  onClick={() => void finish()}
+                  disabled={saving}
+                >
+                  {saving ? <Loader2 size={16} className="spinning" /> : <Sparkles size={16} />}{" "}
+                  {finishLabel}
+                </button>
+              </>
+            )}
           </div>
         )}
 
