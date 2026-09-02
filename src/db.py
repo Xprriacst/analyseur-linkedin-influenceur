@@ -383,6 +383,8 @@ def _copy_user(entry: dict) -> dict:
     copied = dict(entry)
     meta = copied.get("app_metadata")
     copied["app_metadata"] = dict(meta) if isinstance(meta, dict) else {}
+    user_meta = copied.get("user_metadata")
+    copied["user_metadata"] = dict(user_meta) if isinstance(user_meta, dict) else {}
     return copied
 
 
@@ -413,10 +415,13 @@ def get_user(access_token: str) -> dict | None:
     if not user:
         return None
     raw_meta = getattr(user, "app_metadata", None)
+    raw_user_meta = getattr(user, "user_metadata", None)
     entry = {
         "id": user.id,
         "email": getattr(user, "email", None),
         "app_metadata": dict(raw_meta) if isinstance(raw_meta, dict) else {},
+        "user_metadata": dict(raw_user_meta) if isinstance(raw_user_meta, dict) else {},
+        "created_at": getattr(user, "created_at", None),
     }
     with _USER_CACHE_LOCK:
         if len(_USER_CACHE) >= _USER_CACHE_MAX:

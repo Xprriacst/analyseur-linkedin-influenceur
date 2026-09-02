@@ -19,6 +19,7 @@ import { test, expect, type Page } from "@playwright/test";
 
 const SACHA =
   "Pour être honnête avec vous les gars je suis 100% satisfait de votre accompagnement";
+const RESHAPE = "oui le service est toop, on a passé les 4k merci les gars !!!";
 const JOELLE = /très contente de ce premier mois de collaboration/;
 const GROUP = "groupe privé de missions et de stratégies d'acquisition";
 const SKOOL = "https://www.skool.com/example-invite/about";
@@ -69,6 +70,8 @@ test.describe("Landing /pilote", () => {
     await expect(page.getByRole("button", { name: "Commencer gratuitement" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Continuer avec Google" })).toBeVisible();
     await expect(page.getByText(SACHA)).toBeVisible();
+    await expect(page.getByText(RESHAPE)).toBeVisible();
+    await expect(page.getByText("ReShape", { exact: true })).toBeVisible();
     await expect(page.getByText(JOELLE)).toBeVisible();
     await expect(page.getByText("Sacha", { exact: true })).toBeVisible();
     await expect(page.getByText("Joëlle", { exact: true })).toBeVisible();

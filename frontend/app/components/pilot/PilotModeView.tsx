@@ -53,6 +53,14 @@ export type PilotContact = {
   initials: string;
   accent: string;
   message: string;
+  simulated?: boolean;
+};
+
+export type PilotProspectAgent = {
+  active: boolean;
+  status: string;
+  message: string | null;
+  detail: string | null;
 };
 
 export type PilotPost = {
@@ -99,6 +107,8 @@ type PilotModeViewProps = {
   onModeChange?: (mode: InterfaceMode) => void;
   postEmpty?: boolean;
   contactsBlockedReason?: string;
+  prospectAgent?: PilotProspectAgent | null;
+  hideModeToggle?: boolean;
   onPublish?: () => void;
   onEditPost?: () => void;
   onRegeneratePost?: () => void;
@@ -122,6 +132,8 @@ export default function PilotModeView({
   onModeChange,
   postEmpty = false,
   contactsBlockedReason,
+  prospectAgent,
+  hideModeToggle = false,
   onPublish,
   onEditPost,
   onRegeneratePost,
@@ -190,24 +202,28 @@ export default function PilotModeView({
             </span>
           )}
           <div className="pilot-mode-toggle" role="tablist" aria-label="Mode d'interface">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mode === "pilot"}
-              className={mode === "pilot" ? "active" : ""}
-              onClick={() => setMode("pilot")}
-            >
-              Pilote
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mode === "expert"}
-              className={mode === "expert" ? "active" : ""}
-              onClick={() => setMode("expert")}
-            >
-              Expert
-            </button>
+            {!hideModeToggle ? (
+              <>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === "pilot"}
+                  className={mode === "pilot" ? "active" : ""}
+                  onClick={() => setMode("pilot")}
+                >
+                  Pilote
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === "expert"}
+                  className={mode === "expert" ? "active" : ""}
+                  onClick={() => setMode("expert")}
+                >
+                  Expert
+                </button>
+              </>
+            ) : null}
           </div>
         </div>
       </div>
@@ -253,7 +269,7 @@ export default function PilotModeView({
             <p className="pilot-greeting-sub">
               {hasPostContent
                 ? <>Ton post est prêt. {plan.contacts.length} personne{plan.contacts.length > 1 ? "s" : ""} à contacter.<span className="pilot-greeting-rest"> C’est tout.</span></>
-                : <>Pas encore de post du jour — lance une génération.<span className="pilot-greeting-rest"> Le reste de ton plan est prêt.</span></>}
+                : <>Pas encore de post du jour — ton agent le prépare.<span className="pilot-greeting-rest"> Le reste de ton plan avance en parallèle.</span></>}
             </p>
           </div>
           <div className="pilot-week" aria-label="Objectif de la semaine">
@@ -360,12 +376,28 @@ export default function PilotModeView({
               <span className="pilot-section-hint">{plan.contacts.length} aujourd’hui</span>
             </div>
             <div className="pilot-contacts-list">
-              {contactsBlockedReason && (
+              {prospectAgent?.active ? (
+                <div className="pilot-agent-card" role="status" aria-live="polite">
+                  <div className="pilot-agent-card-glow" aria-hidden="true" />
+                  <div className="pilot-agent-card-icon">
+                    <Sparkles size={18} strokeWidth={2.2} aria-hidden="true" />
+                  </div>
+                  <div className="pilot-agent-card-body">
+                    <strong>Agent IA en recherche</strong>
+                    <p>{prospectAgent.message}</p>
+                    {prospectAgent.detail ? (
+                      <p className="pilot-agent-card-detail">{prospectAgent.detail}</p>
+                    ) : null}
+                  </div>
+                  <Loader2 size={18} className="spinning pilot-agent-card-spinner" aria-hidden="true" />
+                </div>
+              ) : null}
+              {!prospectAgent?.active && contactsBlockedReason && (
                 <div className="pilot-empty-block pilot-empty-block-inline">
                   <p className="pilot-empty-copy">{contactsBlockedReason}</p>
                 </div>
               )}
-              {!contactsBlockedReason && plan.contacts.length === 0 && (
+              {!prospectAgent?.active && !contactsBlockedReason && plan.contacts.length === 0 && (
                 <div className="pilot-empty-block pilot-empty-block-inline">
                   <p className="pilot-empty-copy">
                     Aucun lead invitable pour l’instant — importe une recherche ou collecte des commentaires, puis laisse le scoring ICP faire son travail.
@@ -376,10 +408,11 @@ export default function PilotModeView({
                 const isInvited = invited.has(contact.id);
                 const isOpen = expandedContactId === contact.id;
                 const panelId = `pilot-contact-panel-${contact.id}`;
+                const isSimulated = Boolean(contact.simulated);
                 return (
                   <article
                     key={contact.id}
-                    className={`pilot-contact-block${isOpen ? " open" : ""}${isInvited ? " invited" : ""}`}
+                    className={`pilot-contact-block${isOpen ? " open" : ""}${isInvited ? " invited" : ""}${isSimulated ? " simulated" : ""}`}
                   >
                     <button
                       type="button"
@@ -396,7 +429,10 @@ export default function PilotModeView({
                         {contact.initials}
                       </div>
                       <div className="pilot-contact-info">
-                        <h3>{contact.name}</h3>
+                        <h3>
+                          {contact.name}
+                          {isSimulated ? <span className="pilot-contact-new">Nouveau</span> : null}
+                        </h3>
                         <p>
                           {contact.role}
                           {contact.company ? ` · ${contact.company}` : ""}
@@ -409,20 +445,26 @@ export default function PilotModeView({
                       {isOpen && (
                         <div className="pilot-contact-panel-inner">
                           <p className="pilot-message-preview">{contact.message}</p>
-                          <button
-                            type="button"
-                            className={`pilot-btn pilot-btn-primary pilot-btn-invite${isInvited ? " done" : ""}`}
-                            onClick={() => {
-                              setInvited((prev) => new Set(prev).add(contact.id));
-                              handleAction(`Invitation à ${contact.name}`, () =>
-                                onInvite?.(contact.id),
-                              );
-                            }}
-                            disabled={isInvited || Boolean(contactsBlockedReason)}
-                          >
-                            {isInvited ? <Check size={15} /> : <UserPlus size={15} />}
-                            {isInvited ? "Invitation envoyée" : "Inviter"}
-                          </button>
+                          {isSimulated ? (
+                            <p className="pilot-contact-sim-note">
+                              Repéré par l’agent — invitation disponible après connexion LinkedIn.
+                            </p>
+                          ) : (
+                            <button
+                              type="button"
+                              className={`pilot-btn pilot-btn-primary pilot-btn-invite${isInvited ? " done" : ""}`}
+                              onClick={() => {
+                                setInvited((prev) => new Set(prev).add(contact.id));
+                                handleAction(`Invitation à ${contact.name}`, () =>
+                                  onInvite?.(contact.id),
+                                );
+                              }}
+                              disabled={isInvited || Boolean(contactsBlockedReason)}
+                            >
+                              {isInvited ? <Check size={15} /> : <UserPlus size={15} />}
+                              {isInvited ? "Invitation envoyée" : "Inviter"}
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>

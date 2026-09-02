@@ -3,12 +3,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import PublishConfirmModal from "../PublishConfirmModal";
-import PilotModeView, { type PilotPlan, type PilotFollowSuggestion } from "./PilotModeView";
+import PilotModeView, {
+  type PilotPlan,
+  type PilotFollowSuggestion,
+  type PilotProspectAgent,
+} from "./PilotModeView";
+import { PilotNav, type PilotNavTab } from "./PilotNav";
+import { PilotProfilePane } from "./PilotProfilePane";
 import { authHeaders } from "../../lib/supabase";
 
 const DIRECT_API_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL ??
   "https://analyseur-linkedin-influenceur-api.onrender.com";
+
+const PILOT_POLL_MS = 30_000;
 
 type LinkedInImageAttachment = { url: string; filename?: string; source?: string };
 
@@ -22,6 +30,8 @@ type PilotMeta = {
   linkedin_outreach_connected?: boolean;
   linkedin_publish_connected?: boolean;
   contacts_blocked_reason?: string | null;
+  prospect_agent?: PilotProspectAgent | null;
+  is_pilote_landing?: boolean;
 };
 
 type PilotTodayResponse = {
@@ -34,6 +44,8 @@ export type PilotShellProps = {
   onModeChange: (mode: "pilot" | "expert") => void;
   onOpenGenerator: (seed: { topic: string; postText?: string; postId?: string }) => void;
   onOpenAssistant: (postText: string) => void;
+  onUpgrade: () => void;
+  upgradeBusy?: boolean;
 };
 
 function mediaToAttachments(items: PilotMeta["media_items"]): LinkedInImageAttachment[] {
@@ -57,7 +69,10 @@ export default function PilotShell({
   onModeChange,
   onOpenGenerator,
   onOpenAssistant,
+  onUpgrade,
+  upgradeBusy = false,
 }: PilotShellProps) {
+  const [navTab, setNavTab] = useState<PilotNavTab>("today");
   const [plan, setPlan] = useState<PilotPlan | null>(null);
   const [meta, setMeta] = useState<PilotMeta | null>(null);
   const [loading, setLoading] = useState(true);
@@ -66,9 +81,6 @@ export default function PilotShell({
   const [publishing, setPublishing] = useState(false);
 
   // Suggestions « à suivre » — chargées au PREMIER dépliage seulement.
-  // La requête (lecture du cache mutualisé côté serveur) ne doit pas peser sur
-  // le chargement de l'écran d'accueil, que tout le monde voit tous les jours,
-  // pour un panneau que peu déplieront.
   const [followSuggestions, setFollowSuggestions] = useState<PilotFollowSuggestion[]>([]);
   const [followLoading, setFollowLoading] = useState(false);
   const [followError, setFollowError] = useState("");
@@ -76,9 +88,11 @@ export default function PilotShell({
   const [followedHandles, setFollowedHandles] = useState<string[]>([]);
   const [followCapReached, setFollowCapReached] = useState(false);
 
-  const loadPlan = useCallback(async () => {
-    setLoading(true);
-    setLoadError("");
+  const loadPlan = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) {
+      setLoading(true);
+      setLoadError("");
+    }
     try {
       const res = await fetch(`${DIRECT_API_URL}/me/pilot/today`, {
         headers: await authHeaders(),
@@ -89,14 +103,17 @@ export default function PilotShell({
       setMeta(data.meta);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Chargement impossible";
-      setLoadError(message);
+      if (!opts?.silent) setLoadError(message);
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (mode === "pilot") void loadPlan();
+    if (mode !== "pilot") return;
+    void loadPlan();
+    const id = window.setInterval(() => void loadPlan({ silent: true }), PILOT_POLL_MS);
+    return () => window.clearInterval(id);
   }, [mode, loadPlan]);
 
   const postText = meta?.post_text || (plan ? `${plan.post.hook}\n\n${plan.post.body}`.trim() : "");
@@ -127,7 +144,7 @@ export default function PilotShell({
   }
 
   const loadFollowSuggestions = useCallback(async () => {
-    if (followLoaded || followLoading) return; // une seule fois par session d'écran
+    if (followLoaded || followLoading) return;
     setFollowLoading(true);
     setFollowError("");
     try {
@@ -148,8 +165,6 @@ export default function PilotShell({
 
   async function handleFollowProfile(handle: string) {
     try {
-      // Même endpoint (et même plafond de 5) que la veille côté Expert : aucun
-      // second mécanisme de suivi n'existe.
       const res = await fetch(`${DIRECT_API_URL}/me/followed-influencers`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
@@ -160,14 +175,17 @@ export default function PilotShell({
       setFollowedHandles((prev) => (prev.includes(handle) ? prev : [...prev, handle]));
       toast.success("Ajouté à ta veille");
     } catch (err: unknown) {
-      // Le plafond de 5 remonte ici en 422 avec son message explicite.
       toast.error(err instanceof Error ? err.message : "Impossible de suivre ce profil");
     }
   }
 
   async function handleInvite(contactId: string) {
+    if (contactId.startsWith("sim-")) {
+      toast.message("Connecte LinkedIn dans Mon profil pour inviter ce prospect.");
+      return;
+    }
     if (!meta?.linkedin_outreach_connected) {
-      toast.error(meta?.contacts_blocked_reason || "Connecte LinkedIn pour inviter.");
+      toast.error("Connecte LinkedIn pour inviter (Mon profil → Connexions).");
       return;
     }
     try {
@@ -199,9 +217,18 @@ export default function PilotShell({
 
   if (loading && !plan) {
     return (
-      <div className="pilot-root">
-        <div className="pilot-inner" style={{ padding: "48px 24px", textAlign: "center", color: "#86868b" }}>
-          Chargement de ton plan du jour…
+      <div className="pilot-app-layout">
+        <PilotNav
+          activeTab={navTab}
+          onTabChange={setNavTab}
+          onExpertMode={() => onModeChange("expert")}
+          onUpgrade={onUpgrade}
+          upgradeBusy={upgradeBusy}
+        />
+        <div className="pilot-app-main">
+          <div className="pilot-inner" style={{ padding: "48px 24px", textAlign: "center", color: "#86868b" }}>
+            Chargement de ton plan du jour…
+          </div>
         </div>
       </div>
     );
@@ -209,12 +236,21 @@ export default function PilotShell({
 
   if (loadError && !plan) {
     return (
-      <div className="pilot-root">
-        <div className="pilot-inner" style={{ padding: "48px 24px", textAlign: "center" }}>
-          <p style={{ color: "#86868b", marginBottom: 16 }}>{loadError}</p>
-          <button type="button" className="pilot-btn pilot-btn-primary" onClick={() => void loadPlan()}>
-            Réessayer
-          </button>
+      <div className="pilot-app-layout">
+        <PilotNav
+          activeTab={navTab}
+          onTabChange={setNavTab}
+          onExpertMode={() => onModeChange("expert")}
+          onUpgrade={onUpgrade}
+          upgradeBusy={upgradeBusy}
+        />
+        <div className="pilot-app-main">
+          <div className="pilot-inner" style={{ padding: "48px 24px", textAlign: "center" }}>
+            <p style={{ color: "#86868b", marginBottom: 16 }}>{loadError}</p>
+            <button type="button" className="pilot-btn pilot-btn-primary" onClick={() => void loadPlan()}>
+              Réessayer
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -223,38 +259,53 @@ export default function PilotShell({
   if (!plan) return null;
 
   return (
-    <>
-      <PilotModeView
-        plan={plan}
-        mode={mode}
-        onModeChange={onModeChange}
-        postEmpty={Boolean(meta?.post_empty)}
-        contactsBlockedReason={meta?.contacts_blocked_reason || undefined}
-        onPublish={handlePublishClick}
-        onEditPost={() => {
-          if (!postText.trim()) {
-            onOpenGenerator({ topic: "" });
-            return;
-          }
-          onOpenGenerator({
-            topic: postText.slice(0, 120),
-            postText,
-            postId: meta?.post_id || undefined,
-          });
-        }}
-        followSuggestions={followSuggestions}
-        followLoading={followLoading}
-        followError={followError}
-        followedHandles={followedHandles}
-        followCapReached={followCapReached}
-        onFollowPanelOpen={() => void loadFollowSuggestions()}
-        onFollowProfile={(handle) => void handleFollowProfile(handle)}
-        onRegeneratePost={() => {
-          const topic = plan.post.hook || plan.post.body.slice(0, 120) || "";
-          onOpenAssistant(postText || topic);
-        }}
-        onInvite={handleInvite}
+    <div className="pilot-app-layout">
+      <PilotNav
+        activeTab={navTab}
+        onTabChange={setNavTab}
+        onExpertMode={() => onModeChange("expert")}
+        onUpgrade={onUpgrade}
+        upgradeBusy={upgradeBusy}
       />
+      <div className="pilot-app-main">
+        {navTab === "profile" ? (
+          <PilotProfilePane />
+        ) : (
+          <PilotModeView
+            plan={plan}
+            mode={mode}
+            onModeChange={onModeChange}
+            hideModeToggle
+            postEmpty={Boolean(meta?.post_empty)}
+            contactsBlockedReason={meta?.contacts_blocked_reason || undefined}
+            prospectAgent={meta?.prospect_agent ?? null}
+            onPublish={handlePublishClick}
+            onEditPost={() => {
+              if (!postText.trim()) {
+                onOpenGenerator({ topic: "" });
+                return;
+              }
+              onOpenGenerator({
+                topic: postText.slice(0, 120),
+                postText,
+                postId: meta?.post_id || undefined,
+              });
+            }}
+            followSuggestions={followSuggestions}
+            followLoading={followLoading}
+            followError={followError}
+            followedHandles={followedHandles}
+            followCapReached={followCapReached}
+            onFollowPanelOpen={() => void loadFollowSuggestions()}
+            onFollowProfile={(handle) => void handleFollowProfile(handle)}
+            onRegeneratePost={() => {
+              const topic = plan.post.hook || plan.post.body.slice(0, 120) || "";
+              onOpenAssistant(postText || topic);
+            }}
+            onInvite={handleInvite}
+          />
+        )}
+      </div>
       {publishOpen && (
         <PublishConfirmModal
           text={postText}
@@ -265,6 +316,6 @@ export default function PilotShell({
           onConfirm={(text) => void doPublish(text)}
         />
       )}
-    </>
+    </div>
   );
 }

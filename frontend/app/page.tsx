@@ -16612,6 +16612,19 @@ export default function Home() {
   const showPilotShell =
     isAuthed && !restricted && !showOnboarding && !checkingProfile && interfaceMode === "pilot";
 
+  const isPiloteLandingUser =
+    ((session?.user?.user_metadata as Record<string, unknown> | undefined)?.landing) === "pilote";
+  const pilotBilling = useBilling(isAuthed && isPiloteLandingUser);
+  const isPilotPremium = Boolean(pilotBilling.status?.subscribed);
+  const showExpertPreview =
+    isAuthed
+    && !restricted
+    && !showOnboarding
+    && !checkingProfile
+    && interfaceMode === "expert"
+    && isPiloteLandingUser
+    && !isPilotPremium;
+
   function openGeneratorFromPilot(seed: { topic: string; postText?: string; postId?: string }) {
     setInterfaceModePersist("expert");
     setGeneratorSeed({ topic: seed.topic || seed.postText?.slice(0, 120) || "", nonce: Date.now() });
@@ -17361,9 +17374,13 @@ export default function Home() {
           onModeChange={setInterfaceModePersist}
           onOpenGenerator={openGeneratorFromPilot}
           onOpenAssistant={openAssistantFromPilot}
+          onUpgrade={() => void pilotBilling.subscribe()}
+          upgradeBusy={pilotBilling.busy}
         />
       ) : (
-      <div className={IS_DEV_ENV ? "app-shell dev-env" : "app-shell"}>
+      <div
+        className={`${IS_DEV_ENV ? "app-shell dev-env" : "app-shell"}${showExpertPreview ? " pilot-expert-preview-active" : ""}`}
+      >
         <Sidebar
           health={health}
           reports={reports}
@@ -17508,6 +17525,36 @@ export default function Home() {
             </>
           )}
         </main>
+        {showExpertPreview ? (
+          <div className="pilot-expert-preview-banner" role="region" aria-labelledby="pilot-expert-preview-title">
+            <div className="pilot-expert-preview-banner-inner">
+              <div>
+                <p className="pilot-expert-preview-kicker">Mode Expert — aperçu</p>
+                <h2 id="pilot-expert-preview-title">Tu vois l’interface complète, en lecture seule</h2>
+                <p className="pilot-expert-preview-copy">
+                  Passe en premium pour publier, connecter LinkedIn et utiliser tous les outils.
+                </p>
+              </div>
+              <div className="pilot-expert-preview-actions">
+                <button
+                  type="button"
+                  className="pilot-btn pilot-btn-ghost"
+                  onClick={() => setInterfaceModePersist("pilot")}
+                >
+                  Retour au Mode Pilote
+                </button>
+                <button
+                  type="button"
+                  className="pilot-btn pilot-btn-primary"
+                  onClick={() => void pilotBilling.subscribe()}
+                  disabled={pilotBilling.busy}
+                >
+                  {pilotBilling.busy ? "Redirection…" : "Passer en premium"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
       )}
       <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} reason={authReason} defaultMode={authMode} />

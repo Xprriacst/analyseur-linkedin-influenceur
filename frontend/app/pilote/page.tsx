@@ -30,7 +30,12 @@ import { Instrument_Serif } from "next/font/google";
 import { ArrowRight, Check, Loader2, Users } from "lucide-react";
 import { supabase, authHeaders } from "../lib/supabase";
 import { PILOTE_LANDING, trackPilotePageView, piloteSignupMetadata } from "../lib/funnel";
-import { CLIENT_TESTIMONIALS, PROOF_INFLUENCERS_ANALYZED, PROOF_POSTS_ANALYZED } from "../lib/founders";
+import {
+  CLIENT_TESTIMONIALS,
+  FOUNDERS_TESTIMONIAL,
+  PROOF_INFLUENCERS_ANALYZED,
+  PROOF_POSTS_ANALYZED,
+} from "../lib/founders";
 import {
   PILOTE_CONTACTS_PER_DAY,
   PILOTE_GROUP_BLURB,
@@ -242,6 +247,30 @@ export default function PilotePage() {
             <span>Tu commences sans connecter LinkedIn</span>
             <span>Cadençage : horaires, jours ouvrés, warm-up</span>
           </div>
+
+          <figure className="pilote-quote-featured">
+            <a
+              className="pilote-quote-featured-link"
+              href={FOUNDERS_TESTIMONIAL.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <img
+                src={FOUNDERS_TESTIMONIAL.avatar}
+                alt={FOUNDERS_TESTIMONIAL.name}
+                width={44}
+                height={44}
+                className="pilote-quote-featured-avatar"
+              />
+              <span className="pilote-quote-featured-meta">
+                <span className="pilote-quote-featured-name">{FOUNDERS_TESTIMONIAL.name}</span>
+                <span className="pilote-quote-featured-handle">{FOUNDERS_TESTIMONIAL.handle}</span>
+              </span>
+            </a>
+            <blockquote className="pilote-quote pilote-quote-featured-text">
+              <p>«&nbsp;{FOUNDERS_TESTIMONIAL.quote}&nbsp;»</p>
+            </blockquote>
+          </figure>
 
           <ul className="pilote-quotes">
             {CLIENT_TESTIMONIALS.map((t) => (

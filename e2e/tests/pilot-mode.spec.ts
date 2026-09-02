@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 // Mode Pilote — câblage réel (backend mocké, 0 Anthropic / 0 Apify).
-// Vérifie : atterrissage Pilote, bascule Expert, invite → file outreach.
+// Vérifie : atterrissage Pilote, nav simplifiée, agent IA prospects, bascule Expert, invite → file outreach.
 
 const MOCK_PILOT = {
   plan: {
@@ -59,6 +59,13 @@ const MOCK_PILOT = {
     linkedin_outreach_connected: true,
     linkedin_publish_connected: true,
     contacts_blocked_reason: null,
+    prospect_agent: {
+      active: true,
+      status: "starting",
+      message: "Ton agent IA analyse LinkedIn pour trouver des prospects.",
+      detail: "Les profils correspondant à ton ICP apparaîtront ici au fur et à mesure.",
+    },
+    is_pilote_landing: true,
   },
 };
 
@@ -74,6 +81,12 @@ async function mockPilotBackend(page: import("@playwright/test").Page) {
         brand_name: "Cibl",
         business_description: "SaaS",
       }),
+    }),
+  );
+  await page.route("**/me/billing", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ enabled: true, subscribed: false, plan: { amount: 49, credits: 1000 } }),
     }),
   );
 }
@@ -114,23 +127,30 @@ test.describe("Mode Pilote", () => {
     await page.goto("/");
   });
 
-  test("un compte agence atterrit sur le Mode Pilote", async ({ page }) => {
+  test("un compte agence atterrit sur le Mode Pilote avec nav simplifiée", async ({ page }) => {
     await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
       timeout: 45_000,
     });
     await expect(page.getByRole("heading", { name: /Post du jour/i })).toBeVisible();
     await expect(page.locator(".sidebar")).toHaveCount(0);
-    await expect(page.getByRole("tab", { name: "Pilote" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("navigation", { name: "Navigation Mode Pilote" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Vue pilote/i })).toBeVisible();
   });
 
-  test("le toggle Expert affiche la sidebar", async ({ page }) => {
+  test("la carte agent IA prospects est visible", async ({ page }) => {
     await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
       timeout: 45_000,
     });
-    await page.getByRole("tab", { name: "Expert" }).click();
+    await expect(page.getByRole("status")).toContainText(/agent IA analyse LinkedIn/i);
+  });
+
+  test("Mode Expert affiche la sidebar", async ({ page }) => {
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await page.getByRole("button", { name: /Mode Expert/i }).click();
     await expect(page.locator(".sidebar")).toBeVisible();
     await expect(page.locator(".nav-item", { hasText: "Contenu" })).toBeVisible();
-    await expect(page.getByRole("tab", { name: "Expert" })).toHaveAttribute("aria-selected", "true");
   });
 
   test("Inviter appelle l’API outreach existante (file, pas d’envoi immédiat)", async ({ page }) => {
