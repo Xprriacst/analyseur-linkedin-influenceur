@@ -9346,6 +9346,29 @@ function SettingRow({
   );
 }
 
+/** Interrupteur on/off des automatisations — toujours visible quand l'état est modifiable. */
+function AutomationSwitch({
+  checked,
+  onChange,
+  disabled,
+  disabledReason,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  disabled?: boolean;
+  disabledReason?: string;
+}) {
+  return (
+    <label
+      className={`daily-switch${disabled ? " disabled" : ""}`}
+      title={disabled ? disabledReason : undefined}
+    >
+      <input type="checkbox" checked={checked} onChange={onChange} disabled={disabled} />
+      <span>{checked ? "Activé" : "Activer"}</span>
+    </label>
+  );
+}
+
 /* État ManyChat remonté au profil : la ligne « Instagram » (Connexions) et la ligne
    « Réponses aux DM » (Automatisations) parlent du même compte — sans ça, chacune
    irait le chercher de son côté et elles pourraient se contredire à l'écran. */
@@ -12515,18 +12538,24 @@ function ProfileView({
     const next = !weeklyEnabled;
     setWeeklyEnabled(next);
     try {
-      await fetch(`${DIRECT_API_URL}/me/weekly-posts/enabled`, {
+      const res = await fetch(`${DIRECT_API_URL}/me/weekly-posts/enabled`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({ enabled: next }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(typeof data.detail === "string" ? data.detail : "Impossible de modifier ce réglage.");
+      }
       // À la 1ère activation, le backend sème les jours par défaut : on recharge
       // le planning pour afficher la grille pré-remplie tout de suite.
       if (next && weeklySchedule.length === 0) {
-        const res = await fetch(`${DIRECT_API_URL}/me/weekly-posts`, { headers: await authHeaders() });
-        if (res.ok) setWeeklySchedule((await res.json()).schedule || []);
+        const reload = await fetch(`${DIRECT_API_URL}/me/weekly-posts`, { headers: await authHeaders() });
+        if (reload.ok) setWeeklySchedule((await reload.json()).schedule || []);
       }
-    } catch { setWeeklyEnabled(!next); }
+    } catch {
+      setWeeklyEnabled(!next);
+    }
   }
 
   async function saveWeeklySchedule(slots: {day_of_week: number; hour: number; timezone: string}[]) {
@@ -12943,48 +12972,48 @@ function ProfileView({
               continuent de recevoir et de lire leur idée du matin. */}
           <SettingRow
             icon={<Sparkles size={18} style={{ color: "var(--coral)" }} />}
-            name="Une idée de post chaque matin"
-            why="Générée depuis ta veille et ton réservoir d'idées, puis servie aux comptes clients"
+            name="Idée de post du matin"
+            why={
+              dailyEnabled
+                ? "Chaque matin, Cibl rédige une idée à partir de ta veille et de ton réserve d'idées."
+                : "Chaque matin, Cibl peut rédiger une idée à partir de ta veille et de ton réserve d'idées."
+            }
             right={
-              <label className="daily-switch">
-                <input type="checkbox" checked={dailyEnabled} onChange={toggleDailyEnabled} />
-                <span>Activer</span>
-              </label>
+              <AutomationSwitch checked={dailyEnabled} onChange={toggleDailyEnabled} />
             }
           />
 
           <SettingRow
             icon={<CalendarDays size={18} style={{ color: "var(--coral)" }} />}
-            name="Les posts de ta semaine"
+            name="Posts automatiques de la semaine"
             why={
               !weeklyAvailable
-                ? "Désactivés pour le moment."
+                ? "Indisponible pour le moment — tu peux couper l'option si elle était encore active."
                 : !weeklyReady
-                  ? "Connecte LinkedIn (onglet Connexions) pour activer"
+                  ? weeklyEnabled
+                    ? "LinkedIn déconnecté : la génération reprendra quand tu reconnecteras ton compte."
+                    : "Connecte LinkedIn (onglet Connexions) pour activer."
                   : weeklyEnabled && weeklySchedule.length
-                    ? `3 posts écrits le vendredi, publiés ${weeklySchedule.map((s) => `${["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."][s.day_of_week]} ${String(s.hour).padStart(2, "0")} h`).join(" · ")}`
-                    : "3 posts écrits le vendredi matin pour la semaine suivante"
+                    ? `Activé — 3 posts rédigés le vendredi, publiés ${weeklySchedule.map((s) => `${["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."][s.day_of_week]} ${String(s.hour).padStart(2, "0")} h`).join(" · ")}`
+                    : "Le vendredi matin, 3 posts sont rédigés pour la semaine suivante aux créneaux que tu choisis."
             }
             open={openRow === "weekly"}
-            onToggle={weeklyAvailable && weeklyReady && weeklyEnabled ? () => toggleRow("weekly") : undefined}
+            onToggle={weeklyEnabled ? () => toggleRow("weekly") : undefined}
             right={
               !weeklyAvailable ? (
                 <>
-                  <span className="status-pill">Désactivé</span>
-                  {weeklyEnabled && (
-                    <label className="daily-switch">
-                      <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
-                      <span>Activé</span>
-                    </label>
-                  )}
+                  <span className="status-pill">Indisponible</span>
+                  {weeklyEnabled ? (
+                    <AutomationSwitch checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
+                  ) : null}
                 </>
-              ) : weeklyReady ? (
-                <label className="daily-switch">
-                  <input type="checkbox" checked={weeklyEnabled} onChange={toggleWeeklyEnabled} />
-                  <span>Activer</span>
-                </label>
               ) : (
-                <span className="status-pill">LinkedIn requis</span>
+                <AutomationSwitch
+                  checked={weeklyEnabled}
+                  onChange={toggleWeeklyEnabled}
+                  disabled={!weeklyReady && !weeklyEnabled}
+                  disabledReason="Connecte LinkedIn dans l'onglet Connexions pour activer."
+                />
               )
             }
           >
@@ -13050,17 +13079,15 @@ function ProfileView({
 
           <SettingRow
             icon={<Lightbulb size={18} style={{ color: "var(--coral)" }} />}
-            name="Réponses aux messages Inbox"
-            why="L'agent répond seul quand la réponse est dans sa FAQ, sinon il te passe la main"
+            name="Réponses automatiques Inbox"
+            why={
+              igConnected
+                ? "Bientôt disponible — prépare ta FAQ ci-dessous ; l'envoi automatique n'est pas encore activable."
+                : "Bientôt disponible — connecte Instagram (ManyChat) dans Connexions, puis prépare ta FAQ."
+            }
             open={openRow === "faq"}
             onToggle={() => toggleRow("faq")}
-            right={
-              igConnected ? (
-                <span className="status-pill ok"><CheckCircle2 size={14} /> Actif</span>
-              ) : (
-                <span className="status-pill">Instagram non connecté</span>
-              )
-            }
+            right={<span className="status-pill">Bientôt</span>}
           >
             <AgentFaqEditor isAuthed={isAuthed} active={openRow === "faq"} />
             <LearnedRulesEditor isAuthed={isAuthed} active={openRow === "faq"} channel="instagram" />
