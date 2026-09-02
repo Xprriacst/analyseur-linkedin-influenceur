@@ -268,18 +268,36 @@ def build_follow_suggestions(access_token: str) -> dict[str, Any]:
             # Aucun mot-clé ⇒ `rank_suggestions` ne renverrait rien de toute
             # façon : on évite la requête service-role plutôt que de la payer
             # pour jeter le résultat.
-            return {"suggestions": [], "followed_count": len(followed_handles)}
+            return {
+                "suggestions": [],
+                "followed_count": len(followed_handles),
+                "empty_reason": "no_keywords",
+            }
 
         library = db.list_influencer_library(access_token)
         own_handle = handle_from_profile_url((profile or {}).get("linkedin_url"))
         candidates = db.list_influencer_cache_candidates(limit=_CANDIDATE_POOL)
+        excluded = excluded_handles(library, followed_handles, own_handle)
+        pool = _prepare_candidate_pool(candidates, excluded)
+        if not pool:
+            return {
+                "suggestions": [],
+                "followed_count": len(followed_handles),
+                "empty_reason": "no_candidates",
+            }
         suggestions = rank_suggestions(
             candidates,
             profile,
             targeting,
-            excluded_handles(library, followed_handles, own_handle),
+            excluded,
         )
+        if not suggestions:
+            return {
+                "suggestions": [],
+                "followed_count": len(followed_handles),
+                "empty_reason": "no_match",
+            }
         return {"suggestions": suggestions, "followed_count": len(followed_handles)}
     except Exception as exc:  # noqa: BLE001
         print(f"[follow-suggestions] échec : {exc}", flush=True)
-        return {"suggestions": [], "followed_count": 0}
+        return {"suggestions": [], "followed_count": 0, "empty_reason": "error"}

@@ -285,12 +285,13 @@ class BuildFollowSuggestionsTest(unittest.TestCase):
              patch.object(fs.db, "list_influencer_cache_candidates") as candidates:
             out = fs.build_follow_suggestions("token")
         self.assertEqual(out["suggestions"], [])
+        self.assertEqual(out["empty_reason"], "no_keywords")
         candidates.assert_not_called()
 
     def test_db_failure_never_breaks_the_screen(self):
         with patch.object(fs.db, "get_editorial_profile", side_effect=RuntimeError("boom")):
             out = fs.build_follow_suggestions("token")
-        self.assertEqual(out, {"suggestions": [], "followed_count": 0})
+        self.assertEqual(out, {"suggestions": [], "followed_count": 0, "empty_reason": "error"})
 
     def test_result_is_capped(self):
         many = [
