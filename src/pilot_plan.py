@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from src import db
+from src import prospect_pool
 from src.daily_ideas import maybe_bootstrap_daily_idea
 from src.invite_openers import PILOT_INVITE_PREVIEW_CAP, fill_invite_previews
 
@@ -637,6 +638,18 @@ def build_pilot_today(access_token: str) -> dict[str, Any]:
         outreach_connected = bool(outreach_account and outreach_account.get("unipile_account_id"))
         publish_connected = bool(profile and profile.get("zernio_account_id"))
         weekly_done, weekly_total = weekly_progress(access_token)
+        # Vivier partagé : 1 vrai profil / jour, seulement tant que LinkedIn
+        # n'est pas connecté (une fois relié, le client a ses propres leads).
+        # Fail-safe interne à maybe_assign_one — on ne mélange jamais ça avec
+        # les noms inventés de `_PILOT_SIM_PROSPECTS` (`simulate_prospects`
+        # reste False).
+        if not outreach_connected and (user or {}).get("id"):
+            if len(pick_contacts(leads)) < PILOT_CONTACT_LIMIT:
+                assigned = prospect_pool.maybe_assign_one(
+                    user["id"], profile, targeting, leads,
+                )
+                if assigned:
+                    leads = db.list_leads(access_token, limit=200)
         fill_invite_previews(access_token, targeting, pick_contacts(leads))
         return compose_pilot_plan(
             profile=profile,

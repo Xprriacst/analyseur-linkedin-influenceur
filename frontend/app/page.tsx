@@ -15381,6 +15381,8 @@ type LeadSignal = {
   trigger_keyword?: string | null;
   comment_text?: string | null;
   commented_at?: string | null;
+  origin?: string | null;
+  matched_keywords?: string[] | null;
 };
 
 type Lead = {
@@ -15483,6 +15485,11 @@ function isLinkedInSearchUrl(url?: string | null): boolean {
 /** Clé synthétique d'une source `kind=import` (fichier CSV/Excel, migration 0070). */
 function isImportSignalUrl(url?: string | null): boolean {
   return String(url || "").startsWith("import://");
+}
+
+/** Copie depuis le vivier partagé (Mode Pilote, migration 0073). */
+function isPoolSignal(sig: LeadSignal): boolean {
+  return sig.origin === "prospect_pool";
 }
 
 function leadSignals(l: Lead): LeadSignal[] {
@@ -15962,6 +15969,7 @@ function ProspectingView({
             const sig = leadCaptionSignal(l);
             const fromSearch = leadSignals(l).some((s) => isLinkedInSearchUrl(s.post_url));
             const fromImport = leadSignals(l).some((s) => isImportSignalUrl(s.post_url));
+            const fromPool = leadSignals(l).some((s) => isPoolSignal(s));
             const commented = isCommentSignal(sig);
             const multi = (l.signal_count ?? 1) > 1;
             const skipped = l.contact_status === "skip";
@@ -16012,6 +16020,8 @@ function ProspectingView({
                       <>trouvé dans ta recherche</>
                     ) : fromImport ? (
                       <>importé depuis ton fichier</>
+                    ) : fromPool ? (
+                      <>proposé pour ta niche</>
                     ) : null}
                     {multi ? <strong style={{ color: "var(--success)" }}> · {l.signal_count} signaux</strong> : null}
                   </span>
@@ -16190,6 +16200,10 @@ function ProspectingView({
                     ) : isImportSignalUrl(sig.post_url) ? (
                       // Fichier importé (0070) : `author` porte le nom du fichier.
                       <>fichier importé{sig.author ? <> « {sig.author} »</> : null}</>
+                    ) : isPoolSignal(sig) ? (
+                      <>vivier partagé{Array.isArray(sig.matched_keywords) && sig.matched_keywords.length
+                        ? <> · {sig.matched_keywords.slice(0, 3).join(" · ")}</>
+                        : null}</>
                     ) : (
                       <>profil importé</>
                     )}
