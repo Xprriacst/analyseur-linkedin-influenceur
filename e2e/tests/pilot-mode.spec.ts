@@ -41,7 +41,8 @@ const MOCK_PILOT = {
         score: 82,
         initials: "CD",
         accent: "linear-gradient(135deg, #10b981, #047857)",
-        message: "Bonjour Camille — ton profil correspond à mon ICP.",
+        message:
+          "Camille, gérer le stock d'une officine à la main, c'est encore le quotidien ? Comment tu anticipes les ruptures sans y passer tes soirées ?",
       },
     ],
     strategy: {
@@ -179,6 +180,17 @@ test.describe("Mode Pilote", () => {
     // qu'il y a à faire aujourd'hui (le post, les gens à contacter).
     await expect(page.getByRole("button", { name: "Influenceurs à suivre" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Ta stratégie" })).toHaveCount(0);
+  });
+
+  test("l'accroche d'invitation porte un pain point, pas le gabarit bateau", async ({ page }) => {
+    await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
+      timeout: 45_000,
+    });
+    await page.getByRole("button", { name: /Camille Dupont/i }).click();
+    const preview = page.locator(".pilot-message-preview");
+    await expect(preview).toContainText("stock d'une officine");
+    await expect(preview).not.toContainText("correspond à ce que je cible");
+    await expect(preview).not.toContainText("correspond à mon ICP");
   });
 
   test("tier gratuit : Inviter est grisé", async ({ page }) => {

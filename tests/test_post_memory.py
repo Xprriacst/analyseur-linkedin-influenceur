@@ -41,6 +41,37 @@ class DedupePostMemoryTest(unittest.TestCase):
         self.assertEqual(len(out), 5)
         self.assertEqual(out[0]["text"], "Post numéro 0")
 
+    def test_own_linkedin_status_wins_over_generated_duplicate(self):
+        # Le post live est mis en premier par `_post_memory_from_client` :
+        # s'il perdait au dédoublonnage, le modèle croirait n'avoir que le brouillon Cibl.
+        entries = [
+            {"text": "Cloud vs local en officine.", "status": db.OWN_LINKEDIN_STATUS},
+            {"text": "Cloud vs local en officine.", "status": "généré (brouillon)"},
+        ]
+        out = db.dedupe_post_memory(entries)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["status"], db.OWN_LINKEDIN_STATUS)
+
+    def test_has_own_linkedin_memory(self):
+        self.assertFalse(db.has_own_linkedin_memory([]))
+        self.assertFalse(db.has_own_linkedin_memory([{"status": "publié"}]))
+        self.assertTrue(db.has_own_linkedin_memory([
+            {"status": "publié"},
+            {"status": db.OWN_LINKEDIN_STATUS},
+        ]))
+
+    def test_own_posts_to_memory_entries_keeps_order_and_skips_empty(self):
+        rows = [
+            {"text": "Premier post.", "posted_at": "2026-09-01T10:00:00Z"},
+            {"text": "   "},
+            {"text": "Second post.", "posted_at": "2026-08-20"},
+        ]
+        out = db.own_posts_to_memory_entries(rows)
+        self.assertEqual([e["text"] for e in out], ["Premier post.", "Second post."])
+        self.assertEqual(out[0]["status"], db.OWN_LINKEDIN_STATUS)
+        self.assertEqual(out[0]["date"], "2026-09-01")
+        self.assertEqual(out[1]["date"], "2026-08-20")
+
     def test_no_supabase_returns_empty_never_raises(self):
         # Fail-safe : sans session/Supabase, la mémoire est vide, jamais une erreur.
         self.assertEqual(db.get_recent_post_memory(None), [])
@@ -63,6 +94,17 @@ class FormatRecentPostsTest(unittest.TestCase):
         # Les deux effets voulus : anti-répétition ET continuité.
         self.assertIn("Ne reproduis pas un sujet", block)
         self.assertIn("faire écho à un post précédent", block)
+
+    def test_live_linkedin_posts_are_called_out_in_the_rules(self):
+        block = llm._format_recent_posts([
+            {
+                "text": "Hier j'ai parlé du cloud vs local en pharmacie.",
+                "status": db.OWN_LINKEDIN_STATUS,
+            },
+        ])
+        self.assertIn("[publié sur LinkedIn]", block)
+        self.assertIn("tes vrais posts live", block)
+        self.assertIn("ne les recycle pas", block)
 
     def test_caps_entries_and_truncates_text(self):
         posts = [{"text": f"Post {i} " + "x" * 500} for i in range(20)]
@@ -378,6 +420,52 @@ class SaveGeneratedPostsMemoryCardTest(unittest.TestCase):
 
         self.assertEqual(len(saved), 1)
         self.assertIsNone(saved[0]["memory_card"])
+
+
+class UnipileOwnPostsMemoryTest(unittest.TestCase):
+    """Repli Unipile : normalisation pure, sans réseau."""
+
+    def test_normalize_skips_empty_text(self):
+        from src import unipile
+        self.assertIsNone(unipile.normalize_own_post(None))
+        self.assertIsNone(unipile.normalize_own_post({"text": ""}))
+        self.assertIsNone(unipile.normalize_own_post({"date": "2026-09-01"}))
+
+    def test_normalize_accepts_nested_text_and_parsed_datetime(self):
+        from src import unipile
+        entry = unipile.normalize_own_post({
+            "text": {"text": "  Un post live Unipile.  "},
+            "parsed_datetime": "2026-08-28T09:12:00.000Z",
+        })
+        self.assertEqual(entry["text"], "Un post live Unipile.")
+        self.assertEqual(entry["status"], "publié sur LinkedIn")
+        self.assertEqual(entry["date"], "2026-08-28")
+
+    def test_list_own_posts_hits_me_identifier(self):
+        from src import unipile
+        captured = {}
+
+        def fake_request(method, path, **kwargs):
+            captured["method"] = method
+            captured["path"] = path
+            captured["params"] = kwargs.get("params")
+            return {"items": [{"text": "ok", "date": "2026-09-01"}]}
+
+        with patch.object(unipile, "_request", side_effect=fake_request):
+            items = unipile.list_own_posts("acc-1", limit=10)
+        self.assertEqual(captured["method"], "GET")
+        self.assertEqual(captured["path"], "/users/me/posts")
+        self.assertEqual(captured["params"]["account_id"], "acc-1")
+        self.assertEqual(len(items), 1)
+
+    def test_own_posts_to_memory_drops_image_only(self):
+        from src import unipile
+        mem = unipile.own_posts_to_memory([
+            {"text": "Dit à voix haute."},
+            {"share_url": "https://linkedin.com/feed/update/urn"},
+        ])
+        self.assertEqual(len(mem), 1)
+        self.assertEqual(mem[0]["text"], "Dit à voix haute.")
 
 
 if __name__ == "__main__":

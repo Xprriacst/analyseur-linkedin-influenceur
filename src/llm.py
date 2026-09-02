@@ -647,7 +647,9 @@ def _format_recent_posts(recent_posts: list[dict] | None) -> str:
         "- Varie les accroches et les structures par rapport à ces posts récents — pas deux "
         "posts construits pareil d'affilée.\n"
         "- Tu peux faire écho à un post précédent (suite, retour d'expérience, réponse aux "
-        "réactions) quand c'est pertinent : la continuité est un atout, la répétition non."
+        "réactions) quand c'est pertinent : la continuité est un atout, la répétition non.\n"
+        "- Les posts marqués « publié sur LinkedIn » sont tes vrais posts live (pas seulement "
+        "ceux générés dans Cibl) : fais-en la suite, ne les recycle pas."
     )
 
 
@@ -979,60 +981,100 @@ def score_follow_suggestions(
     return results
 
 
-def generate_first_message(targeting: dict, lead: dict) -> str:
-    """Rédige le premier message LinkedIn à envoyer à un lead accepté (ALE-230).
+# Accroche d'invitation / premier message. Partagée Mode Pilote (lot ≤3) et
+# Expert / autopilote (un lead). Le commentaire n'est PLUS requis : un lead
+# importé ou issu d'une recherche n'en a pas — le pain point vient du poste.
+INVITE_OPENER_SYSTEM = (
+    "Tu es l'utilisateur lui-même qui écrit un premier message LinkedIn, en son "
+    "nom, à une personne qu'il veut contacter. "
+    "Chaque message DOIT : (1) nommer un vrai pain point de CETTE personne "
+    "(déduit de son intitulé, de son entreprise, du client idéal et de l'offre "
+    "— pas un cliché générique), (2) poser UNE question précise, éventuellement "
+    "inattendue, qui ouvre une conversation. "
+    "2 à 3 phrases. COURT. Humain. SANS lien, SANS pitch, SANS emoji à outrance, "
+    "SANS argumentaire commercial. "
+    "INTERDIT, mot pour mot et en paraphrase : « ton profil correspond », "
+    "« correspond à ce que je cible », « correspond à mon ICP », "
+    "« on échange rapidement sur {offre} », « curieux d'échanger 15 min ». "
+    "Un commentaire, s'il est fourni, est un BONUS d'ancrage — jamais une "
+    "condition. S'il n'y en a pas, tu t'appuies uniquement sur le poste. "
+    "Écris en français, sauf si l'intitulé de poste indique clairement une "
+    "autre langue (alors écris dans cette langue). "
+    "Si des consignes utilisateur sont fournies, elles PRIMENT. "
+    "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown."
+)
 
-    Ancré sur : ce qui a déclenché le contact (le lead a commenté un post
-    lead-magnet concurrent), le client idéal + l'offre de l'utilisateur, et ses
-    consignes de premier message. Volontairement court, humain, sans lien ni
-    argumentaire commercial agressif — l'objectif est d'ouvrir une conversation.
-    Retourne le texte du message (pas de JSON exposé à l'appelant).
+
+def generate_invite_openers(targeting: dict, leads: list[dict]) -> dict[str, str]:
+    """Rédige une accroche par lead. Retourne `{id: message}`.
+
+    Un seul appel modèle pour tout le lot (Mode Pilote : ≤3). Le commentaire
+    est optionnel. Lève si le modèle lâche — l'appelant Pilot rattrape.
     """
+    payload = []
+    for lead in leads or []:
+        lid = str(lead.get("id") or "").strip()
+        if not lid:
+            continue
+        payload.append({
+            "id": lid,
+            "name": str(lead.get("name") or "")[:80],
+            "headline": str(lead.get("headline") or "")[:200],
+            "comment": str(lead.get("comment_text") or "")[:400],
+            "reacted_to": str(
+                lead.get("trigger_keyword") or lead.get("author") or ""
+            )[:120],
+        })
+    if not payload:
+        return {}
+
     ideal = str(targeting.get("ideal_client") or "").strip()
     offer = str(targeting.get("offer") or "").strip()
     instructions = str(targeting.get("first_message_instructions") or "").strip()
-
-    name = str(lead.get("name") or "").strip()
-    headline = str(lead.get("headline") or "").strip()
-    comment = str(lead.get("comment_text") or "").strip()
-    trigger = str(lead.get("trigger_keyword") or "").strip()
-    author = str(lead.get("author") or "").strip()
-
-    system = (
-        "Tu es l'utilisateur lui-même qui écrit un premier message LinkedIn, en son "
-        "nom, à une personne avec qui il vient de se connecter. Cette personne a "
-        "montré un signal d'intérêt : elle a commenté un post « lead magnet » (du "
-        "type « commente X pour recevoir la ressource »). Le message doit être COURT "
-        "(2-4 phrases), humain, chaleureux, personnalisé sur ce qui l'a fait réagir, "
-        "SANS lien, SANS pitch agressif, SANS emoji à outrance. Objectif : ouvrir une "
-        "vraie conversation, pas vendre au premier message. Écris en français, sauf si "
-        "l'intitulé de poste indique clairement une autre langue. "
-        "Réponds UNIQUEMENT avec un objet JSON valide, sans markdown."
-    )
     ctx = [
         f"CE QUE JE VENDS (offre) : {offer or '(non précisé)'}",
         f"MON CLIENT IDÉAL : {ideal or '(non précisé)'}",
-        f"LA PERSONNE — nom : {name or '(inconnu)'} · intitulé : {headline or '(inconnu)'}",
     ]
-    if comment:
-        ctx.append(f"SON COMMENTAIRE (ce qui a déclenché le contact) : « {comment[:400]} »")
-    if trigger:
-        ctx.append(f"MOT-CLÉ COMMENTÉ : {trigger}")
-    if author:
-        ctx.append(f"POST D'ORIGINE (concurrent) : {author}")
     if instructions:
-        ctx.append(f"MES CONSIGNES POUR CE MESSAGE (à respecter en priorité) : {instructions[:1000]}")
-
+        ctx.append(
+            "MES CONSIGNES POUR CE MESSAGE (à respecter en priorité) : "
+            + instructions[:1000]
+        )
     user = (
         "\n".join(ctx)
+        + "\n\nPersonnes à contacter :\n"
+        + json.dumps(payload, ensure_ascii=False)
         + "\n\nSchéma JSON attendu :\n"
-        + '{"message": "le texte du premier message, prêt à envoyer"}'
+        + '{"openers": [{"id": "id du lead", "message": "texte prêt à envoyer"}, ...]}'
     )
-    data = _call(system, user, max_tokens=700, temperature=0.7)
-    message = str(data.get("message") or "").strip()
+    data = _call(INVITE_OPENER_SYSTEM, user, max_tokens=2000, temperature=0.7)
+    known = {row["id"] for row in payload}
+    out: dict[str, str] = {}
+    rows = data.get("openers") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        rows = data.get("messages") if isinstance(data, dict) else None
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        lid = str(row.get("id") or "").strip()
+        message = str(row.get("message") or "").strip()
+        if lid in known and message:
+            out[lid] = message[:1500]
+    return out
+
+
+def generate_first_message(targeting: dict, lead: dict) -> str:
+    """Rédige le premier message LinkedIn à envoyer à un lead accepté (ALE-230).
+
+    Même prompt que le Mode Pilote (`generate_invite_openers`) : pain point de
+    la personne + une question, commentaire optionnel. Expert et autopilote
+    ne doivent pas diverger de ce que le client a lu dans Pilote.
+    """
+    lid = str(lead.get("id") or "_one").strip() or "_one"
+    out = generate_invite_openers(targeting, [{**lead, "id": lid}])
+    message = str(out.get(lid) or "").strip()
     if not message:
         raise RuntimeError("Le modèle n'a pas produit de message.")
-    # Garde-fou : LinkedIn borne les messages ; on reste bien en-deçà.
     return message[:1500]
 
 
