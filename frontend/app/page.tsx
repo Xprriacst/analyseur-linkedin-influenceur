@@ -17431,6 +17431,8 @@ export default function Home() {
           onOpenAssistant={openAssistantFromPilot}
           onUpgrade={() => void pilotBilling.subscribe()}
           upgradeBusy={pilotBilling.busy}
+          showUpgradeButton={pilotBilling.status !== null && !isPilotPremium}
+          isPremium={isPilotPremium}
           actionsLocked={isPilotFreeLocked}
           devBanner={IS_DEV_ENV}
           userEmail={session?.user?.email ?? undefined}

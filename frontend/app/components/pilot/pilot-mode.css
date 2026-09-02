@@ -1243,6 +1243,17 @@
   cursor: wait;
 }
 
+.pilot-nav-premium-badge {
+  margin: 0;
+  padding: 10px 12px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0071e3;
+  border-radius: 10px;
+  background: rgba(0, 113, 227, 0.08);
+}
+
 .pilot-nav-expert {
   display: flex;
   align-items: center;

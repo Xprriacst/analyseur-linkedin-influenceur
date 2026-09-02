@@ -35,6 +35,8 @@ type PilotProfilePaneProps = {
   followCapReached?: boolean;
   onFollowPanelOpen?: () => void;
   onFollowProfile?: (handle: string) => void;
+  /** Abonnement actif — masque le pied de page « passe en premium ». */
+  isPremium?: boolean;
 };
 
 /** Initiales d'un nom — les suggestions arrivent du serveur sans champ `initials`. */
@@ -59,6 +61,7 @@ export function PilotProfilePane({
   followCapReached = false,
   onFollowPanelOpen,
   onFollowProfile,
+  isPremium = false,
 }: PilotProfilePaneProps) {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<ProfileDraft | null>(null);
@@ -244,9 +247,11 @@ export function PilotProfilePane({
         </div>
       </section>
 
-      <p className="pilot-profile-foot">
-        Pour modifier ton profil ou connecter LinkedIn, passe en premium.
-      </p>
+      {!isPremium && (
+        <p className="pilot-profile-foot">
+          Pour modifier ton profil ou connecter LinkedIn, passe en premium.
+        </p>
+      )}
     </div>
   );
 }
