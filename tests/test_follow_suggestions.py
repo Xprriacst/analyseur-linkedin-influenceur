@@ -6,19 +6,16 @@ suivre ». Ce que ces tests verrouillent, dans l'ordre d'importance :
 1. **Un profil vide ne suggère RIEN.** C'est la garantie produit : mieux vaut
    une section absente qu'une liste de profils sans rapport avec le métier du
    client, qui décrédibiliserait toutes les recommandations de l'app.
-2. **Le score de niche prime sur le nombre d'abonnés.** Sans ce test, un
-   refacto du tri suggérerait les mêmes grosses célébrités LinkedIn à tout le
-   monde, ce qui a l'air normal à l'écran et ne lève aucune erreur.
-3. **Pas de faux positif de sous-chaîne** (« vente » ne matche pas
-   « inventaire ») **mais les dérivés passent** (« coach » matche
-   « coaching ») — le pluriel et les dérivés sont le cas normal sur une fiche.
-4. **Aucun appel réseau, aucun crédit** : tout est testable sans base ni
-   modèle, c'est bien la preuve qu'il n'y a ni IA ni Apify dans ce chemin.
+2. **Le score Haiku prime sur le nombre d'abonnés.** Sans ce test, un refacto
+   du tri suggérerait les mêmes grosses célébrités LinkedIn à tout le monde.
+3. **Fail-safe LLM** : échec Haiku ⇒ liste vide, jamais une exception.
+4. **Aucun appel réseau ni base** dans les tests unitaires : Haiku est mocké.
 """
 import unittest
 from unittest.mock import patch
 
 from src import follow_suggestions as fs
+from src import llm
 
 
 class ExtractNicheKeywordsTest(unittest.TestCase):
@@ -86,98 +83,139 @@ def _candidates():
     ]
 
 
+def _profile():
+    return {"industry": "coaching business", "target_audience": "indépendants B2B"}
+
+
+def _llm_scores_for(candidates, scores_by_handle):
+    """Construit la réponse Haiku mockée alignée sur le pool préparé."""
+    out = []
+    for row in candidates:
+        handle = row.get("_handle") or row.get("handle")
+        rating = scores_by_handle.get(handle, {"score": 0, "matched_aspects": []})
+        out.append({
+            "score": rating.get("score", 0),
+            "reason": rating.get("reason", ""),
+            "matched_aspects": rating.get("matched_aspects", []),
+        })
+    return out
+
+
 class RankSuggestionsTest(unittest.TestCase):
-    def test_no_keywords_no_suggestions(self):
-        self.assertEqual(fs.rank_suggestions(_candidates(), [], set()), [])
+    def test_empty_pool_returns_nothing(self):
+        self.assertEqual(fs.rank_suggestions([], _profile(), None, set()), [])
 
     def test_off_topic_profile_never_suggested(self):
-        rows = fs.rank_suggestions(_candidates(), ["coaching", "business"], set())
+        scores = {
+            "marie": {"score": 88, "matched_aspects": ["coaching", "business"]},
+            "leo": {"score": 72, "matched_aspects": ["coaching"]},
+            "sam": {"score": 5, "matched_aspects": []},
+        }
+        with patch.object(llm, "score_follow_suggestions", side_effect=lambda _p, _t, pool: _llm_scores_for(pool, scores)):
+            rows = fs.rank_suggestions(_candidates(), _profile(), None, set())
         handles = [r["handle"] for r in rows]
         self.assertNotIn("sam", handles)
         self.assertIn("marie", handles)
 
     def test_niche_score_beats_follower_count(self):
-        """Le gros compte matche UN mot-clé, le petit en matche deux : c'est le
-        petit qui doit passer devant."""
-        rows = fs.rank_suggestions(
-            [
-                {"handle": "gros", "name": "Gros", "headline": "Coaching", "follower_count": 500_000},
-                {"handle": "petit", "name": "Petit", "headline": "Coaching pour indépendants", "follower_count": 80},
-            ],
-            ["coaching", "indépendants"],
-            set(),
-        )
+        """Le gros compte score bas, le petit score haut : c'est le petit qui passe devant."""
+        scores = {
+            "gros": {"score": 65, "matched_aspects": ["coaching"]},
+            "petit": {"score": 90, "matched_aspects": ["coaching", "indépendants"]},
+        }
+        candidates = [
+            {"handle": "gros", "name": "Gros", "headline": "Coaching", "follower_count": 500_000},
+            {"handle": "petit", "name": "Petit", "headline": "Coaching pour indépendants", "follower_count": 80},
+        ]
+        with patch.object(llm, "score_follow_suggestions", side_effect=lambda _p, _t, pool: _llm_scores_for(pool, scores)):
+            rows = fs.rank_suggestions(candidates, _profile(), None, set())
         self.assertEqual([r["handle"] for r in rows], ["petit", "gros"])
 
     def test_followers_only_break_ties(self):
-        rows = fs.rank_suggestions(
-            [
-                {"handle": "a", "name": "A", "headline": "Coaching", "follower_count": 10},
-                {"handle": "b", "name": "B", "headline": "Coaching", "follower_count": 900},
-            ],
-            ["coaching"],
-            set(),
-        )
+        scores = {
+            "a": {"score": 80, "matched_aspects": ["coaching"]},
+            "b": {"score": 80, "matched_aspects": ["coaching"]},
+        }
+        candidates = [
+            {"handle": "a", "name": "A", "headline": "Coaching", "follower_count": 10},
+            {"handle": "b", "name": "B", "headline": "Coaching", "follower_count": 900},
+        ]
+        with patch.object(llm, "score_follow_suggestions", side_effect=lambda _p, _t, pool: _llm_scores_for(pool, scores)):
+            rows = fs.rank_suggestions(candidates, _profile(), None, set())
         self.assertEqual([r["handle"] for r in rows], ["b", "a"])
 
-    def test_prefix_match_not_substring(self):
-        """« vente » ne doit pas matcher « inventaire » (faux positif silencieux),
-        mais « coach » doit matcher « coaching » (dérivé, cas normal)."""
-        rows = fs.rank_suggestions(
-            [
-                {"handle": "faux", "name": "Faux", "headline": "Gestion d'inventaire", "follower_count": 10},
-                {"handle": "vrai", "name": "Vrai", "headline": "Coaching d'équipe", "follower_count": 10},
-            ],
-            ["vente", "coach"],
-            set(),
-        )
-        self.assertEqual([r["handle"] for r in rows], ["vrai"])
+    def test_below_min_score_filtered(self):
+        scores = {"faux": {"score": 40, "matched_aspects": ["vente"]}}
+        candidates = [
+            {"handle": "faux", "name": "Faux", "headline": "Gestion d'inventaire", "follower_count": 10},
+        ]
+        with patch.object(llm, "score_follow_suggestions", side_effect=lambda _p, _t, pool: _llm_scores_for(pool, scores)):
+            rows = fs.rank_suggestions(candidates, _profile(), None, set())
+        self.assertEqual(rows, [])
 
     def test_excluded_handles_are_skipped_case_insensitively(self):
-        rows = fs.rank_suggestions(_candidates(), ["coaching", "coach"], {"MARIE"})
+        scores = {
+            "marie": {"score": 90, "matched_aspects": ["coaching"]},
+            "leo": {"score": 85, "matched_aspects": ["coaching"]},
+        }
+        with patch.object(llm, "score_follow_suggestions", side_effect=lambda _p, _t, pool: _llm_scores_for(pool, scores)):
+            rows = fs.rank_suggestions(_candidates(), _profile(), None, {"MARIE"})
         self.assertNotIn("marie", [r["handle"] for r in rows])
 
     def test_limit_respected(self):
-        self.assertEqual(len(fs.rank_suggestions(_candidates(), ["coach"], set(), limit=1)), 1)
-        self.assertEqual(fs.rank_suggestions(_candidates(), ["coach"], set(), limit=0), [])
+        scores = {f"h{i}": {"score": 70 + i, "matched_aspects": ["coaching"]} for i in range(5)}
+        candidates = [
+            {"handle": f"h{i}", "name": f"N{i}", "headline": "Coaching", "follower_count": i}
+            for i in range(5)
+        ]
+        with patch.object(llm, "score_follow_suggestions", side_effect=lambda _p, _t, pool: _llm_scores_for(pool, scores)):
+            self.assertEqual(len(fs.rank_suggestions(candidates, _profile(), None, set(), limit=1)), 1)
+            self.assertEqual(fs.rank_suggestions(candidates, _profile(), None, set(), limit=0), [])
 
     def test_encoded_handle_decoded_and_url_kept_encoded(self):
-        """Le handle sert au suivi (format décodé, comme `followed_influencers`)
-        alors que l'URL doit rester dans sa forme encodée, sinon le lien casse."""
-        rows = fs.rank_suggestions(
-            [{"handle": "th%C3%A9o", "name": "Théo", "headline": "Coaching", "follower_count": 1}],
-            ["coaching"],
-            set(),
-        )
+        scores = {"théo": {"score": 85, "matched_aspects": ["coaching"]}}
+        candidates = [
+            {"handle": "th%C3%A9o", "name": "Théo", "headline": "Coaching", "follower_count": 1},
+        ]
+        with patch.object(llm, "score_follow_suggestions", side_effect=lambda _p, _t, pool: _llm_scores_for(pool, scores)):
+            rows = fs.rank_suggestions(candidates, _profile(), None, set())
         self.assertEqual(rows[0]["handle"], "théo")
         self.assertEqual(rows[0]["profile_url"], "https://www.linkedin.com/in/th%C3%A9o/")
 
     def test_duplicate_handles_collapsed(self):
-        rows = fs.rank_suggestions(
-            [
-                {"handle": "marie", "name": "Marie", "headline": "Coaching", "follower_count": 5},
-                {"handle": "marie", "name": "Marie bis", "headline": "Coaching", "follower_count": 9},
-            ],
-            ["coaching"],
-            set(),
-        )
+        scores = {"marie": {"score": 85, "matched_aspects": ["coaching"]}}
+        candidates = [
+            {"handle": "marie", "name": "Marie", "headline": "Coaching", "follower_count": 5},
+            {"handle": "marie", "name": "Marie bis", "headline": "Coaching", "follower_count": 9},
+        ]
+        with patch.object(llm, "score_follow_suggestions", side_effect=lambda _p, _t, pool: _llm_scores_for(pool, scores)):
+            rows = fs.rank_suggestions(candidates, _profile(), None, set())
         self.assertEqual(len(rows), 1)
 
     def test_row_shape_and_matched_keywords(self):
-        rows = fs.rank_suggestions(
-            [{"handle": "marie", "name": "Marie", "headline": "Coaching business B2B pour indépendants",
-              "follower_count": "42"}],
-            ["coaching", "business", "indépendants", "closing"],
-            set(),
-        )
+        scores = {
+            "marie": {
+                "score": 92,
+                "matched_aspects": ["coaching", "business", "indépendants"],
+            },
+        }
+        candidates = [
+            {
+                "handle": "marie",
+                "name": "Marie",
+                "headline": "Coaching business B2B pour indépendants",
+                "follower_count": "42",
+            },
+        ]
+        with patch.object(llm, "score_follow_suggestions", side_effect=lambda _p, _t, pool: _llm_scores_for(pool, scores)):
+            rows = fs.rank_suggestions(candidates, _profile(), None, set())
         row = rows[0]
-        self.assertEqual(row["follower_count"], 42)  # tolère un entier arrivé en chaîne
+        self.assertEqual(row["follower_count"], 42)
         self.assertEqual(row["matched_keywords"], ["coaching", "business", "indépendants"])
-        self.assertNotIn("closing", row["matched_keywords"])
 
     def test_candidate_without_text_is_ignored(self):
         self.assertEqual(
-            fs.rank_suggestions([{"handle": "vide", "name": "", "headline": ""}], ["coaching"], set()),
+            fs.rank_suggestions([{"handle": "vide", "name": "", "headline": ""}], _profile(), None, set()),
             [],
         )
 
@@ -220,7 +258,15 @@ class BuildFollowSuggestionsTest(unittest.TestCase):
         for p in patches:
             p.start()
         try:
-            return fs.build_follow_suggestions("token")
+            with patch.object(
+                llm,
+                "score_follow_suggestions",
+                side_effect=lambda _p, _t, pool: [
+                    {"score": 90, "matched_aspects": ["coaching"], "reason": "ok"}
+                    for _ in pool
+                ],
+            ):
+                return fs.build_follow_suggestions("token")
         finally:
             for p in patches:
                 p.stop()

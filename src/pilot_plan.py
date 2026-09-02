@@ -334,13 +334,13 @@ def simulated_prospect_reveal_count(created_at: datetime.datetime | None) -> int
 
 def build_prospect_agent_meta(
     *,
-    is_pilote_landing: bool,
+    simulate_prospects: bool,
     real_contact_count: int,
     reveal_count: int,
     outreach_connected: bool,
 ) -> dict[str, Any]:
     """État de l'agent IA de recherche de prospects (Mode Pilote gratuit)."""
-    if not is_pilote_landing:
+    if not simulate_prospects:
         return {"active": False, "status": "idle", "message": None, "detail": None}
 
     if real_contact_count >= PILOT_CONTACT_LIMIT:
@@ -418,6 +418,7 @@ def compose_pilot_plan(
     weekly_done: int,
     weekly_total: int,
     is_pilote_landing: bool = False,
+    simulate_prospects: bool = True,
     account_created_at: datetime.datetime | None = None,
 ) -> dict[str, Any]:
     display = (profile or {}).get("display_name") or (profile or {}).get("brand_name") or "toi"
@@ -484,7 +485,7 @@ def compose_pilot_plan(
         })
 
     reveal_count = (
-        simulated_prospect_reveal_count(account_created_at) if is_pilote_landing else 0
+        simulated_prospect_reveal_count(account_created_at) if simulate_prospects else 0
     )
     contacts.extend(
         build_simulated_contacts(
@@ -495,13 +496,13 @@ def compose_pilot_plan(
     )
 
     prospect_agent = build_prospect_agent_meta(
-        is_pilote_landing=is_pilote_landing,
+        simulate_prospects=simulate_prospects,
         real_contact_count=len(contact_leads),
         reveal_count=reveal_count,
         outreach_connected=outreach_connected,
     )
 
-    if is_pilote_landing:
+    if simulate_prospects:
         blocked_reason = None
     elif outreach_connected:
         blocked_reason = None
@@ -635,6 +636,7 @@ def build_pilot_today(access_token: str) -> dict[str, Any]:
             weekly_done=weekly_done,
             weekly_total=weekly_total,
             is_pilote_landing=is_pilote_landing,
+            simulate_prospects=True,
             account_created_at=account_created_at,
         )
     except Exception as exc:

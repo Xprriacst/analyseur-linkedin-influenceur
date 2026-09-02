@@ -46,6 +46,8 @@ export type PilotShellProps = {
   onOpenAssistant: (postText: string) => void;
   onUpgrade: () => void;
   upgradeBusy?: boolean;
+  /** Tier Pilote gratuit : actions réelles désactivées (aperçu seulement). */
+  actionsLocked?: boolean;
   /** Site dev : le bandeau fixe de 30 px recouvrirait le haut de la nav. */
   devBanner?: boolean;
   /** Compte connecté + déconnexion : le Mode Pilote n'a pas d'entête. */
@@ -76,6 +78,7 @@ export default function PilotShell({
   onOpenAssistant,
   onUpgrade,
   upgradeBusy = false,
+  actionsLocked = false,
   devBanner = false,
   userEmail,
   onSignOut,
@@ -189,6 +192,10 @@ export default function PilotShell({
   }
 
   async function handleInvite(contactId: string) {
+    if (actionsLocked) {
+      toast.message("Réservé aux abonnés premium — passe en premium pour inviter.");
+      return;
+    }
     if (contactId.startsWith("sim-")) {
       toast.message("Connecte LinkedIn dans Mon profil pour inviter ce prospect.");
       return;
@@ -213,6 +220,10 @@ export default function PilotShell({
   }
 
   function handlePublishClick() {
+    if (actionsLocked) {
+      toast.message("Réservé aux abonnés premium — passe en premium pour publier.");
+      return;
+    }
     if (meta?.post_empty || !postText.trim()) {
       onOpenGenerator({ topic: "" });
       return;
@@ -298,11 +309,16 @@ export default function PilotShell({
             plan={plan}
             mode="pilot"
             hideModeToggle
+            actionsLocked={actionsLocked}
             postEmpty={Boolean(meta?.post_empty)}
             contactsBlockedReason={meta?.contacts_blocked_reason || undefined}
             prospectAgent={meta?.prospect_agent ?? null}
             onPublish={handlePublishClick}
             onEditPost={() => {
+              if (actionsLocked) {
+                toast.message("Réservé aux abonnés premium — passe en premium pour modifier.");
+                return;
+              }
               if (!postText.trim()) {
                 onOpenGenerator({ topic: "" });
                 return;
@@ -314,6 +330,10 @@ export default function PilotShell({
               });
             }}
             onRegeneratePost={() => {
+              if (actionsLocked) {
+                toast.message("Réservé aux abonnés premium — passe en premium pour régénérer.");
+                return;
+              }
               const topic = plan.post.hook || plan.post.body.slice(0, 120) || "";
               onOpenAssistant(postText || topic);
             }}

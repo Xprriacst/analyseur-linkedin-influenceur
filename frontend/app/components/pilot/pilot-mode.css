@@ -546,7 +546,24 @@
 }
 
 .pilot-btn:disabled {
-  cursor: default;
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.pilot-btn-primary:disabled:not(.done) {
+  background: #aeaeb2;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.pilot-btn-ghost:disabled {
+  color: rgba(29, 29, 31, 0.38);
+  background: rgba(29, 29, 31, 0.04);
+}
+
+.pilot-actions-locked .pilot-btn:not(:disabled) {
+  /* Garde-fou si un bouton oublie disabled={actionsLocked}. */
+  opacity: 0.42;
+  pointer-events: none;
 }
 
 .pilot-follow-list {
