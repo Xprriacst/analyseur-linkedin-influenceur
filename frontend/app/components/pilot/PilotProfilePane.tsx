@@ -30,6 +30,7 @@ type PilotProfilePaneProps = {
   followSuggestions?: PilotFollowSuggestion[];
   followLoading?: boolean;
   followError?: string;
+  followEmptyReason?: string | null;
   followedHandles?: string[];
   followCapReached?: boolean;
   onFollowPanelOpen?: () => void;
@@ -53,6 +54,7 @@ export function PilotProfilePane({
   followSuggestions = [],
   followLoading = false,
   followError = "",
+  followEmptyReason = null,
   followedHandles = [],
   followCapReached = false,
   onFollowPanelOpen,
@@ -177,8 +179,13 @@ export function PilotProfilePane({
         {!followLoading && followError && <p className="pilot-profile-note">{followError}</p>}
         {!followLoading && !followError && followSuggestions.length === 0 && (
           <p className="pilot-profile-note">
-            Aucun profil à te proposer pour l’instant — complète ton profil éditorial
-            (ton secteur, ta cible, ton offre) et on te suggérera des comptes de ta niche.
+            {followEmptyReason === "no_keywords"
+              ? "Aucun profil à te proposer pour l’instant — complète ton profil éditorial (ton secteur, ta cible, ton offre) et on te suggérera des comptes de ta niche."
+              : followEmptyReason === "no_candidates"
+                ? "Pas encore de profils analysés dans ta niche sur Cibl — ce n’est pas un bug : la base se remplit au fil des analyses de la communauté."
+                : followEmptyReason === "no_match"
+                  ? "Aucun profil ne correspond assez bien à ta niche pour l’instant — reviens dans quelques jours ou affine ton ciblage."
+                  : "Aucune suggestion disponible pour l’instant."}
           </p>
         )}
         {!followLoading && followSuggestions.length > 0 && (

@@ -418,7 +418,7 @@ def compose_pilot_plan(
     weekly_done: int,
     weekly_total: int,
     is_pilote_landing: bool = False,
-    simulate_prospects: bool = True,
+    simulate_prospects: bool = False,
     account_created_at: datetime.datetime | None = None,
 ) -> dict[str, Any]:
     display = (profile or {}).get("display_name") or (profile or {}).get("brand_name") or "toi"
@@ -636,7 +636,7 @@ def build_pilot_today(access_token: str) -> dict[str, Any]:
             weekly_done=weekly_done,
             weekly_total=weekly_total,
             is_pilote_landing=is_pilote_landing,
-            simulate_prospects=True,
+            simulate_prospects=False,
             account_created_at=account_created_at,
         )
     except Exception as exc:

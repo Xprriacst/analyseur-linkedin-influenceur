@@ -94,6 +94,7 @@ export default function PilotShell({
 
   // Suggestions « à suivre » — chargées au PREMIER dépliage seulement.
   const [followSuggestions, setFollowSuggestions] = useState<PilotFollowSuggestion[]>([]);
+  const [followEmptyReason, setFollowEmptyReason] = useState<string | null>(null);
   const [followLoading, setFollowLoading] = useState(false);
   const [followError, setFollowError] = useState("");
   const [followLoaded, setFollowLoaded] = useState(false);
@@ -166,6 +167,7 @@ export default function PilotShell({
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Chargement impossible");
       setFollowSuggestions(data.suggestions || []);
+      setFollowEmptyReason(data.empty_reason ?? null);
       setFollowCapReached((data.followed_count || 0) >= (data.cap || 5));
       setFollowLoaded(true);
     } catch (err: unknown) {
@@ -299,6 +301,7 @@ export default function PilotShell({
             followSuggestions={followSuggestions}
             followLoading={followLoading}
             followError={followError}
+            followEmptyReason={followEmptyReason}
             followedHandles={followedHandles}
             followCapReached={followCapReached}
             onFollowPanelOpen={loadFollowSuggestions}

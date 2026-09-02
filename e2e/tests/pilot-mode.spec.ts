@@ -62,10 +62,10 @@ const MOCK_PILOT = {
     linkedin_publish_connected: true,
     contacts_blocked_reason: null,
     prospect_agent: {
-      active: true,
-      status: "starting",
-      message: "Ton agent IA analyse LinkedIn pour trouver des prospects.",
-      detail: "Les profils correspondant à ton ICP apparaîtront ici au fur et à mesure.",
+      active: false,
+      status: "idle",
+      message: "",
+      detail: null,
     },
     is_pilote_landing: true,
   },
@@ -164,11 +164,11 @@ test.describe("Mode Pilote", () => {
     await expect(page.getByRole("button", { name: /^Autre angle$/i })).toBeDisabled();
   });
 
-  test("la carte agent IA prospects est visible", async ({ page }) => {
+  test("sans simulation, pas de carte agent IA fictive", async ({ page }) => {
     await expect(page.getByRole("heading", { name: /Bonjour Alex\./i })).toBeVisible({
       timeout: 45_000,
     });
-    await expect(page.getByRole("status")).toContainText(/agent IA analyse LinkedIn/i);
+    await expect(page.getByText(/Agent IA en recherche/i)).toHaveCount(0);
   });
 
   test("la vue du jour ne porte plus stratégie ni influenceurs à suivre", async ({ page }) => {

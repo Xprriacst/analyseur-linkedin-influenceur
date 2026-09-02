@@ -3545,10 +3545,36 @@ def billing_plan() -> dict[str, Any]:
     }
 
 
+# Comptes internes traités comme premium en Mode Pilote (gating front), même
+# sans abonnement Stripe actif. Surcharge : PILOT_PREMIUM_EMAILS (virgules).
+_PILOT_PREMIUM_EMAILS = {
+    e.strip().lower()
+    for e in os.environ.get(
+        "PILOT_PREMIUM_EMAILS",
+        "alexandre@clareo-solutions.fr,tom@clareo-solutions.fr",
+    ).split(",")
+    if e.strip()
+}
+
+
+def _billing_state_for_user(token: str, subscription: dict | None) -> dict[str, Any]:
+    """État d'abonnement + override premium interne (Mode Pilote)."""
+    state = _billing_state(subscription)
+    user = db.get_user(token)
+    email = str((user or {}).get("email") or "").strip().lower()
+    if email in _PILOT_PREMIUM_EMAILS:
+        state = {
+            **state,
+            "subscribed": True,
+            "status": state.get("status") or "active",
+        }
+    return state
+
+
 @app.get("/me/billing")
 def me_billing(token: str = Depends(require_token)) -> dict[str, Any]:
     """État d'abonnement de l'utilisateur (pour la carte « Abonnement » du profil)."""
-    return _billing_state(db.get_subscription(token))
+    return _billing_state_for_user(token, db.get_subscription(token))
 
 
 def _granted_trial_days(user_id: str, requested: bool) -> int:

@@ -65,8 +65,8 @@ class PickContactsTest(unittest.TestCase):
 
 
 class ComposePlanTest(unittest.TestCase):
-    def test_empty_post_shows_agent_for_all_pilot_accounts(self):
-        """Comptes in-app (sans tag landing pilote) : agent + pas de message « Connecte LinkedIn »."""
+    def test_empty_post_shows_connect_when_not_simulating(self):
+        """Sans simulation : pas de contacts fictifs ni carte agent — message LinkedIn."""
         created = pp.datetime.datetime.now(pp.datetime.timezone.utc) - pp.datetime.timedelta(minutes=5)
         out = pp.compose_pilot_plan(
             profile={"display_name": "Alex"},
@@ -82,15 +82,13 @@ class ComposePlanTest(unittest.TestCase):
             weekly_done=0,
             weekly_total=3,
             is_pilote_landing=False,
-            simulate_prospects=True,
             account_created_at=created,
         )
         self.assertTrue(out["meta"]["post_empty"])
-        self.assertIsNone(out["meta"]["contacts_blocked_reason"])
+        self.assertIn("Connecte ton compte", out["meta"]["contacts_blocked_reason"] or "")
         agent = out["meta"]["prospect_agent"]
-        self.assertTrue(agent["active"])
-        self.assertIn(agent["status"], ("starting", "searching", "warming"))
-        self.assertTrue(all(c["simulated"] for c in out["plan"]["contacts"]))
+        self.assertFalse(agent["active"])
+        self.assertEqual(out["plan"]["contacts"], [])
 
     def test_simulation_disabled_shows_connect_message(self):
         out = pp.compose_pilot_plan(
@@ -126,6 +124,7 @@ class ComposePlanTest(unittest.TestCase):
             weekly_done=0,
             weekly_total=3,
             is_pilote_landing=True,
+            simulate_prospects=True,
             account_created_at=pp.datetime.datetime.now(pp.datetime.timezone.utc),
         )
         self.assertIsNone(out["meta"]["contacts_blocked_reason"])
@@ -149,6 +148,7 @@ class ComposePlanTest(unittest.TestCase):
             weekly_done=0,
             weekly_total=3,
             is_pilote_landing=True,
+            simulate_prospects=True,
             account_created_at=created,
         )
         self.assertEqual(len(out["plan"]["contacts"]), 2)
