@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from src import db
+from src.daily_ideas import maybe_bootstrap_daily_idea
 
 PILOT_CONTACT_LIMIT = 3
 PILOT_FOLLOW_LIMIT = 5
@@ -608,6 +609,7 @@ def build_pilot_today(access_token: str) -> dict[str, Any]:
         account_created_at = _parse_user_created_at((user or {}).get("created_at"))
         profile = db.get_editorial_profile(access_token)
         targeting = db.get_lead_targeting(access_token)
+        maybe_bootstrap_daily_idea(access_token)
         generated = db.list_generated_posts(access_token, limit=30, platform="linkedin")
         daily_ideas = db.list_daily_ideas(access_token, limit=10)
         leads = db.list_leads(access_token, limit=200)

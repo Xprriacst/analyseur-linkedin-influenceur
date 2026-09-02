@@ -129,6 +129,72 @@ def _generate_for_user(user_id: str, today: str) -> bool:
     return True
 
 
+def maybe_bootstrap_daily_idea(access_token: str) -> bool:
+    """Premier post du jour pour un compte neuf — gratuit, best-effort, jamais d'exception.
+
+    Le cron matinal ne tourne qu'une fois par jour ; un compte créé l'après-midi
+    n'a ni corpus analysé ni idée en base. Sans ce bootstrap, la vue Pilote promet
+    « 1 post / jour » mais affiche un écran vide jusqu'au lendemain.
+    """
+    try:
+        if not os.environ.get("ANTHROPIC_API_KEY") or not db.admin_enabled():
+            return False
+        user = db.get_user(access_token)
+        if not user:
+            return False
+        user_id = user["id"]
+        today = datetime.date.today().isoformat()
+        if db.daily_idea_exists(user_id, today):
+            return False
+        profile = db.get_editorial_profile(access_token)
+        if not profile or not profile.get("daily_ideas_enabled"):
+            return False
+        prior_ideas = db.list_daily_ideas(access_token, limit=1)
+        if prior_ideas:
+            # Compte déjà servi par le cron — pas de rattrapage à chaque ouverture.
+            return False
+        generated = db.list_generated_posts(access_token, limit=30, platform="linkedin")
+        if any(
+            (row.get("post") or "").strip()
+            and row.get("platform") in (None, "", "linkedin")
+            and not row.get("zernio_post_id")
+            for row in generated
+        ):
+            return False
+
+        corpus = db.get_corpus_for_user(user_id)
+        influencers = enrich_influencers(corpus) if corpus else []
+        if influencers:
+            return _generate_for_user(user_id, today)
+
+        context = db.get_user_ai_context(access_token)
+        if not context:
+            return False
+        roles = list(ROLE_SPECS.keys())
+        daily_role = roles[datetime.date.fromisoformat(today).toordinal() % len(roles)]
+        empty_benchmark = {"benchmarks": [], "top_hook_types": {}, "corpus_insights": {}}
+        posts = generate_posts(
+            None,
+            [],
+            empty_benchmark,
+            user_context=context,
+            editorial_role=daily_role,
+            count=1,
+        )
+        if not posts:
+            return False
+        post = posts[0]
+        markdown = post.get("post") or ""
+        if not markdown.strip():
+            return False
+        db.replace_daily_idea(access_token, markdown, today, post=post)
+        print(f"[daily_ideas] bootstrap {user_id}: premier post (profil éditorial)", flush=True)
+        return True
+    except Exception as exc:
+        print(f"[daily_ideas] bootstrap échoué : {exc}", flush=True)
+        return False
+
+
 def main() -> int:
     if not db.admin_enabled():
         print("SUPABASE_SERVICE_ROLE_KEY manquant — cron désactivé.", file=sys.stderr)
