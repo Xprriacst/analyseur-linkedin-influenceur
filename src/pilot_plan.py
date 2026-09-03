@@ -560,10 +560,7 @@ def compose_pilot_plan(
     elif outreach_connected:
         blocked_reason = None
     else:
-        blocked_reason = (
-            "Connecte ton compte LinkedIn de prospection (Mon profil → Connexions) "
-            "pour inviter des leads."
-        )
+        blocked_reason = "Connecte ton compte LinkedIn pour inviter des leads."
 
     now = datetime.datetime.now()
     iso = now.isocalendar()

@@ -1064,6 +1064,10 @@
   color: rgba(29, 29, 31, 0.62);
 }
 
+.pilot-empty-block-inline .pilot-btn {
+  margin-top: 12px;
+}
+
 /* ——— Layout Mode Pilote (nav + contenu) ——— */
 
 /* ⚠️ La nav ne doit JAMAIS défiler hors de l'écran : c'est la hauteur fixe du

@@ -5,6 +5,7 @@ import { Toaster, toast } from "sonner";
 import {
   Check,
   ChevronDown,
+  Link2,
   Loader2,
   PenLine,
   RefreshCw,
@@ -104,6 +105,8 @@ type PilotModeViewProps = {
   onEditPost?: () => void;
   onRegeneratePost?: () => void;
   onInvite?: (contactId: string) => void;
+  onConnectLinkedIn?: () => void;
+  connectingLinkedIn?: boolean;
 };
 
 export default function PilotModeView({
@@ -120,6 +123,8 @@ export default function PilotModeView({
   onEditPost,
   onRegeneratePost,
   onInvite,
+  onConnectLinkedIn,
+  connectingLinkedIn = false,
 }: PilotModeViewProps) {
   const [internalMode, setInternalMode] = useState<InterfaceMode>("pilot");
   const mode = controlledMode ?? internalMode;
@@ -384,6 +389,22 @@ export default function PilotModeView({
               {!prospectAgent?.active && contactsBlockedReason && (
                 <div className="pilot-empty-block pilot-empty-block-inline">
                   <p className="pilot-empty-copy">{contactsBlockedReason}</p>
+                  {onConnectLinkedIn ? (
+                    <button
+                      type="button"
+                      className="pilot-btn pilot-btn-primary"
+                      onClick={onConnectLinkedIn}
+                      disabled={connectingLinkedIn || actionsLocked}
+                      title={actionsLocked ? "Réservé aux abonnés premium" : undefined}
+                    >
+                      {connectingLinkedIn ? (
+                        <Loader2 size={15} className="spinning" />
+                      ) : (
+                        <Link2 size={15} />
+                      )}
+                      {connectingLinkedIn ? "Connexion…" : "Connecter LinkedIn"}
+                    </button>
+                  ) : null}
                 </div>
               )}
               {!prospectAgent?.active && !contactsBlockedReason && plan.contacts.length === 0 && (

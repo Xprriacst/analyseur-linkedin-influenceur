@@ -183,7 +183,7 @@ test.describe("Mode Pilote", () => {
         ...MOCK_PILOT.meta,
         linkedin_outreach_connected: false,
         contacts_blocked_reason:
-          "Connecte ton compte LinkedIn de prospection (Mon profil → Connexions) pour inviter des leads.",
+          "Connecte ton compte LinkedIn pour inviter des leads.",
         prospect_agent: {
           active: true,
           status: "searching",
@@ -238,7 +238,7 @@ test.describe("Mode Pilote", () => {
         ...MOCK_PILOT.meta,
         linkedin_outreach_connected: false,
         contacts_blocked_reason:
-          "Connecte ton compte LinkedIn de prospection (Mon profil → Connexions) pour inviter des leads.",
+          "Connecte ton compte LinkedIn pour inviter des leads.",
       },
     };
     await page.route("**/me/pilot/today", (route) =>
