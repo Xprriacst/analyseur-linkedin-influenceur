@@ -219,3 +219,14 @@ test("LinkedIn › Prospection : liste des leads + panneau de détail (ALE-229)"
   await expect(page.getByRole("button", { name: "X Bientôt" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Reddit Bientôt" })).toHaveCount(0);
 });
+
+test("la sidebar se replie et se rouvre", async ({ page }) => {
+  // Déplacé du smoke public : l'app n'est plus atteignable sans compte.
+  await page.getByRole("button", { name: "Réduire la sidebar" }).click();
+  await expect(page.locator(".sidebar")).toHaveClass(/sidebar-collapsed/);
+  await expect(page.getByRole("button", { name: "Étendre la sidebar" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Étendre la sidebar" }).click();
+  await expect(page.locator(".sidebar")).not.toHaveClass(/sidebar-collapsed/);
+  await expect(page.getByRole("button", { name: "Réduire la sidebar" })).toBeVisible();
+});

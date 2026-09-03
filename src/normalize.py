@@ -247,6 +247,114 @@ def _avatar_url(raw: dict) -> str:
     return ""
 
 
+def _image_url(candidate: Any) -> str:
+    """URL d'image, que le scraper la donne à plat ou en dict par taille."""
+    if isinstance(candidate, dict):
+        # harvestapi : {"url": …} ou {"sizes": [{"width":…, "url":…}, …]}
+        if candidate.get("url"):
+            return str(candidate["url"])
+        sizes = candidate.get("sizes")
+        if isinstance(sizes, list) and sizes:
+            best = max(
+                (s for s in sizes if isinstance(s, dict) and s.get("url")),
+                key=lambda s: int(s.get("width") or 0),
+                default=None,
+            )
+            if best:
+                return str(best["url"])
+        for val in candidate.values():
+            if isinstance(val, str) and val.startswith("http"):
+                return val
+    elif isinstance(candidate, str) and candidate:
+        return candidate
+    return ""
+
+
+def _banner_url(raw: dict) -> str:
+    """Bannière (image de couverture) du profil, chaîne vide si absente.
+
+    ⚠️ Une chaîne vide veut dire « pas de bannière personnalisée » : LinkedIn
+    n'expose pas d'URL pour le fond bleu par défaut. C'est exactement le fait
+    dont l'audit SEO a besoin — ne pas confondre avec un échec de scrape.
+    """
+    bi = raw.get("basic_info") if isinstance(raw.get("basic_info"), dict) else {}
+    for candidate in (
+        bi.get("background_picture_url"),
+        raw.get("coverPicture"),
+        raw.get("backgroundImage"),
+        raw.get("backgroundPicture"),
+    ):
+        url = _image_url(candidate)
+        if url:
+            return url
+    return ""
+
+
+def _skills(raw: dict) -> list[str]:
+    """Compétences déclarées, dans l'ordre du profil (les 1res comptent le plus)."""
+    bi = raw.get("basic_info") if isinstance(raw.get("basic_info"), dict) else {}
+    out: list[str] = []
+    seen: set[str] = set()
+    for source in (bi.get("top_skills"), raw.get("topSkills"), bi.get("skills"), raw.get("skills")):
+        if not isinstance(source, list):
+            continue
+        for item in source:
+            # apimaestro : liste de chaînes. harvestapi : liste de dicts {name, endorsements}.
+            name = item if isinstance(item, str) else (item or {}).get("name") if isinstance(item, dict) else None
+            name = (name or "").strip()
+            key = name.lower()
+            if name and key not in seen:
+                seen.add(key)
+                out.append(name)
+    return out[:30]
+
+
+def _job_titles(raw: dict) -> list[str]:
+    """Intitulés de postes (actuels et passés) — indexés par la recherche LinkedIn."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for source in (raw.get("currentPosition"), raw.get("experience")):
+        if not isinstance(source, list):
+            continue
+        for item in source:
+            if not isinstance(item, dict):
+                continue
+            title = (item.get("position") or item.get("title") or "").strip()
+            key = title.lower()
+            if title and key not in seen:
+                seen.add(key)
+                out.append(title)
+    return out[:12]
+
+
+def _seo_signals(raw: dict) -> dict:
+    """Ce que la « bible LinkedIn » regarde, extrait de ce qu'on scrape DÉJÀ.
+
+    ⚠️ Aucun appel réseau supplémentaire : ces champs étaient renvoyés par les
+    deux acteurs Apify depuis toujours et jetés par la normalisation. Les
+    remonter ne coûte pas un centime de scrape en plus.
+    """
+    bi = raw.get("basic_info") if isinstance(raw.get("basic_info"), dict) else {}
+    totals = raw.get("sectionTotals") if isinstance(raw.get("sectionTotals"), dict) else {}
+    recos = raw.get("receivedRecommendations")
+    return {
+        "banner_url": _banner_url(raw),
+        "skills": _skills(raw),
+        "job_titles": _job_titles(raw),
+        "public_identifier": str(
+            bi.get("public_identifier") or raw.get("publicIdentifier") or ""
+        ),
+        "recommendations_count": int(
+            (totals.get("receivedRecommendations") if isinstance(totals.get("receivedRecommendations"), int) else None)
+            or (len(recos) if isinstance(recos, list) else 0)
+        ),
+        "experience_count": int(totals.get("experience") or 0),
+        "open_to_work": bool(bi.get("open_to_work") or raw.get("openToWork")),
+        "premium": bool(bi.get("is_premium") or raw.get("premium")),
+        "verified": bool(bi.get("is_verified") or raw.get("verified")),
+    }
+
+
 def normalize_profile(raw: dict | None) -> dict:
     """Normalize the profile-scraper output."""
     if not raw:
@@ -268,6 +376,7 @@ def normalize_profile(raw: dict | None) -> dict:
             "influencer": bool(bi.get("is_influencer")),
             "profile_url": bi.get("profile_url") or "",
             "avatar_url": _avatar_url(raw),
+            "seo": _seo_signals(raw),
         }
 
     first = _get(raw, "firstName", "first_name", default="") or ""
@@ -284,4 +393,5 @@ def normalize_profile(raw: dict | None) -> dict:
         "influencer": bool(_get(raw, "influencer", default=False)),
         "profile_url": _get(raw, "url", "profileUrl", "linkedinUrl", default=""),
         "avatar_url": _avatar_url(raw),
+        "seo": _seo_signals(raw),
     }

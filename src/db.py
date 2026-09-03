@@ -786,6 +786,10 @@ def list_reports(access_token: str, limit: int = 3) -> list[dict]:
 
 _EDITORIAL_PROFILE_FIELDS = (
     "display_name",
+    # 0074 : demandé à l'onboarding. Aucun usage produit — sert à rappeler
+    # l'inscrit. Toute colonne ajoutée ici doit exister en base, sinon
+    # l'enregistrement du profil échoue en bloc (PostgREST refuse la colonne).
+    "phone",
     "brand_name",
     "industry",
     "business_description",

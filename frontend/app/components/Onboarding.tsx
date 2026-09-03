@@ -17,7 +17,7 @@
  * sans se dédoubler.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   Briefcase,
@@ -57,6 +57,17 @@ export type OnboardingPreview = {
   hashtags: string[];
   strengths: string[];
   improvements: string[];
+  /** Audit de référencement du profil (bannière incluse). Absent quand aucun
+   *  compte LinkedIn n'a été lu : on n'audite pas ce qu'on n'a pas vu. */
+  seo_audit?: {
+    score: number;
+    findings: { key: string; label: string; ok: boolean; detail: string }[];
+    keywords: string[];
+    priorities: string[];
+    banner_verdict: string;
+    has_banner: boolean;
+    banner_reviewed: boolean;
+  } | null;
 };
 
 /** Stratégie révélée à la fin de l'onboarding (`GET /me/pilot/strategy`).
@@ -254,11 +265,20 @@ const ONB_SAAS_SCAN_STEPS_SITE = [
   "Identification de ta cible…",
   "On peaufine tout ça…",
 ];
+// ⚠️ Ces étapes doivent décrire ce qui se passe VRAIMENT côté serveur, pas
+// meubler l'attente : le scrape LinkedIn remonte bien le titre, la section
+// Infos, les compétences, l'URL et la bannière, et l'audit SEO les passe en
+// revue (dont la bannière, regardée par le modèle). Annoncer une étape qui
+// n'existe pas est un mensonge d'ambiance — c'est ce qui avait été corrigé le
+// 2026-08-11 quand le tunnel disait « lecture de ton profil » sans profil.
 const ONB_SAAS_SCAN_STEPS_LINKEDIN = [
   "Lecture de ton profil…",
-  "Analyse de ton audience…",
+  "On regarde ta bannière…",
+  "Ton titre et tes mots-clés…",
+  "Tes compétences et tes recommandations…",
+  "Analyse de tes posts…",
   "Identification de ta cible…",
-  "On peaufine tout ça…",
+  "On compose ta stratégie…",
 ];
 const ONB_SAAS_SCAN_STEPS_DESCRIPTION = [
   "Lecture de ta description…",
@@ -575,6 +595,13 @@ export default function OnboardingScreen({
   // Qualification fondateur (pendant le scan, tunnel SaaS) — sert l'effet miroir
   // du closing. Volontairement hors du profil éditorial : le backend ignorerait
   // ces clés en silence, autant ne pas prétendre les enregistrer.
+  // Téléphone : seul champ OBLIGATOIRE du tunnel (décision d'Alex). Validé sur
+  // le nombre de chiffres, pas sur un format — les gens écrivent « 06 12 34 »,
+  // « +33 6… », « 06.12.34.56.78 » : refuser une saisie valide au motif qu'elle
+  // n'a pas la bonne ponctuation est le meilleur moyen de perdre l'inscrit.
+  const [phone, setPhone] = useState("");
+  const [phoneTouched, setPhoneTouched] = useState(false);
+  const phoneValid = phone.replace(/\D/g, "").length >= 6;
   const [stage, setStage] = useState("");
   const [obstacles, setObstacles] = useState<string[]>([]);
   // « Autre » : le blocage dans SES mots — c'est même le meilleur carburant du
@@ -623,8 +650,16 @@ export default function OnboardingScreen({
   /** Vitrine / notoriété vs acquisition — choisi sur page2, pilote l'écran gains. */
   const gainsFocus = onbGainsFocus(sel.objective.picks);
 
-  const up = (patch: Partial<ReturnType<typeof onbInitSel>>) =>
+  // ⚠️ Les questions s'affichent PENDANT le scan : à ce moment-là le
+  // pré-remplissage par l'IA n'est pas encore arrivé. Sans ce suivi, le
+  // brouillon écraserait en silence les réponses déjà données (le visiteur
+  // verrait son propre choix changer sous ses yeux). On note donc ce qu'il a
+  // touché ; `applyScanResult` ne pré-remplit que le reste.
+  const touchedRef = useRef<Set<string>>(new Set());
+  const up = (patch: Partial<ReturnType<typeof onbInitSel>>) => {
+    Object.keys(patch).forEach((k) => touchedRef.current.add(k));
     setSel((s) => ({ ...s, ...patch }));
+  };
 
   const inputKind: OnbInputKind = (() => {
     const v = aiInput.trim();
@@ -663,7 +698,7 @@ export default function OnboardingScreen({
   // droit à l'analyse (quizIdx déjà à 3 au lancement, cf. analyze()).
   useEffect(() => {
     if (step !== "scanning" || variantKey !== "saas") return;
-    const id = setTimeout(() => setQuizIdx((i) => (i === 0 ? 1 : i)), 2500);
+    const id = setTimeout(() => setQuizIdx((i) => (i === 0 ? 1 : i)), 2200);
     return () => clearTimeout(id);
   }, [step, variantKey]);
 
@@ -671,7 +706,7 @@ export default function OnboardingScreen({
   // SEUL cas d'avancée automatique : tant qu'une question est à l'écran, le
   // résultat attend — on n'arrache pas un choix en cours.
   useEffect(() => {
-    if (step === "scanning" && variantKey === "saas" && quizIdx === 3 && scanResult) {
+    if (step === "scanning" && variantKey === "saas" && quizIdx > 5 && scanResult) {
       applyScanResult(scanResult.profile, scanResult.preview);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -680,8 +715,23 @@ export default function OnboardingScreen({
   /** Applique le brouillon + la preview et avance vers l'écran d'analyse. */
   function applyScanResult(d: Record<string, string>, p: OnboardingPreview | null) {
     setDraft(d);
-    setSel(onbInitSel(d, variant));
+    const drafted = onbInitSel(d, variant);
+    setSel((current) => {
+      const merged = { ...drafted };
+      // Ce que le visiteur a répondu pendant l'attente prime sur le brouillon.
+      touchedRef.current.forEach((key) => {
+        (merged as Record<string, unknown>)[key] = (current as Record<string, unknown>)[key];
+      });
+      return merged;
+    });
     setPreview(p);
+    // Variante in-app : l'audit ne vit plus sur son propre écran, il est rendu
+    // avec la stratégie (décision d'Alex du 2026-09-03). Les questions ayant
+    // déjà été posées pendant le scan, il ne reste rien à demander.
+    if (variantKey === "saas") {
+      void toPlan();
+      return;
+    }
     setStep(p ? "analysis" : "page1");
   }
 
@@ -695,11 +745,11 @@ export default function OnboardingScreen({
       setError("On ne lit pas les pages entreprise — colle ton profil perso (linkedin.com/in/…).");
       return;
     }
-    // LinkedIn → pas de quiz SaaS (stade / obstacles). Site / texte → quiz
-    // classique (quizIdx 0 → pop-up à 2,5 s). « Où en es-tu aujourd'hui ? » n'a pas
-    // de sens quand on vient de coller un profil perso.
-    const skipSaasQuiz = variantKey === "saas" && inputKind === "linkedin";
-    setError(""); setScanResult(null); setQuizIdx(skipSaasQuiz ? 3 : 0); setStep("scanning");
+    // Les 5 questions portent sur le PROFIL (nom, téléphone, cible, offre,
+    // objectif, secteur) : elles valent quelle que soit l'entrée, y compris un
+    // LinkedIn collé — contrairement à l'ancien quiz « où en est ton SaaS ? »
+    // qui n'avait pas de sens sur un profil perso.
+    setError(""); setScanResult(null); setQuizIdx(0); setStep("scanning");
     try {
       const isLinkedin = inputKind === "linkedin";
       const isWebsite = inputKind === "website";
@@ -748,6 +798,9 @@ export default function OnboardingScreen({
     return {
       ...draft,
       display_name: sel.displayName.trim() || draft.display_name || "",
+      // 0074 : le champ existe côté serveur, sinon il serait accepté puis
+      // ignoré en silence (pydantic + colonne).
+      phone: phone.trim(),
       target_audience: sel.audienceMode === "large" ? "Large, pas de niche précise" : onbJoin(sel.audience),
       core_offer: onbJoin(sel.offer),
       linkedin_objective: onbJoin(sel.objective),
@@ -1012,105 +1065,132 @@ export default function OnboardingScreen({
             {/* « Analyse prête » ne s'affiche qu'une fois le quiz fini : pendant
                 les questions, le statut continue de raconter le scan — annoncer
                 la fin inciterait à bâcler la réponse en cours. */}
-            <div className="onb-scan-status" key={scanResult && quizIdx >= 3 ? "done" : scanIdx}>
-              {scanResult && quizIdx >= 3 ? "Analyse prête ✓" : scanSteps[scanIdx]}
+            <div className="onb-scan-status" key={scanResult && quizIdx > 5 ? "done" : scanIdx}>
+              {scanResult && quizIdx > 5 ? "Analyse prête ✓" : scanSteps[scanIdx]}
             </div>
 
-            {/* Tunnel SaaS + entrée site : deux pop-up (stade / obstacles)
-                pendant l'attente. Pas de quiz si LinkedIn collé — « Où en es-tu
-                aujourd'hui ? » n'a pas de sens sur un profil. Le bouton Continuer
-                est toujours cliquable ; après la 2ᵉ, avancée auto si prêt. */}
-            {variantKey === "saas" && inputKind !== "linkedin" && quizIdx === 1 && (
-              <div className="onb-scan-quiz" key="quiz1">
-                <div className="onb-scan-quiz-kicker">Pendant que ça tourne — question 1/2</div>
-
-                <div className="onb-block" style={{ marginBottom: 6 }}>
-                  <label className="onb-block-label">Où en es-tu aujourd&apos;hui&nbsp;?</label>
-                  <p className="onb-lead" style={{ margin: "0 0 8px", fontSize: 13 }}>
-                    Le stade calibre la stratégie.
-                  </p>
-                  <div className="onb-chips" style={{ flexDirection: "column", alignItems: "stretch" }}>
-                    {ONB_SAAS_STAGES.map((o) => (
-                      <button
-                        key={o.label}
-                        type="button"
-                        className={"onb-chip" + (stage === o.label ? " selected" : "")}
-                        style={{ textAlign: "left", display: "block" }}
-                        onClick={() => setStage(stage === o.label ? "" : o.label)}
-                      >
-                        <span style={{ fontWeight: 600 }}>{o.label}</span>
-                        <span style={{ display: "block", fontSize: 12, opacity: 0.72, marginTop: 2 }}>
-                          {o.hint}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
+            {/* ── Les 5 questions du profil, posées PENDANT le chargement ──
+                Décision d'Alex (2026-09-03) : le scan est plus long depuis que
+                l'audit regarde aussi la bannière — autant occuper l'attente
+                utilement plutôt que d'ajouter des pages après.
+                ⚠️ Rien ici ne ralentit ni n'interrompt le scan : la requête
+                tourne dans `analyze()`, ces pop-up ne font que s'afficher
+                par-dessus. Et le résultat n'arrache JAMAIS l'écran : il attend
+                dans `scanResult` tant qu'une question est ouverte. */}
+            {variantKey === "saas" && quizIdx >= 1 && quizIdx <= 5 && (
+              <div className="onb-scan-quiz" key={`quiz${quizIdx}`}>
+                <div className="onb-scan-quiz-kicker">
+                  Pendant que ça tourne — question {quizIdx}/5
                 </div>
 
-                <button type="button" className="onb-analysis-cta" onClick={() => setQuizIdx(2)}>
-                  Continuer <ChevronRight size={16} />
-                </button>
-              </div>
-            )}
+                {quizIdx === 1 && (
+                  <>
+                    <div className="onb-block">
+                      <label className="onb-block-label" htmlFor="onb-name">Nom et prénom</label>
+                      <input
+                        id="onb-name"
+                        className="onb-other-input"
+                        style={{ marginTop: 0 }}
+                        value={sel.displayName}
+                        onChange={(e) => up({ displayName: e.target.value })}
+                        placeholder="Ton nom et prénom"
+                        autoFocus
+                      />
+                    </div>
+                    <div className="onb-block">
+                      <label className="onb-block-label" htmlFor="onb-phone">Téléphone</label>
+                      <input
+                        id="onb-phone"
+                        className="onb-other-input"
+                        style={{ marginTop: 0 }}
+                        type="tel"
+                        inputMode="tel"
+                        autoComplete="tel"
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        placeholder="06 12 34 56 78"
+                      />
+                      {/* Un numéro demandé sans raison sur un produit gratuit
+                          se lit comme un piège à démarchage. On dit à quoi il
+                          sert — et ce qu'on n'en fera pas. */}
+                      <p className="onb-field-note">
+                        Promis, zéro spam et zéro pub. C&apos;est pour t&apos;accompagner si tu bloques
+                        au démarrage — rien d&apos;automatique ne part sur ce numéro.
+                      </p>
+                      {phoneTouched && !phoneValid && (
+                        <p className="onb-field-error">Ajoute un numéro pour continuer.</p>
+                      )}
+                    </div>
+                  </>
+                )}
 
-            {variantKey === "saas" && inputKind !== "linkedin" && quizIdx === 2 && (
-              <div className="onb-scan-quiz" key="quiz2">
-                <div className="onb-scan-quiz-kicker">Pendant que ça tourne — question 2/2</div>
-
-                <div className="onb-block" style={{ marginBottom: 6 }}>
-                  <label className="onb-block-label">Qu&apos;est-ce qui te bloque le plus&nbsp;?</label>
-                  <p className="onb-lead" style={{ margin: "0 0 8px", fontSize: 13 }}>
-                    Coche tout ce qui te parle — le plan d&apos;attaque se calibre dessus.
-                  </p>
-                  <div className="onb-chips">
-                    {ONB_SAAS_OBSTACLES.map((label) => (
+                {quizIdx === 2 && (
+                  <div className="onb-block">
+                    <label className="onb-block-label">{variant.audienceLabel}</label>
+                    <div className="onb-toggle">
                       <button
-                        key={label}
                         type="button"
-                        className={"onb-chip" + (obstacles.includes(label) ? " selected" : "")}
-                        onClick={() =>
-                          setObstacles((prev) =>
-                            prev.includes(label) ? prev.filter((o) => o !== label) : [...prev, label],
-                          )
-                        }
+                        className={"onb-toggle-btn" + (sel.audienceMode === "niche" ? " selected" : "")}
+                        onClick={() => up({ audienceMode: "niche" })}
                       >
-                        {label}
+                        Une cible précise
                       </button>
-                    ))}
-                    <button
-                      type="button"
-                      className={"onb-chip" + (showObstacleOther ? " selected" : "")}
-                      onClick={() => {
-                        const next = !showObstacleOther;
-                        setShowObstacleOther(next);
-                        if (!next) setObstacleOther("");
-                      }}
-                    >
-                      Autre
-                    </button>
+                      <button
+                        type="button"
+                        className={"onb-toggle-btn" + (sel.audienceMode === "large" ? " selected" : "")}
+                        onClick={() => up({ audienceMode: "large" })}
+                      >
+                        Un public large
+                      </button>
+                    </div>
+                    {sel.audienceMode === "niche" && (
+                      <OnbChips
+                        options={variant.audienceOptions}
+                        field={sel.audience}
+                        onChange={(v) => up({ audience: v })}
+                        placeholder="Ta niche…"
+                      />
+                    )}
                   </div>
-                  {showObstacleOther && (
-                    <input
-                      className="onb-other-input"
-                      value={obstacleOther}
-                      onChange={(e) => setObstacleOther(e.target.value)}
-                      placeholder="Dis-le avec tes mots…"
-                      autoFocus
-                    />
-                  )}
-                </div>
+                )}
 
-                {/* Toujours cliquable : si l'analyse est prête on avance tout de
-                    suite, sinon retour à l'animation — l'effet fera le reste. */}
+                {quizIdx === 3 && (
+                  <div className="onb-block">
+                    <label className="onb-block-label">{variant.offerLabel}</label>
+                    <OnbChips options={variant.offerOptions} field={sel.offer} onChange={(v) => up({ offer: v })} />
+                  </div>
+                )}
+
+                {quizIdx === 4 && (
+                  <div className="onb-block">
+                    <label className="onb-block-label">{variant.objectiveLabel}</label>
+                    <OnbChips options={variant.objectiveOptions} field={sel.objective} onChange={(v) => up({ objective: v })} />
+                  </div>
+                )}
+
+                {quizIdx === 5 && (
+                  <div className="onb-block">
+                    <label className="onb-block-label">{variant.industryLabel}</label>
+                    <OnbChips options={variant.industryOptions} field={sel.industry} onChange={(v) => up({ industry: v })} />
+                  </div>
+                )}
+
+                {/* Toujours cliquable SAUF sur le téléphone, seul champ rendu
+                    obligatoire. Après la dernière : si l'analyse est prête on
+                    avance tout de suite, sinon retour à l'animation et l'effet
+                    d'avancée automatique prend le relais. */}
                 <button
                   type="button"
                   className="onb-analysis-cta"
+                  disabled={quizIdx === 1 && !phoneValid}
                   onClick={() => {
-                    setQuizIdx(3);
-                    if (scanResult) applyScanResult(scanResult.profile, scanResult.preview);
+                    if (quizIdx === 1 && !phoneValid) { setPhoneTouched(true); return; }
+                    const next = quizIdx + 1;
+                    setQuizIdx(next);
+                    if (next > 5 && scanResult) applyScanResult(scanResult.profile, scanResult.preview);
                   }}
                 >
-                  Continuer <ChevronRight size={16} />
+                  {quizIdx === 5 ? "Composer mon plan" : "Continuer"} <ChevronRight size={16} />
                 </button>
               </div>
             )}
@@ -1407,6 +1487,88 @@ export default function OnboardingScreen({
                         <strong className="onb-plan-card-value">{card.value}</strong>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {/* ── Audit du profil, sur la MÊME page que la stratégie ──
+                    Décision d'Alex : plus d'écran d'analyse à part. Ce qui est
+                    montré ici est mesuré sur le profil réellement scrapé — les
+                    constats viennent du serveur, pas du modèle, et restent
+                    justes même si l'appel modèle a échoué (les mots-clés et les
+                    priorités, eux, disparaissent alors : rien plutôt qu'un
+                    titre suivi du vide). */}
+                {preview?.seo_audit && (
+                  <div className="onb-plan-block onb-seo">
+                    <div className="onb-seo-head">
+                      <div className="onb-analysis-label">Ton profil LinkedIn</div>
+                      <span
+                        className={
+                          "onb-seo-score" +
+                          (preview.seo_audit.score >= 70 ? " good" : preview.seo_audit.score >= 40 ? " mid" : " low")
+                        }
+                      >
+                        {preview.seo_audit.score}/100
+                      </span>
+                    </div>
+                    <p className="onb-plan-hint">
+                      LinkedIn est d&apos;abord un moteur de recherche : voilà ce qui décide si
+                      tes clients te trouvent quand ils tapent ton métier.
+                    </p>
+
+                    <ul className="onb-seo-list">
+                      {preview.seo_audit.findings.map((f) => (
+                        <li key={f.key} className={f.ok ? "ok" : "ko"}>
+                          {f.ok ? (
+                            <CheckCircle2 size={15} aria-hidden="true" />
+                          ) : (
+                            <span className="onb-seo-cross" aria-hidden="true">!</span>
+                          )}
+                          <span className="onb-seo-label">{f.label}</span>
+                          <span className="onb-seo-detail">{f.detail}</span>
+                        </li>
+                      ))}
+                    </ul>
+
+                    {/* La bannière : on dit franchement si elle a été REGARDÉE.
+                        Rendre un verdict sur une image qu'on n'a pas pu charger
+                        serait exactement le faux que l'écran doit éviter. */}
+                    {preview.seo_audit.banner_verdict && (
+                      <div className="onb-seo-banner">
+                        <div className="onb-seo-banner-head">
+                          {preview.seo_audit.banner_reviewed
+                            ? "Ta bannière, vue par ton agent"
+                            : "Ta bannière"}
+                        </div>
+                        {preview.seo_audit.banner_reviewed && preview.seo_audit.has_banner && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            className="onb-seo-banner-img"
+                            src={(preview.seo_audit as { banner_url?: string }).banner_url || ""}
+                            alt=""
+                          />
+                        )}
+                        <p>{preview.seo_audit.banner_verdict}</p>
+                      </div>
+                    )}
+
+                    {preview.seo_audit.keywords.length > 0 && (
+                      <div className="onb-seo-kw">
+                        <div className="onb-seo-kw-label">Les mots-clés sur lesquels te placer</div>
+                        <div className="onb-chips">
+                          {preview.seo_audit.keywords.map((k) => (
+                            <span key={k} className="onb-chip onb-chip-static">{k}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {preview.seo_audit.priorities.length > 0 && (
+                      <ol className="onb-seo-todo">
+                        {preview.seo_audit.priorities.map((prio) => (
+                          <li key={prio}>{prio}</li>
+                        ))}
+                      </ol>
+                    )}
                   </div>
                 )}
 

@@ -188,6 +188,10 @@ class AnalyzeRequest(BaseModel):
 
 class EditorialProfileRequest(BaseModel):
     display_name: str | None = None
+    # ⚠️ Un champ absent de ce modèle est ACCEPTÉ puis IGNORÉ en silence par
+    # pydantic : sans cette ligne, le téléphone saisi à l'onboarding
+    # disparaîtrait sans la moindre erreur (piège déjà vécu sur `shots`).
+    phone: str | None = None
     brand_name: str | None = None
     industry: str | None = None
     business_description: str | None = None

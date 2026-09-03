@@ -217,23 +217,36 @@ export default function PilotePage() {
             <span className="pilote-brand-beta">Pilote</span>
           </div>
 
-          <p className="pilote-kicker">Pour les freelances IA</p>
+          <p className="pilote-kicker">Pour les freelances et les agences IA</p>
           <h1 className="pilote-h1">
-            Le <em className="pilote-em">rythme</em> pour trouver tes missions sans scroller LinkedIn.
+            Ton <em className="pilote-em">BDR</em> IA : il te rend visible, et il te trouve des clients.
           </h1>
+          {/* Un BDR est le commercial qui va CHERCHER les clients (Business
+              Development Representative). L'acronyme n'est pas connu des
+              freelances : il est expliqué dans la phrase même, sinon le titre
+              ne veut rien dire pour la moitié des visiteurs. */}
           <p className="pilote-lead">
-            {PILOTE_POSTS_PER_DAY} post par jour. Jusqu&apos;à {PILOTE_CONTACTS_PER_DAY} contacts.
-            Un {PILOTE_GROUP_BLURB}. Gratuit, sans carte — tu commences tout de suite.
+            Un BDR, c&apos;est le commercial qui va chercher les clients au lieu de les attendre.
+            Le tien travaille tous les jours : il développe ta visibilité sur les réseaux sociaux
+            et te trouve des prospects dans ta niche. Gratuit, sans carte.
           </p>
 
           <ul className="pilote-pills">
             <li>
               <Check size={16} aria-hidden="true" />
-              {PILOTE_POSTS_PER_DAY} post LinkedIn écrit pour toi, chaque jour
+              Analyse complète de ton profil LinkedIn ou de ton site web
             </li>
             <li>
               <Check size={16} aria-hidden="true" />
-              Jusqu&apos;à {PILOTE_CONTACTS_PER_DAY} contacts à relancer, déjà triés
+              Une stratégie d&apos;acquisition définie pour ta niche
+            </li>
+            <li>
+              <Check size={16} aria-hidden="true" />
+              {PILOTE_POSTS_PER_DAY} post par jour, écrit pour toi
+            </li>
+            <li>
+              <Check size={16} aria-hidden="true" />
+              Une liste de prospects identifiés, avec des messages personnalisés
             </li>
             <li>
               <Users size={16} aria-hidden="true" />
