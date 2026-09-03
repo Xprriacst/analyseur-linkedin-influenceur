@@ -387,6 +387,15 @@ def _call(
     return _extract_json(text)
 
 
+# Haut volume, sortie mécanique (étiquetage TOFU/hook/format) : bon candidat
+# pour un modèle léger. Surchargeable par `CLASSIFY_MODEL` sur Render ; à
+# défaut on retombe sur le modèle configuré (ANTHROPIC_MODEL), même patron que
+# `_scoring_model`/`_memory_card_model` — absence de variable = comportement
+# actuel inchangé.
+def _classify_model() -> str:
+    return os.environ.get("CLASSIFY_MODEL", _model())
+
+
 def classify_posts(posts: list[dict]) -> list[dict]:
     """Tag each post with TOFU/MOFU/BOFU + topic + hook type."""
     items = [
@@ -409,9 +418,22 @@ def classify_posts(posts: list[dict]) -> list[dict]:
         '"topic": str, "hook_type": str, "angle": str}, ...]}\n\n'
         "Posts:\n" + json.dumps(items, ensure_ascii=False)
     )
-    data = _call(system, user, max_tokens=8192, temperature=0.2)
+    data = _call(system, user, max_tokens=8192, temperature=0.2, model=_classify_model())
     parsed = ClassificationResponse(**data)
     return [c.model_dump() for c in parsed.classifications]
+
+
+# C'est ce que le client lit directement (synthèse + analyse stratégique du
+# dashboard + brouillon de profil éditorial, ce dernier conditionnant toute la
+# génération ensuite) : meilleur rapport qualité/prix du lot pour monter en
+# gamme. Surchargeables par `STRATEGY_MODEL` / `EDITORIAL_PROFILE_MODEL` sur
+# Render ; à défaut on retombe sur le modèle configuré (ANTHROPIC_MODEL).
+def _strategy_model() -> str:
+    return os.environ.get("STRATEGY_MODEL", _model())
+
+
+def _editorial_profile_model() -> str:
+    return os.environ.get("EDITORIAL_PROFILE_MODEL", _model())
 
 
 def synthesize_strategy(stats: dict, classifications: list[dict], posts: list[dict]) -> dict[str, Any]:
@@ -479,7 +501,7 @@ def synthesize_strategy(stats: dict, classifications: list[dict], posts: list[di
         "}"
     )
 
-    data = _call(system, user, max_tokens=4096, temperature=0.4)
+    data = _call(system, user, max_tokens=4096, temperature=0.4, model=_strategy_model())
     return StrategySynthesis(**data).model_dump()
 
 
@@ -1514,7 +1536,7 @@ Schéma JSON attendu, toutes les clés présentes avec string (vide si inconnu) 
   }
 }"""
     )
-    data = _call(system, user, max_tokens=3000, temperature=0.3)
+    data = _call(system, user, max_tokens=3000, temperature=0.3, model=_editorial_profile_model())
     profile = data.get("profile", data)
     return {
         key: str(profile.get(key) or "").strip()
@@ -1737,7 +1759,7 @@ Produis une analyse stratégique COMPLÈTE et ACTIONNABLE en suivant ce plan :
 
     client = _client()
     messages: list[dict] = [{"role": "user", "content": user}]
-    kwargs: dict[str, Any] = dict(model=_model(), max_tokens=8192, system=system)
+    kwargs: dict[str, Any] = dict(model=_strategy_model(), max_tokens=8192, system=system)
     if _accepts_temperature(kwargs["model"]):
         kwargs["temperature"] = 0.5
     kwargs.update(thinking_kwargs(kwargs["model"]))
