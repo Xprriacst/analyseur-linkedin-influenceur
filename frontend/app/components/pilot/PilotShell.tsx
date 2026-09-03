@@ -104,6 +104,7 @@ export default function PilotShell({
   const [followLoaded, setFollowLoaded] = useState(false);
   const [followedHandles, setFollowedHandles] = useState<string[]>([]);
   const [followCapReached, setFollowCapReached] = useState(false);
+  const [connectingLinkedIn, setConnectingLinkedIn] = useState(false);
 
   const loadPlan = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) {
@@ -194,6 +195,24 @@ export default function PilotShell({
       toast.success("Ajouté à ta veille");
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Impossible de suivre ce profil");
+    }
+  }
+
+  async function connectLinkedIn() {
+    setConnectingLinkedIn(true);
+    try {
+      const redirect = `${window.location.origin}${window.location.pathname}?linkedin_outreach=connected`;
+      const res = await fetch(`${DIRECT_API_URL}/me/linkedin/outreach/connect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ redirect_url: redirect }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Connexion impossible");
+      window.location.href = data.auth_url; // Unipile gère l'auth LinkedIn puis renvoie vers l'app
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Connexion impossible");
+      setConnectingLinkedIn(false);
     }
   }
 
@@ -382,6 +401,8 @@ export default function PilotShell({
             actionsLocked={actionsLocked}
             postEmpty={Boolean(meta?.post_empty)}
             contactsBlockedReason={meta?.contacts_blocked_reason || undefined}
+            onConnectLinkedIn={connectLinkedIn}
+            connectingLinkedIn={connectingLinkedIn}
             prospectAgent={meta?.prospect_agent ?? null}
             onPublish={handlePublishClick}
             onEditPost={() => {

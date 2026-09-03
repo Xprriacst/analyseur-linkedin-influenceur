@@ -88,6 +88,18 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-09-03 #3 (INCIDENT PROD : l'audit du profil n'apparaissait pas — le backend de la release n'avait jamais été déployé)
+
+- **Symptôme (test d'Alex)** : nouvel onboarding en prod, écran de fin sans l'audit du profil LinkedIn. Aucune erreur à l'écran, aucune dans les logs.
+- ⚠️ **Cause : le déploiement Render de la release (PR #496, 07:28 UTC) a échoué au `git clone`** — `GitHub is temporarily limiting some unauthenticated downloads`, 5 tentatives, `build_failed`. Le **frontend Netlify, lui, est passé** : `/onboarding` redirigeait bien vers `/pilote` en prod. Résultat : **front neuf servi par un backend du 2026-09-02**, qui ne connaît pas `seo_audit` — la section n'existe donc jamais côté client. **Panne parfaitement silencieuse : rien ne casse, une fonctionnalité entière est juste absente.**
+- ⚠️ **La cause n'a RIEN à voir avec le code** (ni Apify, ni le modèle, ni la bannière) : c'est un aléa GitHub sur le clone. Le piège est qu'un `build_failed` sur Render ne prévient personne et qu'un `/health` tout vert **ne prouve pas** que le code en vol est celui de la release — l'ancienne instance répond exactement pareil.
+- **Règle qui en découle** : après tout merge de release, **lire `list_deploys` du service Render** (statut `live` **sur le commit de release**) avant de conclure quoi que ce soit. Un front déployé + un back en échec, c'est la désynchronisation déjà documentée le 2026-08-05 (fix image OOM), en pire ici puisqu'elle ne produit aucune erreur.
+- **Correctif** : déploiement re-déclenché sur le même commit `230dd16` → **live à 19:05 UTC**, sans toucher au code.
+- ✅ **Le chemin audit a été exécuté pour la première fois contre un VRAI scrape et une VRAIE bannière** (c'était le « jamais testé » du lot) : profil d'Alex → **86/100**, 7 constats mesurés (seul « Titre du profil » en échec, 39 caractères), **bannière réellement téléchargée et regardée par le modèle** (`banner_reviewed: true`, verdict sur le message et l'absence de preuve chiffrée), 7 mots-clés et 3 priorités spécifiques (n8n, agents IA). Le module fonctionne de bout en bout.
+- ⚠️ **Deux comportements à connaître, découverts au diagnostic, NON corrigés** (ils demandent un arbitrage) :
+  1. **L'audit n'existe que si un profil LinkedIn a été lu** (règle voulue : « on n'audite pas un compte qu'on n'a pas vu »). Les deux comptes de test d'Alex du jour (`jesuis untest`, `Unautre TEST`) ont été créés en tapant une **description libre** — ni LinkedIn ni site en base — donc aucun audit, **et l'écran ne dit pas pourquoi**. Le champ d'entrée propose « site ou LinkedIn » : une entrée sur deux prive donc le client de l'audit sans un mot d'explication.
+  2. **Un scrape en échec ne se voit pas** : sur une URL de profil inexistante, les deux acteurs Apify rendent 0 item (`[apify.health] ANOMALIE` dans les logs), et la preview est quand même produite — avec un **nom déduit du slug de l'URL**. Le visiteur lit une analyse d'apparence normale sur un profil que personne n'a lu.
+
 ### 2026-09-03 #2 (dev : landing BDR, onboarding en 5 questions pendant le scan, audit SEO du profil avec lecture de la bannière)
 
 - **Retours d'Alex, traités d'un lot.** Ce qui change pour le client : la landing dit ce que fait le produit (« ton BDR IA »), l'onboarding pose ses questions **pendant** le chargement au lieu d'ajouter des pages, et l'écran de fin porte enfin un **audit de son profil LinkedIn** — bannière comprise — à côté de sa stratégie.
