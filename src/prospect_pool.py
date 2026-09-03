@@ -1,10 +1,13 @@
 """Vivier partagé de prospects — Mode Pilote, 1 profil réel par jour.
 
-Décision produit (Alex, 2026-09-02) : l'app propose **un** prospect réel au
-compte Pilote, tant que LinkedIn n'est pas encore connecté. Le stock n'est
-PAS la liste d'un autre client : c'est un vivier **rempli par l'admin**
-(CSV / xlsx / URLs), table `prospect_cache` (migration 0073), cartes
-publiques seulement (nom, titre, URL LinkedIn).
+Décision produit (Alex, 2026-09-02, corrigée le soir même) : l'app propose
+**un** prospect réel au compte Pilote, tant que LinkedIn n'est pas encore
+connecté. Le stock `prospect_cache` (migration 0073) est alimenté par **tous
+les prospects de tous les comptes** — cartes publiques seulement (nom, titre,
+URL LinkedIn). L'import admin (CSV / xlsx / URLs) reste un appoint.
+
+Jamais de commentaire, d'invitation ou de message : ces champs n'existent
+pas sur la table, et la copie depuis `leads` ne les projette pas.
 
 Même garantie que les suggestions « à suivre » (`src/follow_suggestions.py`) :
 
@@ -46,7 +49,14 @@ POOL_ASSIGN_SCORE = 75
 SIGNAL_ORIGIN = "prospect_pool"
 
 # Combien de fiches du vivier on inspecte. Filtrage en mémoire ensuite.
-_CANDIDATE_POOL = 500
+# Doit couvrir le stock organique (prod ~1 300 URLs distinctes au 2026-09-02)
+# sinon le matching ne verrait que les 500 plus récentes — souvent une seule
+# niche — et un compte d'une autre niche resterait à « en recherche ».
+_CANDIDATE_POOL = 2500
+
+# Un harvest (copie des leads existants) par process Render : idempotent, et
+# `save_leads` alimente ensuite le vivier à chaque nouvel import.
+_harvest_attempted = False
 
 
 def canonical_url(url: str | None) -> str | None:
@@ -67,7 +77,14 @@ def keyword_hits(haystack: str, keywords: Iterable[str]) -> list[str]:
         token = str(raw or "").strip().lower()
         if len(token) < 4 or token in seen:
             continue
-        if re.search(r"\b" + re.escape(token), text):
+        variants = [token]
+        # « Coachs & consultants » extrait `coachs` / `consultants` — sans
+        # ça `\bcoachs` rate « Coach en … » (le cas normal sur LinkedIn).
+        if token.endswith("s") and len(token) >= 5:
+            stem = token[:-1]
+            if len(stem) >= 4:
+                variants.append(stem)
+        if any(re.search(r"\b" + re.escape(variant), text) for variant in variants):
             seen.add(token)
             hits.append(token)
     return hits
@@ -196,27 +213,85 @@ def parse_profile_urls(text: str) -> dict[str, Any]:
     return {"leads": leads, "ignored": ignored, "rows": rows, "truncated": False}
 
 
+def public_card(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """URL / nom / titre. Jamais un commentaire, un signal, un user_id."""
+    if not isinstance(row, dict):
+        return None
+    url = canonical_url(row.get("profile_url"))
+    if not url:
+        return None
+    name = str(row.get("name") or "").strip() or None
+    headline = str(row.get("headline") or "").strip() or None
+    return {
+        "profile_url": url,
+        "name": name[:300] if name else None,
+        "headline": headline[:500] if headline else None,
+    }
+
+
 def ingest_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Écrit les cartes publiques dans `prospect_cache`. Dédup par URL."""
-    payload: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    """Écrit les cartes publiques dans `prospect_cache`. Dédup par URL.
+
+    Deux lignes de la même personne (deux comptes) : on garde le nom/titre
+    déjà remplis, on complète les blancs. On n'écrase pas une fiche nommée
+    par une URL seule.
+    """
+    by_url: dict[str, dict[str, Any]] = {}
     for row in rows or []:
-        if not isinstance(row, dict):
+        card = public_card(row)
+        if not card:
             continue
-        url = canonical_url(row.get("profile_url"))
-        if not url or url in seen:
+        url = card["profile_url"]
+        current = by_url.get(url)
+        if current is None:
+            by_url[url] = card
             continue
-        seen.add(url)
-        name = str(row.get("name") or "").strip() or None
-        headline = str(row.get("headline") or "").strip() or None
-        payload.append({
-            "profile_url": url,
-            "name": name[:300] if name else None,
-            "headline": headline[:500] if headline else None,
-        })
+        if card["name"] and not current["name"]:
+            current["name"] = card["name"]
+        if card["headline"] and not current["headline"]:
+            current["headline"] = card["headline"]
+    payload = list(by_url.values())
     if not payload:
         return {"inserted": 0, "updated": 0, "skipped": 0}
     return db.upsert_prospect_cache(payload)
+
+
+def contribute_from_leads(rows: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Copie les cartes publiques d'un lot de leads dans le vivier.
+
+    Best-effort : un échec ici ne doit jamais faire échouer `save_leads`.
+    """
+    try:
+        return ingest_rows(list(rows or []))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[prospect_pool] contribution sautée : {exc}", flush=True)
+        return {"inserted": 0, "updated": 0, "skipped": 0}
+
+
+def harvest_existing_leads(
+    *,
+    force: bool = False,
+    list_leads=None,
+) -> dict[str, Any]:
+    """Rattrapage : tous les leads déjà en base → vivier, une fois par process.
+
+    Les imports *futurs* passent par `contribute_from_leads` depuis
+    `save_leads`. Celui-ci ne sert qu'à ne pas attendre le prochain import
+    pour remplir un vivier encore vide.
+    """
+    global _harvest_attempted
+    if _harvest_attempted and not force:
+        return {"inserted": 0, "updated": 0, "skipped": 0, "read": 0}
+    _harvest_attempted = True
+    try:
+        reader = list_leads or db.list_all_lead_public_cards
+        rows = reader()
+        counts = ingest_rows(list(rows or []))
+        counts["read"] = len(rows or [])
+        return counts
+    except Exception as exc:  # noqa: BLE001
+        print(f"[prospect_pool] harvest sauté : {exc}", flush=True)
+        return {"inserted": 0, "updated": 0, "skipped": 0, "read": 0}
 
 
 def maybe_assign_one(
@@ -250,6 +325,12 @@ def maybe_assign_one(
         excluded = existing_profile_urls(leads)
         reader = list_candidates or db.list_prospect_cache_candidates
         candidates = reader(limit=_CANDIDATE_POOL)
+        # Vivier encore vide (aucun import depuis le dernier deploy) : on
+        # rattrape les leads déjà en base, puis on relit. Injecter
+        # `list_candidates` (tests) saute ce chemin — on ne touche pas à la DB.
+        if list_candidates is None and not candidates:
+            harvest_existing_leads()
+            candidates = reader(limit=_CANDIDATE_POOL)
         picked = pick_best(candidates, keywords, excluded)
         if not picked:
             return None

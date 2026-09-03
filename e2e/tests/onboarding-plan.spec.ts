@@ -118,7 +118,25 @@ test.describe("Onboarding — plan final", () => {
     });
     await page.route("**/me/profile/draft", (route) =>
       route.fulfill({
-        json: { profile: { display_name: "Alex Test", core_offer: "Automatisation" }, preview: PREVIEW },
+        json: {
+          profile: { display_name: "Alex Test", core_offer: "Automatisation" },
+          preview: {
+            ...PREVIEW,
+            seo_audit: {
+              score: 43,
+              findings: [
+                { key: "headline", label: "Titre du profil", ok: false, detail: "7 caractères" },
+                { key: "banner", label: "Bannière", ok: true, detail: "personnalisée" },
+              ],
+              keywords: ["consultant seo", "audit linkedin"],
+              priorities: ["Remplace « Founder » par ton métier réel"],
+              banner_verdict: "Ta bannière est jolie mais ne dit pas ce que tu vends.",
+              has_banner: true,
+              banner_reviewed: true,
+              banner_url: "",
+            },
+          },
+        },
       }),
     );
     await page.route("**/me/pilot/strategy", (route) => {
@@ -165,13 +183,19 @@ test.describe("Onboarding — plan final", () => {
     // Même jeu de questions que /onboarding : un seul onboarding.
     await page.getByPlaceholder(/ton-site\.com/).fill("https://www.linkedin.com/in/alex-test/");
     await page.getByRole("button", { name: "Analyser" }).click();
-    await expect(page.getByRole("heading", { name: "Analyse IA" })).toBeVisible({ timeout: 30_000 });
+    // Les 5 questions se posent PENDANT le chargement (2026-09-03) : plus
+    // d'écran d'analyse séparé, plus de pages après.
+    await expect(page.getByText("Pendant que ça tourne — question 1/5")).toBeVisible({ timeout: 30_000 });
 
-    // (2) L'écran de détail a disparu du tunnel.
-    await expect(page.getByRole("button", { name: "Voir mon potentiel" })).toHaveCount(0);
+    // (2) Le téléphone est le seul champ bloquant : tant qu'il est vide, on ne
+    // passe pas. Vérifié par la négative — sans ça le « obligatoire » serait
+    // décoratif.
+    const suivant = page.getByRole("button", { name: /Continuer|Composer mon plan/ });
+    await expect(suivant).toBeDisabled();
+    await page.getByLabel("Téléphone").fill("06 12 34 56 78");
+    await expect(suivant).toBeEnabled();
 
-    await page.getByRole("button", { name: "Continuer", exact: true }).click();
-    await page.getByRole("button", { name: "Continuer", exact: true }).click();
+    for (let i = 0; i < 4; i++) await suivant.click();
     await page.getByRole("button", { name: "Composer mon plan" }).click();
 
     // (1) Le profil part AVANT la lecture de la stratégie.
@@ -180,7 +204,13 @@ test.describe("Onboarding — plan final", () => {
     });
     expect(saveDoneAt).toBeGreaterThan(0);
     expect(strategyAt).toBeGreaterThan(saveDoneAt);
-    expect(savedProfile).toMatchObject({ display_name: "Alex Test" });
+    expect(savedProfile).toMatchObject({ display_name: "Alex Test", phone: "06 12 34 56 78" });
+
+    // (4) L'audit du profil est rendu sur la MÊME page que la stratégie.
+    await expect(page.getByText("Ton profil LinkedIn")).toBeVisible();
+    await expect(page.getByText("43/100")).toBeVisible();
+    await expect(page.getByText(/ne dit pas ce que tu vends/)).toBeVisible();
+    await expect(page.getByText("consultant seo")).toBeVisible();
 
     // La stratégie affichée est bien celle lue sur le serveur.
     await expect(page.getByText("Fondateurs SaaS · Automatisation LinkedIn")).toBeVisible();

@@ -254,8 +254,67 @@ export default function PilotShell({
           onInterfaceModeChange={onInterfaceModeChange}
         />
         <div className="pilot-app-main">
-          <div className="pilot-inner" style={{ padding: "48px 24px", textAlign: "center", color: "#86868b" }}>
-            Chargement de ton plan du jour…
+          {/* Squelette à la forme RÉELLE de la vue du jour (salutation, semaine,
+              post, contacts) plutôt qu'une phrase grise centrée : l'écran ne
+              saute plus au moment où le plan arrive, il se remplit. Mêmes
+              primitives `.sk` que le mode Expert (globals.css, ALE-266) — pas
+              un second système d'états de chargement.
+              `aria-hidden` + `role="status"` : le lecteur d'écran entend une
+              phrase, pas dix-sept blocs vides. */}
+          <div className="pilot-inner pilot-skeleton" role="status" aria-live="polite">
+            <span className="sr-only">Chargement de ton plan du jour…</span>
+            <div className="pilot-hero" aria-hidden>
+              <div className="pilot-hero-copy sk-list">
+                <div className="sk line sm" style={{ width: 110 }} />
+                <div className="sk line" style={{ width: "62%", height: 26, marginTop: 14 }} />
+                <div className="sk line" style={{ width: "84%", marginTop: 12 }} />
+              </div>
+              <div className="pilot-skeleton-week">
+                <div className="sk" style={{ width: 96, height: 12, borderRadius: 999 }} />
+                <div className="sk line sm" style={{ width: 74, marginTop: 10 }} />
+              </div>
+            </div>
+
+            <div className="pilot-desk" aria-hidden>
+              <section className="pilot-section">
+                <div className="pilot-section-head">
+                  <div className="sk line sm" style={{ width: 96 }} />
+                  <div className="sk" style={{ width: 68, height: 18, borderRadius: 999 }} />
+                </div>
+                <article className="pilot-post-card">
+                  <div className="pilot-post-card-inner sk-list">
+                    <div className="pilot-skeleton-author">
+                      <div className="sk circle" style={{ width: 40, height: 40 }} />
+                      <div style={{ flex: 1 }}>
+                        <div className="sk line sm" style={{ width: "44%" }} />
+                        <div className="sk line sm" style={{ width: "66%", marginTop: 7 }} />
+                      </div>
+                    </div>
+                    <div className="sk line" style={{ width: "92%", marginTop: 18 }} />
+                    <div className="sk line" style={{ width: "100%", marginTop: 10 }} />
+                    <div className="sk line" style={{ width: "97%", marginTop: 10 }} />
+                    <div className="sk line" style={{ width: "58%", marginTop: 10 }} />
+                  </div>
+                </article>
+              </section>
+
+              <section className="pilot-section">
+                <div className="pilot-section-head">
+                  <div className="sk line sm" style={{ width: 112 }} />
+                </div>
+                <div className="sk-list">
+                  {[0, 1, 2].map((i) => (
+                    <div key={i} className="pilot-skeleton-contact">
+                      <div className="sk circle" style={{ width: 34, height: 34 }} />
+                      <div style={{ flex: 1 }}>
+                        <div className="sk line sm" style={{ width: "52%" }} />
+                        <div className="sk line sm" style={{ width: "78%", marginTop: 7 }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       </div>

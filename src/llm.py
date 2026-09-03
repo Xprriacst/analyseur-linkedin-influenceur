@@ -1,6 +1,7 @@
 """LLM-based classification and strategic synthesis (Claude / Anthropic)."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import random
@@ -325,6 +326,7 @@ def _call(
     tools: list[dict] | None = None,
     on_web_search: Callable[[dict[str, Any]], None] | None = None,
     model: str | None = None,
+    images: list[tuple[str, bytes]] | None = None,
 ) -> dict:
     if on_web_search:
         return _call_streaming(
@@ -337,7 +339,25 @@ def _call(
         )
 
     client = _client()
-    messages: list[dict] = [{"role": "user", "content": user}]
+    # `images` = [(media_type, octets)] — audit visuel d'une bannière LinkedIn.
+    # L'image passe AVANT le texte : c'est l'ordre recommandé côté Anthropic,
+    # le texte peut alors s'y référer (« la bannière ci-dessus »).
+    if images:
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": base64.standard_b64encode(data).decode("ascii"),
+                },
+            }
+            for media_type, data in images
+        ]
+        blocks.append({"type": "text", "text": user})
+        messages: list[dict] = [{"role": "user", "content": blocks}]
+    else:
+        messages = [{"role": "user", "content": user}]
     kwargs: dict[str, Any] = dict(
         model=model or _model(),
         max_tokens=max_tokens,
@@ -1400,12 +1420,45 @@ Schéma JSON attendu :
     # Défaut = ANTHROPIC_MODEL. Sur Render : ONBOARDING_PREVIEW_MODEL=claude-opus-5
     # (plus Fable : trop cher pour cet appel). Thinking désactivé via thinking_kwargs.
     model = os.environ.get("ONBOARDING_PREVIEW_MODEL", "").strip() or None
+
+    # L'audit SEO du profil est un SECOND appel modèle (+ le téléchargement de
+    # la bannière). Le lancer en parallèle plutôt qu'à la suite : les deux
+    # latences se recouvrent au lieu de s'additionner sur un écran d'attente
+    # que le visiteur regarde déjà depuis plusieurs secondes.
+    # ⚠️ Import local : `linkedin_seo` importe `llm`, un import en tête de
+    # fichier serait circulaire.
+    seo_future = None
+    executor = None
+    scraped_profile = ((seed or {}).get("linkedin_apify_profile") or {}).get("profile")
+    if has_linkedin and isinstance(scraped_profile, dict):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from src import linkedin_seo
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        seo_future = executor.submit(linkedin_seo.audit, scraped_profile)
+
     try:
         data = _call(system, user, max_tokens=4000, temperature=0.4, model=model)
     except Exception:
+        data = None
+    finally:
+        seo_audit = None
+        if seo_future is not None:
+            try:
+                seo_audit = seo_future.result(timeout=90)
+            except Exception:
+                seo_audit = None  # best-effort : l'analyse vit sans son audit
+        if executor is not None:
+            executor.shutdown(wait=False)
+
+    if data is None:
         return None
     preview = data.get("preview", data)
-    return normalize_onboarding_preview(preview if isinstance(preview, dict) else None, seed=seed)
+    normalized = normalize_onboarding_preview(preview if isinstance(preview, dict) else None, seed=seed)
+    if normalized is not None and seo_audit:
+        normalized["seo_audit"] = seo_audit
+    return normalized
 
 
 def draft_editorial_profile(

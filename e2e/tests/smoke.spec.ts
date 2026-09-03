@@ -1,33 +1,18 @@
 import { test, expect } from "@playwright/test";
 
 // Écrans publics — aucun login, aucun coût backend.
-test.describe("Landing publique", () => {
-  test("la page se charge avec le titre et la navigation", async ({ page }) => {
+test.describe("Porte d'entrée publique", () => {
+  test("un visiteur non connecté est envoyé sur la page de vente", async ({ page }) => {
+    // L'app n'a plus d'aperçu anonyme : la seule porte d'entrée est `/pilote`
+    // (landing → compte → onboarding → vue du jour). Avant, le visiteur tombait
+    // sur un aperçu de l'app dont les boutons ouvraient une fenêtre
+    // e-mail/mot de passe — il ne voyait jamais ce qu'on lui vend.
     await page.goto("/");
-    await expect(page).toHaveTitle(/Cibl/i);
-    // ALE-257 : « Veille » retirée de la nav (fusionnée dans Contenu › Analyses).
-    // Backlog Notion : « Agent IA » retiré à son tour — l'assistant vit dans l'Inbox.
-    for (const label of ["Contenu", "Inbox", "Mon profil"]) {
-      await expect(page.locator(".nav-item", { hasText: label })).toBeVisible();
-    }
-  });
-
-  test("le modal de connexion s'ouvre", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Se connecter" }).first().click();
-    await expect(page.getByPlaceholder("toi@exemple.com")).toBeVisible();
-    await expect(page.getByPlaceholder("••••••••")).toBeVisible();
-  });
-
-  test("la sidebar repliée affiche un bouton pour la rouvrir", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Réduire la sidebar" }).click();
-
-    await expect(page.locator(".sidebar")).toHaveClass(/sidebar-collapsed/);
-    await expect(page.getByRole("button", { name: "Étendre la sidebar" })).toBeVisible();
-
-    await page.getByRole("button", { name: "Étendre la sidebar" }).click();
-    await expect(page.locator(".sidebar")).not.toHaveClass(/sidebar-collapsed/);
-    await expect(page.getByRole("button", { name: "Réduire la sidebar" })).toBeVisible();
+    await page.waitForURL(/\/pilote$/, { timeout: 30_000 });
+    await expect(
+      page.locator(".pilote-form-card").getByRole("heading", { name: /Crée ton compte/i })
+    ).toBeVisible();
+    // Et l'app elle-même n'est pas laissée derrière : pas de sidebar à explorer.
+    await expect(page.locator(".sidebar")).toHaveCount(0);
   });
 });

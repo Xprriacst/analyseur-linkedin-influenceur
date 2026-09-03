@@ -303,9 +303,10 @@ export default function LeadsPage() {
                   Vivier de prospects — Mode Pilote
                 </h2>
                 <p style={{ margin: "6px 0 0", color: "var(--muted)", fontSize: 13.5 }}>
-                  Cartes publiques (nom, titre, URL LinkedIn). Un client en voit{" "}
-                  <strong>une par jour</strong> tant que son LinkedIn n&apos;est pas connecté.
-                  Ça n&apos;écrit pas dans tes leads — seulement dans le stock partagé.
+                  Alimenté par les cartes publiques (nom, titre, URL LinkedIn) de
+                  tous les comptes. Un client en voit <strong>une par jour</strong> tant
+                  que son LinkedIn n&apos;est pas connecté. Tu peux aussi coller un
+                  fichier ou des URLs — ça n&apos;écrit pas dans tes leads.
                 </p>
                 <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--muted)" }}>
                   {poolCount} profil{poolCount === 1 ? "" : "s"} en stock

@@ -621,6 +621,14 @@ a { color: inherit; text-decoration: none; }
 .onb-chip:active { transform: scale(.96); }
 .onb-chip.selected { border-color: var(--primary); background: var(--primary); color: #fff; }
 .onb-other-input { width: 100%; margin-top: 10px; padding: 11px 14px; font-size: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); animation: onb-fade-up .3s ease both; }
+
+/* Note sous un champ (à quoi il sert) et message d'erreur de champ. Le
+   message vit SOUS le champ concerné, pas dans un bandeau en haut de
+   formulaire : deux fois la même phrase à l'écran se lit comme un bug
+   (leçon de la confirmation de mot de passe, 2026-08-13). */
+.onb-field-note { margin: 8px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.onb-field-error { margin: 6px 0 0; font-size: 12.5px; color: #d1344b; font-weight: 500; }
+.onb-analysis-cta:disabled { opacity: 0.45; cursor: not-allowed; }
 .onb-other-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 4px rgba(70,72,212,.12); }
 
 /* Sticky en bas de l'écran pendant le scroll — Continuer reste atteignable. */
@@ -3716,3 +3724,47 @@ tr.tr-top3 .tr-rank { color: var(--primary); }
   cursor: pointer; display: flex; align-items: center; justify-content: center;
 }
 .img-zoom-close:hover { background: rgba(0, 0, 0, 0.55); }
+
+/* ── Audit SEO du profil, rendu avec la stratégie (onboarding) ────────── */
+.onb-seo-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.onb-seo-score {
+  font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 999px;
+  background: rgba(99, 102, 241, 0.12); color: var(--primary);
+}
+.onb-seo-score.good { background: rgba(16, 163, 96, 0.13); color: #0f7a4c; }
+.onb-seo-score.mid { background: rgba(217, 138, 10, 0.14); color: #a86a04; }
+.onb-seo-score.low { background: rgba(209, 52, 75, 0.12); color: #b32540; }
+
+.onb-seo-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
+.onb-seo-list li {
+  display: flex; align-items: center; gap: 9px; font-size: 13.5px;
+  padding: 9px 12px; border-radius: 10px; background: var(--surface);
+  border: 1px solid var(--border);
+}
+.onb-seo-list li.ok { color: #0f7a4c; }
+.onb-seo-list li.ko { color: var(--fg); }
+.onb-seo-cross {
+  width: 15px; height: 15px; border-radius: 50%; flex-shrink: 0;
+  background: #d1344b; color: #fff; font-size: 11px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.onb-seo-label { font-weight: 600; }
+.onb-seo-detail { margin-left: auto; font-size: 12.5px; color: var(--muted); text-align: right; }
+
+.onb-seo-banner { margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); }
+.onb-seo-banner-head { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.onb-seo-banner-img { display: block; width: 100%; max-height: 120px; object-fit: cover; border-radius: 8px; margin: 10px 0; }
+.onb-seo-banner p { margin: 8px 0 0; font-size: 13.5px; line-height: 1.5; }
+
+.onb-seo-kw { margin-top: 14px; }
+.onb-seo-kw-label { font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
+/* Mot-clé affiché, pas cliquable : même langage visuel que les chips du
+   tunnel, sans le comportement (ce n'est pas un choix à faire). */
+.onb-chip-static { cursor: default; pointer-events: none; }
+
+.onb-seo-todo { margin: 14px 0 0; padding-left: 20px; display: grid; gap: 7px; font-size: 13.5px; line-height: 1.5; }
+
+@media (max-width: 560px) {
+  .onb-seo-list li { flex-wrap: wrap; }
+  .onb-seo-detail { margin-left: 0; width: 100%; text-align: left; }
+}
