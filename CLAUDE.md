@@ -88,6 +88,16 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-09-02 #5 (dev : le vivier se remplit avec les prospects de tous les comptes)
+
+- **Retour d'Alex** : le stock Mode Pilote ne devait **pas** rester un import admin isolé. Les leads d'alexandre@ / tom@ (et de tout compte) **sont** le vivier — cartes publiques seulement.
+- **Ce qui change** : chaque `save_leads` (commentaire, recherche, import fichier) copie URL / nom / titre dans `prospect_cache`. Un rattrapage lit les leads déjà en base (projection étroite, pagination, une fois par process) si le vivier est encore vide. L'import admin `/leads` reste un appoint.
+- ⚠️ **Toujours pas de commentaires, d'invitations ni de messages.** `list_all_lead_public_cards` ne sélectionne que `profile_url,name,headline` — le test de projection échoue si le select s'élargit. Deux clients voient la même personne, chacun invite depuis SON LinkedIn.
+- ⚠️ **Matching** : « Coachs & consultants » (pluriel du profil) matchait 0 fiche « Coach / Consultant … ». Correspondance par début de mot **et** singulier (`coachs` → `coach`). Toujours rien plutôt que n'importe quoi si aucun mot-clé.
+- Plafond de lecture porté à **2 500** fiches (prod ~1 300 URLs distinctes) : rester à 500 n'aurait vu que les plus récentes, souvent une seule niche.
+- **Rattrapage SQL** appliqué sur **dev et prod** (cartes publiques, `ON CONFLICT` ne vide pas un nom déjà rempli). Aucune migration, aucune variable d'env.
+- **Tests** : contribution sans champs privés, harvest 1×/process, vivier vide → harvest puis attribution, projection `leads` étroite, pluriel→singulier.
+
 ### 2026-09-02 #4 (dev : agent « en recherche » + 1 prospect affiché / jour, même si le vivier est plein)
 
 - **Retour d'Alex** (compte Test, vue du jour) : colonne « À contacter » vide + « Connecte LinkedIn » — l'utilisateur ne voyait pas que l'agent cherchait. Et coller plein d'URLs dans le vivier (depuis `/leads`) ne doit **jamais** en déverser plusieurs d'un coup.
@@ -97,7 +107,7 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ### 2026-09-02 #3 (dev : vivier partagé de prospects — 1 vrai profil / jour en Mode Pilote)
 
-- **Décision d'Alex du 2026-09-02** : tant que le LinkedIn n'est pas connecté, le Mode Pilote propose **un prospect réel par jour**, tiré d'un stock **rempli par l'admin** (CSV / xlsx / URLs collées). Pas Unipile, pas Fable, pas n8n ; pas non plus les leads des autres clients (ce serait leurs commentaires / leur ICP, pas un stock public).
+- **Décision d'Alex du 2026-09-02** : tant que le LinkedIn n'est pas connecté, le Mode Pilote propose **un prospect réel par jour**, tiré d'un stock **partagé** (cartes publiques de tous les comptes ; l'import admin CSV/URLs reste un appoint). Corrigé le soir même (#5) : ce n'est plus un silo rempli à la main seulement.
 - **Ce qui change pour le client** : à l'ouverture de la vue du jour, s'il n'a pas encore relié LinkedIn et qu'il reste de la place dans ses 3 contacts, l'app copie **au plus un** profil du vivier dans **ses** `leads`. Deux clients pharmacie peuvent voir la même personne ; chacun invite depuis SON LinkedIn. L'invitation reste **bloquée** (« Connecte LinkedIn ») tant que le compte n'est pas relié. Les trois noms inventés (Camille Martin / Thomas Leroy / Sarah Benali) **ne se mélangent plus** à de vrais profils — `simulate_prospects` reste False.
 - ⚠️ **Cartes publiques seulement** : `prospect_cache` ne porte que URL / nom / titre. Aucun commentaire, aucune invitation, aucun message d'un autre compte — ces champs n'existent pas sur la table. La copie dans `leads` pose `comment_text = None` et un signal `origin=prospect_pool` (libellé Prospection : « proposé pour ta niche »).
 - ⚠️ **Rien plutôt que n'importe quoi** (même garantie que les suggestions à suivre) : sans mot-clé de niche (profil encore vide), **aucune attribution**, et le vivier n'est même pas lu. Matching textuel, **zéro modèle / zéro Apify / zéro crédit**. Correspondance par **début de mot** (`\b`) : « vente » ≠ « inventaire », « coach » = « coaching ». Un profil sans hit n'est jamais proposé « pour remplir la case ».
@@ -107,7 +117,7 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 - **Fail-safe de bout en bout** : vivier vide, service-role absent, Supabase en panne, unique `(user_id, profile_url)` déjà pris ⇒ liste vide, le plan du jour ne tombe jamais. Deux clients **peuvent** partager une personne (pas de réservation exclusive).
 - **Tests** : `tests/test_prospect_pool.py` + `tests/test_prospect_pool_db.py` (projection étroite, receveur ≠ admin, 1/jour, URL-only ne vide pas le nom) + `tests/test_pilot_plan.py` (carte réelle, gate LinkedIn connecté / non connecté). Spec e2e `pilot-mode.spec.ts` : prospect du vivier, `simulated` absent, Inviter grisé sans LinkedIn, zéro Camille Martin.
 - **Migration 0073** idempotente, **appliquée et vérifiée sur dev** (`aiaohrlmsqhdadgaqavx` : table + RLS + 0 policy + unique `profile_url`). ⚠️ **À appliquer sur prod avant la release.** Tant qu'elle manque, l'attribution échoue en best-effort (log `[prospect_pool]`), le plan du jour s'affiche vide de contacts — jamais une 500. Aucune variable d'env, aucune dépendance nouvelle.
-- **Reste à faire** : test d'Alex — remplir le vivier depuis `/leads` (CSV ou URLs avec nom + titre dans la niche d'un compte de test), ouvrir le Mode Pilote **sans** LinkedIn connecté → 1 vrai prospect, Inviter grisé ; le lendemain, un autre. ⚠️ Un vivier vide **ou** un profil sans niche ⇒ aucun contact, **ce n'est pas une panne**. **Non fait volontairement** : pas d'enrichissement Apify des URLs seules, pas de contribution organique des imports clients.
+- **Reste à faire** : test d'Alex — Mode Pilote **sans** LinkedIn → 1 vrai prospect du stock partagé, Inviter grisé. ⚠️ Un profil **sans niche** ⇒ aucun contact, **ce n'est pas une panne**. **Non fait volontairement** : pas d'enrichissement Apify des URLs seules.
 
 ### 2026-09-02 #2 (dev : mémoire des vrais posts LinkedIn + invitations Pilote rédigées par le modèle)
 - **Retour d'Alex** (compte pharmacie IA) : le post du jour recyclait un angle déjà publié **sur LinkedIn**, et l'invitation à Charlie Hartig était un gabarit (« ton profil correspond à ce que je cible. On échange rapidement sur {offre} ? »). Ni l'un ni l'autre n'appelait réellement le modèle avec le bon contexte — ce n'était pas un problème de Sonnet.

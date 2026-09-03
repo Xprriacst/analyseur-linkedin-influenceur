@@ -4649,19 +4649,20 @@ def list_influencer_cache_candidates(limit: int = 300) -> list[dict]:
 
 
 # ── Vivier partagé de prospects (Mode Pilote) ─────────────────────────────── #
-# Cartes publiques uniquement. La table n'a pas de user_id (stock admin, comme
+# Cartes publiques uniquement. La table n'a pas de user_id (stock partagé, comme
 # influencer_cache). La projection est volontairement étroite : y ajouter une
 # colonne privée un jour n'aurait rien à exposer aujourd'hui, mais le test de
 # projection échoue si le select s'élargit — même discipline que 0016.
 
 _PROSPECT_CACHE_COLS = "id,profile_url,name,headline,created_at"
+_LEAD_PUBLIC_CARD_COLS = "profile_url,name,headline"
 
 
-def list_prospect_cache_candidates(limit: int = 500) -> list[dict]:
+def list_prospect_cache_candidates(limit: int = 2500) -> list[dict]:
     """Fiches du vivier, candidates à une attribution Mode Pilote.
 
     Ne projette QUE des champs publics d'un profil LinkedIn. Gratuit : on
-    relit ce que l'admin a déjà déposé, aucun scrape.
+    relit le stock déjà en base (imports clients + appoint admin), aucun scrape.
     """
     if not admin_enabled():
         return []
@@ -4675,6 +4676,43 @@ def list_prospect_cache_candidates(limit: int = 500) -> list[dict]:
             .execute()
         )
         return resp.data or []
+    except Exception:
+        return []
+
+
+def list_all_lead_public_cards(
+    page_size: int = 1000,
+    max_rows: int = 8000,
+) -> list[dict]:
+    """Tous les leads, cartes publiques seulement — pour remplir le vivier.
+
+    Service-role : on traverse les comptes, mais on ne ramène QUE
+    `profile_url` / `name` / `headline`. Un `select('*')` ici copierait
+    commentaires et invitations d'un client dans un stock partagé, sans
+    la moindre erreur. Le test de projection échoue si le select s'élargit.
+    """
+    if not admin_enabled():
+        return []
+    size = max(1, min(int(page_size or 1000), 1000))
+    cap = max(1, min(int(max_rows or 8000), 20000))
+    out: list[dict] = []
+    offset = 0
+    try:
+        client = admin_client()
+        while len(out) < cap:
+            resp = (
+                client.table("leads")
+                .select(_LEAD_PUBLIC_CARD_COLS)
+                .order("id")
+                .range(offset, offset + size - 1)
+                .execute()
+            )
+            rows = resp.data or []
+            out.extend(rows)
+            if len(rows) < size:
+                break
+            offset += size
+        return out[:cap]
     except Exception:
         return []
 
@@ -6183,6 +6221,12 @@ def save_leads(access_token: str, source: dict, commenters: list[dict]) -> dict:
             if r.get("profile_url") and r.get("id"):
                 ids_by_url[r["profile_url"]] = r["id"]
         inserted += len(resp.data or [])
+
+    try:
+        from src import prospect_pool as _prospect_pool
+        _prospect_pool.contribute_from_leads(valid)
+    except Exception as exc:  # noqa: BLE001 — un vivier en panne n'annule pas l'import
+        print(f"[prospect_pool] contribution sautée après save_leads : {exc}", flush=True)
 
     return {
         "inserted": inserted,

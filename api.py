@@ -1057,7 +1057,7 @@ def admin_prospect_pool_list(
     """Dashboard interne : fiches du vivier partagé (cartes publiques)."""
     require_audit_leads_admin(token)
     cap = max(1, min(int(limit or 80), 200))
-    rows = db.list_prospect_cache_candidates(limit=500)
+    rows = db.list_prospect_cache_candidates(limit=2500)
     return {"count": len(rows), "prospects": rows[:cap]}
 
 
@@ -1067,9 +1067,10 @@ async def admin_prospect_pool_import_file(
     file: UploadFile = File(...),
     token: str = Depends(require_token),
 ) -> dict[str, Any]:
-    """Remplit le vivier depuis un CSV/xlsx — mêmes règles que l'import client.
+    """Remplit le vivier depuis un CSV/xlsx — appoint, mêmes règles que l'import client.
 
     Écrit dans `prospect_cache`, PAS dans les leads de l'admin. Gratuit.
+    Le stock est surtout alimenté tout seul par les leads de tous les comptes.
     Les lignes sans URL de profil sont comptées et restituées.
     """
     require_audit_leads_admin(token)
