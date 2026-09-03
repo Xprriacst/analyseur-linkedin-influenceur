@@ -42,6 +42,13 @@ class KeywordHitsTest(unittest.TestCase):
     def test_coach_matches_coaching(self):
         self.assertEqual(pp.keyword_hits("Coaching business pour indépendants", ["coach"]), ["coach"])
 
+    def test_plural_keyword_matches_singular_headline(self):
+        """« Coachs » (profil) doit matcher « Coach en … » (fiche LinkedIn)."""
+        self.assertEqual(
+            pp.keyword_hits("Coach et consultant pour dirigeants", ["coachs", "consultants", "dirigeants"]),
+            ["coachs", "consultants", "dirigeants"],
+        )
+
     def test_preserves_keyword_order(self):
         hits = pp.keyword_hits("pharmacienne titulaire officine", ["officine", "pharmacie", "titulaire"])
         self.assertEqual(hits, ["officine", "pharmacie", "titulaire"])
@@ -336,6 +343,125 @@ class IngestRowsTest(unittest.TestCase):
         self.assertEqual(len(captured["rows"]), 1)
         self.assertEqual(captured["rows"][0]["profile_url"], "https://www.linkedin.com/in/marie")
         self.assertEqual(out["inserted"], 1)
+
+    def test_url_only_fills_name_from_the_other_row(self):
+        captured = {}
+
+        def upsert(rows):
+            captured["rows"] = rows
+            return {"inserted": 1, "updated": 0, "skipped": 0}
+
+        with patch("src.prospect_pool.db.upsert_prospect_cache", side_effect=upsert):
+            pp.ingest_rows([
+                {"profile_url": "https://www.linkedin.com/in/marie", "name": None, "headline": None},
+                {"profile_url": "https://www.linkedin.com/in/marie", "name": "Marie", "headline": "Pharmacienne"},
+            ])
+        self.assertEqual(captured["rows"][0]["name"], "Marie")
+        self.assertEqual(captured["rows"][0]["headline"], "Pharmacienne")
+
+
+class ContributeFromLeadsTest(unittest.TestCase):
+    def test_strips_private_fields(self):
+        captured = {}
+
+        def upsert(rows):
+            captured["rows"] = rows
+            return {"inserted": 1, "updated": 0, "skipped": 0}
+
+        with patch("src.prospect_pool.db.upsert_prospect_cache", side_effect=upsert):
+            pp.contribute_from_leads([{
+                "profile_url": "https://www.linkedin.com/in/marie",
+                "name": "Marie",
+                "headline": "Pharmacienne",
+                "comment_text": "SECRET — ne jamais copier",
+                "signals": [{"origin": "post", "comment_text": "secret"}],
+                "user_id": "other-client",
+                "outreach_status": "invite_sent",
+                "invite_preview": "On échange ?",
+            }])
+        row = captured["rows"][0]
+        self.assertEqual(set(row), {"profile_url", "name", "headline"})
+        self.assertEqual(row["name"], "Marie")
+
+    def test_failure_is_swallowed(self):
+        with patch("src.prospect_pool.ingest_rows", side_effect=RuntimeError("boom")):
+            out = pp.contribute_from_leads([_pool_row("marie")])
+        self.assertEqual(out["inserted"], 0)
+
+
+class HarvestExistingLeadsTest(unittest.TestCase):
+    def tearDown(self):
+        pp._harvest_attempted = False
+
+    def test_once_per_process_unless_forced(self):
+        calls = {"n": 0}
+
+        def list_leads():
+            calls["n"] += 1
+            return [_pool_row("marie")]
+
+        with patch("src.prospect_pool.db.upsert_prospect_cache", return_value={"inserted": 1, "updated": 0, "skipped": 0}):
+            first = pp.harvest_existing_leads(list_leads=list_leads)
+            second = pp.harvest_existing_leads(list_leads=list_leads)
+            forced = pp.harvest_existing_leads(force=True, list_leads=list_leads)
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(first["read"], 1)
+        self.assertEqual(second["read"], 0)
+        self.assertEqual(forced["read"], 1)
+
+
+class EmptyPoolTriggersHarvestTest(unittest.TestCase):
+    def tearDown(self):
+        pp._harvest_attempted = False
+
+    def test_harvests_when_cache_empty_then_assigns(self):
+        calls = {"n": 0}
+
+        def reader(limit=2500):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return []
+            return [_pool_row("marie")]
+
+        harvested = {"n": 0}
+
+        def harvest(**_k):
+            harvested["n"] += 1
+            return {"inserted": 1, "updated": 0, "skipped": 0, "read": 1}
+
+        seen = []
+
+        def writer(user_id, **kwargs):
+            seen.append(user_id)
+            return {"id": "lead-1", "user_id": user_id, **kwargs}
+
+        with patch("src.prospect_pool.harvest_existing_leads", side_effect=harvest), \
+             patch("src.prospect_pool.db.list_prospect_cache_candidates", side_effect=reader):
+            out = pp.maybe_assign_one(
+                "user-lia", _profile(), None, [], insert_lead=writer,
+            )
+        self.assertEqual(harvested["n"], 1)
+        self.assertEqual(out["profile_url"], "https://www.linkedin.com/in/marie")
+        self.assertEqual(seen, ["user-lia"])
+
+    def test_injected_reader_does_not_harvest(self):
+        harvested = {"n": 0}
+
+        def harvest(**_k):
+            harvested["n"] += 1
+            return {}
+
+        with patch("src.prospect_pool.harvest_existing_leads", side_effect=harvest):
+            out = pp.maybe_assign_one(
+                "user-lia",
+                _profile(),
+                None,
+                [],
+                list_candidates=lambda **_k: [_pool_row("marie")],
+                insert_lead=lambda *_a, **k: {"id": "x", **k},
+            )
+        self.assertEqual(harvested["n"], 0)
+        self.assertEqual(out["profile_url"], "https://www.linkedin.com/in/marie")
 
 
 class NicheReasonTest(unittest.TestCase):

@@ -19,8 +19,14 @@
 export const FOUNDERS_MONTHLY_SEATS = 40;
 export const FOUNDERS_GUARANTEE_DAYS = 30;
 
-export const PROOF_INFLUENCERS_ANALYZED = 150;
-export const PROOF_POSTS_ANALYZED = 3500;
+// ⚠️ Mesuré en base de PROD le 2026-09-03 : 45 profils distincts analysés
+// (84 analyses lancées) et 1 904 posts + 744 en cache ≈ 2 650. Les valeurs
+// précédentes (150 / 3 500) dépassaient le réel d'un facteur ~3 — c'est
+// exactement ce que le commentaire ci-dessus interdit. Requête de contrôle :
+//   select (select count(distinct handle) from influencers),
+//          (select count(*) from posts) + (select count(*) from cached_posts);
+export const PROOF_INFLUENCERS_ANALYZED = 50;
+export const PROOF_POSTS_ANALYZED = 3000;
 
 /**
  * Remise fondateurs sur le PREMIER mois payé (après l'essai).

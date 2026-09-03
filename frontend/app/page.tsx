@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -16545,6 +16546,7 @@ function ContentHub({
 
 
 export default function Home() {
+  const router = useRouter();
   const [health, setHealth] = useState<Health | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [reportsLoading, setReportsLoading] = useState(false);
@@ -16575,6 +16577,11 @@ export default function Home() {
   // n'interrompe jamais le polling (même raison que imageJobs).
   const [avatarVideoJobs, setAvatarVideoJobs] = useState<AvatarVideoJob[]>([]);
   const [session, setSession] = useState<Session | null>(null);
+  // Supabase restaure la session de façon ASYNCHRONE : `session === null` au
+  // premier rendu ne veut pas dire « personne n'est connecté », seulement « on
+  // ne sait pas encore ». Sans ce drapeau, la redirection ci-dessous éjecterait
+  // vers la landing un utilisateur parfaitement connecté, à chaque rechargement.
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [authReason, setAuthReason] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
@@ -16767,6 +16774,11 @@ export default function Home() {
     }
   }, []);
 
+  /** ⚠️ Plus atteignable depuis `/` : un visiteur non connecté est renvoyé sur
+   *  `/pilote` avant que quoi que ce soit ne s'affiche. Les `requireAuth(...)`
+   *  disséminés dans les écrans sont donc devenus des filets sans emploi — on
+   *  les garde (avec `AuthModal`) plutôt que de raboter des dizaines d'appels
+   *  pour une porte qu'on pourrait vouloir rouvrir. */
   function requireAuth(reason?: string, mode: AuthMode = "signup") {
     setAuthReason(reason || "");
     setAuthMode(mode);
@@ -17079,7 +17091,14 @@ export default function Home() {
 
   useEffect(() => {
     fetch(`${API_URL}/health`).then((r) => r.json()).then(setHealth).catch(() => null);
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    // `finally` et pas seulement `then` : si la lecture de session échoue
+    // (stockage bloqué, réseau), le verdict doit quand même tomber — sinon la
+    // page resterait sur son écran de chargement, indéfiniment et sans erreur.
+    supabase.auth
+      .getSession()
+      .then(({ data }) => setSession(data.session))
+      .catch(() => { /* pas de session lisible → visiteur */ })
+      .finally(() => setSessionChecked(true));
 
     // Home ne se démonte jamais : son state par-utilisateur doit être purgé à
     // chaque changement de compte, sinon l'utilisateur suivant voit les données
@@ -17087,6 +17106,7 @@ export default function Home() {
     // l'écran, qu'on conserve et qu'on sauvegarde dans le nouveau compte.
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s);
+      setSessionChecked(true);
       const uid = s?.user?.id ?? null;
       if (uid === userIdRef.current) return;
       const prev = userIdRef.current;
@@ -17433,6 +17453,33 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  }
+
+  // Un visiteur qui n'est pas connecté n'a rien à faire dans l'app : la seule
+  // porte d'entrée est la page de vente `/pilote` (landing → compte →
+  // onboarding → vue du jour). Avant, il tombait sur un aperçu de l'app dont
+  // les boutons ouvraient une fenêtre e-mail/mot de passe au milieu de nulle
+  // part — il ne voyait jamais ce qu'on lui vend.
+  // ⚠️ `sessionChecked` n'est PAS une précaution de confort — mesuré sans lui :
+  // l'utilisateur connecté part sur `/pilote`, qui le renvoie aussitôt dans
+  // l'app puisqu'il a une session, qui le renvoie sur `/pilote`… BOUCLE
+  // INFINIE, app inaccessible, zéro erreur à l'écran. La course ne se joue
+  // qu'en mode Pilote (en Expert elle passe inaperçue), d'où le spec dédié
+  // `e2e/tests/app-entry.spec.ts` qui tourne hors du mode Expert forcé.
+  useEffect(() => {
+    if (!sessionChecked || isAuthed) return;
+    router.replace("/pilote");
+  }, [sessionChecked, isAuthed, router]);
+
+  // Tant que le verdict n'est pas tombé (ou pendant la redirection), écran de
+  // chargement neutre : afficher l'app puis la remplacer donnerait un flash
+  // d'interface à quelqu'un qui n'y a pas accès.
+  if (!isAuthed) {
+    return (
+      <div className="onb-overlay">
+        <div className="onb-boot"><Loader2 size={30} className="spinning" /></div>
+      </div>
+    );
   }
 
   return (

@@ -36,6 +36,10 @@ class _FakeQuery:
         self._captured["order"] = (key, desc)
         return self
 
+    def range(self, start, end):
+        self._captured["range"] = (start, end)
+        return self
+
     def limit(self, n):
         self._captured["limit"] = n
         return self
@@ -98,6 +102,52 @@ class ListProspectCacheCandidatesTest(unittest.TestCase):
         with patch.object(db, "admin_enabled", return_value=True), \
              patch.object(db, "admin_client", side_effect=RuntimeError("boom")):
             self.assertEqual(db.list_prospect_cache_candidates(), [])
+
+
+class ListAllLeadPublicCardsTest(unittest.TestCase):
+    def test_noop_when_service_role_absent(self):
+        with patch.object(db, "admin_enabled", return_value=False), \
+             patch.object(db, "admin_client") as client:
+            self.assertEqual(db.list_all_lead_public_cards(), [])
+        client.assert_not_called()
+
+    def test_projects_only_public_fields(self):
+        """Élargir le select exposerait commentaires / invitations d'un autre compte."""
+        rows = [{
+            "profile_url": "https://www.linkedin.com/in/marie",
+            "name": "Marie",
+            "headline": "Pharmacienne",
+        }]
+        fake = _FakeAdminClient(rows)
+        with patch.object(db, "admin_enabled", return_value=True), \
+             patch.object(db, "admin_client", return_value=fake):
+            out = db.list_all_lead_public_cards(page_size=1000)
+        self.assertEqual(out, rows)
+        cols = fake.captured["select"]
+        self.assertEqual(fake.captured["table"], "leads")
+        self.assertEqual(cols, db._LEAD_PUBLIC_CARD_COLS)
+        for forbidden in (
+            "comment_text", "signals", "user_id", "outreach_status",
+            "outreach_chat_id", "invite_preview", "provider_id",
+        ):
+            self.assertNotIn(forbidden, cols)
+        for required in ("profile_url", "name", "headline"):
+            self.assertIn(required, cols)
+
+    def test_failure_is_swallowed(self):
+        with patch.object(db, "admin_enabled", return_value=True), \
+             patch.object(db, "admin_client", side_effect=RuntimeError("boom")):
+            self.assertEqual(db.list_all_lead_public_cards(), [])
+
+
+class SaveLeadsContributesToPoolTest(unittest.TestCase):
+    def test_save_leads_calls_contribute(self):
+        """Si on retire cet appel, les imports futurs n'alimentent plus le vivier."""
+        from pathlib import Path
+        src = Path(__file__).resolve().parents[1] / "src" / "db.py"
+        text = src.read_text(encoding="utf-8")
+        self.assertIn("contribute_from_leads", text)
+        self.assertIn("prospect_pool", text)
 
 
 class AdminInsertPoolLeadTest(unittest.TestCase):
