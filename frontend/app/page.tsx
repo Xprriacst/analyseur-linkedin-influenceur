@@ -15517,6 +15517,9 @@ function ProspectingView({
   onNavigateInbox: (chatId?: string) => void;
 }) {
   const [leads, setLeads] = useState<Lead[]>([]);
+  // Total en base, hors fenêtre d'affichage : la liste est plafonnée côté serveur
+  // et une troncature muette se lit comme une liste complète (incident prod 04/09).
+  const [leadsTotal, setLeadsTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Lead | null>(null);
@@ -15673,7 +15676,11 @@ function ProspectingView({
     const res = await fetch(`${DIRECT_API_URL}/me/leads`, { headers: await authHeaders() });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Chargement des leads impossible");
-    return Array.isArray(data.leads) ? (data.leads as Lead[]) : [];
+    const rows = Array.isArray(data.leads) ? (data.leads as Lead[]) : [];
+    // Le serveur est fail-safe sur ce compteur : à défaut, on n'annonce jamais
+    // moins que ce qu'on affiche.
+    setLeadsTotal(typeof data.total === "number" ? Math.max(data.total, rows.length) : rows.length);
+    return rows;
   };
 
   useEffect(() => {
@@ -16087,7 +16094,14 @@ function ProspectingView({
       )}
       {leads.length > 0 && (
         <p style={{ color: "var(--muted)", fontSize: 12, textAlign: "center", marginTop: 14 }}>
-          {leads.length} lead(s) · classés par pertinence (score) — les moins pertinents restent en bas, rien n&apos;est masqué.
+          {leadsTotal > leads.length ? (
+            <>
+              {leads.length} lead(s) affichés sur <strong>{leadsTotal}</strong> · les mieux notés d&apos;abord.
+              {" "}Les {leadsTotal - leads.length} suivants ont un score inférieur — affine ton ciblage ou supprime une source pour les faire remonter.
+            </>
+          ) : (
+            <>{leads.length} lead(s) · classés par pertinence (score) — les moins pertinents restent en bas, rien n&apos;est masqué.</>
+          )}
         </p>
       )}
 

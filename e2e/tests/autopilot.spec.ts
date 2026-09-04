@@ -80,6 +80,12 @@ async function mockProspecting(
 }
 
 test.beforeEach(async ({ page }) => {
+  // La vue Pilote est le mode par défaut depuis le 03/09 : sans ce garde, le spec
+  // atterrit sur un shell qui n'a pas d'onglet Prospection et échoue sur la
+  // navigation, pas sur ce qu'il teste.
+  await page.addInitScript(() => {
+    localStorage.setItem("lkd_interface_mode", "expert");
+  });
   await page.goto("/");
 });
 

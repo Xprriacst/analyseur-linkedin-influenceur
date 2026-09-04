@@ -4765,8 +4765,18 @@ def delete_me_lead_source(source_id: str, token: str = Depends(require_token)) -
 @app.get("/me/leads")
 def me_leads(token: str = Depends(require_token)) -> dict[str, Any]:
     """Leads de prospection de l'utilisateur — mieux notés d'abord, jamais masqués
-    (les écartés « ne pas contacter » restent en bas de liste, cf. ALE-243)."""
-    return {"leads": db.list_leads(token)}
+    (les écartés « ne pas contacter » restent en bas de liste, cf. ALE-243).
+
+    ⚠️ `total` n'est pas une statistique de confort : la liste est plafonnée, et une
+    troncature muette se lit comme une liste complète. C'est ce qui a fait conclure,
+    en prod le 2026-09-04, que des invitations déposées par l'autopilote n'existaient
+    pas — les leads concernés étaient hors fenêtre. L'écran doit pouvoir dire « 500
+    sur 1 133 »."""
+    leads = db.list_leads(token)
+    total = db.count_leads(token)
+    # Le compteur est fail-safe (0 en cas de pépin) : on ne prétend jamais avoir
+    # MOINS de leads que ce qu'on vient d'afficher.
+    return {"leads": leads, "total": max(total, len(leads))}
 
 
 class LeadContactStatusRequest(BaseModel):
