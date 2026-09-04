@@ -6243,11 +6243,27 @@ def save_leads(access_token: str, source: dict, commenters: list[dict]) -> dict:
 def list_leads(access_token: str, limit: int = 500) -> list[dict]:
     """Leads de l'utilisateur pour la liste Prospection (RLS scope).
 
-    On garde TOUTE la liste (aucun masquage) : les leads sont classés par score
-    ICP décroissant — les moins pertinents descendent mais restent visibles ; les
-    non-notés (score null) passent après. À l'intérieur d'un même groupe :
-    multi-signaux puis plus récents (ordre du fetch, tri stable). La curation
+    Les leads sont classés par score ICP décroissant — les moins pertinents
+    descendent mais restent visibles ; les non-notés (score null) passent après.
+    À l'intérieur d'un même groupe : multi-signaux puis plus récents. La curation
     manuelle « ne pas contacter » est un sujet à part (ALE-243).
+
+    ⚠️ LE TRI SE FAIT EN BASE, SUR LE CRITÈRE D'AFFICHAGE — pas après coup en
+    Python. Trier après la troncature revient à retenir N lignes sur un critère
+    puis à les classer sur un autre : les meilleurs leads du compte tombent hors
+    fenêtre **sans la moindre erreur**, et l'écran a l'air complet. Constaté en
+    prod le 2026-09-04 sur un compte à 1 133 leads : 12 des 50 meilleurs profils
+    d'un import (score 80) n'étaient PAS affichés, parce que l'ancien tri
+    `signal_count desc` favorisait les commentateurs de posts — qui cumulent
+    plusieurs signaux — sur les leads importés, qui n'en portent qu'un. Le client
+    ne pouvait donc pas relire ce que son autopilote faisait sur eux.
+
+    ⚠️ `nullsfirst=False` n'est pas décoratif : en SQL, `order by score desc` place
+    les NULL EN TÊTE. Sans lui, la liste s'ouvrirait sur les leads non notés — ceux
+    dont on ne sait justement rien.
+
+    La liste reste plafonnée (charge de la requête et de l'écran) : `count_leads`
+    donne le total pour que la troncature soit ANNONCÉE plutôt que subie.
     """
     if not supabase_enabled():
         return []
@@ -6255,20 +6271,44 @@ def list_leads(access_token: str, limit: int = 500) -> list[dict]:
     resp = (
         db.table("leads")
         .select("*")
+        .order("score", desc=True, nullsfirst=False)
         .order("signal_count", desc=True)
         .order("created_at", desc=True)
         .limit(limit)
         .execute()
     )
     rows = resp.data or []
-    # Tri stable : les écartés « ne pas contacter » (ALE-243) en tout dernier
-    # (jamais masqués), puis scorés (par score décroissant) avant non-scorés.
+    # Raffinement d'ordre UNIQUEMENT (la fenêtre, elle, est déjà décidée en base) :
+    # les écartés « ne pas contacter » (ALE-243) en tout dernier, jamais masqués.
+    # Ce tri doit rester cohérent avec le `order by` ci-dessus — s'il s'en écarte,
+    # on retombe dans le défaut qu'on vient de corriger.
     rows.sort(key=lambda r: (
         1 if r.get("contact_status") == "skip" else 0,
         0 if r.get("score") is not None else 1,
         -(int(r.get("score") or 0)),
     ))
     return rows
+
+
+def count_leads(access_token: str) -> int:
+    """Nombre TOTAL de leads du user (RLS scope), y compris hors fenêtre d'affichage.
+
+    Sert à annoncer la troncature de `list_leads`. Sans ce chiffre, une liste
+    plafonnée à 500 sur 1 133 leads se lit exactement comme une liste complète :
+    c'est ce qui a fait croire, en prod le 2026-09-04, que des invitations déposées
+    par l'autopilote n'existaient pas.
+
+    Fail-safe : ce compteur est un confort d'affichage, jamais une raison de faire
+    échouer la liste elle-même. Toute erreur ⇒ 0, et l'appelant retombe sur le
+    nombre de lignes réellement remontées."""
+    if not supabase_enabled():
+        return 0
+    try:
+        db = client_for_token(access_token)
+        resp = db.table("leads").select("id", count="exact").limit(1).execute()
+        return int(getattr(resp, "count", 0) or 0)
+    except Exception:
+        return 0
 
 
 def list_leads_for_scoring(access_token: str, limit: int = 1000) -> list[dict]:
