@@ -24,7 +24,7 @@ class ZernioMediaTest(unittest.TestCase):
     def test_create_post_includes_media_items(self):
         calls = []
 
-        def fake_request(method, path, *, params=None, body=None):
+        def fake_request(method, path, *, params=None, body=None, **kwargs):
             calls.append((method, path, body))
             return {"post": {"_id": "post-1"}}
 
@@ -43,7 +43,7 @@ class ZernioMediaTest(unittest.TestCase):
         presign_calls = []
         upload_calls = []
 
-        def fake_request(method, path, *, params=None, body=None):
+        def fake_request(method, path, *, params=None, body=None, **kwargs):
             presign_calls.append((method, path, body))
             return {"uploadUrl": "https://upload.example.com/put", "publicUrl": "https://media.example.com/image.png"}
 
@@ -72,7 +72,7 @@ class ZernioMediaTest(unittest.TestCase):
         png_data = b"fake-png"
         attempts = {"n": 0}
 
-        def fake_request(method, path, *, params=None, body=None):
+        def fake_request(method, path, *, params=None, body=None, **kwargs):
             return {"uploadUrl": "https://upload.example.com/put", "publicUrl": "https://media.example.com/image.png"}
 
         def fake_urlopen(req, timeout=0):
@@ -99,7 +99,7 @@ class ZernioMediaTest(unittest.TestCase):
         media_items = [{"type": "image", "url": "https://cdn.example.com/image.png"}]
         calls = {"n": 0}
 
-        def fake_request(method, path, *, params=None, body=None):
+        def fake_request(method, path, *, params=None, body=None, **kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise zernio.ZernioError("Zernio POST /posts a échoué (400) : Some media files failed to upload.")
@@ -118,7 +118,7 @@ class ZernioMediaTest(unittest.TestCase):
     def test_create_post_does_not_retry_unrelated_errors(self):
         media_items = [{"type": "image", "url": "https://cdn.example.com/image.png"}]
 
-        def fake_request(method, path, *, params=None, body=None):
+        def fake_request(method, path, *, params=None, body=None, **kwargs):
             raise zernio.ZernioError("Zernio POST /posts a échoué (401) : Unauthorized.")
 
         with patch.object(zernio, "_request", side_effect=fake_request):

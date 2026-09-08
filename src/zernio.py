@@ -13,10 +13,12 @@ import os
 import base64
 import binascii
 import re
+import socket
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any
 
 BASE_URL = "https://zernio.com/api/v1"
@@ -50,8 +52,48 @@ MAX_REEL_VIDEO_BYTES = 100 * 1024 * 1024
 _DATA_URL_RE = re.compile(r"^data:(?P<content_type>[-\w.]+/[-+\w.]+);base64,(?P<data>.+)$", re.DOTALL)
 
 
+DEFAULT_TIMEOUT_S = 30
+# Publication synchrone (`publishNow: true`) : Zernio télécharge d'abord chaque
+# média puis le pousse vers le réseau DANS LA MÊME REQUÊTE (doc : « publish
+# synchronously, inside this request »). Mesuré en prod le 2026-09-08 : sur 18
+# posts programmés en échec, 14 étaient des « The read operation timed out » à
+# 30 s, 13 d'entre eux avec une image. 30 s convient à un appel de lecture, pas
+# à une publication avec média.
+PUBLISH_TIMEOUT_DEFAULT_S = 120
+
+
+def _publish_timeout() -> int:
+    raw = os.environ.get("ZERNIO_PUBLISH_TIMEOUT_S", "").strip()
+    try:
+        value = int(raw) if raw else PUBLISH_TIMEOUT_DEFAULT_S
+    except ValueError:
+        value = PUBLISH_TIMEOUT_DEFAULT_S
+    return max(DEFAULT_TIMEOUT_S, value)
+
+
 class ZernioError(RuntimeError):
     """Raised when the Zernio API returns an error or is not configured."""
+
+
+class ZernioTimeout(ZernioError):
+    """Zernio n'a pas répondu à temps.
+
+    ⚠️ Ce n'est PAS un échec : la requête a peut-être abouti côté Zernio (et le
+    post être en ligne). L'appelant ne doit jamais la traiter comme « rien n'est
+    parti » ni rejouer sans garde-fou d'idempotence.
+    """
+
+
+class ZernioDuplicate(ZernioError):
+    """409 Zernio : ce contenu est déjà publié (ou en cours) sur ce compte.
+
+    Dédoublonnage par empreinte `(platform, accountId, content + media)` sur
+    24 h. `existing_post_id` est l'id Zernio du post déjà en ligne.
+    """
+
+    def __init__(self, message: str, *, existing_post_id: str | None = None):
+        super().__init__(message)
+        self.existing_post_id = existing_post_id
 
 
 def enabled() -> bool:
@@ -65,7 +107,22 @@ def _api_key() -> str:
     return key
 
 
-def _request(method: str, path: str, *, params: dict | None = None, body: dict | None = None) -> Any:
+def _is_timeout(exc: BaseException) -> bool:
+    # Python < 3.10 : socket.timeout est distinct de TimeoutError ; ≥ 3.10 c'est
+    # le même objet. urllib lève l'un OU l'autre selon la phase (connexion vs
+    # lecture), parfois enveloppé dans URLError.reason.
+    return isinstance(exc, (socket.timeout, TimeoutError))
+
+
+def _request(
+    method: str,
+    path: str,
+    *,
+    params: dict | None = None,
+    body: dict | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: int = DEFAULT_TIMEOUT_S,
+) -> Any:
     url = f"{BASE_URL}{path}"
     if params:
         url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
@@ -75,19 +132,35 @@ def _request(method: str, path: str, *, params: dict | None = None, body: dict |
     req.add_header("Accept", "application/json")
     if data is not None:
         req.add_header("Content-Type", "application/json")
+    for key, value in (headers or {}).items():
+        req.add_header(key, value)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
+        parsed: Any = None
         try:
             parsed = json.loads(detail)
             detail = parsed.get("error") or parsed.get("message") or detail
         except Exception:
             pass
+        if exc.code == 409:
+            existing = None
+            if isinstance(parsed, dict):
+                details = parsed.get("details") if isinstance(parsed.get("details"), dict) else {}
+                existing = details.get("existingPostId") or parsed.get("existingPostId")
+            raise ZernioDuplicate(
+                f"Zernio {method} {path} : contenu déjà publié sur ce compte ({detail})",
+                existing_post_id=str(existing) if existing else None,
+            ) from exc
         raise ZernioError(f"Zernio {method} {path} a échoué ({exc.code}) : {detail}") from exc
     except urllib.error.URLError as exc:
+        if _is_timeout(exc.reason):
+            raise ZernioTimeout(f"Zernio n'a pas répondu en {timeout} s ({method} {path}).") from exc
         raise ZernioError(f"Zernio injoignable : {exc.reason}") from exc
+    except (socket.timeout, TimeoutError) as exc:
+        raise ZernioTimeout(f"Zernio n'a pas répondu en {timeout} s ({method} {path}).") from exc
     return json.loads(raw) if raw else {}
 
 
@@ -340,12 +413,26 @@ def create_post(
     media_items: list[dict[str, Any]] | None = None,
     platform: str = PLATFORM,
     platform_specific_data: dict[str, Any] | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     """Publish or save as draft a post on the given account.
 
     `platform_specific_data` (ALE-59) porte les options propres au réseau, dans
     l'entrée du tableau `platforms` (schéma OpenAPI Zernio) : `threadItems` pour
     un thread X, `{subreddit, title, flairId…}` pour Reddit.
+
+    `request_id` = clé d'idempotence (en-tête `x-request-id`, fenêtre ~5 min
+    chez Zernio). Passer un identifiant STABLE par publication logique (id du
+    post programmé, du post sauvegardé…) : c'est ce qui rend le rejeu après un
+    timeout sûr — Zernio renvoie alors le post déjà créé (`existingPost`) au
+    lieu d'en publier un second. Sans valeur fournie, un UUID par appel protège
+    au moins le rejeu interne de cette fonction.
+
+    Lève `ZernioTimeout` si Zernio n'a pas confirmé après deux tentatives (le
+    post est PEUT-ÊTRE en ligne), `ZernioDuplicate` (409) si ce contenu est déjà
+    publié sur ce compte, `ZernioError` sinon — y compris quand Zernio répond
+    2xx (207) avec `post.status == "failed"` : urllib ne distingue pas un 207
+    d'un 201, et un client qui ne regarde que le code lirait « publié ».
     """
     platform_entry: dict[str, Any] = {"platform": platform, "accountId": account_id}
     if platform_specific_data:
@@ -360,12 +447,69 @@ def create_post(
         body["isDraft"] = True
     else:
         body["publishNow"] = publish_now
+    request_id = (request_id or "").strip() or f"cibl-{uuid.uuid4()}"
+    publishes_now = bool(publish_now) and not is_draft
+    timeout = _publish_timeout() if publishes_now else DEFAULT_TIMEOUT_S
+
+    def send(rid: str) -> dict[str, Any]:
+        return _request("POST", "/posts", body=body, headers={"x-request-id": rid}, timeout=timeout)
+
     try:
-        return _request("POST", "/posts", body=body)
+        result = send(request_id)
+    except ZernioTimeout:
+        # Rejeu SÛR : même x-request-id ⇒ si la première requête a abouti
+        # pendant qu'on n'attendait plus, Zernio renvoie ce post-là (200,
+        # `existingPost`) au lieu d'en créer un second ; sinon il la traite.
+        try:
+            result = send(request_id)
+        except ZernioTimeout as exc:
+            raise ZernioTimeout(
+                f"Zernio n'a pas confirmé la publication {platform} en {2 * timeout} s. "
+                "Le post est PEUT-ÊTRE déjà en ligne : vérifie sur le réseau avant de relancer "
+                f"(x-request-id {request_id})."
+            ) from exc
     except ZernioError as exc:
         if media_items and "failed to upload" in str(exc).lower():
             # Filet de sécurité si _wait_media_ready n'a pas suffi : Zernio a
             # eu besoin d'un peu plus de temps pour rendre le média lisible.
+            # Nouvel id : la 1re tentative a été REFUSÉE (400, rien de créé),
+            # rejouer son x-request-id pourrait nous rendre ce refus au lieu de
+            # retenter. Le dédoublonnage par contenu (409) protège toujours.
             time.sleep(MEDIA_READY_DELAY_S * MEDIA_READY_RETRIES)
-            return _request("POST", "/posts", body=body)
-        raise
+            result = send(f"{request_id}-r2")
+        else:
+            raise
+    return _accept_publish_result(result, platform=platform)
+
+
+def _accept_publish_result(result: Any, *, platform: str) -> dict[str, Any]:
+    """Normalise la réponse de POST /posts et refuse un « 2xx qui a échoué ».
+
+    - Rejeu idempotent : Zernio répond 200 avec le post d'origine dans
+      `existingPost` → on le remonte comme `post` (l'appelant lit `post._id`).
+    - 207 : le post est créé mais la publication inline n'a pas abouti ;
+      `post.status == "failed"` est terminal (« nothing will be retried »). Le
+      remonter comme un succès marquerait « publié » un post que personne ne
+      verra jamais — exactement la panne silencieuse à éviter. (`scheduled` =
+      erreur transitoire, Zernio republie seul : ce n'est PAS un échec.)
+    """
+    if not isinstance(result, dict):
+        return {"post": {}}
+    existing = result.get("existingPost")
+    if isinstance(existing, dict) and existing:
+        result = {**result, "post": existing, "replayed": True}
+    post = result.get("post") if isinstance(result.get("post"), dict) else {}
+    if (post or {}).get("status") == "failed":
+        detail = result.get("error")
+        if not detail:
+            for entry in result.get("platformResults") or []:
+                if isinstance(entry, dict) and entry.get("error"):
+                    detail = entry["error"]
+                    break
+        if not detail:
+            for entry in post.get("platforms") or []:
+                if isinstance(entry, dict) and entry.get("errorMessage"):
+                    detail = entry["errorMessage"]
+                    break
+        raise ZernioError(f"Publication {platform} refusée par le réseau : {detail or 'motif non précisé par Zernio'}")
+    return result
