@@ -67,9 +67,14 @@ def publish_cross_posts(post: dict) -> dict:
                     publish_now=True,
                     platform=zernio.PLATFORM_X,
                     platform_specific_data=psd,
+                    request_id=f"cibl-sched-{post['id']}-x",
                 )
                 z_post = result.get("post") or result
                 entry.update({"status": "published", "zernio_post_id": z_post.get("_id")})
+            except zernio.ZernioDuplicate as dup:
+                # Déjà en ligne sur ce compte (dédoublonnage Zernio 24 h) : c'est
+                # un succès, pas un échec à consigner.
+                entry.update({"status": "published", "zernio_post_id": dup.existing_post_id})
             except Exception as exc:
                 logger.error(f"Post {post['id']} : publication X échouée : {exc}")
                 entry.update({"status": "failed", "error": str(exc)[:500]})
@@ -99,9 +104,12 @@ def publish_cross_posts(post: dict) -> dict:
                     publish_now=True,
                     platform="reddit",
                     platform_specific_data=psd,
+                    request_id=f"cibl-sched-{post['id']}-reddit",
                 )
                 z_post = result.get("post") or result
                 entry.update({"status": "published", "zernio_post_id": z_post.get("_id")})
+            except zernio.ZernioDuplicate as dup:
+                entry.update({"status": "published", "zernio_post_id": dup.existing_post_id})
             except Exception as exc:
                 logger.error(f"Post {post['id']} : publication Reddit échouée : {exc}")
                 entry.update({"status": "failed", "error": str(exc)[:500]})
@@ -163,13 +171,25 @@ def run() -> None:
 
         try:
             media_items = zernio.prepare_image_media_items(post.get("media_items") or [])
-            result = zernio.create_post(
-                post["post_text"],
-                account_id,
-                publish_now=True,
-                media_items=media_items,
-            )
-            z_post = result.get("post") or result
+            try:
+                # x-request-id STABLE = l'id du post programmé : un rejeu après
+                # timeout (interne à create_post, ou un prochain passage du cron)
+                # récupère le post déjà créé au lieu d'en publier un second.
+                result = zernio.create_post(
+                    post["post_text"],
+                    account_id,
+                    publish_now=True,
+                    media_items=media_items,
+                    request_id=f"cibl-sched-{post_id}",
+                )
+                z_post = result.get("post") or result
+            except zernio.ZernioDuplicate as dup:
+                # Zernio a déjà ce contenu en ligne sur ce compte (< 24 h) — par
+                # exemple une tentative précédente soldée « timeout » alors
+                # qu'elle avait abouti. Le post EST publié : le marquer `failed`
+                # inviterait à le reprogrammer, donc à le dupliquer.
+                logger.warning(f"Post {post_id} : déjà publié côté Zernio ({dup.existing_post_id}) — marqué publié.")
+                z_post = {"_id": dup.existing_post_id}
             # ALE-59 : versions X/Reddit publiées ensemble, après le succès
             # LinkedIn (résultats par réseau consignés dans cross_posts). Un
             # imprévu ici ne doit jamais faire passer en `failed` un post déjà

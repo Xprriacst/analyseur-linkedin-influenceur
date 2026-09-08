@@ -1247,6 +1247,22 @@ def me_linkedin_disconnect(token: str = Depends(require_token)) -> dict[str, Any
     return _linkedin_status(token)
 
 
+def _publish_http_error(exc: zernio.ZernioError, *, prefix: str = "") -> HTTPException:
+    """Traduit une erreur de publication Zernio en réponse HTTP honnête.
+
+    ⚠️ Un timeout n'est PAS « rien n'est parti » : Zernio a peut-être publié
+    pendant qu'on n'attendait plus. 504 + le message qui dit de vérifier sur le
+    réseau avant de relancer — un 502 « publication impossible » ferait
+    recliquer le client, et le post partirait deux fois. Le 409 (contenu déjà
+    publié sur ce compte < 24 h) est de la même famille : le post est en ligne.
+    """
+    if isinstance(exc, zernio.ZernioTimeout):
+        return HTTPException(status_code=504, detail=f"{prefix}{exc}")
+    if isinstance(exc, zernio.ZernioDuplicate):
+        return HTTPException(status_code=409, detail=f"{prefix}{exc}")
+    return HTTPException(status_code=502, detail=f"{prefix}{exc}")
+
+
 @app.post("/me/linkedin/publish")
 def me_linkedin_publish(
     payload: LinkedInPublishRequest,
@@ -1269,7 +1285,7 @@ def me_linkedin_publish(
             media_items=media_items,
         )
     except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise _publish_http_error(exc) from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft, "media_count": len(payload.images)}
 
@@ -1438,7 +1454,7 @@ def me_instagram_publish(
             platform_specific_data=platform_specific_data,
         )
     except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=f"Publication Instagram impossible : {exc}") from exc
+        raise _publish_http_error(exc, prefix="Publication Instagram impossible : ") from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post}
 
@@ -1935,10 +1951,11 @@ def me_linkedin_schedule(
         # le message de validation Slack ne peut afficher que des URLs publiques,
         # et on évite de stocker des data-URLs base64 en base. Le cron republie
         # ces items tels quels (prepare_image_media_items est idempotent).
-        try:
-            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
-        except zernio.ZernioError as exc:
-            raise HTTPException(status_code=502, detail=f"Impossible de préparer les images du post : {exc}") from exc
+        # Stockage DURABLE : un post programmé attend souvent des jours entre la
+        # programmation et sa publication — une URL temporaire aurait expiré.
+        media_items, media_degraded = _durable_media_items(payload.images, scope="scheduled")
+        if payload.images and not media_items:
+            raise HTTPException(status_code=502, detail="Impossible de préparer les images du post.")
 
     # Déploiement progressif : n'exige la feature que si le payload embarque la
     # version correspondante (le cadençage LinkedIn reste ouvert à tous).
@@ -2128,7 +2145,7 @@ def me_x_publish(
             platform_specific_data=platform_specific_data,
         )
     except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise _publish_http_error(exc) from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft, "thread_len": len(tweets) or 1}
 
@@ -2301,7 +2318,7 @@ def me_reddit_publish(
             platform_specific_data=platform_specific_data,
         )
     except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise _publish_http_error(exc) from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post, "subreddit": subreddit}
 
@@ -2389,10 +2406,9 @@ def me_linkedin_scheduled_update(
 
     media_items: list[dict[str, Any]] | None = None
     if payload.images is not None:
-        try:
-            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
-        except zernio.ZernioError as exc:
-            raise HTTPException(status_code=502, detail=f"Hébergement des images impossible : {exc}") from exc
+        media_items, _ = _durable_media_items(payload.images, scope="scheduled")
+        if payload.images and not media_items:
+            raise HTTPException(status_code=502, detail="Hébergement des images impossible.")
 
     row = db.update_scheduled_post(
         token,
@@ -3339,18 +3355,50 @@ class CreatePostRequest(BaseModel):
     images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
 
 
-def _saved_post_media_items(images: list[LinkedInImageRequest]) -> tuple[list[dict[str, Any]], bool]:
-    """Convert attached images to public-URL media_items (ALE-179).
+def _durable_media_items(
+    images: list[LinkedInImageRequest],
+    *,
+    scope: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Images jointes → `media_items` durables (ALE-179).
 
-    Les data URLs sont hébergées sur Zernio (URL publique), les URLs déjà
-    publiques passent telles quelles. Non bloquant : un échec d'upload ne doit
-    pas empêcher la sauvegarde du texte — retourne (items, erreur)."""
+    ⚠️ Ne JAMAIS renvoyer ça vers le `/temp/` de Zernio : ce stockage est fait
+    pour matérialiser un post publié dans la foulée, pas pour garder une image
+    qu'on relira des jours plus tard (idée du réservoir, post en attente de
+    validation). C'est exactement ce qui a fait expirer les photos des comptes
+    en vue client. Zernio ne sert plus que de repli quand le stockage durable
+    n'est pas configuré — sans lui, mieux vaut une image éphémère que rien.
+
+    Retourne `(items, degraded)` ; `degraded` = une image n'a pas pu être rendue
+    durable et le front doit le signaler."""
     if not images:
         return [], False
+    payload = _image_payload(images)
+    if media_store.enabled():
+        try:
+            items, degraded = media_store.persist_image_attachments(payload, scope=scope)
+        except media_store.MediaStoreError as exc:
+            print(f"[media] stockage durable impossible (scope={scope}) : {exc}", flush=True)
+            return [], True
+        if degraded:
+            # Pas une erreur pour l'appelant (les images sont bien attachées),
+            # mais une URL non durable peut expirer : ça doit se voir en logs.
+            print(
+                f"[media] {len(payload)} image(s) jointe(s) dont au moins une non "
+                f"rendue durable (scope={scope})",
+                flush=True,
+            )
+        return items, bool(payload) and not items
+    print(f"[media] SUPABASE_SERVICE_ROLE_KEY absent : repli Zernio éphémère (scope={scope})", flush=True)
     try:
-        return zernio.prepare_image_media_items(_image_payload(images)), False
+        return zernio.prepare_image_media_items(payload), False
     except zernio.ZernioError:
         return [], True
+
+
+def _saved_post_media_items(images: list[LinkedInImageRequest]) -> tuple[list[dict[str, Any]], bool]:
+    """Images d'un post sauvegardé ou d'une idée du réservoir (stockage durable)."""
+    return _durable_media_items(images, scope="posts")
 
 
 @app.post("/me/generated-posts")
@@ -3484,11 +3532,18 @@ def validate_generated_post(
 
     try:
         media_items = zernio.prepare_image_media_items(post.get("media_items") or [])
-        result = zernio.create_post(content, account_id, publish_now=True, media_items=media_items)
-        z_post = result.get("post") or result
-        published = db.mark_generated_post_published_user(token, post_id, (z_post or {}).get("_id"))
+        try:
+            result = zernio.create_post(
+                content, account_id, publish_now=True, media_items=media_items, request_id=f"cibl-gp-{post_id}"
+            )
+            zernio_post_id = ((result.get("post") or result) or {}).get("_id")
+        except zernio.ZernioDuplicate as dup:
+            # Déjà en ligne sur ce compte (< 24 h) : l'enregistrer comme publié
+            # plutôt que renvoyer une erreur sur un post que le client voit.
+            zernio_post_id = dup.existing_post_id
+        published = db.mark_generated_post_published_user(token, post_id, zernio_post_id)
     except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=f"Publication LinkedIn impossible : {exc}") from exc
+        raise _publish_http_error(exc, prefix="Publication LinkedIn impossible : ") from exc
 
     return {"ok": True, "post": published or post}
 
@@ -6303,10 +6358,7 @@ def slack_send_post(
     # rechargent le post depuis la base). Non bloquant : un échec d'upload média
     # n'empêche pas l'envoi du texte.
     if payload.images:
-        try:
-            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
-        except zernio.ZernioError:
-            media_items = []
+        media_items, _ = _durable_media_items(payload.images, scope="posts")
         if media_items:
             db.update_generated_post_media(token, payload.post_id, media_items)
             post = {**post, "media_items": media_items}
@@ -6496,14 +6548,18 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
                     else:
                         try:
                             media_items = zernio.prepare_image_media_items(post.get("media_items") or [])
-                            result = zernio.create_post(
-                                post.get("post") or "",
-                                account_id,
-                                publish_now=True,
-                                media_items=media_items,
-                            )
-                            z_post = result.get("post") or result
-                            db.mark_generated_post_published(item_id, user_id_w, (z_post or {}).get("_id"))
+                            try:
+                                result = zernio.create_post(
+                                    post.get("post") or "",
+                                    account_id,
+                                    publish_now=True,
+                                    media_items=media_items,
+                                    request_id=f"cibl-gp-{item_id}",
+                                )
+                                zernio_post_id = ((result.get("post") or result) or {}).get("_id")
+                            except zernio.ZernioDuplicate as dup:
+                                zernio_post_id = dup.existing_post_id
+                            db.mark_generated_post_published(item_id, user_id_w, zernio_post_id)
                         except Exception as exc:
                             display_status = "publish_error"
                             error_detail = str(exc)
