@@ -157,5 +157,110 @@ class SelfPhotoListingTest(unittest.TestCase):
         self.assertFalse(rows[1]["is_temporary"])
 
 
+class PersistImageAttachmentsTest(unittest.TestCase):
+    """Les images jointes (idée, post, programmation) vont au stockage durable."""
+
+    def _fake_admin(self):
+        bucket = _FakeBucket()
+        admin = MagicMock()
+        admin.storage = _FakeStorage(bucket)
+        return admin, bucket
+
+    @patch("src.media_store.db.admin_enabled", return_value=True)
+    @patch("src.media_store.db.admin_client")
+    def test_data_url_attachment_goes_to_durable_storage(self, admin_client, _enabled):
+        admin, bucket = self._fake_admin()
+        admin_client.return_value = admin
+
+        items, degraded = media_store.persist_image_attachments(
+            [{"data_url": "data:image/png;base64,QUJDRA==", "filename": "photo-idee-1.jpg"}],
+            scope="posts",
+        )
+
+        self.assertFalse(degraded)
+        self.assertEqual(items[0]["type"], "image")
+        self.assertTrue(items[0]["url"].startswith("https://storage.example.com/posts/"))
+        self.assertNotIn("zernio", items[0]["url"])
+        self.assertEqual(len(bucket.upload_calls), 1)
+
+    @patch("src.media_store.db.admin_enabled", return_value=True)
+    @patch("src.media_store.rehost_external_image")
+    def test_already_durable_url_is_not_reuploaded(self, rehost, _enabled):
+        url = "https://xyz.supabase.co/storage/v1/object/public/app-media/posts/1_a_photo.png"
+
+        items, degraded = media_store.persist_image_attachments([{"url": url}], scope="posts")
+
+        rehost.assert_not_called()
+        self.assertFalse(degraded)
+        self.assertEqual(items[0]["url"], url)
+
+    @patch("src.media_store.db.admin_enabled", return_value=True)
+    @patch("src.media_store.rehost_external_image", side_effect=media_store.MediaStoreError("404"))
+    def test_expired_zernio_url_is_dropped_never_persisted(self, _rehost, _enabled):
+        """Repersister une URL /temp/ morte, c'est refaire le bug."""
+        items, degraded = media_store.persist_image_attachments(
+            [{"url": "https://media.zernio.com/temp/123_abc_photo.png"}],
+            scope="posts",
+        )
+
+        self.assertEqual(items, [])
+        self.assertTrue(degraded)
+
+    @patch("src.media_store.db.admin_enabled", return_value=True)
+    @patch("src.media_store.rehost_external_image", side_effect=media_store.MediaStoreError("timeout"))
+    def test_unreachable_third_party_url_is_kept_and_flagged(self, _rehost, _enabled):
+        """Une photo d'annonce injoignable à cet instant : la jeter la perdrait."""
+        url = "https://api.cotality.com/trestle/Media/Property/PHOTO-Jpeg/1091455397/1/abc"
+
+        items, degraded = media_store.persist_image_attachments([{"url": url}], scope="scheduled")
+
+        self.assertEqual(items[0]["url"], url)
+        self.assertTrue(degraded)
+
+
+@unittest.skipIf(api is None, "fastapi absent de l'environnement local")
+class AttachmentsNeverGoToZernioTempTest(unittest.TestCase):
+    """Régression vécue : les photos jointes par la cliente partaient dans le
+    `/temp/` de Zernio et expiraient. Ce test tombe si un chemin y retourne."""
+
+    def test_durable_media_items_does_not_call_zernio(self):
+        images = [api.LinkedInImageRequest(data_url="data:image/png;base64,QUJDRA==", filename="p.jpg")]
+        durable = "https://xyz.supabase.co/storage/v1/object/public/app-media/posts/1_a_p.jpg"
+        with (
+            patch.object(api.media_store, "enabled", return_value=True),
+            patch.object(
+                api.media_store,
+                "persist_image_attachments",
+                return_value=([{"type": "image", "url": durable}], False),
+            ),
+            patch.object(api.zernio, "prepare_image_media_items") as zernio_upload,
+        ):
+            items, error = api._durable_media_items(images, scope="posts")
+
+        zernio_upload.assert_not_called()
+        self.assertFalse(error)
+        self.assertEqual(items[0]["url"], durable)
+
+    def test_saved_posts_and_idea_seeds_share_the_durable_path(self):
+        images = [api.LinkedInImageRequest(data_url="data:image/png;base64,QUJDRA==")]
+        with patch.object(api, "_durable_media_items", return_value=([], False)) as durable:
+            api._saved_post_media_items(images)
+        self.assertEqual(durable.call_args.kwargs["scope"], "posts")
+
+    def test_storage_failure_is_reported_not_swallowed(self):
+        images = [api.LinkedInImageRequest(data_url="data:image/png;base64,QUJDRA==")]
+        with (
+            patch.object(api.media_store, "enabled", return_value=True),
+            patch.object(
+                api.media_store,
+                "persist_image_attachments",
+                side_effect=media_store.MediaStoreError("bucket absent"),
+            ),
+        ):
+            items, error = api._durable_media_items(images, scope="posts")
+        self.assertEqual(items, [])
+        self.assertTrue(error)
+
+
 if __name__ == "__main__":
     unittest.main()
