@@ -1247,6 +1247,22 @@ def me_linkedin_disconnect(token: str = Depends(require_token)) -> dict[str, Any
     return _linkedin_status(token)
 
 
+def _publish_http_error(exc: zernio.ZernioError, *, prefix: str = "") -> HTTPException:
+    """Traduit une erreur de publication Zernio en réponse HTTP honnête.
+
+    ⚠️ Un timeout n'est PAS « rien n'est parti » : Zernio a peut-être publié
+    pendant qu'on n'attendait plus. 504 + le message qui dit de vérifier sur le
+    réseau avant de relancer — un 502 « publication impossible » ferait
+    recliquer le client, et le post partirait deux fois. Le 409 (contenu déjà
+    publié sur ce compte < 24 h) est de la même famille : le post est en ligne.
+    """
+    if isinstance(exc, zernio.ZernioTimeout):
+        return HTTPException(status_code=504, detail=f"{prefix}{exc}")
+    if isinstance(exc, zernio.ZernioDuplicate):
+        return HTTPException(status_code=409, detail=f"{prefix}{exc}")
+    return HTTPException(status_code=502, detail=f"{prefix}{exc}")
+
+
 @app.post("/me/linkedin/publish")
 def me_linkedin_publish(
     payload: LinkedInPublishRequest,
@@ -1269,7 +1285,7 @@ def me_linkedin_publish(
             media_items=media_items,
         )
     except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise _publish_http_error(exc) from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft, "media_count": len(payload.images)}
 
@@ -1438,7 +1454,7 @@ def me_instagram_publish(
             platform_specific_data=platform_specific_data,
         )
     except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=f"Publication Instagram impossible : {exc}") from exc
+        raise _publish_http_error(exc, prefix="Publication Instagram impossible : ") from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post}
 
@@ -2129,7 +2145,7 @@ def me_x_publish(
             platform_specific_data=platform_specific_data,
         )
     except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise _publish_http_error(exc) from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post, "draft": payload.draft, "thread_len": len(tweets) or 1}
 
@@ -2302,7 +2318,7 @@ def me_reddit_publish(
             platform_specific_data=platform_specific_data,
         )
     except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise _publish_http_error(exc) from exc
     post = result.get("post") or result
     return {"ok": True, "post_id": post.get("_id"), "post": post, "subreddit": subreddit}
 
@@ -3516,11 +3532,18 @@ def validate_generated_post(
 
     try:
         media_items = zernio.prepare_image_media_items(post.get("media_items") or [])
-        result = zernio.create_post(content, account_id, publish_now=True, media_items=media_items)
-        z_post = result.get("post") or result
-        published = db.mark_generated_post_published_user(token, post_id, (z_post or {}).get("_id"))
+        try:
+            result = zernio.create_post(
+                content, account_id, publish_now=True, media_items=media_items, request_id=f"cibl-gp-{post_id}"
+            )
+            zernio_post_id = ((result.get("post") or result) or {}).get("_id")
+        except zernio.ZernioDuplicate as dup:
+            # Déjà en ligne sur ce compte (< 24 h) : l'enregistrer comme publié
+            # plutôt que renvoyer une erreur sur un post que le client voit.
+            zernio_post_id = dup.existing_post_id
+        published = db.mark_generated_post_published_user(token, post_id, zernio_post_id)
     except zernio.ZernioError as exc:
-        raise HTTPException(status_code=502, detail=f"Publication LinkedIn impossible : {exc}") from exc
+        raise _publish_http_error(exc, prefix="Publication LinkedIn impossible : ") from exc
 
     return {"ok": True, "post": published or post}
 
@@ -6525,14 +6548,18 @@ async def slack_interactive_webhook(request: Request) -> dict[str, Any]:
                     else:
                         try:
                             media_items = zernio.prepare_image_media_items(post.get("media_items") or [])
-                            result = zernio.create_post(
-                                post.get("post") or "",
-                                account_id,
-                                publish_now=True,
-                                media_items=media_items,
-                            )
-                            z_post = result.get("post") or result
-                            db.mark_generated_post_published(item_id, user_id_w, (z_post or {}).get("_id"))
+                            try:
+                                result = zernio.create_post(
+                                    post.get("post") or "",
+                                    account_id,
+                                    publish_now=True,
+                                    media_items=media_items,
+                                    request_id=f"cibl-gp-{item_id}",
+                                )
+                                zernio_post_id = ((result.get("post") or result) or {}).get("_id")
+                            except zernio.ZernioDuplicate as dup:
+                                zernio_post_id = dup.existing_post_id
+                            db.mark_generated_post_published(item_id, user_id_w, zernio_post_id)
                         except Exception as exc:
                             display_status = "publish_error"
                             error_detail = str(exc)

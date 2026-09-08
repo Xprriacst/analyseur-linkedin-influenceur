@@ -159,7 +159,7 @@ class ZernioCrossPostPayloadTest(unittest.TestCase):
     def _capture_body(self, **kwargs):
         captured = {}
 
-        def fake_request(method, path, params=None, body=None):
+        def fake_request(method, path, params=None, body=None, **kwargs):
             captured.update({"method": method, "path": path, "body": body})
             return {"post": {"_id": "z1"}}
 
@@ -202,7 +202,7 @@ class ZernioCrossPostPayloadTest(unittest.TestCase):
     def test_validate_subreddit_strips_prefix(self):
         captured = {}
 
-        def fake_request(method, path, params=None, body=None):
+        def fake_request(method, path, params=None, body=None, **kwargs):
             captured.update({"path": path, "params": params})
             return {"exists": True}
 
