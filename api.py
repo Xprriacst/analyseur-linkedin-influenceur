@@ -1935,10 +1935,11 @@ def me_linkedin_schedule(
         # le message de validation Slack ne peut afficher que des URLs publiques,
         # et on évite de stocker des data-URLs base64 en base. Le cron republie
         # ces items tels quels (prepare_image_media_items est idempotent).
-        try:
-            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
-        except zernio.ZernioError as exc:
-            raise HTTPException(status_code=502, detail=f"Impossible de préparer les images du post : {exc}") from exc
+        # Stockage DURABLE : un post programmé attend souvent des jours entre la
+        # programmation et sa publication — une URL temporaire aurait expiré.
+        media_items, media_degraded = _durable_media_items(payload.images, scope="scheduled")
+        if payload.images and not media_items:
+            raise HTTPException(status_code=502, detail="Impossible de préparer les images du post.")
 
     # Déploiement progressif : n'exige la feature que si le payload embarque la
     # version correspondante (le cadençage LinkedIn reste ouvert à tous).
@@ -2389,10 +2390,9 @@ def me_linkedin_scheduled_update(
 
     media_items: list[dict[str, Any]] | None = None
     if payload.images is not None:
-        try:
-            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
-        except zernio.ZernioError as exc:
-            raise HTTPException(status_code=502, detail=f"Hébergement des images impossible : {exc}") from exc
+        media_items, _ = _durable_media_items(payload.images, scope="scheduled")
+        if payload.images and not media_items:
+            raise HTTPException(status_code=502, detail="Hébergement des images impossible.")
 
     row = db.update_scheduled_post(
         token,
@@ -3339,18 +3339,50 @@ class CreatePostRequest(BaseModel):
     images: list[LinkedInImageRequest] = Field(default_factory=list, max_length=zernio.MAX_LINKEDIN_IMAGES)
 
 
-def _saved_post_media_items(images: list[LinkedInImageRequest]) -> tuple[list[dict[str, Any]], bool]:
-    """Convert attached images to public-URL media_items (ALE-179).
+def _durable_media_items(
+    images: list[LinkedInImageRequest],
+    *,
+    scope: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Images jointes → `media_items` durables (ALE-179).
 
-    Les data URLs sont hébergées sur Zernio (URL publique), les URLs déjà
-    publiques passent telles quelles. Non bloquant : un échec d'upload ne doit
-    pas empêcher la sauvegarde du texte — retourne (items, erreur)."""
+    ⚠️ Ne JAMAIS renvoyer ça vers le `/temp/` de Zernio : ce stockage est fait
+    pour matérialiser un post publié dans la foulée, pas pour garder une image
+    qu'on relira des jours plus tard (idée du réservoir, post en attente de
+    validation). C'est exactement ce qui a fait expirer les photos des comptes
+    en vue client. Zernio ne sert plus que de repli quand le stockage durable
+    n'est pas configuré — sans lui, mieux vaut une image éphémère que rien.
+
+    Retourne `(items, degraded)` ; `degraded` = une image n'a pas pu être rendue
+    durable et le front doit le signaler."""
     if not images:
         return [], False
+    payload = _image_payload(images)
+    if media_store.enabled():
+        try:
+            items, degraded = media_store.persist_image_attachments(payload, scope=scope)
+        except media_store.MediaStoreError as exc:
+            print(f"[media] stockage durable impossible (scope={scope}) : {exc}", flush=True)
+            return [], True
+        if degraded:
+            # Pas une erreur pour l'appelant (les images sont bien attachées),
+            # mais une URL non durable peut expirer : ça doit se voir en logs.
+            print(
+                f"[media] {len(payload)} image(s) jointe(s) dont au moins une non "
+                f"rendue durable (scope={scope})",
+                flush=True,
+            )
+        return items, bool(payload) and not items
+    print(f"[media] SUPABASE_SERVICE_ROLE_KEY absent : repli Zernio éphémère (scope={scope})", flush=True)
     try:
-        return zernio.prepare_image_media_items(_image_payload(images)), False
+        return zernio.prepare_image_media_items(payload), False
     except zernio.ZernioError:
         return [], True
+
+
+def _saved_post_media_items(images: list[LinkedInImageRequest]) -> tuple[list[dict[str, Any]], bool]:
+    """Images d'un post sauvegardé ou d'une idée du réservoir (stockage durable)."""
+    return _durable_media_items(images, scope="posts")
 
 
 @app.post("/me/generated-posts")
@@ -6303,10 +6335,7 @@ def slack_send_post(
     # rechargent le post depuis la base). Non bloquant : un échec d'upload média
     # n'empêche pas l'envoi du texte.
     if payload.images:
-        try:
-            media_items = zernio.prepare_image_media_items(_image_payload(payload.images))
-        except zernio.ZernioError:
-            media_items = []
+        media_items, _ = _durable_media_items(payload.images, scope="posts")
         if media_items:
             db.update_generated_post_media(token, payload.post_id, media_items)
             post = {**post, "media_items": media_items}
