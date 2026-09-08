@@ -36,7 +36,13 @@ def _json_safe(obj: Any) -> Any:
     return obj
 
 
-def _looks_temporary_media_url(url: str | None) -> bool:
+def looks_temporary_media_url(url: str | None) -> bool:
+    """URL connue pour expirer (stockage temporaire de Zernio).
+
+    Source de vérité unique : `media_store` s'en sert pour décider qu'une image
+    ne doit surtout PAS être persistée telle quelle. Elle vit ici parce que
+    `media_store` importe `db` (et pas l'inverse).
+    """
     text = (url or "").strip().lower()
     return "/temp/" in text and "media.zernio.com" in text
 
@@ -2993,7 +2999,7 @@ def list_self_photos(access_token: str, limit: int = 20) -> list[dict]:
     rows = resp.data or []
     for row in rows:
         url = row.get("image_url")
-        row["is_temporary"] = _looks_temporary_media_url(url)
+        row["is_temporary"] = looks_temporary_media_url(url)
     return rows
 
 
@@ -3027,7 +3033,7 @@ def get_self_photos_by_ids(access_token: str, photo_ids: list[str]) -> list[dict
     )
     by_id = {}
     for row in (resp.data or []):
-        row["is_temporary"] = _looks_temporary_media_url(row.get("image_url"))
+        row["is_temporary"] = looks_temporary_media_url(row.get("image_url"))
         by_id[row["id"]] = row
     return [by_id[pid] for pid in ordered if pid in by_id]
 

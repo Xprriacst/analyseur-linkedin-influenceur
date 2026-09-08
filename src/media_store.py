@@ -145,3 +145,61 @@ def rehost_image_media_items(
                 continue
         out.append(entry)
     return out
+
+
+def is_durable_url(url: str | None) -> bool:
+    """Vrai si l'URL pointe déjà sur notre stockage durable."""
+    text = (url or "").strip().lower()
+    return f"/storage/v1/object/public/{BUCKET}/" in text
+
+
+def persist_image_attachments(
+    images: list[dict[str, Any]] | None,
+    *,
+    scope: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Images jointes par le client → `media_items` à URLs durables.
+
+    C'est le point d'entrée de TOUT ce que l'app doit relire plus tard (idée du
+    réservoir, post sauvegardé, post programmé, message Slack de validation) :
+    une image déposée aujourd'hui est relue des jours après, elle ne peut donc
+    pas vivre dans le `/temp/` de Zernio.
+
+    Retourne `(items, degraded)`. `degraded` signale une image qu'on n'a pas su
+    rendre durable — le front doit le dire plutôt que d'afficher une vignette
+    qui cassera. Lève `MediaStoreError` seulement quand une image que le client
+    vient d'uploader ne peut pas être stockée du tout (là, il faut le lui dire).
+    """
+    if not images:
+        return [], False
+    out: list[dict[str, Any]] = []
+    degraded = False
+    for index, image in enumerate(images, start=1):
+        entry = dict(image or {})
+        source = str(entry.get("data_url") or entry.get("url") or "").strip()
+        if not source:
+            raise MediaStoreError("Image invalide : URL ou data_url manquante.")
+        stem = f"{scope}-{index}"
+        if source.startswith("data:"):
+            # Octets fournis par le client : un échec ici est une vraie panne,
+            # on ne fait pas semblant d'avoir enregistré sa photo.
+            url = upload_image_data_url(source, filename=entry.get("filename") or f"{stem}.png", scope=scope)
+        elif is_durable_url(source):
+            url = source
+        else:
+            try:
+                url = rehost_external_image(source, filename_stem=stem, scope=scope)
+            except MediaStoreError:
+                degraded = True
+                if db.looks_temporary_media_url(source):
+                    # Connue pour expirer : la persister serait reproduire le bug.
+                    continue
+                # URL tierce (CDN d'une annonce) : rien ne dit qu'elle expire, et
+                # la jeter perdrait la photo à coup sûr. On la garde, signalée.
+                url = source
+        item: dict[str, Any] = {"type": "image", "url": url}
+        title = str(entry.get("title") or entry.get("filename") or "").strip()
+        if title:
+            item["title"] = title[:200]
+        out.append(item)
+    return out, degraded
