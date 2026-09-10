@@ -202,6 +202,23 @@ def account_id_of(account: dict[str, Any] | None) -> str | None:
     return _pick(account, "id", "account_id") if account else None
 
 
+def account_name_tag(account: dict[str, Any] | None) -> str | None:
+    """Le `name` qu'on a passé au lien d'auth hébergée (= notre user_id).
+
+    C'est la SEULE correspondance forte entre un compte du workspace partagé et
+    l'un de nos utilisateurs. Unipile ne la renvoie pas toujours sur
+    `GET /accounts` (le champ porte parfois le nom LinkedIn) : quand elle est
+    absente, l'appelant doit se rabattre sur un repli borné, jamais sur « le
+    compte le plus récent ».
+    """
+    return _pick(account, "name") if account else None
+
+
+def account_created_at(account: dict[str, Any] | None) -> str | None:
+    """Horodatage de création/connexion du compte, tel que rendu par Unipile."""
+    return _pick(account, "created_at", "connected_at") if account else None
+
+
 def chat_id_of(chat: dict[str, Any] | None) -> str | None:
     """Id d'un chat renvoyé par Unipile (start_new_chat / send)."""
     return _pick(chat, "chat_id", "id") if chat else None
