@@ -6815,25 +6815,64 @@ def chat(payload: ChatRequest, token: str = Depends(require_token)) -> Streaming
 @app.post("/analyze")
 def analyze(
     payload: AnalyzeRequest,
-    token: Optional[str] = Depends(optional_token),
+    token: str = Depends(require_token),
 ) -> dict[str, Any]:
+    """Analyse synchrone d'un profil — authentifiée et débitée, comme la file.
+
+    ⚠️ Cette route a longtemps porté `optional_token` : un visiteur ANONYME
+    déclenchait deux runs Apify (argent réel) plus la classification et la synthèse
+    Claude, sans compte, sans crédit et sans plafond. Le garde-fou « une analyse
+    gratuite » vivait dans le `localStorage` du navigateur, donc se levait en vidant
+    le stockage ou en appelant l'API directement. Le chemin officiel (`POST /jobs`)
+    débite 20 crédits par profil : cette route offrait exactement le même travail
+    gratuitement, à qui connaissait son chemin.
+
+    Elle reste montée (des scripts internes peuvent l'appeler) mais applique
+    désormais les mêmes règles que la file : jeton valide, URL LinkedIn, débit
+    atomique, remboursement si l'analyse n'aboutit pas.
+    """
     if not os.environ.get("APIFY_TOKEN"):
         raise HTTPException(status_code=400, detail="APIFY_TOKEN manquant dans .env")
     if payload.run_llm and not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
+    # Même filtre que la file : sans lui, `profile_url` partait tel quel chez Apify
+    # (donc un run facturé pour une URL qui n'est même pas un profil LinkedIn).
+    urls = _clean_urls([payload.profile_url])
+    if not urls:
+        raise HTTPException(status_code=400, detail="Aucune URL de profil LinkedIn valide.")
+    profile_url = urls[0]
+
+    # Débit APRÈS les préconditions, avant le travail payant (fonction Postgres
+    # atomique). Un solde insuffisant doit couper avant le moindre run Apify.
+    ok, balance = db.debit_credits(token, "analyze_job", 1)
+    if not ok:
+        cost = db.CREDIT_COSTS["analyze_job"]
+        raise HTTPException(
+            status_code=402,
+            detail=f"Crédits insuffisants (solde : {balance}). Analyse d'un profil = {cost} crédit(s).",
+        )
+
     try:
         result = run_analysis(
-            payload.profile_url.strip(),
+            profile_url,
             limit=payload.limit,
             no_cache=not payload.use_cache,
             with_llm=payload.run_llm,
         )
     except Exception as exc:
+        # Analyse non livrée ⇒ crédit rendu (même règle que `fail_job_item` pour la
+        # file). Sans ça, un timeout Apify ou un JSON tronqué coûterait 20 crédits
+        # au client pour rien.
+        user = db.get_user(token) or {}
+        db.refund_credits_admin(
+            user.get("id"), "analyze_job", description="remboursement analyse synchrone en échec"
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    # Persist to the database when an authenticated user is making the request.
-    if token and db.supabase_enabled():
+    # Persistance best-effort : le jeton est désormais garanti valide (require_token),
+    # donc le seul cas restant est une panne Supabase — jamais « pas de session ».
+    if db.supabase_enabled():
         try:
             saved = db.save_analysis(token, result, posts_limit=payload.limit)
             if saved:
@@ -6844,11 +6883,10 @@ def analyze(
             # Persistence is best-effort: never fail the analysis on a DB error,
             # but surface the reason so the client can warn the user.
             result["save_error"] = f"Sauvegarde Supabase échouée : {exc}"
-    elif not db.supabase_enabled():
-        result["save_error"] = "Supabase non configuré sur le serveur (SUPABASE_URL / SUPABASE_ANON_KEY)."
     else:
-        result["save_error"] = "Aucune session utilisateur : analyse non sauvegardée."
+        result["save_error"] = "Supabase non configuré sur le serveur (SUPABASE_URL / SUPABASE_ANON_KEY)."
 
+    result["credits"] = balance
     return result
 
 
