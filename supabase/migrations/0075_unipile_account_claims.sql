@@ -23,20 +23,23 @@
 --      Le prochain `refresh` de n'importe quel client se l'attribuait.
 --
 -- Ce que pose cette migration :
---   (a) la table devient SERVEUR-ÉCRITE, CLIENT-LISIBLE (revoke insert/update/
---       delete) — les écritures passent désormais par la clé service-role,
---       scopée au user_id du jeton vérifié ;
+--   (a) le retrait des droits d'écriture au client est dans la 0076, PAS ici —
+--       voir l'ordre de déploiement ci-dessous ;
 --   (b) un journal PERMANENT des rattachements : un compte Unipile revendiqué
 --       une fois ne redevient jamais « libre », même après déconnexion ;
 --   (c) `connect_requested_at`, qui borne le repli aux comptes créés APRÈS que
 --       CE client a demandé son lien d'authentification.
 --
--- ⚠️ ORDRE DE DÉPLOIEMENT : appliquer cette migration AVANT que le nouveau code
--- soit en vol laisse l'ancien code (qui écrit avec le jeton client) sans droit
--- d'écriture — le réglage de cadençage et le rattachement répondent alors en
--- erreur pendant la fenêtre de déploiement (quelques minutes), sans rien
--- corrompre. C'est le sens le moins risqué : l'inverse (code neuf sans la
--- table de journal) casserait le rattachement.
+-- ⚠️ ORDRE DE DÉPLOIEMENT — c'est la raison d'être du découpage 0075/0076.
+-- La 0075 (celle-ci) n'enlève RIEN à personne : l'ancien code garde ses droits
+-- d'écriture, le nouveau code trouve le registre et la colonne dont il a
+-- besoin. Elle s'applique donc AVANT le déploiement, sans aucune fenêtre de
+-- dégradation.
+-- La 0076 retire les droits d'écriture au client : elle s'applique APRÈS que
+-- le nouveau code soit en vol (lui écrit en service-role, donc elle ne le
+-- gêne pas). Appliquée trop tôt, elle priverait l'ANCIEN code du droit
+-- d'écrire — réglage de cadençage et rattachement en erreur le temps du
+-- déploiement.
 --
 -- Idempotente (IF NOT EXISTS / DROP IF EXISTS).
 
@@ -75,19 +78,3 @@ on conflict (unipile_account_id) do nothing;
 -- qui traînait avant que le client clique « Connecter » n'est jamais le sien.
 alter table public.linkedin_outreach_accounts
   add column if not exists connect_requested_at timestamptz;
-
--- (a) La table passe en lecture seule pour le client.
--- Vérifié : un REVOKE au niveau table retire AUSSI les droits colonne par
--- colonne posés par 0048/0052 (contrôlé sur une table jetable — l'ACL retombe
--- à `authenticated=r`). Le SELECT est conservé : l'app lit cette ligne à
--- chaque écran de prospection.
-revoke insert, update, delete, truncate on public.linkedin_outreach_accounts from authenticated;
-revoke insert, update, delete, truncate on public.linkedin_outreach_accounts from anon;
-
--- Le registre n'est protégé que par sa RLS sans policy (patron `prospect_cache`).
--- On retire quand même les droits par défaut que Supabase accorde à toute table
--- de `public` : sur un registre de sécurité, deux verrous valent mieux qu'un —
--- si une policy y était ajoutée un jour par inadvertance, les grants ne
--- suivraient pas.
-revoke all on public.unipile_account_claims from authenticated;
-revoke all on public.unipile_account_claims from anon;

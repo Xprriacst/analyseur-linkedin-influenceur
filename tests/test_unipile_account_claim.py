@@ -27,6 +27,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 API_SOURCE = (ROOT / "api.py").read_text(encoding="utf-8")
 DB_SOURCE = (ROOT / "src" / "db.py").read_text(encoding="utf-8")
 MIGRATION = (ROOT / "supabase" / "migrations" / "0075_unipile_account_claims.sql").read_text(encoding="utf-8")
+# Le retrait des droits d'écriture vit dans une migration SÉPARÉE, à appliquer
+# APRÈS le déploiement du code (la 0075 ne casse rien et passe avant).
+REVOKE_MIGRATION = (ROOT / "supabase" / "migrations" / "0076_outreach_accounts_server_written.sql").read_text(encoding="utf-8")
 
 try:
     import api as api_module
@@ -217,7 +220,7 @@ class ServerSideWritesTest(unittest.TestCase):
         for role in ("authenticated", "anon"):
             revoke = next(
                 (
-                    line for line in MIGRATION.splitlines()
+                    line for line in REVOKE_MIGRATION.splitlines()
                     if line.startswith("revoke ")
                     and "public.linkedin_outreach_accounts" in line
                     and line.rstrip(";").endswith(role)
@@ -227,6 +230,8 @@ class ServerSideWritesTest(unittest.TestCase):
             self.assertIsNotNone(revoke, f"aucun revoke pour {role}")
             for privilege in ("insert", "update", "delete"):
                 self.assertIn(privilege, revoke)
+        # La 0075 ne doit RIEN révoquer : c'est elle qui passe avant le code.
+        self.assertNotIn("revoke insert", MIGRATION)
         self.assertIn("create table if not exists public.unipile_account_claims", MIGRATION)
         # RLS sans policy : service-role uniquement.
         self.assertIn("alter table public.unipile_account_claims enable row level security", MIGRATION)
