@@ -5270,12 +5270,17 @@ def _resolve_unipile_account(token: str, user_id: str) -> dict[str, Any] | None:
     # 1. Correspondance forte.
     exact = [a for a in accounts if unipile.account_name_tag(a) == user_id]
     if exact:
+        print(f"[unipile] rattachement par correspondance forte (name) pour {user_id}.")
         return _most_recent(exact)
 
     # 3. Fail-closed : sans registre, pas de repli.
     owners = db.unipile_account_owners()
     if owners is None:
-        print("[unipile] registre des rattachements indisponible — repli refusé.")
+        print(
+            f"[unipile] aucun rattachement pour {user_id} : registre des propriétés "
+            "illisible (table 0075 absente, service-role manquant ou base en panne) "
+            "— repli refusé volontairement."
+        )
         return None
 
     current = db.get_linkedin_outreach_account(token) or {}
@@ -5283,7 +5288,14 @@ def _resolve_unipile_account(token: str, user_id: str) -> dict[str, Any] | None:
     cutoff = requested_at or (datetime.now(timezone.utc) - _UNIPILE_FALLBACK_WINDOW)
 
     # 2. Repli borné.
+    # ⚠️ Les compteurs ci-dessous ne sont pas décoratifs : ce chemin ne peut pas
+    # être joué hors production (la base dev n'a aucun compte Unipile connecté).
+    # Un « je n'arrive plus à connecter LinkedIn » sans motif serait une enquête ;
+    # avec cette ligne, un grep sur `[unipile]` dit lequel des trois refus a joué.
     candidates: list[dict[str, Any]] = []
+    claimed_by_others = 0
+    too_old = 0
+    undated = 0
     for account in accounts:
         account_id = unipile.account_id_of(account)
         if not account_id:
@@ -5293,11 +5305,28 @@ def _resolve_unipile_account(token: str, user_id: str) -> dict[str, Any] | None:
             # Revendiqué : seul son propriétaire peut le retrouver (reconnexion).
             if owner == user_id:
                 candidates.append(account)
+            else:
+                claimed_by_others += 1
             continue
         created = _parse_iso_utc(unipile.account_created_at(account))
         # Horodatage illisible ⇒ on ne peut pas prouver qu'il est récent ⇒ refus.
-        if created is not None and created >= cutoff:
+        if created is None:
+            undated += 1
+        elif created >= cutoff:
             candidates.append(account)
+        else:
+            too_old += 1
+
+    if not candidates:
+        print(
+            f"[unipile] aucun compte rattachable pour {user_id} : "
+            f"{len(accounts)} compte(s) vus, {claimed_by_others} revendiqué(s) par un autre "
+            f"compte Cibl, {too_old} antérieur(s) à la demande de connexion "
+            f"({cutoff.isoformat()}), {undated} sans date de création exploitable. "
+            f"Demande de connexion horodatée : {'oui' if requested_at else 'non'}."
+        )
+        return None
+    print(f"[unipile] rattachement par repli borné pour {user_id} ({len(candidates)} candidat(s)).")
     return _most_recent(candidates)
 
 

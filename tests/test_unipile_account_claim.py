@@ -115,6 +115,67 @@ class ResolveUnipileAccountTest(unittest.TestCase):
         self.assertIsNone(self._resolve(old, {}, requested_minutes_ago=None))
 
 
+@unittest.skipUnless(HAS_API, "fastapi absent de cet environnement")
+class ResolveUnipileDiagnosticsTest(unittest.TestCase):
+    """Un refus de rattachement doit DIRE pourquoi.
+
+    Ce chemin ne peut pas être joué hors production : la base dev n'a aucun
+    compte Unipile connecté. Le premier test réel est donc celui d'Alex, en prod.
+    Sans motif dans les logs, « je n'arrive plus à connecter LinkedIn » devient
+    une enquête au lieu d'un grep.
+    """
+
+    def _resolve_capturing_logs(self, accounts, owners, *, requested_minutes_ago=5, user_id="me"):
+        import contextlib
+        import io
+
+        current = {"connect_requested_at": _iso(requested_minutes_ago)} if requested_minutes_ago is not None else {}
+        buffer = io.StringIO()
+        with mock.patch.object(api_module.unipile, "list_accounts", return_value=accounts), \
+             mock.patch.object(api_module.db, "unipile_account_owners", return_value=owners), \
+             mock.patch.object(api_module.db, "get_linkedin_outreach_account", return_value=current), \
+             contextlib.redirect_stdout(buffer):
+            got = api_module._resolve_unipile_account("tok", user_id)
+        return got, buffer.getvalue()
+
+    def test_refusal_names_the_account_claimed_by_someone_else(self) -> None:
+        accounts = [{"id": "acc-victime", "name": "Nom LinkedIn", "created_at": _iso(1)}]
+        got, logs = self._resolve_capturing_logs(accounts, {"acc-victime": "un-autre"})
+        self.assertIsNone(got)
+        self.assertIn("[unipile]", logs)
+        self.assertIn("1 revendiqué(s) par un autre", logs)
+
+    def test_refusal_names_the_out_of_window_account(self) -> None:
+        accounts = [{"id": "acc-vieux", "name": "Nom LinkedIn", "created_at": _iso(90)}]
+        got, logs = self._resolve_capturing_logs(accounts, {}, requested_minutes_ago=10)
+        self.assertIsNone(got)
+        self.assertIn("antérieur(s) à la demande de connexion", logs)
+
+    def test_refusal_names_the_undated_account(self) -> None:
+        accounts = [{"id": "acc-sans-date", "name": "X", "created_at": "n'importe quoi"}]
+        got, logs = self._resolve_capturing_logs(accounts, {}, requested_minutes_ago=10)
+        self.assertIsNone(got)
+        self.assertIn("sans date de création exploitable", logs)
+
+    def test_unreadable_registry_says_so(self) -> None:
+        accounts = [{"id": "acc", "name": "X", "created_at": _iso(1)}]
+        got, logs = self._resolve_capturing_logs(accounts, None)
+        self.assertIsNone(got)
+        self.assertIn("registre des propriétés", logs)
+
+    def test_success_says_which_path_ran(self) -> None:
+        """Savoir si c'est la correspondance forte ou le repli qui a joué change
+        le diagnostic du jour où Unipile se mettra à renvoyer le `name`."""
+        _, strong = self._resolve_capturing_logs(
+            [{"id": "a1", "name": "me", "created_at": _iso(1)}], {}
+        )
+        self.assertIn("correspondance forte", strong)
+        _, fallback = self._resolve_capturing_logs(
+            [{"id": "a2", "name": "Nom LinkedIn", "created_at": _iso(1)}], {}
+        )
+        self.assertIn("repli borné", fallback)
+
+
 class ServerSideWritesTest(unittest.TestCase):
     """Les écritures de la table quittent le navigateur (migration 0075)."""
 
