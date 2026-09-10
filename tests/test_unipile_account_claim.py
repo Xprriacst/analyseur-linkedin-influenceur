@@ -148,7 +148,24 @@ class ServerSideWritesTest(unittest.TestCase):
         self.assertIn("return None", body)
 
     def test_migration_locks_the_table_for_clients(self) -> None:
-        self.assertIn("revoke insert, update, delete on public.linkedin_outreach_accounts from authenticated", MIGRATION)
+        """Les trois écritures doivent être retirées à `authenticated` ET `anon`.
+
+        L'assertion porte sur le CONTENU du revoke, pas sur une chaîne figée :
+        ajouter un privilège à la liste (`truncate`…) est un durcissement, il ne
+        doit pas faire tomber le test — seul le retrait d'un des trois compte."""
+        for role in ("authenticated", "anon"):
+            revoke = next(
+                (
+                    line for line in MIGRATION.splitlines()
+                    if line.startswith("revoke ")
+                    and "public.linkedin_outreach_accounts" in line
+                    and line.rstrip(";").endswith(role)
+                ),
+                None,
+            )
+            self.assertIsNotNone(revoke, f"aucun revoke pour {role}")
+            for privilege in ("insert", "update", "delete"):
+                self.assertIn(privilege, revoke)
         self.assertIn("create table if not exists public.unipile_account_claims", MIGRATION)
         # RLS sans policy : service-role uniquement.
         self.assertIn("alter table public.unipile_account_claims enable row level security", MIGRATION)
