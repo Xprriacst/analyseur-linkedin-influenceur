@@ -5194,6 +5194,11 @@ def me_linkedin_outreach_connect(
     # (pattern `...\.\d{3}Z$`) — pas de microsecondes ni d'offset `+00:00`, sinon
     # 400 « Expected union value ». Lien court-vécu (1 h).
     expires_on = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    # Borne du repli de rattachement : seul un compte Unipile créé APRÈS cet
+    # instant pourra être considéré comme celui que CE client vient de connecter.
+    # Posé avant d'ouvrir le lien, sinon un compte créé pendant l'authentification
+    # tomberait avant la borne et serait refusé.
+    db.set_unipile_connect_requested(token)
     try:
         url = unipile.create_hosted_auth_link(
             name=str(user_id),
@@ -5206,16 +5211,51 @@ def me_linkedin_outreach_connect(
     return {"auth_url": url}
 
 
-def _resolve_unipile_account(token: str, user_id: str) -> dict[str, Any] | None:
-    """Retrouve le compte Unipile fraîchement connecté par cet utilisateur.
+# Fenêtre de repli quand on ignore quand le client a demandé son lien d'auth :
+# un compte Unipile plus vieux que ça n'est pas « celui qu'il vient de connecter ».
+_UNIPILE_FALLBACK_WINDOW = timedelta(minutes=15)
 
-    ⚠️ Piège Unipile : `GET /accounts` renvoie le NOM LinkedIn du compte, pas le
-    `name` (=user_id) qu'on a passé à la connexion (celui-ci n'arrive que via le
-    webhook notify_url). On tente donc : (1) correspondance exacte par `name` (si
-    Unipile l'expose un jour), sinon (2) fallback robuste pour les connexions
-    séquentielles/supervisées — le compte le plus récent NON déjà rattaché à un
-    autre utilisateur (en gardant le nôtre en cas de reconnexion). Limite assumée :
-    2 connexions simultanées pourraient se croiser → durcissement via notify_url."""
+
+def _parse_iso_utc(value: Any) -> datetime | None:
+    """Horodatage ISO d'Unipile/Supabase en datetime aware, ou None si illisible."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _resolve_unipile_account(token: str, user_id: str) -> dict[str, Any] | None:
+    """Retrouve le compte Unipile fraîchement connecté par CET utilisateur.
+
+    ⚠️ Une seule clé API Unipile sert tous les clients : se tromper de compte ici,
+    c'est donner à quelqu'un la messagerie LinkedIn d'un autre et lui laisser
+    envoyer des invitations en son nom. Cette fonction refuse donc plutôt que de
+    deviner.
+
+    ⚠️ Piège Unipile : `GET /accounts` ne renvoie pas toujours le `name` (= notre
+    user_id) passé au lien d'auth — il porte parfois le nom LinkedIn du compte.
+    La version précédente retombait sur « le compte le plus récent non encore
+    rattaché EN BASE ». Or la déconnexion supprimait la ligne sans délier le
+    compte chez Unipile : le compte redevenait « non rattaché » tout en restant
+    connecté, et le rattachement suivant de N'IMPORTE QUEL client se l'attribuait.
+
+    Trois règles, dans l'ordre :
+      1. correspondance forte par `name` — le seul lien incontestable (ce `name`
+         est posé côté serveur depuis le jeton vérifié, un client ne peut pas le
+         forger) ; elle l'emporte, y compris pour réattribuer un compte dont la
+         revendication est périmée (même personne, nouveau compte Cibl) ;
+      2. sinon, repli BORNÉ : jamais un compte revendiqué par quelqu'un d'autre
+         (registre permanent), et seulement un compte créé APRÈS que ce client a
+         demandé son lien d'authentification ;
+      3. registre illisible ⇒ aucun repli. « Je ne sais pas qui possède quoi »
+         doit se solder par un refus, pas par une attribution au hasard.
+    """
     accounts = unipile.list_accounts()
     if not accounts:
         return None
@@ -5223,19 +5263,70 @@ def _resolve_unipile_account(token: str, user_id: str) -> dict[str, Any] | None:
     def _most_recent(items: list[dict[str, Any]]) -> dict[str, Any] | None:
         if not items:
             return None
-        return sorted(items, key=lambda a: str(a.get("created_at") or ""), reverse=True)[0]
+        return sorted(
+            items, key=lambda a: str(unipile.account_created_at(a) or ""), reverse=True
+        )[0]
 
-    exact = [a for a in accounts if a.get("name") == user_id]
+    # 1. Correspondance forte.
+    exact = [a for a in accounts if unipile.account_name_tag(a) == user_id]
     if exact:
+        print(f"[unipile] rattachement par correspondance forte (name) pour {user_id}.")
         return _most_recent(exact)
 
+    # 3. Fail-closed : sans registre, pas de repli.
+    owners = db.unipile_account_owners()
+    if owners is None:
+        print(
+            f"[unipile] aucun rattachement pour {user_id} : registre des propriétés "
+            "illisible (table 0075 absente, service-role manquant ou base en panne) "
+            "— repli refusé volontairement."
+        )
+        return None
+
     current = db.get_linkedin_outreach_account(token) or {}
-    my_id = current.get("unipile_account_id")
-    claimed = db.list_claimed_unipile_account_ids()
-    candidates = [
-        a for a in accounts
-        if unipile.account_id_of(a) == my_id or unipile.account_id_of(a) not in claimed
-    ]
+    requested_at = _parse_iso_utc(current.get("connect_requested_at"))
+    cutoff = requested_at or (datetime.now(timezone.utc) - _UNIPILE_FALLBACK_WINDOW)
+
+    # 2. Repli borné.
+    # ⚠️ Les compteurs ci-dessous ne sont pas décoratifs : ce chemin ne peut pas
+    # être joué hors production (la base dev n'a aucun compte Unipile connecté).
+    # Un « je n'arrive plus à connecter LinkedIn » sans motif serait une enquête ;
+    # avec cette ligne, un grep sur `[unipile]` dit lequel des trois refus a joué.
+    candidates: list[dict[str, Any]] = []
+    claimed_by_others = 0
+    too_old = 0
+    undated = 0
+    for account in accounts:
+        account_id = unipile.account_id_of(account)
+        if not account_id:
+            continue
+        owner = owners.get(account_id)
+        if owner is not None:
+            # Revendiqué : seul son propriétaire peut le retrouver (reconnexion).
+            if owner == user_id:
+                candidates.append(account)
+            else:
+                claimed_by_others += 1
+            continue
+        created = _parse_iso_utc(unipile.account_created_at(account))
+        # Horodatage illisible ⇒ on ne peut pas prouver qu'il est récent ⇒ refus.
+        if created is None:
+            undated += 1
+        elif created >= cutoff:
+            candidates.append(account)
+        else:
+            too_old += 1
+
+    if not candidates:
+        print(
+            f"[unipile] aucun compte rattachable pour {user_id} : "
+            f"{len(accounts)} compte(s) vus, {claimed_by_others} revendiqué(s) par un autre "
+            f"compte Cibl, {too_old} antérieur(s) à la demande de connexion "
+            f"({cutoff.isoformat()}), {undated} sans date de création exploitable. "
+            f"Demande de connexion horodatée : {'oui' if requested_at else 'non'}."
+        )
+        return None
+    print(f"[unipile] rattachement par repli borné pour {user_id} ({len(candidates)} candidat(s)).")
     return _most_recent(candidates)
 
 
@@ -5254,9 +5345,19 @@ def me_linkedin_outreach_refresh(token: str = Depends(require_token)) -> dict[st
     except unipile.UnipileError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if account:
+        account_id = unipile.account_id_of(account)
+        # La revendication est posée AVANT le rattachement : si l'écriture du
+        # registre échoue, on n'attache rien. L'inverse (compte attaché mais non
+        # revendiqué) le laisserait « libre » pour le prochain client qui
+        # rattache — la faille même que ce registre ferme.
+        if not db.claim_unipile_account(str(user_id), str(account_id or "")):
+            raise HTTPException(
+                status_code=503,
+                detail="Rattachement impossible pour le moment (registre indisponible). Réessaie dans un instant.",
+            )
         db.upsert_linkedin_outreach_account(
             token,
-            unipile_account_id=unipile.account_id_of(account),
+            unipile_account_id=account_id,
             account_name=unipile.account_display_name(account),
             status="connected",
         )
@@ -5302,7 +5403,10 @@ def me_linkedin_outreach_settings(
         if not outreach_autopilot.template_is_usable(template or ""):
             raise HTTPException(status_code=422, detail="Écris le texte de ton template avant de l'activer.")
 
-    db.upsert_linkedin_outreach_account(
+    # ⚠️ Écriture en service-role depuis la 0075 (la table n'est plus écrivable
+    # par le client). Un retour vide = écriture refusée : le dire, plutôt que de
+    # rendre un écran inchangé qui laisse croire que le réglage est enregistré.
+    saved = db.upsert_linkedin_outreach_account(
         token,
         daily_cap=payload.daily_cap,
         weekly_invite_cap=payload.weekly_invite_cap,
@@ -5320,6 +5424,11 @@ def me_linkedin_outreach_settings(
         auto_message_template=payload.auto_message_template,
         auto_message_requires_validation=payload.auto_message_requires_validation,
     )
+    if not saved:
+        raise HTTPException(
+            status_code=503,
+            detail="Réglage non enregistré (base indisponible). Réessaie dans un instant.",
+        )
     return _unipile_outreach_status(token)
 
 

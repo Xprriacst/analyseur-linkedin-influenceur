@@ -6492,13 +6492,21 @@ def upsert_linkedin_outreach_account(
 
     ⚠️ Aucun paramètre ne permet de lever le gel (`frozen`) : c'est un garde-fou
     anti-restriction, il n'est pas contournable depuis l'interface. Il se lève seul
-    (voir `outreach_engine.freeze_active`)."""
-    if not supabase_enabled():
+    (voir `outreach_engine.freeze_active`).
+
+    ⚠️ ÉCRITURE EN SERVICE-ROLE (migration 0075), pas avec le jeton du client.
+    Cette table porte `unipile_account_id`, seule clé de cloisonnement d'une API
+    Unipile partagée par tous les clients : tant qu'elle était écrivable depuis le
+    navigateur, un client pouvait y écrire l'identifiant du compte LinkedIn d'un
+    AUTRE client et envoyer en son nom. La 0075 retire insert/update/delete à
+    `authenticated` ; le `user_id` vient donc du jeton vérifié ici, jamais du
+    payload."""
+    if not supabase_enabled() or not admin_enabled():
         return None
     user = get_user(access_token)
     if not user:
         return None
-    db = client_for_token(access_token)
+    db = admin_client()
     row: dict[str, Any] = {
         "user_id": user["id"],
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -6550,42 +6558,111 @@ def upsert_linkedin_outreach_account(
     return resp.data[0] if resp.data else None
 
 
+def set_unipile_connect_requested(access_token: str) -> None:
+    """Horodate la demande de lien d'authentification Unipile de ce client.
+
+    Sert de borne au repli de rattachement : seul un compte Unipile créé APRÈS
+    cet instant peut être considéré comme « celui que ce client vient de
+    connecter ». Sans cette borne, un compte qui traînait déjà dans le workspace
+    partagé pouvait être attribué à quelqu'un qui n'y avait aucun droit.
+    Best-effort : ne jamais faire échouer l'ouverture du lien d'auth.
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return
+    user = get_user(access_token)
+    if not user:
+        return
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    try:
+        admin_client().table("linkedin_outreach_accounts").upsert(
+            {"user_id": user["id"], "connect_requested_at": now, "updated_at": now},
+            on_conflict="user_id",
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[unipile] horodatage de connexion non enregistré : {exc}")
+
+
+def unipile_account_owners() -> dict[str, str] | None:
+    """Registre permanent {unipile_account_id: user_id} (service-role).
+
+    ⚠️ `None` ≠ `{}` — et la distinction EST le garde-fou. `{}` veut dire
+    « aucun compte revendiqué » ; `None` veut dire « on ne sait pas » (table
+    absente, Supabase en panne, service-role manquant). L'appelant doit refuser
+    tout rattachement par repli quand c'est `None` : se rabattre sur un registre
+    vide reviendrait exactement au comportement vulnérable qu'on corrige — on
+    attribuerait le compte LinkedIn de quelqu'un d'autre en croyant qu'il est
+    libre.
+    """
+    if not supabase_enabled() or not admin_enabled():
+        return None
+    try:
+        resp = (
+            admin_client()
+            .table("unipile_account_claims")
+            .select("unipile_account_id, user_id")
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[unipile] registre des rattachements illisible : {exc}")
+        return None
+    return {
+        str(r["unipile_account_id"]): str(r["user_id"])
+        for r in (resp.data or [])
+        if r.get("unipile_account_id") and r.get("user_id")
+    }
+
+
+def claim_unipile_account(user_id: str, unipile_account_id: str) -> bool:
+    """Inscrit (ou rafraîchit) la propriété d'un compte Unipile — définitive.
+
+    Une revendication n'est JAMAIS retirée, même à la déconnexion : le compte
+    reste connecté chez Unipile, et le rendre « libre » suffirait à ce qu'un
+    autre client se l'attribue au rattachement suivant. Un client qui reconnecte
+    SON compte retombe sur sa propre ligne (`on conflict`).
+    """
+    if not user_id or not unipile_account_id or not supabase_enabled() or not admin_enabled():
+        return False
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    try:
+        admin_client().table("unipile_account_claims").upsert(
+            {
+                "unipile_account_id": unipile_account_id,
+                "user_id": user_id,
+                "last_seen_at": now,
+            },
+            on_conflict="unipile_account_id",
+        ).execute()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[unipile] revendication non enregistrée ({unipile_account_id}) : {exc}")
+        return False
+
+
 def disconnect_linkedin_outreach(access_token: str) -> bool:
-    """Délie le compte Unipile de l'utilisateur (le journal d'actions reste)."""
-    if not supabase_enabled():
+    """Délie le compte Unipile de l'utilisateur (le journal d'actions reste).
+
+    ⚠️ La revendication dans `unipile_account_claims` n'est PAS effacée : le
+    compte reste connecté côté Unipile, donc le remettre dans le pot commun le
+    rendrait captable par le premier client qui rattache un compte. C'était
+    précisément le chemin d'attaque corrigé par la 0075.
+
+    Écriture en service-role : la 0075 retire le DELETE à `authenticated` — sans
+    quoi un client supprimait sa ligne puis la recréait pour effacer son gel
+    anti-restriction et son warm-up.
+    """
+    if not supabase_enabled() or not admin_enabled():
         return False
     user = get_user(access_token)
     if not user:
         return False
-    db = client_for_token(access_token)
     resp = (
-        db.table("linkedin_outreach_accounts")
+        admin_client()
+        .table("linkedin_outreach_accounts")
         .delete()
         .eq("user_id", user["id"])
         .execute()
     )
     return bool(resp.data)
-
-
-def list_claimed_unipile_account_ids() -> set[str]:
-    """Tous les `unipile_account_id` déjà rattachés à un utilisateur (service-role).
-
-    Sert au rattachement du compte fraîchement connecté : /accounts d'Unipile ne
-    renvoie pas notre `name` (=user_id) mais le nom LinkedIn du compte, donc on
-    réclame un compte NON déjà pris — d'où ce set des comptes déjà attribués.
-    Service-role car il faut voir les lignes de TOUS les utilisateurs (RLS bypass)."""
-    if not admin_enabled():
-        return set()
-    try:
-        resp = (
-            admin_client()
-            .table("linkedin_outreach_accounts")
-            .select("unipile_account_id")
-            .execute()
-        )
-    except Exception:
-        return set()
-    return {r["unipile_account_id"] for r in (resp.data or []) if r.get("unipile_account_id")}
 
 
 def log_outreach_action(
