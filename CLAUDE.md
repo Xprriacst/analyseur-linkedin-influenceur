@@ -88,6 +88,16 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-09-11 (dev : générer un post sans analyse d'influenceurs — Joëlle / wizard)
+
+- **Signalement d'Alex** : ce matin, génération d'un post pour Joëlle **avec une idée** et **sans idée** — les deux ont échoué.
+- ⚠️ **Cause** : les deux portes du parcours guidé shareaient le même 400. « Je n'ai pas d'idée » appelle `POST /ideas` ; « J'ai une idée » aboutit à `POST /generate/jobs`. Les deux levaient *« Aucun influenceur analysé. Lance d'abord une analyse. »* dès que `_get_influencers` rendait `[]`. Or un compte `ideas_only` (Joëlle) **n'analyse pas d'influenceurs** : son carburant est le profil éditorial + l'idée (souvent une annonce). Le bootstrap du post du jour savait déjà générer sans corpus ; le wizard, non. Panne unique, deux messages identiques, zéro analyse à lancer.
+- **Correctif** : `_generation_influencers` autorise une liste vide. `/ideas`, `_prepare_generate_context` (`/generate` + `/generate/stream`), `/generate/jobs` et `POST /me/daily-ideas/regenerate` n'exigent plus d'analyse. Le modèle s'appuie sur le profil ; sans posts d'influenceurs, `generate_one_line_ideas` **et** `generate_posts` **interdisent d'inventer** un nom, une URL ou un chiffre d'engagement. L'analyse stratégique dashboard et le chat **gardent** le 400 — là, sans corpus, il n'y a vraiment rien à dire.
+- ⚠️ **Trouvé en passant, non corrigé ici** : dans la vue client (`reservoirOnly`), `IdeaReservoir` n'a pas de `onGenerate` — le bouton « Générer » est masqué. Et `onReuse` bascule sur l'onglet Générateur que cette vue **ne rend pas**. Hors périmètre (1 issue = 1 PR) : Alex était dans le wizard agence.
+- **Aucune migration, aucune variable d'env, aucun changement frontend.** Fichiers : `api.py`, `src/llm.py`, `tests/test_generate_without_corpus.py`.
+- **Tests** : source (les 4 routes de génération n'ont plus le `raise` 400, dashboard + chat l'ont encore) + prompt (corpus vide ≠ corpus présent, idées **et** `generate_posts`, vérifié par la négative) + comportement fastapi (`/ideas` et `/generate/jobs` passent avec `[]`, le 402 crédits reste fail-closed). **829 unitaires verts**, `py_compile` vert, `npm run build` vert, zéro marqueur de conflit. Frontend inchangé.
+- **Reste à faire** : test d'Alex sur **dev** — se connecter sur le compte de Joëlle, vue agence, les deux portes du wizard (« J'ai une idée » et « Je n'ai pas d'idée ») doivent produire un post. Sans analyse d'influenceurs, c'est le profil éditorial + l'idée qui nourrissent le modèle.
+
 ### 2026-09-08 #2 (dev : publication Zernio — timeout honnête, rejeu idempotent, 409 = publié, 207 « failed » détecté)
 
 - **Trouvé en diagnostiquant les photos expirées de Joëlle (entrée précédente), et c'est la cause DOMINANTE de ses échecs** : en prod, **18 posts programmés en échec, 17 avec image, 14 sur `The read operation timed out`**. Chez Joëlle : **10 publiés / 10 en échec** sur ses posts avec photo — **un sur deux ne partait pas, depuis juillet**, et l'âge de l'image (3-4 j, mesuré sur le timestamp du nom de fichier) est le **même** côté publiés et échoués : ce n'était pas l'expiration.
