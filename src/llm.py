@@ -1608,17 +1608,20 @@ def generate_one_line_ideas(
     platform: str = "linkedin",
     recent_posts: list[dict] | None = None,
 ) -> list[dict]:
-    """Generate scannable one-liner post ideas anchored in real top posts.
+    """Generate scannable one-liner post ideas.
 
-    Returns a list of {line, source_type, source_ref, source_url}.
+    Quand ``real_posts`` est fourni, les idées s'ancrent dans ces posts.
+    Quand il est vide (compte sans analyse d'influenceurs), elles se déduisent
+    du seul contexte client — on n'invente ni nom ni URL.
     """
     network = "Instagram" if platform == "instagram" else "LinkedIn"
     context_text = _format_user_context(user_context)
+    has_real_posts = bool(real_posts)
     posts_text = "\n".join(
         f"- [{p.get('name', '?')} · {p.get('engagement', 0)} réactions]"
         f" ({p.get('url', '')}) : {str(p.get('text', ''))[:200]}"
         for p in real_posts[:40]
-    )
+    ) if has_real_posts else ""
     recent_text = (
         "\n\nIdées récentes déjà proposées (ne pas répéter, pas de variation triviale) :\n"
         + "\n".join(f"- {line}" for line in (recent_idea_lines or [])[:40])
@@ -1628,17 +1631,38 @@ def generate_one_line_ideas(
         f"\n\nThème imposé à développer en priorité : « {seed_topic} ».\n"
         if seed_topic else ""
     )
+    if has_real_posts:
+        system_anchor = "ancrées dans de vrais posts qui ont performé. "
+        posts_block = f"\n\nPosts réels les plus performants (source + engagement) :\n{posts_text}"
+        source_rule = (
+            '- Ancre chaque idée dans un post réel de la liste (source_type="influencer_post")\n'
+            '  ou "pattern" si c\'est une synthèse multi-posts (source_type="pattern")'
+        )
+    else:
+        # Compte sans analyse : inventer un influenceur + une URL serait un
+        # mensonge d'apparence normale (le wizard afficherait 3 idées « sourcées »).
+        system_anchor = "déduites du contexte client (aucun corpus d'influenceurs). "
+        posts_block = (
+            "\n\nAucun post d'influenceur en corpus : déduis les idées du SEUL "
+            "contexte client. N'invente ni nom d'influenceur, ni URL de post, "
+            "ni chiffre d'engagement."
+        )
+        source_rule = (
+            '- source_type="pattern" uniquement — pas d\'influenceur à citer\n'
+            '- source_ref décrit le pattern (offre, audience, angle), source_url vide'
+        )
     system = (
         f"Tu es un stratège contenu {network}. "
-        "Tu génères des idées de posts en une phrase, scannables, ancrées dans de vrais posts qui ont performé. "
-        "Chaque idée doit être actionnable, originale et dicter clairement l'angle à prendre. "
+        "Tu génères des idées de posts en une phrase, scannables, "
+        + system_anchor
+        + "Chaque idée doit être actionnable, originale et dicter clairement l'angle à prendre. "
         + _date_directive()
         + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
     )
     user = (
         f"Contexte client :\n{context_text}"
         + seed_directive
-        + f"\n\nPosts réels les plus performants (source + engagement) :\n{posts_text}"
+        + posts_block
         + _format_reference_posts(reference_posts)
         + _format_recent_posts(recent_posts)
         + recent_text
@@ -1649,8 +1673,7 @@ Règles :
 - Une idée = une phrase de 10-15 mots MAX qui dit quel angle prendre, pas un thème vague
 - Diversifie : hooks, angles, niveaux de funnel (attirer / éduquer / convertir), formats
 - Chaque idée doit être transposable au métier du client
-- Ancre chaque idée dans un post réel de la liste (source_type="influencer_post")
-  ou "pattern" si c'est une synthèse multi-posts (source_type="pattern")
+{source_rule}
 
 Schéma JSON attendu :
 {{
@@ -2074,10 +2097,11 @@ def generate_posts(
     à fort potentiel à partir du contexte client et du benchmark (comme la
     génération d'idées) — une idée = un post.
     """
+    has_examples = bool(top_posts_examples)
     examples_text = "\n\n".join(
         f"[{e.get('influencer', '?')} | {e.get('engagement', 0)} eng | hook: {e.get('hook_type', 'other')}]\n{e.get('text', '')[:600]}"
         for e in top_posts_examples[:6]
-    )
+    ) if has_examples else ""
     context_text = _format_user_context(user_context)
 
     count = max(1, min(count, 5))
@@ -2102,13 +2126,37 @@ def generate_posts(
         else ""
     )
 
+    if has_examples:
+        corpus_system = (
+            "puis en t'appuyant sur les patterns observés chez les influenceurs analysés. "
+            "Les patterns du benchmark servent à imiter un style réel (rythme, angle, niveau de détail), pas à recycler des templates. "
+        )
+        examples_block = (
+            "\n\nBenchmarks issus de l'analyse d'influenceurs LinkedIn "
+            "(corpus_insights = données mesurées sur ce corpus réel, à respecter et ne pas contredire) :\n"
+            + json.dumps(benchmark, ensure_ascii=False, indent=2)
+            + "\n\nExemples des posts les plus performants :\n"
+            + examples_text
+        )
+    else:
+        # Compte ideas_only (Joëlle) : le wizard génère sans analyse. Inventer un
+        # influenceur + des chiffres d'engagement serait un post d'apparence
+        # normale, juste faux.
+        corpus_system = (
+            "en t'appuyant uniquement sur le contexte du client "
+            "(aucun corpus d'influenceurs). "
+        )
+        examples_block = (
+            "\n\nAucun post d'influenceur en corpus : écris uniquement à partir du "
+            "contexte client et du sujet. N'invente ni nom d'influenceur, ni "
+            "statistique d'engagement tirée d'un compte que tu n'as pas vu."
+        )
     system = (
         "Tu es un expert en stratégie LinkedIn. "
         "Tu génères des posts prêts à publier en respectant d'abord le contexte du client, "
-        "puis en t'appuyant sur les patterns observés chez les influenceurs analysés. "
-        "Tu produis des STRUCTURES VARIÉES, naturelles et humaines : tous les posts ne sont pas des posts viraux optimisés engagement. "
+        + corpus_system
+        + "Tu produis des STRUCTURES VARIÉES, naturelles et humaines : tous les posts ne sont pas des posts viraux optimisés engagement. "
         "Chaque rôle éditorial a sa propre intention et sa propre forme — respecte-les strictement. "
-        "Les patterns du benchmark servent à imiter un style réel (rythme, angle, niveau de détail), pas à recycler des templates. "
         + _date_directive()
         + search_directive
         + " Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte avant/après."
@@ -2128,11 +2176,7 @@ def generate_posts(
         topic_directive
         + "Contexte client à respecter EN PRIORITÉ (prime sur les patterns viraux) :\n"
         + context_text
-        + "\n\nBenchmarks issus de l'analyse d'influenceurs LinkedIn "
-        "(corpus_insights = données mesurées sur ce corpus réel, à respecter et ne pas contredire) :\n"
-        + json.dumps(benchmark, ensure_ascii=False, indent=2)
-        + "\n\nExemples des posts les plus performants :\n"
-        + examples_text
+        + examples_block
         + _format_reference_posts(reference_posts)
         + _format_template(template)
         + _format_recent_posts(recent_posts)

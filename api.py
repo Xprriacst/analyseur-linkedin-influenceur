@@ -2552,6 +2552,19 @@ def _get_influencers(token: Optional[str], platform: str = "linkedin") -> list[d
     return _load_cached_influencers()
 
 
+def _generation_influencers(token: Optional[str], platform: str = "linkedin") -> list[dict]:
+    """Corpus d'influenceurs pour une génération. **Peut être vide.**
+
+    Ne PAS reposer un 400 « Lance d'abord une analyse » ici : les comptes
+    ``ideas_only`` (Joëlle) n'analysent pas d'influenceurs. Leur carburant est
+    le profil éditorial + l'idée (souvent une annonce). Les deux portes du
+    wizard (``/ideas`` et ``/generate/jobs``) passent par ici ; un 400 unique
+    les casserait toutes les deux. ``generate_posts`` / ``generate_one_line_ideas``
+    et le bootstrap daily-idea savent déjà tourner sur un benchmark vide.
+    """
+    return _get_influencers(token, platform=platform)
+
+
 def _build_benchmark(influencers: list[dict]) -> tuple[list[dict], dict]:
     """Build top posts list and benchmark summary."""
     return build_benchmark(influencers)
@@ -2853,11 +2866,10 @@ def ideas(payload: IdeasRequest, token: Optional[str] = Depends(optional_token))
     platform = payload.platform if payload.platform == "instagram" else "linkedin"
     if platform == "instagram" and token:
         require_feature(token, "instagram")
-    influencers = _get_influencers(token, platform=platform)
-    if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
+    influencers = _generation_influencers(token, platform=platform)
 
-    # Débit par lot (pas par idée) — après les préconditions.
+    # Débit par lot (pas par idée) — après les préconditions. Un corpus vide
+    # n'en est plus une : le modèle s'appuie alors sur le profil éditorial.
     credits: int | None = None
     if token:
         ok, balance = db.debit_credits(token, "generate_ideas", 1)
@@ -2921,11 +2933,11 @@ def _prepare_generate_context(payload: GenerateRequest, token: Optional[str]) ->
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _get_influencers(token)
-    if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
+    influencers = _generation_influencers(token)
 
-    # Débit après toutes les préconditions : un user sans influenceur ne perd pas de crédits.
+    # Débit après la clé Anthropic. Un corpus vide n'est plus une précondition
+    # (voir `_generation_influencers`) : un user ideas_only ne perd pas de
+    # crédits pour une analyse qu'il n'a pas le droit de lancer.
     credits: int | None = None
     if token:
         ok, balance = db.debit_credits(token, "generate_post", payload.count)
@@ -3082,14 +3094,10 @@ def create_generation_job(payload: GenerationJobRequest, token: str = Depends(re
     platform = payload.platform if payload.platform == "instagram" else "linkedin"
     if platform == "instagram":
         require_feature(token, "instagram")
-    influencers = _get_influencers(token, platform=platform)
-    if not influencers:
-        detail = (
-            "Aucun influenceur Instagram analysé. Lance d'abord une analyse."
-            if platform == "instagram"
-            else "Aucun influenceur analysé. Lance d'abord une analyse."
-        )
-        raise HTTPException(status_code=400, detail=detail)
+    # Pas de `_generation_influencers` ici : le thread `process_generation_job`
+    # relit le corpus lui-même, et une liste vide est un cas légitime (compte
+    # ideas_only). Un 400 « Lance d'abord une analyse » cassait les deux portes
+    # du wizard d'un même coup.
 
     # ALE-156 : sujet = lien d'annonce → on ancre le post sur le bien (titre,
     # prix, description) plutôt que de donner l'URL brute au modèle, et on garde
@@ -3108,7 +3116,8 @@ def create_generation_job(payload: GenerationJobRequest, token: str = Depends(re
         except ListingError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
-    # Débit après les préconditions : un user sans influenceur ne perd pas de crédits.
+    # Débit après la clé Anthropic (et l'annonce, LinkedIn). Un corpus vide
+    # n'est plus une précondition — voir `_generation_influencers`.
     credit_action = "generate_reel" if platform == "instagram" else "generate_post"
     ok, balance = db.debit_credits(token, credit_action, payload.count)
     if not ok:
@@ -6219,9 +6228,7 @@ def regenerate_daily_idea(token: str = Depends(require_token)) -> dict[str, Any]
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=400, detail="ANTHROPIC_API_KEY manquant dans .env")
 
-    influencers = _get_influencers(token)
-    if not influencers:
-        raise HTTPException(status_code=400, detail="Aucun influenceur analysé. Lance d'abord une analyse.")
+    influencers = _generation_influencers(token)
 
     ok, balance = db.debit_credits(token, "generate_ideas", 1)
     if not ok:
