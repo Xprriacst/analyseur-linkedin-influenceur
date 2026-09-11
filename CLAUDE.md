@@ -88,6 +88,14 @@ Les routines autonomes tiennent un **journal de bord versionné** : `docs/agent-
 
 ## Changelog
 
+### 2026-09-11 (dev : génération de post — virgule finale JSON du modèle)
+
+- **Signalement d'Alex** : générer un post échoue avec `Illegal trailing comma before end of object: line 8 column 973 (char 1460)`.
+- ⚠️ **Cause** : le modèle (Sonnet 5) termine parfois le dernier champ du variant par une virgule, comme en JavaScript. `_extract_json` passait déjà `strict=False` et réparait les guillemets internes (PR #377), mais **`strict=False` ne relâche que les caractères de contrôle**, pas la grammaire — `json.loads` refuse la virgule finale. L'erreur remontait telle quelle dans le job (`str(exc)`), le post n'était jamais écrit (crédits déjà débités à la création du job, comme tout échec de génération).
+- **Correctif** : `_strip_trailing_commas` retire uniquement les `,` hors chaîne qui précèdent `}` / `]` ; `_loads_lenient` l'enchaîne après la réparation des guillemets (les deux défauts peuvent coexister sur le même JSON). Une virgule dans le corps du post n'est pas touchée.
+- **Aucune migration, aucune variable d'env, aucun changement frontend.** Tous les chemins LLM qui passent par `_extract_json` en profitent (posts, reels, idées, preview…).
+- **Tests** : `tests/test_extract_json_repair.py` (+7 : objet / tableau / imbriqué, combo virgule+guillemet interne, virgule dans le texte conservée, no-op sur JSON valide, passe guillemets seule qui ne suffit pas). ⚠️ **Vérifié par la négative** : `json.loads` brut lève bien ; `_repair_inner_quotes` seul aussi ; sans la passe virgule, `_extract_json` relance l'erreur. **823 unitaires verts** sous Python 3.12, `py_compile` vert, `npm run build` vert, zéro marqueur de conflit.
+
 ### 2026-09-08 #2 (dev : publication Zernio — timeout honnête, rejeu idempotent, 409 = publié, 207 « failed » détecté)
 
 - **Trouvé en diagnostiquant les photos expirées de Joëlle (entrée précédente), et c'est la cause DOMINANTE de ses échecs** : en prod, **18 posts programmés en échec, 17 avec image, 14 sur `The read operation timed out`**. Chez Joëlle : **10 publiés / 10 en échec** sur ses posts avec photo — **un sur deux ne partait pas, depuis juillet**, et l'âge de l'image (3-4 j, mesuré sur le timestamp du nom de fichier) est le **même** côté publiés et échoués : ce n'était pas l'expiration.

@@ -188,12 +188,69 @@ def _repair_inner_quotes(raw: str) -> str:
     return "".join(out)
 
 
+def _strip_trailing_commas(raw: str) -> str:
+    """Retire les virgules finales avant `}` / `]` (JSON non-strict du modèle).
+
+    Le modèle termine parfois le dernier champ d'un objet (ou le dernier
+    élément d'un tableau) par une virgule, comme en JS. `json.loads` refuse
+    ça même en `strict=False` — ce drapeau ne relâche que les caractères de
+    contrôle, pas la grammaire. CPython récent dit « Illegal trailing comma
+    before end of object » ; 3.12 dit encore « Expecting property name… ».
+    On ne touche qu'aux virgules HORS chaîne : une virgule dans le corps du
+    post (« wait, } still ») reste intacte.
+    """
+    out: list[str] = []
+    in_string = False
+    i = 0
+    n = len(raw)
+    while i < n:
+        ch = raw[i]
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(raw[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < n and raw[j] in " \t\r\n":
+                j += 1
+            if j < n and raw[j] in "}]":
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _loads_lenient(candidate: str) -> dict:
-    """json.loads(strict=False) avec une passe de réparation des guillemets."""
+    """json.loads(strict=False) + réparations (guillemets internes, virgules finales)."""
     try:
         return json.loads(candidate, strict=False)
-    except json.JSONDecodeError:
-        return json.loads(_repair_inner_quotes(candidate), strict=False)
+    except json.JSONDecodeError as first_err:
+        attempts: list[str] = []
+        for text in (
+            _repair_inner_quotes(candidate),
+            _strip_trailing_commas(candidate),
+            _strip_trailing_commas(_repair_inner_quotes(candidate)),
+        ):
+            if text != candidate and text not in attempts:
+                attempts.append(text)
+        for text in attempts:
+            try:
+                return json.loads(text, strict=False)
+            except json.JSONDecodeError:
+                continue
+        raise first_err
 
 
 def _extract_json(text: str) -> dict:
@@ -203,8 +260,8 @@ def _extract_json(text: str) -> dict:
     contenir des retours à la ligne littéraux que le modèle oublie d'échapper
     en `\\n` — le mode strict de json.loads rejette ça avec "Invalid control
     character", alors que le JSON est par ailleurs valide et complet. Les
-    guillemets internes non échappés sont réparés en dernier recours par
-    `_loads_lenient`.
+    guillemets internes non échappés et les virgules finales (JS-style) sont
+    réparés en dernier recours par `_loads_lenient`.
     """
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
